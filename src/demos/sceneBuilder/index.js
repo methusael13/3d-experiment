@@ -50,8 +50,13 @@ export function createSceneBuilderDemo(container, options = {}) {
   // Scene state
   const sceneObjects = []; // For rendering data (model, renderer)
   const sceneGraph = createSceneGraph(); // For spatial queries
-  let selectedObjectId = null;
   let nextObjectId = 1;
+  
+  // Multi-select and grouping
+  const selectedObjectIds = new Set(); // Multiple selection support
+  const groups = new Map(); // groupId -> { name, childIds: Set, collapsed: bool }
+  let nextGroupId = 1;
+  let expandedGroupInList = null; // Track which group is expanded in object list for child-level selection
   
   // Camera state
   let cameraAngleX = 0.5;
@@ -482,6 +487,7 @@ export function createSceneBuilderDemo(container, options = {}) {
         position: [0, 0, 0],
         rotation: [0, 0, 0],
         scale: [1, 1, 1],
+        groupId: null, // Group membership (null = ungrouped)
       };
       
       sceneObjects.push(sceneObject);
@@ -538,44 +544,299 @@ export function createSceneBuilderDemo(container, options = {}) {
     }
   }
   
+  // ==================== Selection & Grouping ====================
+  
+  /**
+   * Get the first selected object (for single-selection compatibility)
+   */
+  function getFirstSelectedObject() {
+    if (selectedObjectIds.size === 0) return null;
+    const firstId = selectedObjectIds.values().next().value;
+    return sceneObjects.find(o => o.id === firstId) || null;
+  }
+  
+  /**
+   * Get all selected objects
+   */
+  function getSelectedObjects() {
+    return sceneObjects.filter(o => selectedObjectIds.has(o.id));
+  }
+  
+  /**
+   * Calculate centroid of selected objects
+   */
+  function getSelectionCentroid() {
+    const selected = getSelectedObjects();
+    if (selected.length === 0) return [0, 0, 0];
+    
+    const sum = [0, 0, 0];
+    for (const obj of selected) {
+      sum[0] += obj.position[0];
+      sum[1] += obj.position[1];
+      sum[2] += obj.position[2];
+    }
+    return [sum[0] / selected.length, sum[1] / selected.length, sum[2] / selected.length];
+  }
+  
+  /**
+   * Clear selection
+   */
+  function clearSelection() {
+    selectedObjectIds.clear();
+    updateObjectList();
+    updateGizmoTarget();
+    container.querySelector('#transform-panel').style.display = 'none';
+  }
+  
+  /**
+   * Select a single object (or its group members)
+   * @param {string} id - Object ID
+   * @param {boolean} additive - If true, add to selection (shift+click)
+   * @param {boolean} fromExpandedGroup - If true, select only this object even if in group
+   */
+  function selectObject(id, additive = false, fromExpandedGroup = false) {
+    const obj = sceneObjects.find(o => o.id === id);
+    if (!obj) {
+      if (!additive) clearSelection();
+      return;
+    }
+    
+    // Determine what IDs to select
+    let idsToSelect = [id];
+    
+    // If object is in a group and we're not selecting from an expanded group list,
+    // select all objects in the group
+    if (obj.groupId && !fromExpandedGroup) {
+      const group = groups.get(obj.groupId);
+      if (group) {
+        idsToSelect = [...group.childIds];
+      }
+    }
+    
+    if (additive) {
+      // Toggle: if all idsToSelect are already selected, deselect them
+      const allSelected = idsToSelect.every(i => selectedObjectIds.has(i));
+      if (allSelected) {
+        idsToSelect.forEach(i => selectedObjectIds.delete(i));
+      } else {
+        idsToSelect.forEach(i => selectedObjectIds.add(i));
+      }
+    } else {
+      // Clear and select new
+      selectedObjectIds.clear();
+      idsToSelect.forEach(i => selectedObjectIds.add(i));
+    }
+    
+    updateObjectList();
+    updateGizmoTarget();
+    updateTransformPanel();
+  }
+  
+  /**
+   * Update the transform panel based on selection
+   */
+  function updateTransformPanel() {
+    const transformPanel = container.querySelector('#transform-panel');
+    
+    if (selectedObjectIds.size === 0) {
+      transformPanel.style.display = 'none';
+      return;
+    }
+    
+    transformPanel.style.display = 'block';
+    
+    if (selectedObjectIds.size === 1) {
+      // Single selection: show exact values
+      const obj = getFirstSelectedObject();
+      if (obj) {
+        container.querySelector('#object-name').value = obj.name;
+        container.querySelector('#object-name').disabled = false;
+        container.querySelector('#pos-x').value = obj.position[0].toFixed(2);
+        container.querySelector('#pos-y').value = obj.position[1].toFixed(2);
+        container.querySelector('#pos-z').value = obj.position[2].toFixed(2);
+        container.querySelector('#rot-x').value = obj.rotation[0].toFixed(1);
+        container.querySelector('#rot-y').value = obj.rotation[1].toFixed(1);
+        container.querySelector('#rot-z').value = obj.rotation[2].toFixed(1);
+        container.querySelector('#scale-x').value = obj.scale[0].toFixed(2);
+        container.querySelector('#scale-y').value = obj.scale[1].toFixed(2);
+        container.querySelector('#scale-z').value = obj.scale[2].toFixed(2);
+      }
+    } else {
+      // Multi-selection: show centroid for position, disable name
+      const centroid = getSelectionCentroid();
+      container.querySelector('#object-name').value = `${selectedObjectIds.size} objects`;
+      container.querySelector('#object-name').disabled = true;
+      container.querySelector('#pos-x').value = centroid[0].toFixed(2);
+      container.querySelector('#pos-y').value = centroid[1].toFixed(2);
+      container.querySelector('#pos-z').value = centroid[2].toFixed(2);
+      // Clear rotation/scale (can't show meaningful values for multi-select)
+      container.querySelector('#rot-x').value = '-';
+      container.querySelector('#rot-y').value = '-';
+      container.querySelector('#rot-z').value = '-';
+      container.querySelector('#scale-x').value = '-';
+      container.querySelector('#scale-y').value = '-';
+      container.querySelector('#scale-z').value = '-';
+    }
+  }
+  
+  /**
+   * Create a group from selected objects
+   */
+  function createGroupFromSelection() {
+    if (selectedObjectIds.size < 2) return null;
+    
+    // Check if all selected are already in the same group
+    const selected = getSelectedObjects();
+    const existingGroupId = selected[0].groupId;
+    if (existingGroupId) {
+      const group = groups.get(existingGroupId);
+      if (group && group.childIds.size === selectedObjectIds.size) {
+        // All members of this group are selected - no-op
+        const allSameGroup = selected.every(o => o.groupId === existingGroupId);
+        if (allSameGroup) {
+          console.log('All selected objects are already in the same group');
+          return null;
+        }
+      }
+    }
+    
+    // Remove selected objects from any existing groups
+    for (const obj of selected) {
+      if (obj.groupId) {
+        removeObjectFromGroup(obj.id);
+      }
+    }
+    
+    // Create new group
+    const groupId = `group-${nextGroupId++}`;
+    const group = {
+      name: `Group ${nextGroupId - 1}`,
+      childIds: new Set(selectedObjectIds),
+      collapsed: true,
+    };
+    groups.set(groupId, group);
+    
+    // Assign group to objects
+    for (const obj of selected) {
+      obj.groupId = groupId;
+    }
+    
+    updateObjectList();
+    return groupId;
+  }
+  
+  /**
+   * Remove an object from its group
+   */
+  function removeObjectFromGroup(objectId) {
+    const obj = sceneObjects.find(o => o.id === objectId);
+    if (!obj || !obj.groupId) return;
+    
+    const group = groups.get(obj.groupId);
+    if (group) {
+      group.childIds.delete(objectId);
+      
+      // If group has 0 or 1 members, dissolve it
+      if (group.childIds.size <= 1) {
+        // Remove groupId from remaining member
+        for (const remainingId of group.childIds) {
+          const remainingObj = sceneObjects.find(o => o.id === remainingId);
+          if (remainingObj) remainingObj.groupId = null;
+        }
+        groups.delete(obj.groupId);
+      }
+    }
+    
+    obj.groupId = null;
+  }
+  
   // ==================== UI ====================
   
   function updateObjectList() {
     const list = container.querySelector('#object-list');
-    list.innerHTML = sceneObjects.map(obj => `
-      <li data-id="${obj.id}" class="${obj.id === selectedObjectId ? 'selected' : ''}">
-        <span>${obj.name}</span>
-      </li>
-    `).join('');
     
-    list.querySelectorAll('li').forEach(li => {
-      li.addEventListener('click', () => selectObject(li.dataset.id));
-    });
-  }
-  
-  function selectObject(id) {
-    selectedObjectId = id;
-    updateObjectList();
-    updateGizmoTarget();
+    // Build hierarchical list with groups
+    const ungrouped = sceneObjects.filter(o => !o.groupId);
+    const groupedByGroupId = new Map();
     
-    const transformPanel = container.querySelector('#transform-panel');
-    const obj = sceneObjects.find(o => o.id === id);
-    
-    if (obj) {
-      transformPanel.style.display = 'block';
-      container.querySelector('#object-name').value = obj.name;
-      container.querySelector('#pos-x').value = obj.position[0];
-      container.querySelector('#pos-y').value = obj.position[1];
-      container.querySelector('#pos-z').value = obj.position[2];
-      container.querySelector('#rot-x').value = obj.rotation[0];
-      container.querySelector('#rot-y').value = obj.rotation[1];
-      container.querySelector('#rot-z').value = obj.rotation[2];
-      container.querySelector('#scale-x').value = obj.scale[0];
-      container.querySelector('#scale-y').value = obj.scale[1];
-      container.querySelector('#scale-z').value = obj.scale[2];
-    } else {
-      transformPanel.style.display = 'none';
+    for (const obj of sceneObjects) {
+      if (obj.groupId) {
+        if (!groupedByGroupId.has(obj.groupId)) {
+          groupedByGroupId.set(obj.groupId, []);
+        }
+        groupedByGroupId.get(obj.groupId).push(obj);
+      }
     }
+    
+    let html = '';
+    
+    // Render groups first
+    for (const [groupId, groupObjects] of groupedByGroupId) {
+      const group = groups.get(groupId);
+      if (!group) continue;
+      
+      const isExpanded = expandedGroupInList === groupId;
+      const allSelected = groupObjects.every(o => selectedObjectIds.has(o.id));
+      
+      html += `
+        <li class="group-header ${allSelected ? 'selected' : ''}" data-group-id="${groupId}">
+          <span class="group-toggle">${isExpanded ? '▼' : '▶'}</span>
+          <span class="group-name">${group.name}</span>
+          <span class="group-count">(${groupObjects.length})</span>
+        </li>
+      `;
+      
+      if (isExpanded) {
+        for (const obj of groupObjects) {
+          html += `
+            <li class="group-child ${selectedObjectIds.has(obj.id) ? 'selected' : ''}" data-id="${obj.id}" data-in-expanded-group="true">
+              <span class="child-indent">└─</span>
+              <span>${obj.name}</span>
+            </li>
+          `;
+        }
+      }
+    }
+    
+    // Render ungrouped objects
+    for (const obj of ungrouped) {
+      html += `
+        <li data-id="${obj.id}" class="${selectedObjectIds.has(obj.id) ? 'selected' : ''}">
+          <span>${obj.name}</span>
+        </li>
+      `;
+    }
+    
+    list.innerHTML = html;
+    
+    // Attach event handlers
+    list.querySelectorAll('li[data-id]').forEach(li => {
+      li.addEventListener('click', (e) => {
+        const inExpandedGroup = li.dataset.inExpandedGroup === 'true';
+        selectObject(li.dataset.id, e.shiftKey, inExpandedGroup);
+      });
+    });
+    
+    list.querySelectorAll('.group-header').forEach(li => {
+      li.addEventListener('click', (e) => {
+        const groupId = li.dataset.groupId;
+        if (e.target.classList.contains('group-toggle')) {
+          // Toggle expand/collapse
+          expandedGroupInList = expandedGroupInList === groupId ? null : groupId;
+          updateObjectList();
+        } else {
+          // Select all group members
+          const group = groups.get(groupId);
+          if (group) {
+            if (!e.shiftKey) selectedObjectIds.clear();
+            group.childIds.forEach(id => selectedObjectIds.add(id));
+            updateObjectList();
+            updateGizmoTarget();
+            updateTransformPanel();
+          }
+        }
+      });
+    });
   }
   
   function setupMenuBar() {
