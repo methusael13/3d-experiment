@@ -47,9 +47,8 @@ export function createObjectRenderer(gl, glbModel) {
     uniform float uHdrExposure;
     
     // Shadow uniforms
-    uniform highp sampler2DShadow uShadowMap;
+    uniform highp sampler2D uShadowMap;
     uniform int uShadowEnabled;
-    uniform float uShadowBias;
     
     in vec2 vTexCoord;
     in vec3 vNormal;
@@ -90,7 +89,7 @@ export function createObjectRenderer(gl, glbModel) {
       return result;
     }
     
-    // PCF shadow sampling (3x3 kernel) with slope-scaled bias
+    // PCF shadow sampling with manual depth comparison
     float calcShadow(vec4 lightSpacePos, vec3 normal, vec3 lightDir) {
       // Perspective divide
       vec3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
@@ -104,20 +103,20 @@ export function createObjectRenderer(gl, glbModel) {
         return 1.0; // No shadow outside map
       }
       
-      // Slope-scaled bias: surfaces angled away from light need more bias
-      float NdotL = dot(normal, lightDir);
-      float bias = max(0.008 * (1.0 - NdotL), 0.002);
+      // Slope-scaled bias
+      float NdotL = max(dot(normal, lightDir), 0.0);
+      float bias = 0.002 + 0.01 * (1.0 - NdotL);
       
-      float currentDepth = projCoords.z - bias;
+      float currentDepth = projCoords.z;
       
-      // PCF: sample 3x3 around current position
+      // PCF: sample 3x3 around current position with manual comparison
       float shadow = 0.0;
-      vec2 texelSize = vec2(1.0 / 2048.0); // Approximate, will work for all resolutions
+      vec2 texelSize = vec2(1.0 / 2048.0);
       
       for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
-          vec3 sampleCoord = vec3(projCoords.xy + vec2(x, y) * texelSize, currentDepth);
-          shadow += texture(uShadowMap, sampleCoord);
+          float sampledDepth = texture(uShadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
+          shadow += currentDepth - bias > sampledDepth ? 0.0 : 1.0;
         }
       }
       shadow /= 9.0;
