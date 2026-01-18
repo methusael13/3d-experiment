@@ -166,8 +166,8 @@ export function createShadowRenderer(gl, initialResolution = 2048) {
     gl.viewport(0, 0, resolution, resolution);
     gl.clear(gl.DEPTH_BUFFER_BIT);
     
-    // Use front-face culling to reduce peter-panning
-    gl.cullFace(gl.FRONT);
+    // Disable culling during shadow pass to catch all geometry
+    gl.disable(gl.CULL_FACE);
     
     gl.useProgram(program);
     gl.uniformMatrix4fv(locations.uLightSpaceMatrix, false, lightSpaceMatrix);
@@ -203,6 +203,8 @@ export function createShadowRenderer(gl, initialResolution = 2048) {
   function endShadowPass(canvasWidth, canvasHeight) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, canvasWidth, canvasHeight);
+    // Re-enable culling
+    gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
   }
   
