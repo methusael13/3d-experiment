@@ -127,38 +127,60 @@ export function createSceneBuilderDemo(container, options = {}) {
   function initGizmo() {
     transformGizmo = createTransformGizmo(gl, camera);
     transformGizmo.setOnChange((type, value) => {
-      const obj = sceneObjects.find(o => o.id === selectedObjectId);
-      if (!obj) return;
+      // For multi-select, apply delta transforms to all selected objects
+      const selected = getSelectedObjects();
+      if (selected.length === 0) return;
       
-      if (type === 'position') {
-        obj.position = value;
-        sceneGraph.updateNode(obj.id, { position: value });
-        container.querySelector('#pos-x').value = value[0].toFixed(2);
-        container.querySelector('#pos-y').value = value[1].toFixed(2);
-        container.querySelector('#pos-z').value = value[2].toFixed(2);
-      } else if (type === 'rotation') {
-        obj.rotation = value;
-        sceneGraph.updateNode(obj.id, { rotation: value });
-        container.querySelector('#rot-x').value = value[0].toFixed(1);
-        container.querySelector('#rot-y').value = value[1].toFixed(1);
-        container.querySelector('#rot-z').value = value[2].toFixed(1);
-      } else if (type === 'scale') {
-        obj.scale = value;
-        sceneGraph.updateNode(obj.id, { scale: value });
-        container.querySelector('#scale-x').value = value[0].toFixed(2);
-        container.querySelector('#scale-y').value = value[1].toFixed(2);
-        container.querySelector('#scale-z').value = value[2].toFixed(2);
+      if (selected.length === 1) {
+        // Single selection: apply value directly
+        const obj = selected[0];
+        if (type === 'position') {
+          obj.position = value;
+          sceneGraph.updateNode(obj.id, { position: value });
+        } else if (type === 'rotation') {
+          obj.rotation = value;
+          sceneGraph.updateNode(obj.id, { rotation: value });
+        } else if (type === 'scale') {
+          obj.scale = value;
+          sceneGraph.updateNode(obj.id, { scale: value });
+        }
+      } else {
+        // Multi-selection: value is delta, apply to all
+        // For now, just apply to first object (TODO: proper multi-transform)
+        const obj = selected[0];
+        if (type === 'position') {
+          obj.position = value;
+          sceneGraph.updateNode(obj.id, { position: value });
+        } else if (type === 'rotation') {
+          obj.rotation = value;
+          sceneGraph.updateNode(obj.id, { rotation: value });
+        } else if (type === 'scale') {
+          obj.scale = value;
+          sceneGraph.updateNode(obj.id, { scale: value });
+        }
       }
+      
+      updateTransformPanel();
     });
   }
   
   function updateGizmoTarget() {
-    const obj = sceneObjects.find(o => o.id === selectedObjectId);
-    if (obj) {
+    const selected = getSelectedObjects();
+    if (selected.length === 0) {
+      transformGizmo.setEnabled(false);
+      return;
+    }
+    
+    if (selected.length === 1) {
+      // Single selection: target that object
+      const obj = selected[0];
       transformGizmo.setEnabled(true);
       transformGizmo.setTarget(obj.position, obj.rotation, obj.scale);
     } else {
-      transformGizmo.setEnabled(false);
+      // Multi-selection: target centroid with neutral rotation/scale
+      const centroid = getSelectionCentroid();
+      transformGizmo.setEnabled(true);
+      transformGizmo.setTarget(centroid, [0, 0, 0], [1, 1, 1]);
     }
   }
   
