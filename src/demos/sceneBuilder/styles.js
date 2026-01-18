@@ -200,6 +200,76 @@ export const sceneBuilderStyles = `
     color: #000;
   }
   
+  /* Group styling in object list */
+  .object-list .group-header {
+    background: #3a3a3a;
+    font-weight: bold;
+    border-left: 3px solid #ff9966;
+  }
+  
+  .object-list .group-header:hover {
+    background: #454545;
+  }
+  
+  .object-list .group-header.selected {
+    background: #ff6666;
+    color: #000;
+    border-left-color: #cc4444;
+  }
+  
+  .object-list .group-toggle {
+    cursor: pointer;
+    padding: 0 4px;
+    font-size: 10px;
+    color: #888;
+    user-select: none;
+  }
+  
+  .object-list .group-header:hover .group-toggle,
+  .object-list .group-header.selected .group-toggle {
+    color: inherit;
+  }
+  
+  .object-list .group-name {
+    flex: 1;
+    margin-left: 4px;
+  }
+  
+  .object-list .group-count {
+    font-size: 11px;
+    color: #888;
+    font-weight: normal;
+  }
+  
+  .object-list .group-header.selected .group-count {
+    color: #333;
+  }
+  
+  .object-list .group-child {
+    background: #2a2a2a;
+    padding-left: 8px;
+    border-left: 3px solid transparent;
+  }
+  
+  .object-list .group-child:hover {
+    background: #383838;
+  }
+  
+  .object-list .group-child.selected {
+    background: #ff6666;
+    color: #000;
+  }
+  
+  .object-list .child-indent {
+    color: #555;
+    font-size: 11px;
+    margin-right: 4px;
+  }
+  
+  .object-list .group-child.selected .child-indent {
+    color: #333;
+  }
+  
   .import-controls {
     display: flex;
     flex-direction: column;

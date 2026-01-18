@@ -57,9 +57,10 @@ export function isImportedModel(modelPath) {
  * @param {Object} cameraState - Camera state
  * @param {Object} lightingState - Optional lighting state
  * @param {string} filename - Optional filename (without .json extension)
+ * @param {Map} groups - Optional groups map (groupId -> { name, childIds: Set })
  * @returns {string} The filename that was used
  */
-export function saveScene(sceneObjects, cameraState, lightingState = null, filename = null) {
+export function saveScene(sceneObjects, cameraState, lightingState = null, filename = null, groups = null) {
   // Prompt for filename if not provided
   let sceneName = filename;
   if (!sceneName) {
@@ -84,10 +85,24 @@ export function saveScene(sceneObjects, cameraState, lightingState = null, filen
         position: [...obj.position],
         rotation: [...obj.rotation],
         scale: [...obj.scale],
+        groupId: obj.groupId || null,
       };
     }),
     camera: cameraState,
   };
+  
+  // Add groups if provided
+  if (groups && groups.size > 0) {
+    sceneData.groups = [];
+    for (const [groupId, group] of groups) {
+      sceneData.groups.push({
+        id: groupId,
+        name: group.name,
+        childIds: [...group.childIds],
+        collapsed: group.collapsed,
+      });
+    }
+  }
   
   // Add lighting state if provided
   if (lightingState) {
@@ -187,6 +202,23 @@ export function parseLightingState(sceneData) {
     hdrExposure: sceneData.lighting.hdrExposure ?? 1.0,
     hdrFilename: sceneData.lighting.hdrFilename || null,
   };
+}
+
+/**
+ * Parse scene data and return groups data
+ * @returns {Array|null} Array of group objects or null if no groups
+ */
+export function parseGroupsState(sceneData) {
+  if (!sceneData.groups || sceneData.groups.length === 0) {
+    return null;
+  }
+  
+  return sceneData.groups.map(g => ({
+    id: g.id,
+    name: g.name,
+    childIds: g.childIds || [],
+    collapsed: g.collapsed ?? true,
+  }));
 }
 
 /**
