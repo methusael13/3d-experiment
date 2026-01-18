@@ -90,8 +90,8 @@ export function createObjectRenderer(gl, glbModel) {
       return result;
     }
     
-    // PCF shadow sampling (3x3 kernel)
-    float calcShadow(vec4 lightSpacePos, float bias) {
+    // PCF shadow sampling (3x3 kernel) with slope-scaled bias
+    float calcShadow(vec4 lightSpacePos, vec3 normal, vec3 lightDir) {
       // Perspective divide
       vec3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
       
@@ -103,6 +103,10 @@ export function createObjectRenderer(gl, glbModel) {
           projCoords.y < 0.0 || projCoords.y > 1.0) {
         return 1.0; // No shadow outside map
       }
+      
+      // Slope-scaled bias: surfaces angled away from light need more bias
+      float NdotL = dot(normal, lightDir);
+      float bias = max(0.008 * (1.0 - NdotL), 0.002);
       
       float currentDepth = projCoords.z - bias;
       
@@ -147,10 +151,10 @@ export function createObjectRenderer(gl, glbModel) {
         float NdotL = max(dot(normal, lightDir), 0.0);
         vec3 diffuse = uLightColor * NdotL;
         
-        // Apply shadow
+        // Apply shadow with slope-scaled bias
         float shadow = 1.0;
         if (uShadowEnabled == 1) {
-          shadow = calcShadow(vLightSpacePos, uShadowBias);
+          shadow = calcShadow(vLightSpacePos, normal, lightDir);
         }
         
         lighting = ambient + diffuse * shadow;
