@@ -125,7 +125,6 @@ export const sceneBuilderStyles = `
     width: 100%;
     flex: 1;
     padding: 16px;
-    overflow: hidden;
   }
   
   .scene-builder-sidebar {
@@ -543,6 +542,8 @@ export const sceneBuilderTemplate = `
               <button class="menu-action" id="menu-solid-view">Solid View</button>
             </div>
           </div>
+          <div class="menu-separator"></div>
+          <button class="menu-action" id="menu-shader-editor">Shader Editor</button>
         </div>
       </div>
       <div class="menu-item" id="menu-lighting">
@@ -646,6 +647,19 @@ export const sceneBuilderTemplate = `
                 <button id="shadow-4096" class="quality-btn">4096</button>
               </div>
             </div>
+            <div class="transform-group">
+              <label>Shadow Debug</label>
+              <select id="shadow-debug" style="width: 100%; padding: 6px; background: #333; color: #f0f0f0; border: 1px solid #555; border-radius: 4px;">
+                <option value="0">Off (Normal)</option>
+                <option value="1">Depth Map</option>
+                <option value="2">UV Coords</option>
+                <option value="3">Shadow Value</option>
+              </select>
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="shadow-thumbnail">
+              <span>Show Depth Thumbnail</span>
+            </label>
           </div>
         </div>
           <div id="hdr-controls" style="display: none;">

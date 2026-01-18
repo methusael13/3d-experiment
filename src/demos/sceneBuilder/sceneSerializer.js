@@ -53,12 +53,27 @@ export function isImportedModel(modelPath) {
 
 /**
  * Save scene to JSON file
+ * @param {Array} sceneObjects - Array of scene objects
+ * @param {Object} cameraState - Camera state
+ * @param {Object} lightingState - Optional lighting state
+ * @param {string} filename - Optional filename (without .json extension)
+ * @returns {string} The filename that was used
  */
-export function saveScene(sceneObjects, cameraState) {
+export function saveScene(sceneObjects, cameraState, lightingState = null, filename = null) {
+  // Prompt for filename if not provided
+  let sceneName = filename;
+  if (!sceneName) {
+    sceneName = prompt('Enter scene name:', 'Untitled Scene');
+    if (!sceneName) return null; // User cancelled
+  }
+  
+  // Ensure filename doesn't have .json extension (we'll add it)
+  sceneName = sceneName.replace(/\.json$/i, '');
+  
   const importedModelsUsed = [];
   
   const sceneData = {
-    name: 'Untitled Scene',
+    name: sceneName,
     objects: sceneObjects.map(obj => {
       if (importedModels.has(obj.modelPath)) {
         importedModelsUsed.push(obj.modelPath);
@@ -74,12 +89,25 @@ export function saveScene(sceneObjects, cameraState) {
     camera: cameraState,
   };
   
+  // Add lighting state if provided
+  if (lightingState) {
+    sceneData.lighting = {
+      mode: lightingState.mode || 'sun',
+      sunAzimuth: lightingState.sunAzimuth ?? 45,
+      sunElevation: lightingState.sunElevation ?? 45,
+      shadowEnabled: lightingState.shadowEnabled ?? true,
+      shadowResolution: lightingState.shadowResolution ?? 2048,
+      hdrExposure: lightingState.hdrExposure ?? 1.0,
+      hdrFilename: lightingState.hdrFilename || null,
+    };
+  }
+  
   // Save the scene JSON
   const blob = new Blob([JSON.stringify(sceneData, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'scene.json';
+  a.download = `${sceneName}.json`;
   a.click();
   URL.revokeObjectURL(url);
   
@@ -107,6 +135,8 @@ export function saveScene(sceneObjects, cameraState) {
       }
     }
   }
+  
+  return sceneName;
 }
 
 /**
@@ -137,6 +167,25 @@ export function parseCameraState(sceneData) {
     offsetX: sceneData.camera.offsetX || 0,
     offsetY: sceneData.camera.offsetY || 0,
     offsetZ: sceneData.camera.offsetZ || 0,
+  };
+}
+
+/**
+ * Parse scene data and return lighting state
+ */
+export function parseLightingState(sceneData) {
+  if (!sceneData.lighting) {
+    return null; // No lighting data in scene file
+  }
+  
+  return {
+    mode: sceneData.lighting.mode || 'sun',
+    sunAzimuth: sceneData.lighting.sunAzimuth ?? 45,
+    sunElevation: sceneData.lighting.sunElevation ?? 45,
+    shadowEnabled: sceneData.lighting.shadowEnabled ?? true,
+    shadowResolution: sceneData.lighting.shadowResolution ?? 2048,
+    hdrExposure: sceneData.lighting.hdrExposure ?? 1.0,
+    hdrFilename: sceneData.lighting.hdrFilename || null,
   };
 }
 

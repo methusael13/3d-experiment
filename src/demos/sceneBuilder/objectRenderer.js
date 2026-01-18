@@ -1,9 +1,16 @@
 import { mat4 } from 'gl-matrix';
+import { registerShader, unregisterShader } from './shaderManager.js';
+
+// Generate unique ID for each renderer instance
+let rendererIdCounter = 0;
 
 /**
  * Creates a renderer for a GLB model in the scene
  */
 export function createObjectRenderer(gl, glbModel) {
+  const rendererId = rendererIdCounter++;
+  const shaderName = `Object Main #${rendererId}`;
+  
   // Vertex shader
   const vsSource = `#version 300 es
     precision highp float;
@@ -49,6 +56,7 @@ export function createObjectRenderer(gl, glbModel) {
     // Shadow uniforms
     uniform highp sampler2D uShadowMap;
     uniform int uShadowEnabled;
+    uniform int uShadowDebug; // 0=off, 1=depth, 2=lightspace UV, 3=shadow value
     
     in vec2 vTexCoord;
     in vec3 vNormal;
@@ -89,6 +97,12 @@ export function createObjectRenderer(gl, glbModel) {
       return result;
     }
     
+    // Unpack depth from RGBA8
+    float unpackDepth(vec4 rgba) {
+      const vec4 bitShift = vec4(1.0 / (256.0 * 256.0 * 256.0), 1.0 / (256.0 * 256.0), 1.0 / 256.0, 1.0);
+      return dot(rgba, bitShift);
+    }
+    
     // PCF shadow sampling with manual depth comparison
     float calcShadow(vec4 lightSpacePos, vec3 normal, vec3 lightDir) {
       // Perspective divide
@@ -115,8 +129,9 @@ export function createObjectRenderer(gl, glbModel) {
       
       for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
-          float sampledDepth = texture(uShadowMap, projCoords.xy + vec2(x, y) * texelSize).r;
-          // In shadow if current depth (adjusted) is greater than stored depth
+          vec4 packedDepth = texture(uShadowMap, projCoords.xy + vec2(x, y) * texelSize);
+          float sampledDepth = unpackDepth(packedDepth);
+          // Lit if current depth is less than stored depth (closer to light)
           shadow += (currentDepth - bias) > sampledDepth ? 0.0 : 1.0;
         }
       }
@@ -166,6 +181,30 @@ export function createObjectRenderer(gl, glbModel) {
         finalColor = mix(finalColor, vec3(1.0, 0.4, 0.4), 0.3);
       }
       
+      // Debug visualization
+      if (uShadowDebug == 1) {
+        // Show sampled depth from shadow map at CENTER of texture (should be ~1.0 if cleared properly)
+        vec4 centerPacked = texture(uShadowMap, vec2(0.5, 0.5));
+        float centerDepth = unpackDepth(centerPacked);
+        // Also sample at computed UV
+        vec3 projCoords = (vLightSpacePos.xyz / vLightSpacePos.w) * 0.5 + 0.5;
+        vec4 packed = texture(uShadowMap, projCoords.xy);
+        float depth = unpackDepth(packed);
+        // Show center depth in red, computed UV depth in green, raw alpha in blue
+        fragColor = vec4(centerDepth, depth, packed.a, 1.0);
+        return;
+      } else if (uShadowDebug == 2) {
+        // Show light-space UV coordinates (R=X, G=Y, B=fragment depth)
+        vec3 projCoords = (vLightSpacePos.xyz / vLightSpacePos.w) * 0.5 + 0.5;
+        fragColor = vec4(projCoords.xy, projCoords.z, 1.0);
+        return;
+      } else if (uShadowDebug == 3) {
+        // Show shadow value (white=lit, black=shadow)
+        float shadowVal = calcShadow(vLightSpacePos, normal, lightDir);
+        fragColor = vec4(vec3(shadowVal), 1.0);
+        return;
+      }
+      
       fragColor = vec4(finalColor, color.a);
     }
   `;
@@ -185,13 +224,13 @@ export function createObjectRenderer(gl, glbModel) {
   const vs = compileShader(gl.VERTEX_SHADER, vsSource);
   const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
   
-  const program = gl.createProgram();
+  let program = gl.createProgram();
   gl.attachShader(program, vs);
   gl.attachShader(program, fs);
   gl.linkProgram(program);
   
-  // Get locations
-  const locations = {
+  // Get locations - will be updated on shader recompile
+  let locations = {
     aPosition: gl.getAttribLocation(program, 'aPosition'),
     aTexCoord: gl.getAttribLocation(program, 'aTexCoord'),
     aNormal: gl.getAttribLocation(program, 'aNormal'),
@@ -212,7 +251,49 @@ export function createObjectRenderer(gl, glbModel) {
     uShadowMap: gl.getUniformLocation(program, 'uShadowMap'),
     uShadowEnabled: gl.getUniformLocation(program, 'uShadowEnabled'),
     uShadowBias: gl.getUniformLocation(program, 'uShadowBias'),
+    uShadowDebug: gl.getUniformLocation(program, 'uShadowDebug'),
   };
+  
+  // Function to update uniform locations after shader recompile
+  function updateLocations(newProgram) {
+    locations = {
+      aPosition: gl.getAttribLocation(newProgram, 'aPosition'),
+      aTexCoord: gl.getAttribLocation(newProgram, 'aTexCoord'),
+      aNormal: gl.getAttribLocation(newProgram, 'aNormal'),
+      uModelViewProjection: gl.getUniformLocation(newProgram, 'uModelViewProjection'),
+      uModel: gl.getUniformLocation(newProgram, 'uModel'),
+      uTexture: gl.getUniformLocation(newProgram, 'uTexture'),
+      uBaseColor: gl.getUniformLocation(newProgram, 'uBaseColor'),
+      uHasTexture: gl.getUniformLocation(newProgram, 'uHasTexture'),
+      uLightDir: gl.getUniformLocation(newProgram, 'uLightDir'),
+      uSelected: gl.getUniformLocation(newProgram, 'uSelected'),
+      uAmbientIntensity: gl.getUniformLocation(newProgram, 'uAmbientIntensity'),
+      uLightColor: gl.getUniformLocation(newProgram, 'uLightColor'),
+      uLightMode: gl.getUniformLocation(newProgram, 'uLightMode'),
+      uHdrTexture: gl.getUniformLocation(newProgram, 'uHdrTexture'),
+      uHasHdr: gl.getUniformLocation(newProgram, 'uHasHdr'),
+      uHdrExposure: gl.getUniformLocation(newProgram, 'uHdrExposure'),
+      uLightSpaceMatrix: gl.getUniformLocation(newProgram, 'uLightSpaceMatrix'),
+      uShadowMap: gl.getUniformLocation(newProgram, 'uShadowMap'),
+      uShadowEnabled: gl.getUniformLocation(newProgram, 'uShadowEnabled'),
+      uShadowBias: gl.getUniformLocation(newProgram, 'uShadowBias'),
+      uShadowDebug: gl.getUniformLocation(newProgram, 'uShadowDebug'),
+    };
+  }
+  
+  // Register shader with shader manager for hot-reload
+  registerShader(shaderName, {
+    gl,
+    program,
+    vsSource,
+    fsSource,
+    onRecompile: (newProgram) => {
+      // Delete old program
+      gl.deleteProgram(program);
+      program = newProgram;
+      updateLocations(newProgram);
+    },
+  });
   
   // Create buffers for meshes
   const gpuMeshes = glbModel.meshes.map(mesh => {
@@ -487,12 +568,16 @@ export function createObjectRenderer(gl, glbModel) {
       // Shadow uniforms
       gl.uniform1i(locations.uShadowEnabled, light.shadowEnabled ? 1 : 0);
       gl.uniform1f(locations.uShadowBias, light.shadowBias || 0.002);
-      if (light.shadowMap && light.lightSpaceMatrix) {
+      gl.uniform1i(locations.uShadowDebug, light.shadowDebug || 0);
+      if (light.lightSpaceMatrix) {
         gl.uniformMatrix4fv(locations.uLightSpaceMatrix, false, light.lightSpaceMatrix);
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, light.shadowMap);
-        gl.uniform1i(locations.uShadowMap, 2);
       }
+      // Always bind shadow map to texture unit 2 (even if null for debug)
+      gl.activeTexture(gl.TEXTURE2);
+      if (light.shadowMap) {
+        gl.bindTexture(gl.TEXTURE_2D, light.shadowMap);
+      }
+      gl.uniform1i(locations.uShadowMap, 2);
       
       // Bind HDR texture to unit 1 if available
       if (light.hdrTexture) {
@@ -540,6 +625,9 @@ export function createObjectRenderer(gl, glbModel) {
     },
     
     destroy() {
+      // Unregister from shader manager
+      unregisterShader(shaderName);
+      
       gl.deleteProgram(program);
       gl.deleteProgram(outlineProgram);
       gl.deleteProgram(wireProgram);

@@ -10,11 +10,13 @@ import { createOriginMarkerRenderer } from './originMarkerRenderer';
 import { sceneBuilderStyles, sceneBuilderTemplate } from './styles';
 import { screenToRay, projectToScreen, raycastToGround } from './raycastUtils';
 import { 
-  importModelFile, getModelUrl, saveScene, parseCameraState, clearImportedModels 
+  importModelFile, getModelUrl, saveScene, parseCameraState, parseLightingState, clearImportedModels 
 } from './sceneSerializer';
 import { createSkyRenderer } from './skyRenderer';
 import { loadHDR, createHDRTexture, parseHDR } from './hdrLoader';
 import { createShadowRenderer } from './shadowRenderer';
+import { createShaderDebugPanel } from './shaderDebugPanel';
+import { createLightingManager } from './lights';
 
 /**
  * Scene Builder Demo
@@ -71,16 +73,12 @@ export function createSceneBuilderDemo(container, options = {}) {
   let gizmoMode = 'translate';
   let viewportMode = 'solid'; // 'solid' or 'wireframe'
   
-  // Lighting state
-  let lightMode = 'sun'; // 'sun' | 'hdr'
-  let sunAzimuth = 45;   // degrees
-  let sunElevation = 45; // degrees
-  let hdrTexture = null;
-  let hdrExposure = 1.0;
+  // Lighting (OOP-based)
+  const lightingManager = createLightingManager();
   let skyRenderer = null;
   let shadowRenderer = null;
-  let shadowEnabled = true;
-  let shadowResolution = 2048;
+  let showShadowThumbnail = false;
+  let shaderDebugPanel = null;
   
   // Camera view shortcuts state
   let savedHomeState = null; // Last free camera state
@@ -94,6 +92,9 @@ export function createSceneBuilderDemo(container, options = {}) {
   let uniformScaleObjectScreenPos = [0, 0];
   let uniformScaleStartMousePos = [0, 0];
   let lastKnownMousePos = [0, 0];
+  
+  // Scene file tracking
+  let currentSceneFilename = null; // Track loaded/saved scene filename
   
   // ==================== GL Initialization ====================
   
@@ -111,7 +112,7 @@ export function createSceneBuilderDemo(container, options = {}) {
     gridRenderer = createGridRenderer(gl);
     originMarkerRenderer = createOriginMarkerRenderer(gl);
     skyRenderer = createSkyRenderer(gl);
-    shadowRenderer = createShadowRenderer(gl, shadowResolution);
+    shadowRenderer = createShadowRenderer(gl, lightingManager.sunLight.shadowResolution);
     
     return true;
   }
@@ -251,6 +252,61 @@ export function createSceneBuilderDemo(container, options = {}) {
       offsetY: cameraOffsetY,
       offsetZ: cameraOffsetZ,
     };
+  }
+  
+  function getLightingState() {
+    // Serialize using lightingManager
+    const state = lightingManager.serialize();
+    // Add HDR filename from UI (texture cannot be serialized)
+    state.hdr.filename = container.querySelector('#hdr-filename')?.textContent || null;
+    return state;
+  }
+  
+  function setLightingState(state) {
+    if (!state) return;
+    
+    // Deserialize using lightingManager
+    lightingManager.deserialize(state);
+    
+    // Update UI mode
+    setLightMode(lightingManager.activeMode);
+    
+    // Update sun sliders
+    const azimuthSlider = container.querySelector('#sun-azimuth');
+    const azimuthValue = container.querySelector('#sun-azimuth-value');
+    if (azimuthSlider) {
+      azimuthSlider.value = lightingManager.sunLight.azimuth;
+      azimuthValue.textContent = `${lightingManager.sunLight.azimuth}°`;
+    }
+    
+    const elevationSlider = container.querySelector('#sun-elevation');
+    const elevationValue = container.querySelector('#sun-elevation-value');
+    if (elevationSlider) {
+      elevationSlider.value = lightingManager.sunLight.elevation;
+      elevationValue.textContent = `${lightingManager.sunLight.elevation}°`;
+    }
+    
+    // Update shadow controls
+    const shadowCheckbox = container.querySelector('#shadow-enabled');
+    if (shadowCheckbox) shadowCheckbox.checked = lightingManager.shadowEnabled;
+    
+    shadowRenderer?.setResolution(lightingManager.sunLight.shadowResolution);
+    container.querySelectorAll('.quality-btn').forEach(btn => btn.classList.remove('active'));
+    const activeQualityBtn = container.querySelector(`#shadow-${lightingManager.sunLight.shadowResolution}`);
+    if (activeQualityBtn) activeQualityBtn.classList.add('active');
+    
+    // Update HDR exposure slider
+    const exposureSlider = container.querySelector('#hdr-exposure');
+    const exposureValue = container.querySelector('#hdr-exposure-value');
+    if (exposureSlider) {
+      exposureSlider.value = lightingManager.hdrLight.exposure;
+      exposureValue.textContent = lightingManager.hdrLight.exposure.toFixed(1);
+    }
+    
+    // Note: HDR texture filename is stored but the texture itself cannot be restored
+    if (lightingManager.hdrLight.filename && lightingManager.hdrLight.filename !== 'No HDR loaded') {
+      container.querySelector('#hdr-filename').textContent = `${lightingManager.hdrLight.filename} (reload required)`;
+    }
   }
   
   function setCameraState(state) {
@@ -567,7 +623,11 @@ export function createSceneBuilderDemo(container, options = {}) {
     
     // File menu actions
     container.querySelector('#menu-save-scene').addEventListener('click', () => {
-      saveScene(sceneObjects, getCameraState());
+      // Pass current filename if we have one (to reuse the same name)
+      const savedFilename = saveScene(sceneObjects, getCameraState(), getLightingState(), currentSceneFilename);
+      if (savedFilename) {
+        currentSceneFilename = savedFilename;
+      }
       menuItems.forEach(item => item.classList.remove('open'));
     });
     
@@ -591,6 +651,17 @@ export function createSceneBuilderDemo(container, options = {}) {
       container.querySelector('#hdr-file').click();
       menuItems.forEach(item => item.classList.remove('open'));
     });
+    
+    // Shader editor toggle (View menu)
+    const shaderEditorBtn = container.querySelector('#menu-shader-editor');
+    if (shaderEditorBtn) {
+      shaderEditorBtn.addEventListener('click', () => {
+        if (shaderDebugPanel) {
+          shaderDebugPanel.toggle();
+        }
+        menuItems.forEach(item => item.classList.remove('open'));
+      });
+    }
   }
   
   function setViewportMode(mode) {
@@ -603,59 +674,15 @@ export function createSceneBuilderDemo(container, options = {}) {
   // ==================== Lighting ====================
   
   function setLightMode(mode) {
-    lightMode = mode;
+    lightingManager.setMode(mode);
     container.querySelector('#current-light-mode').textContent = mode === 'sun' ? 'Sun Mode' : 'HDR Mode';
     container.querySelector('#sun-controls').style.display = mode === 'sun' ? 'block' : 'none';
     container.querySelector('#hdr-controls').style.display = mode === 'hdr' ? 'block' : 'none';
   }
   
-  function getSunDirection() {
-    const azRad = sunAzimuth * Math.PI / 180;
-    const elRad = sunElevation * Math.PI / 180;
-    return [
-      Math.cos(elRad) * Math.sin(azRad),
-      Math.sin(elRad),
-      Math.cos(elRad) * Math.cos(azRad),
-    ];
-  }
-  
-  function getSunAmbient() {
-    // Night mode: low ambient when sun below horizon
-    if (sunElevation <= 0) {
-      return 0.1 + (sunElevation + 90) / 900; // 0.1 at -90°, ~0.2 at 0°
-    }
-    // Day mode: ramp up ambient
-    return 0.2 + sunElevation / 180; // 0.2 at 0°, ~0.7 at 90°
-  }
-  
-  function getSunColor() {
-    // Sunset/sunrise tint
-    if (Math.abs(sunElevation) < 15) {
-      const t = Math.abs(sunElevation) / 15;
-      return [1.0, 0.6 + 0.4 * t, 0.4 + 0.6 * t];
-    }
-    // Day: white light
-    if (sunElevation > 0) {
-      return [1.0, 1.0, 0.95];
-    }
-    // Night: cool blue moonlight
-    return [0.4, 0.5, 0.7];
-  }
-  
   function getLightParams() {
-    const sunDir = getSunDirection();
-    return {
-      mode: lightMode,
-      sunDir: sunDir,
-      ambient: getSunAmbient(),
-      lightColor: getSunColor(),
-      hdrTexture: hdrTexture,
-      hdrExposure: hdrExposure,
-      shadowEnabled: shadowEnabled && lightMode === 'sun',
-      shadowMap: shadowRenderer?.getTexture(),
-      lightSpaceMatrix: shadowRenderer?.getLightSpaceMatrix(),
-      shadowBias: 0.003,
-    };
+    // Get params from lightingManager with shadow renderer
+    return lightingManager.getLightParams(shadowRenderer);
   }
   
   function setupCollapsiblePanels() {
@@ -671,41 +698,54 @@ export function createSceneBuilderDemo(container, options = {}) {
     const azimuthSlider = container.querySelector('#sun-azimuth');
     const azimuthValue = container.querySelector('#sun-azimuth-value');
     azimuthSlider.addEventListener('input', (e) => {
-      sunAzimuth = parseFloat(e.target.value);
-      azimuthValue.textContent = `${sunAzimuth}°`;
+      lightingManager.sunLight.azimuth = parseFloat(e.target.value);
+      azimuthValue.textContent = `${lightingManager.sunLight.azimuth}°`;
     });
     
     // Sun elevation slider
     const elevationSlider = container.querySelector('#sun-elevation');
     const elevationValue = container.querySelector('#sun-elevation-value');
     elevationSlider.addEventListener('input', (e) => {
-      sunElevation = parseFloat(e.target.value);
-      elevationValue.textContent = `${sunElevation}°`;
+      lightingManager.sunLight.elevation = parseFloat(e.target.value);
+      elevationValue.textContent = `${lightingManager.sunLight.elevation}°`;
     });
     
     // HDR exposure slider
     const exposureSlider = container.querySelector('#hdr-exposure');
     const exposureValue = container.querySelector('#hdr-exposure-value');
     exposureSlider.addEventListener('input', (e) => {
-      hdrExposure = parseFloat(e.target.value);
-      exposureValue.textContent = hdrExposure.toFixed(1);
+      lightingManager.hdrLight.exposure = parseFloat(e.target.value);
+      exposureValue.textContent = lightingManager.hdrLight.exposure.toFixed(1);
     });
     
     // Shadow controls
     const shadowCheckbox = container.querySelector('#shadow-enabled');
     shadowCheckbox.addEventListener('change', (e) => {
-      shadowEnabled = e.target.checked;
+      lightingManager.shadowEnabled = e.target.checked;
     });
     
     // Shadow quality buttons
     [1024, 2048, 4096].forEach(res => {
       container.querySelector(`#shadow-${res}`).addEventListener('click', () => {
-        shadowResolution = res;
+        lightingManager.sunLight.shadowResolution = res;
         shadowRenderer?.setResolution(res);
         container.querySelectorAll('.quality-btn').forEach(btn => btn.classList.remove('active'));
         container.querySelector(`#shadow-${res}`).classList.add('active');
       });
     });
+    
+    // Shadow debug dropdown
+    container.querySelector('#shadow-debug').addEventListener('change', (e) => {
+      lightingManager.shadowDebug = parseInt(e.target.value, 10);
+    });
+    
+    // Shadow thumbnail checkbox
+    const shadowThumbnailCheckbox = container.querySelector('#shadow-thumbnail');
+    if (shadowThumbnailCheckbox) {
+      shadowThumbnailCheckbox.addEventListener('change', (e) => {
+        showShadowThumbnail = e.target.checked;
+      });
+    }
     
     // HDR file input
     const hdrFile = container.querySelector('#hdr-file');
@@ -717,11 +757,12 @@ export function createSceneBuilderDemo(container, options = {}) {
           const hdrData = parseHDR(buffer);
           
           // Delete old texture if exists
-          if (hdrTexture) {
-            gl.deleteTexture(hdrTexture);
+          if (lightingManager.hdrLight.texture) {
+            gl.deleteTexture(lightingManager.hdrLight.texture);
           }
           
-          hdrTexture = createHDRTexture(gl, hdrData);
+          const texture = createHDRTexture(gl, hdrData);
+          lightingManager.hdrLight.setTexture(texture, file.name);
           container.querySelector('#hdr-filename').textContent = file.name;
           
           // Auto-switch to HDR mode
@@ -963,6 +1004,9 @@ export function createSceneBuilderDemo(container, options = {}) {
     sceneFile.addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (file) {
+        // Extract filename without .json extension
+        currentSceneFilename = file.name.replace(/\.json$/i, '');
+        
         const reader = new FileReader();
         reader.onload = async (event) => {
           try {
@@ -970,6 +1014,7 @@ export function createSceneBuilderDemo(container, options = {}) {
             await loadSceneData(sceneData);
           } catch (err) {
             console.error('Failed to load scene:', err);
+            currentSceneFilename = null; // Reset on error
           }
         };
         reader.readAsText(file);
@@ -984,6 +1029,12 @@ export function createSceneBuilderDemo(container, options = {}) {
     selectedObjectId = null;
     
     setCameraState(parseCameraState(sceneData));
+    
+    // Restore lighting state if present
+    const lightingState = parseLightingState(sceneData);
+    if (lightingState) {
+      setLightingState(lightingState);
+    }
     
     for (const objData of sceneData.objects) {
       const obj = await addObject(objData.modelPath, objData.name);
@@ -1100,11 +1151,14 @@ export function createSceneBuilderDemo(container, options = {}) {
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       
       const vpMatrix = camera.getViewProjectionMatrix();
+      const mode = lightingManager.activeMode;
       
       // Shadow pass (sun mode only)
-      if (lightMode === 'sun' && shadowEnabled && sceneObjects.length > 0) {
-        const sunDir = getSunDirection();
-        shadowRenderer.beginShadowPass(sunDir, GRID_BOUNDS);
+      if (mode === 'sun' && lightingManager.shadowEnabled && sceneObjects.length > 0) {
+        const sunDir = lightingManager.sunLight.getDirection();
+        // Use larger coverage for shadow map to handle larger scenes
+        const shadowCoverage = 5;
+        shadowRenderer.beginShadowPass(sunDir, shadowCoverage);
         
         for (const obj of sceneObjects) {
           if (obj.renderer && obj.renderer.gpuMeshes) {
@@ -1117,10 +1171,10 @@ export function createSceneBuilderDemo(container, options = {}) {
       }
       
       // Render sky background first
-      if (lightMode === 'hdr' && hdrTexture) {
-        skyRenderer.renderHDRSky(vpMatrix, hdrTexture, hdrExposure);
+      if (mode === 'hdr' && lightingManager.hdrLight.texture) {
+        skyRenderer.renderHDRSky(vpMatrix, lightingManager.hdrLight.texture, lightingManager.hdrLight.exposure);
       } else {
-        skyRenderer.renderSunSky(sunElevation);
+        skyRenderer.renderSunSky(lightingManager.sunLight.elevation);
       }
       
       gridRenderer.render(vpMatrix);
@@ -1136,6 +1190,13 @@ export function createSceneBuilderDemo(container, options = {}) {
       }
       
       transformGizmo.render(vpMatrix);
+      
+      // Shadow map debug thumbnail (after scene, before UI)
+      if (showShadowThumbnail && lightingManager.shadowEnabled && mode === 'sun') {
+        const thumbSize = 150;
+        const margin = 10;
+        shadowRenderer.renderDebugThumbnail(margin, margin, thumbSize, CANVAS_WIDTH, CANVAS_HEIGHT);
+      }
     });
   }
   
@@ -1150,6 +1211,10 @@ export function createSceneBuilderDemo(container, options = {}) {
     setupUI();
     setupLightingControls();
     setupCollapsiblePanels();
+    
+    // Create shader debug panel
+    shaderDebugPanel = createShaderDebugPanel(viewport);
+    
     startRendering();
   }
   
@@ -1160,7 +1225,12 @@ export function createSceneBuilderDemo(container, options = {}) {
     if (transformGizmo) { transformGizmo.destroy(); transformGizmo = null; }
     if (skyRenderer) { skyRenderer.destroy(); skyRenderer = null; }
     if (shadowRenderer) { shadowRenderer.destroy(); shadowRenderer = null; }
-    if (hdrTexture) { gl.deleteTexture(hdrTexture); hdrTexture = null; }
+    if (shaderDebugPanel) { shaderDebugPanel.destroy(); shaderDebugPanel = null; }
+    // Clean up HDR texture via lightingManager
+    if (lightingManager.hdrLight.texture) {
+      gl.deleteTexture(lightingManager.hdrLight.texture);
+      lightingManager.hdrLight.texture = null;
+    }
     sceneObjects.forEach(obj => obj.renderer?.destroy());
     sceneObjects.length = 0;
     sceneGraph.clear();
