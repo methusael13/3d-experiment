@@ -1,6 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { registerShader, unregisterShader } from './shaderManager.js';
-import { windComplete, lightingComplete, terrainBlendComplete, shadowFunctions } from './shaderChunks.js';
+import { windComplete, shadowUniforms, shadowFunctions, hdrUniforms, lightingUniforms, pbrFunctions, iblFunctions, pbrLighting, terrainBlendComplete } from './shaderChunks.js';
 
 // Generate unique ID for each renderer instance
 let rendererIdCounter = 0;
@@ -29,6 +29,7 @@ export function createObjectRenderer(gl, glbModel) {
     
     out vec2 vTexCoord;
     out vec3 vNormal;
+    out vec3 vWorldPos;
     out vec4 vLightSpacePos;
     out float vWindType;
     out float vHeightFactor;
@@ -59,6 +60,7 @@ export function createObjectRenderer(gl, glbModel) {
       
       vTexCoord = aTexCoord;
       vNormal = mat3(uModel) * aNormal;
+      vWorldPos = worldPos.xyz;
       vLightSpacePos = uLightSpaceMatrix * worldPos;
       
       // Pass debug info to fragment shader
@@ -69,15 +71,30 @@ export function createObjectRenderer(gl, glbModel) {
   `;
   
   const fsSource = `#version 300 es
-    precision mediump float;
+    precision highp float;
     
     uniform sampler2D uTexture;
     uniform vec4 uBaseColor;
     uniform bool uHasTexture;
     uniform bool uSelected;
+    uniform vec3 uCameraPos;
     
-    // All lighting-related uniforms and functions
-    ${lightingComplete}
+    // Lighting uniforms
+    ${lightingUniforms}
+    ${hdrUniforms}
+    ${shadowUniforms}
+    
+    // Shadow functions (needed by PBR lighting)
+    ${shadowFunctions}
+    
+    // PBR functions
+    ${pbrFunctions}
+    
+    // IBL functions
+    ${iblFunctions}
+    
+    // PBR lighting calculation
+    ${pbrLighting}
     
     // Debug uniforms
     uniform int uShadowDebug; // 0=off, 1=depth, 2=lightspace UV, 3=shadow value
@@ -88,6 +105,7 @@ export function createObjectRenderer(gl, glbModel) {
     
     in vec2 vTexCoord;
     in vec3 vNormal;
+    in vec3 vWorldPos;
     in vec4 vLightSpacePos;
     in float vWindType;
     in float vHeightFactor;
@@ -101,11 +119,27 @@ export function createObjectRenderer(gl, glbModel) {
         color = texture(uTexture, vTexCoord) * uBaseColor;
       }
       
-      vec3 normal = normalize(vNormal);
-      vec3 lightDir = normalize(uLightDir);
+      vec3 N = normalize(vNormal);
+      vec3 V = normalize(uCameraPos - vWorldPos);
       
-      vec3 lighting = calcLighting(normal, lightDir, vLightSpacePos);
-      vec3 finalColor = color.rgb * lighting;
+      // GLB models: use base color as albedo, default metallic=0, roughness from texture or 0.5
+      vec3 albedo = color.rgb;
+      float metallic = 0.0;
+      float roughness = 0.5;
+      
+      vec3 finalColor = calcPBRLighting(
+        N, V, vWorldPos,
+        albedo, metallic, roughness,
+        uLightDir, uLightColor, uAmbientIntensity,
+        uLightMode, uHdrTexture, uHasHdr, uHdrExposure,
+        uShadowMap, uShadowEnabled, vLightSpacePos
+      );
+      
+      // Tone mapping (Reinhard)
+      finalColor = finalColor / (finalColor + vec3(1.0));
+      
+      // Gamma correction
+      finalColor = pow(finalColor, vec3(1.0 / 2.2));
       
       if (uSelected) {
         finalColor = mix(finalColor, vec3(1.0, 0.4, 0.4), 0.3);
@@ -113,47 +147,41 @@ export function createObjectRenderer(gl, glbModel) {
       
       // Debug visualization
       if (uShadowDebug == 1) {
-        // Show sampled depth from shadow map at CENTER of texture (should be ~1.0 if cleared properly)
+        vec3 lightDir = normalize(uLightDir);
         vec4 centerPacked = texture(uShadowMap, vec2(0.5, 0.5));
         float centerDepth = unpackDepth(centerPacked);
-        // Also sample at computed UV
         vec3 projCoords = (vLightSpacePos.xyz / vLightSpacePos.w) * 0.5 + 0.5;
         vec4 packed = texture(uShadowMap, projCoords.xy);
         float depth = unpackDepth(packed);
-        // Show center depth in red, computed UV depth in green, raw alpha in blue
         fragColor = vec4(centerDepth, depth, packed.a, 1.0);
         return;
       } else if (uShadowDebug == 2) {
-        // Show light-space UV coordinates (R=X, G=Y, B=fragment depth)
         vec3 projCoords = (vLightSpacePos.xyz / vLightSpacePos.w) * 0.5 + 0.5;
         fragColor = vec4(projCoords.xy, projCoords.z, 1.0);
         return;
       } else if (uShadowDebug == 3) {
-        // Show shadow value (white=lit, black=shadow)
-        float shadowVal = calcShadow(vLightSpacePos, normal, lightDir);
+        vec3 lightDir = normalize(uLightDir);
+        float shadowVal = calcShadow(vLightSpacePos, N, lightDir);
         fragColor = vec4(vec3(shadowVal), 1.0);
         return;
       }
       
       // Wind debug visualization
       if (uWindDebug == 1) {
-        // Wind type: Red=none, Green=leaf, Yellow=branch
         vec3 debugColor;
         if (vWindType < 0.5) {
-          debugColor = vec3(1.0, 0.0, 0.0); // Red - no wind type
+          debugColor = vec3(1.0, 0.0, 0.0);
         } else if (vWindType < 1.5) {
-          debugColor = vec3(0.0, 1.0, 0.0); // Green - leaf
+          debugColor = vec3(0.0, 1.0, 0.0);
         } else {
-          debugColor = vec3(1.0, 1.0, 0.0); // Yellow - branch
+          debugColor = vec3(1.0, 1.0, 0.0);
         }
         fragColor = vec4(debugColor, 1.0);
         return;
       } else if (uWindDebug == 2) {
-        // Height factor: Black=0, White=1
         fragColor = vec4(vec3(vHeightFactor), 1.0);
         return;
       } else if (uWindDebug == 3) {
-        // Displacement magnitude: Blue=0, Red=max
         float normalizedDisp = clamp(vDisplacementMag * 5.0, 0.0, 1.0);
         vec3 debugColor = mix(vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), normalizedDisp);
         fragColor = vec4(debugColor, 1.0);
@@ -162,7 +190,7 @@ export function createObjectRenderer(gl, glbModel) {
       
       vec4 finalFragment = vec4(finalColor, color.a);
       
-      // Apply terrain blend if enabled (fade at intersections with other geometry)
+      // Apply terrain blend if enabled
       if (uTerrainBlendEnabled == 1) {
         finalFragment = applyTerrainBlend(finalFragment, gl_FragCoord.z);
       }
@@ -233,6 +261,7 @@ export function createObjectRenderer(gl, glbModel) {
     uScreenSize: gl.getUniformLocation(program, 'uScreenSize'),
     uNearPlane: gl.getUniformLocation(program, 'uNearPlane'),
     uFarPlane: gl.getUniformLocation(program, 'uFarPlane'),
+    uCameraPos: gl.getUniformLocation(program, 'uCameraPos'),
   };
   
   // Function to update uniform locations after shader recompile
@@ -278,6 +307,7 @@ export function createObjectRenderer(gl, glbModel) {
       uScreenSize: gl.getUniformLocation(newProgram, 'uScreenSize'),
       uNearPlane: gl.getUniformLocation(newProgram, 'uNearPlane'),
       uFarPlane: gl.getUniformLocation(newProgram, 'uFarPlane'),
+      uCameraPos: gl.getUniformLocation(newProgram, 'uCameraPos'),
     };
   }
   
@@ -567,6 +597,7 @@ export function createObjectRenderer(gl, glbModel) {
       gl.uniform1i(locations.uLightMode, light.mode === 'hdr' ? 1 : 0);
       gl.uniform1i(locations.uHasHdr, light.hdrTexture ? 1 : 0);
       gl.uniform1f(locations.uHdrExposure, light.hdrExposure || 1.0);
+      gl.uniform3fv(locations.uCameraPos, light.cameraPos || [0, 0, 5]);
       
       // Shadow uniforms
       gl.uniform1i(locations.uShadowEnabled, light.shadowEnabled ? 1 : 0);
