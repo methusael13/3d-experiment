@@ -1,5 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { registerShader, unregisterShader } from './shaderManager.js';
+import { simplexNoise, windUniforms, windDisplacement } from './shaderChunks.js';
 
 // Generate unique ID for each renderer instance
 let rendererIdCounter = 0;
@@ -11,7 +12,7 @@ export function createObjectRenderer(gl, glbModel) {
   const rendererId = rendererIdCounter++;
   const shaderName = `Object Main #${rendererId}`;
   
-  // Vertex shader
+  // Vertex shader with shared wind chunks
   const vsSource = `#version 300 es
     precision highp float;
     
@@ -23,16 +24,49 @@ export function createObjectRenderer(gl, glbModel) {
     uniform mat4 uModel;
     uniform mat4 uLightSpaceMatrix;
     
+    // Include shared shader chunks
+    ${simplexNoise}
+    ${windUniforms}
+    ${windDisplacement}
+    
     out vec2 vTexCoord;
     out vec3 vNormal;
     out vec4 vLightSpacePos;
+    out float vWindType;
+    out float vHeightFactor;
+    out float vDisplacementMag;
     
     void main() {
       vec4 worldPos = uModel * vec4(aPosition, 1.0);
+      
+      // Calculate height factor for wind (vertices above anchor move more)
+      float heightAboveAnchor = max(0.0, worldPos.y - uWindAnchorHeight);
+      float heightFactor = clamp(heightAboveAnchor * 0.5, 0.0, 1.0);
+      heightFactor = heightFactor * heightFactor; // Quadratic falloff
+      
+      // Apply wind displacement in world space
+      vec3 windOffset = calcWindDisplacement(worldPos.xyz, heightFactor);
+      worldPos.xyz += windOffset;
+      
+      // Recalculate MVP with displaced position
+      // We need to transform back to local space first
+      mat4 invModel = inverse(uModel);
+      vec4 displacedLocal = invModel * worldPos;
+      
       gl_Position = uModelViewProjection * vec4(aPosition, 1.0);
+      // Apply wind offset in clip space (simpler and avoids matrix issues)
+      vec4 worldOffset = vec4(windOffset, 0.0);
+      mat4 vp = uModelViewProjection * inverse(uModel);
+      gl_Position += vp * worldOffset;
+      
       vTexCoord = aTexCoord;
       vNormal = mat3(uModel) * aNormal;
       vLightSpacePos = uLightSpaceMatrix * worldPos;
+      
+      // Pass debug info to fragment shader
+      vWindType = float(uWindType);
+      vHeightFactor = heightFactor;
+      vDisplacementMag = length(windOffset);
     }
   `;
   
@@ -58,9 +92,15 @@ export function createObjectRenderer(gl, glbModel) {
     uniform int uShadowEnabled;
     uniform int uShadowDebug; // 0=off, 1=depth, 2=lightspace UV, 3=shadow value
     
+    // Wind debug uniform
+    uniform int uWindDebug; // 0=off, 1=wind type, 2=height factor, 3=displacement
+    
     in vec2 vTexCoord;
     in vec3 vNormal;
     in vec4 vLightSpacePos;
+    in float vWindType;
+    in float vHeightFactor;
+    in float vDisplacementMag;
     
     out vec4 fragColor;
     
@@ -205,6 +245,31 @@ export function createObjectRenderer(gl, glbModel) {
         return;
       }
       
+      // Wind debug visualization
+      if (uWindDebug == 1) {
+        // Wind type: Red=none, Green=leaf, Yellow=branch
+        vec3 debugColor;
+        if (vWindType < 0.5) {
+          debugColor = vec3(1.0, 0.0, 0.0); // Red - no wind type
+        } else if (vWindType < 1.5) {
+          debugColor = vec3(0.0, 1.0, 0.0); // Green - leaf
+        } else {
+          debugColor = vec3(1.0, 1.0, 0.0); // Yellow - branch
+        }
+        fragColor = vec4(debugColor, 1.0);
+        return;
+      } else if (uWindDebug == 2) {
+        // Height factor: Black=0, White=1
+        fragColor = vec4(vec3(vHeightFactor), 1.0);
+        return;
+      } else if (uWindDebug == 3) {
+        // Displacement magnitude: Blue=0, Red=max
+        float normalizedDisp = clamp(vDisplacementMag * 5.0, 0.0, 1.0);
+        vec3 debugColor = mix(vec3(0.0, 0.0, 1.0), vec3(1.0, 0.0, 0.0), normalizedDisp);
+        fragColor = vec4(debugColor, 1.0);
+        return;
+      }
+      
       fragColor = vec4(finalColor, color.a);
     }
   `;
@@ -252,6 +317,18 @@ export function createObjectRenderer(gl, glbModel) {
     uShadowEnabled: gl.getUniformLocation(program, 'uShadowEnabled'),
     uShadowBias: gl.getUniformLocation(program, 'uShadowBias'),
     uShadowDebug: gl.getUniformLocation(program, 'uShadowDebug'),
+    uWindDebug: gl.getUniformLocation(program, 'uWindDebug'),
+    // Wind uniforms
+    uWindEnabled: gl.getUniformLocation(program, 'uWindEnabled'),
+    uWindTime: gl.getUniformLocation(program, 'uWindTime'),
+    uWindStrength: gl.getUniformLocation(program, 'uWindStrength'),
+    uWindDirection: gl.getUniformLocation(program, 'uWindDirection'),
+    uWindTurbulence: gl.getUniformLocation(program, 'uWindTurbulence'),
+    uWindType: gl.getUniformLocation(program, 'uWindType'),
+    uWindInfluence: gl.getUniformLocation(program, 'uWindInfluence'),
+    uWindStiffness: gl.getUniformLocation(program, 'uWindStiffness'),
+    uWindAnchorHeight: gl.getUniformLocation(program, 'uWindAnchorHeight'),
+    uWindPhysicsDisplacement: gl.getUniformLocation(program, 'uWindPhysicsDisplacement'),
   };
   
   // Function to update uniform locations after shader recompile
@@ -278,6 +355,18 @@ export function createObjectRenderer(gl, glbModel) {
       uShadowEnabled: gl.getUniformLocation(newProgram, 'uShadowEnabled'),
       uShadowBias: gl.getUniformLocation(newProgram, 'uShadowBias'),
       uShadowDebug: gl.getUniformLocation(newProgram, 'uShadowDebug'),
+      uWindDebug: gl.getUniformLocation(newProgram, 'uWindDebug'),
+      // Wind uniforms
+      uWindEnabled: gl.getUniformLocation(newProgram, 'uWindEnabled'),
+      uWindTime: gl.getUniformLocation(newProgram, 'uWindTime'),
+      uWindStrength: gl.getUniformLocation(newProgram, 'uWindStrength'),
+      uWindDirection: gl.getUniformLocation(newProgram, 'uWindDirection'),
+      uWindTurbulence: gl.getUniformLocation(newProgram, 'uWindTurbulence'),
+      uWindType: gl.getUniformLocation(newProgram, 'uWindType'),
+      uWindInfluence: gl.getUniformLocation(newProgram, 'uWindInfluence'),
+      uWindStiffness: gl.getUniformLocation(newProgram, 'uWindStiffness'),
+      uWindAnchorHeight: gl.getUniformLocation(newProgram, 'uWindAnchorHeight'),
+      uWindPhysicsDisplacement: gl.getUniformLocation(newProgram, 'uWindPhysicsDisplacement'),
     };
   }
   
@@ -531,8 +620,10 @@ export function createObjectRenderer(gl, glbModel) {
      * @param {boolean} isSelected 
      * @param {boolean} wireframeMode 
      * @param {object} lightParams - { mode: 'sun'|'hdr', sunDir: [x,y,z], ambient: number, lightColor: [r,g,b], hdrTexture: WebGLTexture|null }
+     * @param {object} windParams - { enabled, time, strength, direction, turbulence } from wind manager
+     * @param {object} objectWindSettings - { enabled, influence, stiffness, anchorHeight, leafMaterialIndices, branchMaterialIndices }
      */
-    render(vpMatrix, modelMatrix, isSelected, wireframeMode = false, lightParams = null) {
+    render(vpMatrix, modelMatrix, isSelected, wireframeMode = false, lightParams = null, windParams = null, objectWindSettings = null) {
       if (wireframeMode) {
         renderWireframe(vpMatrix, modelMatrix, isSelected);
         return;
@@ -586,7 +677,38 @@ export function createObjectRenderer(gl, glbModel) {
         gl.uniform1i(locations.uHdrTexture, 1);
       }
       
-      for (const gpuMesh of gpuMeshes) {
+      // Wind uniforms (global)
+      const wind = windParams || { enabled: false, time: 0, strength: 0, direction: [1, 0], turbulence: 0.5, debug: 0 };
+      const objWind = objectWindSettings || { enabled: false, influence: 1.0, stiffness: 0.5, anchorHeight: 0, leafMaterialIndices: new Set() };
+      
+      // Set wind debug mode
+      gl.uniform1i(locations.uWindDebug, wind.debug || 0);
+      
+      const windActive = wind.enabled && objWind.enabled;
+      gl.uniform1i(locations.uWindEnabled, windActive ? 1 : 0);
+      gl.uniform1f(locations.uWindTime, wind.time || 0);
+      gl.uniform1f(locations.uWindStrength, wind.strength || 0);
+      gl.uniform2fv(locations.uWindDirection, wind.direction || [1, 0]);
+      gl.uniform1f(locations.uWindTurbulence, wind.turbulence || 0.5);
+      gl.uniform1f(locations.uWindInfluence, objWind.influence || 1.0);
+      gl.uniform1f(locations.uWindStiffness, objWind.stiffness || 0.5);
+      gl.uniform1f(locations.uWindAnchorHeight, objWind.anchorHeight || 0);
+      gl.uniform2fv(locations.uWindPhysicsDisplacement, objWind.displacement || [0, 0]);
+      
+      for (let meshIdx = 0; meshIdx < gpuMeshes.length; meshIdx++) {
+        const gpuMesh = gpuMeshes[meshIdx];
+        
+        // Determine wind type for this mesh based on material index
+        let windType = 0; // 0=none by default
+        if (windActive) {
+          if (objWind.leafMaterialIndices && objWind.leafMaterialIndices.has(gpuMesh.materialIndex)) {
+            windType = 1; // leaf
+          } else if (objWind.branchMaterialIndices && objWind.branchMaterialIndices.has(gpuMesh.materialIndex)) {
+            windType = 2; // branch
+          }
+        }
+        gl.uniform1i(locations.uWindType, windType);
+        
         gl.bindBuffer(gl.ARRAY_BUFFER, gpuMesh.posBuffer);
         gl.enableVertexAttribArray(locations.aPosition);
         gl.vertexAttribPointer(locations.aPosition, 3, gl.FLOAT, false, 0, 0);

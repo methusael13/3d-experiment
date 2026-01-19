@@ -58,9 +58,12 @@ export function isImportedModel(modelPath) {
  * @param {Object} lightingState - Optional lighting state
  * @param {string} filename - Optional filename (without .json extension)
  * @param {Map} groups - Optional groups map (groupId -> { name, childIds: Set })
+ * @param {Object} windState - Optional global wind state
+ * @param {Object} objectWindSettings - Optional per-object wind settings
+ * @param {Array} groupsArray - Optional groups array
  * @returns {string} The filename that was used
  */
-export function saveScene(sceneObjects, cameraState, lightingState = null, filename = null, groups = null) {
+export function saveScene(sceneObjects, cameraState, lightingState = null, filename = null, groups = null, windState = null, objectWindSettings = null, groupsArray = null) {
   // Prompt for filename if not provided
   let sceneName = filename;
   if (!sceneName) {
@@ -91,7 +94,7 @@ export function saveScene(sceneObjects, cameraState, lightingState = null, filen
     camera: cameraState,
   };
   
-  // Add groups if provided
+  // Add groups if provided (Map format)
   if (groups && groups.size > 0) {
     sceneData.groups = [];
     for (const [groupId, group] of groups) {
@@ -102,6 +105,21 @@ export function saveScene(sceneObjects, cameraState, lightingState = null, filen
         collapsed: group.collapsed,
       });
     }
+  }
+  
+  // Add groups if provided (Array format from scene.serialize)
+  if (groupsArray && groupsArray.length > 0) {
+    sceneData.groups = groupsArray;
+  }
+  
+  // Add wind state if provided
+  if (windState) {
+    sceneData.wind = windState;
+  }
+  
+  // Add per-object wind settings if provided
+  if (objectWindSettings) {
+    sceneData.objectWindSettings = objectWindSettings;
   }
   
   // Add lighting state if provided

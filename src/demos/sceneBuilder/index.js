@@ -13,6 +13,7 @@ import { createShaderDebugPanel } from './shaderDebugPanel';
 import { createLightingManager } from './lights';
 import { createScene } from './scene';
 import { createCameraController } from './cameraController';
+import { createWindManager, serializeObjectWindSettings, deserializeObjectWindSettings } from './wind';
 
 /**
  * Scene Builder Demo
@@ -76,6 +77,10 @@ export function createSceneBuilderDemo(container, options = {}) {
   // Scene file tracking
   let currentSceneFilename = null;
   
+  // Wind system
+  const windManager = createWindManager();
+  const objectWindSettings = new Map(); // objectId -> wind settings
+  
   
   // ==================== GL Initialization ====================
   
@@ -103,6 +108,7 @@ export function createSceneBuilderDemo(container, options = {}) {
       updateObjectList();
       updateGizmoTarget();
       updateTransformPanel();
+      updateWindObjectPanel();
     };
     
     scene.onObjectAdded = () => {
@@ -341,15 +347,15 @@ export function createSceneBuilderDemo(container, options = {}) {
   }
   
   function updateTransformPanel() {
-    const transformPanel = container.querySelector('#transform-panel');
+    const objectPanel = container.querySelector('#object-panel');
     const selectionCount = scene.getSelectionCount();
     
     if (selectionCount === 0) {
-      transformPanel.style.display = 'none';
+      objectPanel.style.display = 'none';
       return;
     }
     
-    transformPanel.style.display = 'block';
+    objectPanel.style.display = 'block';
     
     if (selectionCount === 1) {
       const obj = scene.getFirstSelected();
@@ -420,7 +426,16 @@ export function createSceneBuilderDemo(container, options = {}) {
     
     container.querySelector('#menu-save-scene').addEventListener('click', () => {
       const sceneData = scene.serialize();
-      const savedFilename = saveScene(sceneData.objects, cameraController.serialize(), getLightingState(), currentSceneFilename, new Map());
+      // Add wind settings to scene data - key by object index for reliable matching on reload
+      sceneData.wind = windManager.serialize();
+      sceneData.objectWindSettings = [];
+      const allObjects = scene.getAllObjects();
+      for (let i = 0; i < allObjects.length; i++) {
+        const obj = allObjects[i];
+        const settings = objectWindSettings.get(obj.id);
+        sceneData.objectWindSettings.push(settings ? serializeObjectWindSettings(settings) : null);
+      }
+      const savedFilename = saveScene(sceneData.objects, cameraController.serialize(), getLightingState(), currentSceneFilename, new Map(), sceneData.wind, sceneData.objectWindSettings, sceneData.groups);
       if (savedFilename) {
         currentSceneFilename = savedFilename;
       }
@@ -481,6 +496,290 @@ export function createSceneBuilderDemo(container, options = {}) {
         header.parentElement.classList.toggle('collapsed');
       });
     });
+  }
+  
+  function setupEnvironmentTabs() {
+    // Environment panel tabs (Lighting/Wind)
+    const envPanel = container.querySelector('#environment-panel');
+    if (envPanel) {
+      const envTabs = envPanel.querySelectorAll('.env-tab');
+      envTabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          envTabs.forEach(t => t.classList.remove('active'));
+          tab.classList.add('active');
+          
+          const tabName = tab.dataset.tab;
+          envPanel.querySelectorAll('.env-tab-content').forEach(content => {
+            content.classList.remove('active');
+          });
+          envPanel.querySelector(`#env-${tabName}-tab`).classList.add('active');
+        });
+      });
+    }
+    
+    // Object panel tabs (Transform/Modifiers)
+    const objPanel = container.querySelector('#object-panel');
+    if (objPanel) {
+      const objTabs = objPanel.querySelectorAll('.env-tab');
+      objTabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          objTabs.forEach(t => t.classList.remove('active'));
+          tab.classList.add('active');
+          
+          const tabName = tab.dataset.tab;
+          objPanel.querySelectorAll('.env-tab-content').forEach(content => {
+            content.classList.remove('active');
+          });
+          objPanel.querySelector(`#obj-${tabName}-tab`).classList.add('active');
+        });
+      });
+    }
+  }
+  
+  // ==================== Wind Controls ====================
+  
+  function getOrCreateWindSettings(objectId) {
+    if (!objectWindSettings.has(objectId)) {
+      objectWindSettings.set(objectId, windManager.createObjectWindSettings());
+    }
+    return objectWindSettings.get(objectId);
+  }
+  
+  function updateWindDirectionArrow() {
+    const arrow = container.querySelector('#wind-direction-arrow');
+    if (arrow) {
+      arrow.style.transform = `translateY(-50%) rotate(${windManager.direction}deg)`;
+    }
+  }
+  
+  function updateWindEnabledIndicator() {
+    const indicator = container.querySelector('#wind-enabled-indicator');
+    if (indicator) {
+      indicator.classList.toggle('active', windManager.enabled);
+    }
+  }
+  
+  function updateWindObjectPanel() {
+    const selectionCount = scene.getSelectionCount();
+    const windModifierSettings = container.querySelector('#wind-modifier-settings');
+    
+    if (selectionCount !== 1) {
+      // Disable wind settings when no single object selected
+      windModifierSettings?.classList.add('disabled');
+      return;
+    }
+    
+    const obj = scene.getFirstSelected();
+    if (!obj) {
+      windModifierSettings?.classList.add('disabled');
+      return;
+    }
+    
+    const settings = getOrCreateWindSettings(obj.id);
+    
+    // Update UI with current settings
+    container.querySelector('#object-wind-enabled').checked = settings.enabled;
+    container.querySelector('#object-wind-influence').value = settings.influence;
+    container.querySelector('#object-wind-influence-value').textContent = settings.influence.toFixed(1);
+    container.querySelector('#object-wind-stiffness').value = settings.stiffness;
+    container.querySelector('#object-wind-stiffness-value').textContent = settings.stiffness.toFixed(1);
+    container.querySelector('#object-wind-anchor').value = settings.anchorHeight;
+    container.querySelector('#object-wind-anchor-value').textContent = settings.anchorHeight.toFixed(1);
+    
+    // Enable/disable wind settings based on checkbox
+    updateWindModifierSettingsState(settings.enabled);
+    
+    // Populate material lists
+    updateMaterialLists(obj, settings);
+  }
+  
+  function updateWindModifierSettingsState(enabled) {
+    const windModifierSettings = container.querySelector('#wind-modifier-settings');
+    if (windModifierSettings) {
+      windModifierSettings.classList.toggle('disabled', !enabled);
+    }
+  }
+  
+  function updateMaterialLists(obj, settings) {
+    const leafList = container.querySelector('#leaf-material-list');
+    const branchList = container.querySelector('#branch-material-list');
+    
+    if (!obj.model || !obj.model.materials) {
+      leafList.innerHTML = '<div style="color: #666; font-size: 11px;">No materials found</div>';
+      branchList.innerHTML = '<div style="color: #666; font-size: 11px;">No materials found</div>';
+      return;
+    }
+    
+    const materials = obj.model.materials;
+    
+    // Build leaf material list
+    let leafHtml = '';
+    materials.forEach((mat, idx) => {
+      const isLeaf = settings.leafMaterialIndices.has(idx);
+      const color = mat.baseColorFactor || [0.8, 0.8, 0.8, 1];
+      const colorStr = `rgb(${Math.round(color[0]*255)}, ${Math.round(color[1]*255)}, ${Math.round(color[2]*255)})`;
+      const name = mat.name || `Material ${idx}`;
+      leafHtml += `
+        <div class="material-item" data-material-idx="${idx}" data-type="leaf">
+          <input type="checkbox" ${isLeaf ? 'checked' : ''}>
+          <div class="material-color-swatch" style="background: ${colorStr}"></div>
+          <span class="material-name">${name}</span>
+          ${isLeaf ? '<span class="wind-type-badge leaf">Leaf</span>' : ''}
+        </div>
+      `;
+    });
+    leafList.innerHTML = leafHtml || '<div style="color: #666; font-size: 11px;">No materials</div>';
+    
+    // Build branch material list
+    let branchHtml = '';
+    materials.forEach((mat, idx) => {
+      const isBranch = settings.branchMaterialIndices?.has(idx);
+      const color = mat.baseColorFactor || [0.8, 0.8, 0.8, 1];
+      const colorStr = `rgb(${Math.round(color[0]*255)}, ${Math.round(color[1]*255)}, ${Math.round(color[2]*255)})`;
+      const name = mat.name || `Material ${idx}`;
+      branchHtml += `
+        <div class="material-item" data-material-idx="${idx}" data-type="branch">
+          <input type="checkbox" ${isBranch ? 'checked' : ''}>
+          <div class="material-color-swatch" style="background: ${colorStr}"></div>
+          <span class="material-name">${name}</span>
+          ${isBranch ? '<span class="wind-type-badge branch">Branch</span>' : ''}
+        </div>
+      `;
+    });
+    branchList.innerHTML = branchHtml || '<div style="color: #666; font-size: 11px;">No materials</div>';
+    
+    // Attach click handlers
+    leafList.querySelectorAll('.material-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        const checkbox = item.querySelector('input[type="checkbox"]');
+        if (e.target !== checkbox) checkbox.checked = !checkbox.checked;
+        
+        const idx = parseInt(item.dataset.materialIdx, 10);
+        if (checkbox.checked) {
+          settings.leafMaterialIndices.add(idx);
+          // Remove from branch if present
+          settings.branchMaterialIndices?.delete(idx);
+        } else {
+          settings.leafMaterialIndices.delete(idx);
+        }
+        updateMaterialLists(obj, settings);
+      });
+    });
+    
+    branchList.querySelectorAll('.material-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        const checkbox = item.querySelector('input[type="checkbox"]');
+        if (e.target !== checkbox) checkbox.checked = !checkbox.checked;
+        
+        const idx = parseInt(item.dataset.materialIdx, 10);
+        if (!settings.branchMaterialIndices) settings.branchMaterialIndices = new Set();
+        
+        if (checkbox.checked) {
+          settings.branchMaterialIndices.add(idx);
+          // Remove from leaf if present
+          settings.leafMaterialIndices.delete(idx);
+        } else {
+          settings.branchMaterialIndices.delete(idx);
+        }
+        updateMaterialLists(obj, settings);
+      });
+    });
+  }
+  
+  function setupWindControls() {
+    // Global wind enabled
+    container.querySelector('#wind-enabled').addEventListener('change', (e) => {
+      windManager.enabled = e.target.checked;
+      updateWindEnabledIndicator();
+    });
+    
+    // Wind direction
+    const dirSlider = container.querySelector('#wind-direction');
+    const dirValue = container.querySelector('#wind-direction-value');
+    dirSlider.addEventListener('input', (e) => {
+      windManager.direction = parseFloat(e.target.value);
+      dirValue.textContent = `${windManager.direction}°`;
+      updateWindDirectionArrow();
+    });
+    
+    // Wind strength
+    const strengthSlider = container.querySelector('#wind-strength');
+    const strengthValue = container.querySelector('#wind-strength-value');
+    strengthSlider.addEventListener('input', (e) => {
+      windManager.strength = parseFloat(e.target.value);
+      strengthValue.textContent = windManager.strength.toFixed(1);
+    });
+    
+    // Turbulence
+    const turbSlider = container.querySelector('#wind-turbulence');
+    const turbValue = container.querySelector('#wind-turbulence-value');
+    turbSlider.addEventListener('input', (e) => {
+      windManager.turbulence = parseFloat(e.target.value);
+      turbValue.textContent = windManager.turbulence.toFixed(1);
+    });
+    
+    // Gust strength
+    const gustSlider = container.querySelector('#wind-gust-strength');
+    const gustValue = container.querySelector('#wind-gust-strength-value');
+    gustSlider.addEventListener('input', (e) => {
+      windManager.gustStrength = parseFloat(e.target.value);
+      gustValue.textContent = windManager.gustStrength.toFixed(1);
+    });
+    
+    // Object wind enabled
+    container.querySelector('#object-wind-enabled').addEventListener('change', (e) => {
+      const obj = scene.getFirstSelected();
+      if (obj) {
+        const settings = getOrCreateWindSettings(obj.id);
+        settings.enabled = e.target.checked;
+        updateWindModifierSettingsState(settings.enabled);
+      }
+    });
+    
+    // Object influence
+    const infSlider = container.querySelector('#object-wind-influence');
+    const infValue = container.querySelector('#object-wind-influence-value');
+    infSlider.addEventListener('input', (e) => {
+      const obj = scene.getFirstSelected();
+      if (obj) {
+        const settings = getOrCreateWindSettings(obj.id);
+        settings.influence = parseFloat(e.target.value);
+        infValue.textContent = settings.influence.toFixed(1);
+      }
+    });
+    
+    // Object stiffness
+    const stiffSlider = container.querySelector('#object-wind-stiffness');
+    const stiffValue = container.querySelector('#object-wind-stiffness-value');
+    stiffSlider.addEventListener('input', (e) => {
+      const obj = scene.getFirstSelected();
+      if (obj) {
+        const settings = getOrCreateWindSettings(obj.id);
+        settings.stiffness = parseFloat(e.target.value);
+        stiffValue.textContent = settings.stiffness.toFixed(1);
+      }
+    });
+    
+    // Object anchor height
+    const anchorSlider = container.querySelector('#object-wind-anchor');
+    const anchorValue = container.querySelector('#object-wind-anchor-value');
+    anchorSlider.addEventListener('input', (e) => {
+      const obj = scene.getFirstSelected();
+      if (obj) {
+        const settings = getOrCreateWindSettings(obj.id);
+        settings.anchorHeight = parseFloat(e.target.value);
+        anchorValue.textContent = settings.anchorHeight.toFixed(1);
+      }
+    });
+    
+    // Wind debug dropdown
+    container.querySelector('#wind-debug').addEventListener('change', (e) => {
+      windManager.debug = parseInt(e.target.value, 10);
+    });
+    
+    // Initial UI update
+    updateWindDirectionArrow();
+    updateWindEnabledIndicator();
   }
   
   function setupLightingControls() {
@@ -721,7 +1020,38 @@ export function createSceneBuilderDemo(container, options = {}) {
     const lightingState = parseLightingState(sceneData);
     if (lightingState) setLightingState(lightingState);
     
+    // Load wind settings
+    if (sceneData.wind) {
+      windManager.deserialize(sceneData.wind);
+      // Update UI
+      container.querySelector('#wind-enabled').checked = windManager.enabled;
+      container.querySelector('#wind-direction').value = windManager.direction;
+      container.querySelector('#wind-direction-value').textContent = `${windManager.direction}°`;
+      container.querySelector('#wind-strength').value = windManager.strength;
+      container.querySelector('#wind-strength-value').textContent = windManager.strength.toFixed(1);
+      container.querySelector('#wind-turbulence').value = windManager.turbulence;
+      container.querySelector('#wind-turbulence-value').textContent = windManager.turbulence.toFixed(1);
+      container.querySelector('#wind-gust-strength').value = windManager.gustStrength;
+      container.querySelector('#wind-gust-strength-value').textContent = windManager.gustStrength.toFixed(1);
+      updateWindDirectionArrow();
+      updateWindEnabledIndicator();
+    }
+    
     await scene.deserialize({ objects: sceneData.objects, groups: sceneData.groups || [] });
+    
+    // Load per-object wind settings - array indexed by object order
+    objectWindSettings.clear();
+    if (sceneData.objectWindSettings && Array.isArray(sceneData.objectWindSettings)) {
+      const allObjects = scene.getAllObjects();
+      for (let i = 0; i < allObjects.length && i < sceneData.objectWindSettings.length; i++) {
+        const settingsData = sceneData.objectWindSettings[i];
+        if (settingsData) {
+          const settings = deserializeObjectWindSettings(settingsData);
+          if (settings) objectWindSettings.set(allObjects[i].id, settings);
+        }
+      }
+    }
+    
     updateObjectList();
   }
   
@@ -819,7 +1149,17 @@ export function createSceneBuilderDemo(container, options = {}) {
     
     animationLoop = createAnimationLoop({ onFps });
     
-    animationLoop.start(() => {
+    animationLoop.start((deltaTime) => {
+      const dt = deltaTime / 1000; // Convert to seconds
+      
+      // Update wind simulation
+      windManager.update(dt);
+      
+      // Update physics for each object with wind settings
+      for (const [objId, settings] of objectWindSettings) {
+        windManager.updateObjectPhysics(settings, dt);
+      }
+      
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
       
       const vpMatrix = cameraController.getViewProjectionMatrix();
@@ -832,10 +1172,14 @@ export function createSceneBuilderDemo(container, options = {}) {
         const shadowCoverage = 5;
         shadowRenderer.beginShadowPass(sunDir, shadowCoverage);
         
+        // Get global wind params for shadow pass
+        const windParams = windManager.getShaderUniforms();
+        
         for (const obj of allObjects) {
           if (obj.renderer && obj.renderer.gpuMeshes) {
             const modelMatrix = scene.getModelMatrix(obj);
-            shadowRenderer.renderObject(obj.renderer.gpuMeshes, modelMatrix);
+            const objWindSettings = objectWindSettings.get(obj.id) || null;
+            shadowRenderer.renderObject(obj.renderer.gpuMeshes, modelMatrix, windParams, objWindSettings);
           }
         }
         
@@ -854,10 +1198,12 @@ export function createSceneBuilderDemo(container, options = {}) {
       
       const isWireframe = viewportMode === 'wireframe';
       const lightParams = getLightParams();
+      const windParams = windManager.getShaderUniforms();
       
       for (const obj of allObjects) {
         if (obj.renderer) {
-          obj.renderer.render(vpMatrix, scene.getModelMatrix(obj), scene.isSelected(obj.id), isWireframe, lightParams);
+          const objWindSettings = objectWindSettings.get(obj.id) || null;
+          obj.renderer.render(vpMatrix, scene.getModelMatrix(obj), scene.isSelected(obj.id), isWireframe, lightParams, windParams, objWindSettings);
         }
       }
       
@@ -878,7 +1224,9 @@ export function createSceneBuilderDemo(container, options = {}) {
     setupMenuBar();
     setupUI();
     setupLightingControls();
+    setupWindControls();
     setupCollapsiblePanels();
+    setupEnvironmentTabs();
     
     shaderDebugPanel = createShaderDebugPanel(viewport);
     
