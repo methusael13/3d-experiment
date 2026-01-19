@@ -385,26 +385,26 @@ function createBlurShader(gl) {
       return normalize(tangent * H.x + bitangent * H.y + N * H.z);
     }
     
-    // Convert UV to equirectangular direction
+    // Convert UV to equirectangular direction (Y-flipped for HDR convention)
     vec3 uvToDirection(vec2 uv) {
-      float phi = uv.x * 2.0 * PI;
-      float theta = uv.y * PI;
+      float phi = (uv.x - 0.5) * 2.0 * PI;
+      float theta = (0.5 - uv.y) * PI;
       
       return vec3(
-        sin(theta) * cos(phi),
-        cos(theta),
-        sin(theta) * sin(phi)
+        cos(theta) * cos(phi),
+        sin(theta),
+        cos(theta) * sin(phi)
       );
     }
     
-    // Convert direction to UV
+    // Convert direction to UV (Y-flipped for HDR convention)
     vec2 directionToUV(vec3 dir) {
       float phi = atan(dir.z, dir.x);
-      float theta = acos(clamp(dir.y, -1.0, 1.0));
+      float theta = asin(clamp(dir.y, -1.0, 1.0));
       
       return vec2(
         phi / (2.0 * PI) + 0.5,
-        theta / PI
+        0.5 - theta / PI
       );
     }
     

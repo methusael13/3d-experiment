@@ -239,7 +239,7 @@ const float PI = 3.14159265359;
 vec2 dirToEquirect(vec3 dir) {
   float phi = atan(dir.z, dir.x);
   float theta = asin(clamp(dir.y, -1.0, 1.0));
-  return vec2(phi / (2.0 * PI) + 0.5, theta / PI + 0.5);
+  return vec2(phi / (2.0 * PI) + 0.5, 0.5 - theta / PI);
 }
 
 vec3 sampleHDR(vec3 dir, float exposure) {
@@ -530,10 +530,10 @@ vec3 samplePrefilteredEnv(vec3 R, float roughness, sampler2D envMap, float maxMi
   // Convert roughness to mip level (0 = sharp, max = blurry)
   float mipLevel = roughness * maxMipLevel;
   
-  // Equirectangular projection
+  // Equirectangular projection (flip Y to match HDR convention)
   float phi = atan(R.z, R.x);
   float theta = asin(clamp(R.y, -1.0, 1.0));
-  vec2 uv = vec2(phi / (2.0 * PI) + 0.5, theta / PI + 0.5);
+  vec2 uv = vec2(phi / (2.0 * PI) + 0.5, 0.5 - theta / PI);
   
   // WebGL2 textureLod for mip sampling
   return textureLod(envMap, uv, mipLevel).rgb;
@@ -549,8 +549,8 @@ vec3 sampleDiffuseIBL(vec3 N, sampler2D envMap, float exposure) {
   vec3 tangent = normalize(cross(N, abs(N.y) < 0.9 ? vec3(0,1,0) : vec3(1,0,0)));
   vec3 bitangent = cross(N, tangent);
   
-  // Main direction
-  vec2 uvN = vec2(atan(N.z, N.x) / (2.0 * PI) + 0.5, asin(clamp(N.y, -1.0, 1.0)) / PI + 0.5);
+  // Main direction (flip Y to match HDR convention)
+  vec2 uvN = vec2(atan(N.z, N.x) / (2.0 * PI) + 0.5, 0.5 - asin(clamp(N.y, -1.0, 1.0)) / PI);
   irradiance += textureLod(envMap, uvN, 4.0).rgb * 0.5; // Use high mip for blur
   
   // Offset samples
@@ -559,10 +559,10 @@ vec3 sampleDiffuseIBL(vec3 N, sampler2D envMap, float exposure) {
   vec3 d3 = normalize(N + bitangent * 0.5);
   vec3 d4 = normalize(N - bitangent * 0.5);
   
-  vec2 uv1 = vec2(atan(d1.z, d1.x) / (2.0 * PI) + 0.5, asin(clamp(d1.y, -1.0, 1.0)) / PI + 0.5);
-  vec2 uv2 = vec2(atan(d2.z, d2.x) / (2.0 * PI) + 0.5, asin(clamp(d2.y, -1.0, 1.0)) / PI + 0.5);
-  vec2 uv3 = vec2(atan(d3.z, d3.x) / (2.0 * PI) + 0.5, asin(clamp(d3.y, -1.0, 1.0)) / PI + 0.5);
-  vec2 uv4 = vec2(atan(d4.z, d4.x) / (2.0 * PI) + 0.5, asin(clamp(d4.y, -1.0, 1.0)) / PI + 0.5);
+  vec2 uv1 = vec2(atan(d1.z, d1.x) / (2.0 * PI) + 0.5, 0.5 - asin(clamp(d1.y, -1.0, 1.0)) / PI);
+  vec2 uv2 = vec2(atan(d2.z, d2.x) / (2.0 * PI) + 0.5, 0.5 - asin(clamp(d2.y, -1.0, 1.0)) / PI);
+  vec2 uv3 = vec2(atan(d3.z, d3.x) / (2.0 * PI) + 0.5, 0.5 - asin(clamp(d3.y, -1.0, 1.0)) / PI);
+  vec2 uv4 = vec2(atan(d4.z, d4.x) / (2.0 * PI) + 0.5, 0.5 - asin(clamp(d4.y, -1.0, 1.0)) / PI);
   
   irradiance += textureLod(envMap, uv1, 4.0).rgb * 0.125;
   irradiance += textureLod(envMap, uv2, 4.0).rgb * 0.125;
