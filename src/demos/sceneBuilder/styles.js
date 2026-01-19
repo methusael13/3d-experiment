@@ -1000,7 +1000,22 @@ export const sceneBuilderTemplate = `
               </div>
             </div>
             <div class="modifier-divider"></div>
-            <!-- Future modifiers go here -->
+            <div class="modifier-section" id="terrain-blend-modifier">
+              <label class="checkbox-label">
+                <input type="checkbox" id="object-terrain-blend-enabled">
+                <span>Terrain Blend</span>
+              </label>
+              <div class="modifier-settings" id="terrain-blend-settings">
+                <div class="transform-group compact-slider">
+                  <div class="slider-header">
+                    <label>Blend Distance</label>
+                    <span id="terrain-blend-distance-value" class="slider-value">0.5</span>
+                  </div>
+                  <input type="range" id="terrain-blend-distance" min="0.1" max="2" step="0.1" value="0.5" class="slider-input">
+                </div>
+                <p style="font-size: 10px; color: #666; margin-top: 4px;">Fades object edges at intersections with other geometry</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>

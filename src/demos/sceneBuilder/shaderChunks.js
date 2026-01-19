@@ -203,3 +203,64 @@ vec3 applyWind(vec3 localPos, mat4 modelMatrix) {
   return calcWindDisplacement(worldPos.xyz, heightFactor);
 }
 `;
+
+/**
+ * Terrain blend uniform declarations
+ * For depth-based intersection blending
+ */
+export const terrainBlendUniforms = `
+// Terrain blend uniforms
+uniform int uTerrainBlendEnabled;
+uniform float uTerrainBlendDistance; // World units for blend zone
+uniform sampler2D uSceneDepthTexture;
+uniform vec2 uScreenSize;
+uniform float uNearPlane;
+uniform float uFarPlane;
+`;
+
+/**
+ * Terrain blend functions for fragment shader
+ * Samples scene depth and computes blend factor at intersections
+ */
+export const terrainBlendFunctions = `
+// Linearize depth from depth buffer [0,1] to view-space Z
+float linearizeDepth(float depth) {
+  float z = depth * 2.0 - 1.0; // Back to NDC
+  return (2.0 * uNearPlane * uFarPlane) / (uFarPlane + uNearPlane - z * (uFarPlane - uNearPlane));
+}
+
+// Calculate terrain blend factor based on depth difference
+// Returns 1.0 at intersection, fading to 0.0 at blendDistance
+float calcTerrainBlendFactor(float fragmentDepth) {
+  if (uTerrainBlendEnabled == 0) {
+    return 0.0;
+  }
+  
+  // Sample scene depth at current fragment position
+  vec2 screenUV = gl_FragCoord.xy / uScreenSize;
+  float sceneDepth = texture(uSceneDepthTexture, screenUV).r;
+  
+  // Linearize both depths
+  float linearScene = linearizeDepth(sceneDepth);
+  float linearFragment = linearizeDepth(fragmentDepth);
+  
+  // Calculate depth difference (positive = fragment behind scene)
+  float depthDiff = abs(linearScene - linearFragment);
+  
+  // Blend factor: 1.0 at intersection, 0.0 beyond blend distance
+  float blendFactor = 1.0 - smoothstep(0.0, uTerrainBlendDistance, depthDiff);
+  
+  return blendFactor;
+}
+
+// Apply terrain blend to fragment color
+// Fades alpha based on proximity to other surfaces
+vec4 applyTerrainBlend(vec4 color, float fragmentDepth) {
+  float blend = calcTerrainBlendFactor(fragmentDepth);
+  
+  // Soft fade at intersections
+  color.a *= (1.0 - blend * 0.8);
+  
+  return color;
+}
+`;

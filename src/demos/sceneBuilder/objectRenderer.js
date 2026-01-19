@@ -1,6 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { registerShader, unregisterShader } from './shaderManager.js';
-import { simplexNoise, windUniforms, windDisplacement } from './shaderChunks.js';
+import { simplexNoise, windUniforms, windDisplacement, terrainBlendUniforms, terrainBlendFunctions } from './shaderChunks.js';
 
 // Generate unique ID for each renderer instance
 let rendererIdCounter = 0;
@@ -94,6 +94,10 @@ export function createObjectRenderer(gl, glbModel) {
     
     // Wind debug uniform
     uniform int uWindDebug; // 0=off, 1=wind type, 2=height factor, 3=displacement
+    
+    // Terrain blend uniforms and functions
+    ${terrainBlendUniforms}
+    ${terrainBlendFunctions}
     
     in vec2 vTexCoord;
     in vec3 vNormal;
@@ -270,7 +274,14 @@ export function createObjectRenderer(gl, glbModel) {
         return;
       }
       
-      fragColor = vec4(finalColor, color.a);
+      vec4 finalFragment = vec4(finalColor, color.a);
+      
+      // Apply terrain blend if enabled (fade at intersections with other geometry)
+      if (uTerrainBlendEnabled == 1) {
+        finalFragment = applyTerrainBlend(finalFragment, gl_FragCoord.z);
+      }
+      
+      fragColor = finalFragment;
     }
   `;
   
@@ -329,6 +340,13 @@ export function createObjectRenderer(gl, glbModel) {
     uWindStiffness: gl.getUniformLocation(program, 'uWindStiffness'),
     uWindAnchorHeight: gl.getUniformLocation(program, 'uWindAnchorHeight'),
     uWindPhysicsDisplacement: gl.getUniformLocation(program, 'uWindPhysicsDisplacement'),
+    // Terrain blend uniforms
+    uTerrainBlendEnabled: gl.getUniformLocation(program, 'uTerrainBlendEnabled'),
+    uTerrainBlendDistance: gl.getUniformLocation(program, 'uTerrainBlendDistance'),
+    uSceneDepthTexture: gl.getUniformLocation(program, 'uSceneDepthTexture'),
+    uScreenSize: gl.getUniformLocation(program, 'uScreenSize'),
+    uNearPlane: gl.getUniformLocation(program, 'uNearPlane'),
+    uFarPlane: gl.getUniformLocation(program, 'uFarPlane'),
   };
   
   // Function to update uniform locations after shader recompile
@@ -367,6 +385,13 @@ export function createObjectRenderer(gl, glbModel) {
       uWindStiffness: gl.getUniformLocation(newProgram, 'uWindStiffness'),
       uWindAnchorHeight: gl.getUniformLocation(newProgram, 'uWindAnchorHeight'),
       uWindPhysicsDisplacement: gl.getUniformLocation(newProgram, 'uWindPhysicsDisplacement'),
+      // Terrain blend uniforms
+      uTerrainBlendEnabled: gl.getUniformLocation(newProgram, 'uTerrainBlendEnabled'),
+      uTerrainBlendDistance: gl.getUniformLocation(newProgram, 'uTerrainBlendDistance'),
+      uSceneDepthTexture: gl.getUniformLocation(newProgram, 'uSceneDepthTexture'),
+      uScreenSize: gl.getUniformLocation(newProgram, 'uScreenSize'),
+      uNearPlane: gl.getUniformLocation(newProgram, 'uNearPlane'),
+      uFarPlane: gl.getUniformLocation(newProgram, 'uFarPlane'),
     };
   }
   
@@ -622,8 +647,9 @@ export function createObjectRenderer(gl, glbModel) {
      * @param {object} lightParams - { mode: 'sun'|'hdr', sunDir: [x,y,z], ambient: number, lightColor: [r,g,b], hdrTexture: WebGLTexture|null }
      * @param {object} windParams - { enabled, time, strength, direction, turbulence } from wind manager
      * @param {object} objectWindSettings - { enabled, influence, stiffness, anchorHeight, leafMaterialIndices, branchMaterialIndices }
+     * @param {object} terrainBlendParams - { enabled, blendDistance, depthTexture, screenSize, nearPlane, farPlane }
      */
-    render(vpMatrix, modelMatrix, isSelected, wireframeMode = false, lightParams = null, windParams = null, objectWindSettings = null) {
+    render(vpMatrix, modelMatrix, isSelected, wireframeMode = false, lightParams = null, windParams = null, objectWindSettings = null, terrainBlendParams = null) {
       if (wireframeMode) {
         renderWireframe(vpMatrix, modelMatrix, isSelected);
         return;
@@ -695,6 +721,25 @@ export function createObjectRenderer(gl, glbModel) {
       gl.uniform1f(locations.uWindAnchorHeight, objWind.anchorHeight || 0);
       gl.uniform2fv(locations.uWindPhysicsDisplacement, objWind.displacement || [0, 0]);
       
+      // Terrain blend uniforms
+      const terrainBlend = terrainBlendParams || { enabled: false };
+      gl.uniform1i(locations.uTerrainBlendEnabled, terrainBlend.enabled ? 1 : 0);
+      gl.uniform1f(locations.uTerrainBlendDistance, terrainBlend.blendDistance || 0.5);
+      gl.uniform2fv(locations.uScreenSize, terrainBlend.screenSize || [800, 600]);
+      gl.uniform1f(locations.uNearPlane, terrainBlend.nearPlane || 0.1);
+      gl.uniform1f(locations.uFarPlane, terrainBlend.farPlane || 100.0);
+      
+      // Bind scene depth texture to unit 3 if terrain blend is enabled
+      if (terrainBlend.enabled && terrainBlend.depthTexture) {
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, terrainBlend.depthTexture);
+        gl.uniform1i(locations.uSceneDepthTexture, 3);
+        
+        // Enable blending for terrain blend effect
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      }
+      
       for (let meshIdx = 0; meshIdx < gpuMeshes.length; meshIdx++) {
         const gpuMesh = gpuMeshes[meshIdx];
         
@@ -743,6 +788,11 @@ export function createObjectRenderer(gl, glbModel) {
         } else {
           gl.drawArrays(gl.TRIANGLES, 0, gpuMesh.vertexCount);
         }
+      }
+      
+      // Disable blending if it was enabled for terrain blend
+      if (terrainBlend.enabled) {
+        gl.disable(gl.BLEND);
       }
     },
     

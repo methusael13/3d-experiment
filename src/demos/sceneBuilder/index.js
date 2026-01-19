@@ -9,6 +9,7 @@ import { importModelFile, saveScene, parseCameraState, parseLightingState, clear
 import { createSkyRenderer } from './skyRenderer';
 import { parseHDR, createHDRTexture } from './hdrLoader';
 import { createShadowRenderer } from './shadowRenderer';
+import { createDepthPrePassRenderer } from './depthPrePassRenderer';
 import { createShaderDebugPanel } from './shaderDebugPanel';
 import { createLightingManager } from './lights';
 import { createScene } from './scene';
@@ -81,6 +82,10 @@ export function createSceneBuilderDemo(container, options = {}) {
   const windManager = createWindManager();
   const objectWindSettings = new Map(); // objectId -> wind settings
   
+  // Terrain blend settings
+  const objectTerrainBlendSettings = new Map(); // objectId -> { enabled, blendDistance }
+  let depthPrePassRenderer = null;
+  
   
   // ==================== GL Initialization ====================
   
@@ -99,6 +104,7 @@ export function createSceneBuilderDemo(container, options = {}) {
     originMarkerRenderer = createOriginMarkerRenderer(gl);
     skyRenderer = createSkyRenderer(gl);
     shadowRenderer = createShadowRenderer(gl, lightingManager.sunLight.shadowResolution);
+    depthPrePassRenderer = createDepthPrePassRenderer(gl, CANVAS_WIDTH, CANVAS_HEIGHT);
     
     // Initialize scene after GL context is ready
     scene = createScene(gl, sceneGraph);
@@ -545,6 +551,13 @@ export function createSceneBuilderDemo(container, options = {}) {
     return objectWindSettings.get(objectId);
   }
   
+  function getOrCreateTerrainBlendSettings(objectId) {
+    if (!objectTerrainBlendSettings.has(objectId)) {
+      objectTerrainBlendSettings.set(objectId, { enabled: false, blendDistance: 0.5 });
+    }
+    return objectTerrainBlendSettings.get(objectId);
+  }
+  
   function updateWindDirectionArrow() {
     const arrow = container.querySelector('#wind-direction-arrow');
     if (arrow) {
@@ -591,6 +604,24 @@ export function createSceneBuilderDemo(container, options = {}) {
     
     // Populate material lists
     updateMaterialLists(obj, settings);
+    
+    // Update terrain blend UI
+    updateTerrainBlendPanel(obj);
+  }
+  
+  function updateTerrainBlendPanel(obj) {
+    if (!obj) return;
+    
+    const terrainSettings = getOrCreateTerrainBlendSettings(obj.id);
+    container.querySelector('#object-terrain-blend-enabled').checked = terrainSettings.enabled;
+    container.querySelector('#terrain-blend-distance').value = terrainSettings.blendDistance;
+    container.querySelector('#terrain-blend-distance-value').textContent = terrainSettings.blendDistance.toFixed(1);
+    
+    // Enable/disable settings based on checkbox
+    const settingsDiv = container.querySelector('#terrain-blend-settings');
+    if (settingsDiv) {
+      settingsDiv.classList.toggle('disabled', !terrainSettings.enabled);
+    }
   }
   
   function updateWindModifierSettingsState(enabled) {
@@ -780,6 +811,30 @@ export function createSceneBuilderDemo(container, options = {}) {
     // Initial UI update
     updateWindDirectionArrow();
     updateWindEnabledIndicator();
+    
+    // Terrain blend controls
+    container.querySelector('#object-terrain-blend-enabled').addEventListener('change', (e) => {
+      const obj = scene.getFirstSelected();
+      if (obj) {
+        const settings = getOrCreateTerrainBlendSettings(obj.id);
+        settings.enabled = e.target.checked;
+        const settingsDiv = container.querySelector('#terrain-blend-settings');
+        if (settingsDiv) {
+          settingsDiv.classList.toggle('disabled', !settings.enabled);
+        }
+      }
+    });
+    
+    const blendDistSlider = container.querySelector('#terrain-blend-distance');
+    const blendDistValue = container.querySelector('#terrain-blend-distance-value');
+    blendDistSlider.addEventListener('input', (e) => {
+      const obj = scene.getFirstSelected();
+      if (obj) {
+        const settings = getOrCreateTerrainBlendSettings(obj.id);
+        settings.blendDistance = parseFloat(e.target.value);
+        blendDistValue.textContent = settings.blendDistance.toFixed(1);
+      }
+    });
   }
   
   function setupLightingControls() {
@@ -1186,6 +1241,35 @@ export function createSceneBuilderDemo(container, options = {}) {
         shadowRenderer.endShadowPass(CANVAS_WIDTH, CANVAS_HEIGHT);
       }
       
+      // Depth pre-pass for terrain blend
+      // Render all objects except those with terrain blend enabled
+      const hasTerrainBlendObjects = Array.from(objectTerrainBlendSettings.values()).some(s => s.enabled);
+      const windParamsForPrePass = windManager.getShaderUniforms();
+      
+      if (hasTerrainBlendObjects && allObjects.length > 1) {
+        depthPrePassRenderer.beginPass(vpMatrix);
+        
+        for (const obj of allObjects) {
+          if (obj.renderer && obj.renderer.gpuMeshes) {
+            const modelMatrix = scene.getModelMatrix(obj);
+            const objWindSettings = objectWindSettings.get(obj.id) || null;
+            const terrainSettings = objectTerrainBlendSettings.get(obj.id);
+            const isTerrainBlendTarget = terrainSettings?.enabled || false;
+            
+            depthPrePassRenderer.renderObject(
+              obj.renderer.gpuMeshes,
+              vpMatrix,
+              modelMatrix,
+              windParamsForPrePass,
+              objWindSettings,
+              isTerrainBlendTarget
+            );
+          }
+        }
+        
+        depthPrePassRenderer.endPass(CANVAS_WIDTH, CANVAS_HEIGHT);
+      }
+      
       // Sky
       if (mode === 'hdr' && lightingManager.hdrLight.texture) {
         skyRenderer.renderHDRSky(vpMatrix, lightingManager.hdrLight.texture, lightingManager.hdrLight.exposure);
@@ -1200,10 +1284,28 @@ export function createSceneBuilderDemo(container, options = {}) {
       const lightParams = getLightParams();
       const windParams = windManager.getShaderUniforms();
       
+      // Get camera near/far for terrain blend
+      const camera = cameraController.getCamera();
+      
       for (const obj of allObjects) {
         if (obj.renderer) {
           const objWindSettings = objectWindSettings.get(obj.id) || null;
-          obj.renderer.render(vpMatrix, scene.getModelMatrix(obj), scene.isSelected(obj.id), isWireframe, lightParams, windParams, objWindSettings);
+          const terrainSettings = objectTerrainBlendSettings.get(obj.id);
+          
+          // Build terrain blend params if enabled for this object
+          let terrainBlendParams = null;
+          if (terrainSettings?.enabled && hasTerrainBlendObjects) {
+            terrainBlendParams = {
+              enabled: true,
+              blendDistance: terrainSettings.blendDistance,
+              depthTexture: depthPrePassRenderer.getDepthTexture(),
+              screenSize: [CANVAS_WIDTH, CANVAS_HEIGHT],
+              nearPlane: camera.near || 0.1,
+              farPlane: camera.far || 100,
+            };
+          }
+          
+          obj.renderer.render(vpMatrix, scene.getModelMatrix(obj), scene.isSelected(obj.id), isWireframe, lightParams, windParams, objWindSettings, terrainBlendParams);
         }
       }
       
@@ -1240,6 +1342,7 @@ export function createSceneBuilderDemo(container, options = {}) {
     if (transformGizmo) { transformGizmo.destroy(); transformGizmo = null; }
     if (skyRenderer) { skyRenderer.destroy(); skyRenderer = null; }
     if (shadowRenderer) { shadowRenderer.destroy(); shadowRenderer = null; }
+    if (depthPrePassRenderer) { depthPrePassRenderer.destroy(); depthPrePassRenderer = null; }
     if (shaderDebugPanel) { shaderDebugPanel.destroy(); shaderDebugPanel = null; }
     if (lightingManager.hdrLight.texture) {
       gl.deleteTexture(lightingManager.hdrLight.texture);
