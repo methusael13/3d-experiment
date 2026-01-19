@@ -220,6 +220,8 @@ export function createViewport(canvasElement, options = {}) {
   }
   
   function getLightParams() {
+    const cameraPos = cameraController.getCamera().position;
+    
     if (lightingState.mode === 'hdr') {
       return {
         mode: 'hdr',
@@ -229,6 +231,7 @@ export function createViewport(canvasElement, options = {}) {
         sunDir: getSunDirection(),
         ambient: lightingState.ambient,
         lightColor: lightingState.lightColor,
+        cameraPos,
       };
     }
     
@@ -241,6 +244,7 @@ export function createViewport(canvasElement, options = {}) {
       lightSpaceMatrix: shadowRenderer ? shadowRenderer.getLightSpaceMatrix() : null,
       shadowMap: shadowRenderer ? shadowRenderer.getTexture() : null,
       shadowDebug: lightingState.shadowDebug,
+      cameraPos,
     };
   }
   

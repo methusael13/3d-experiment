@@ -1,6 +1,6 @@
-import { mat4 } from 'gl-matrix';
+import { mat4, vec3 } from 'gl-matrix';
 import { generatePrimitiveGeometry, computeBounds } from './primitiveGeometry.js';
-import { lightingComplete } from './shaderChunks.js';
+import { shadowUniforms, shadowFunctions, hdrUniforms, lightingUniforms, pbrFunctions, iblFunctions, pbrLighting } from './shaderChunks.js';
 
 /**
  * Creates a renderer for primitive geometry (cube, plane, sphere)
@@ -9,8 +9,12 @@ import { lightingComplete } from './shaderChunks.js';
  * @param {object} config - { size, subdivision }
  */
 export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
-  // Default grey color
-  const baseColor = [0.75, 0.75, 0.75, 1.0];
+  // Default PBR material properties
+  let material = {
+    albedo: [0.75, 0.75, 0.75],
+    metallic: 0.0,
+    roughness: 0.5,
+  };
   
   // Track if this is a single-sided primitive (plane)
   const isSingleSided = primitiveType === 'plane';
@@ -19,7 +23,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
   let geometry = generatePrimitiveGeometry(primitiveType, config);
   let currentConfig = { ...config };
   
-  // Vertex shader - simplified version without wind for primitives
+  // Vertex shader with world position for PBR
   const vsSource = `#version 300 es
     precision highp float;
     
@@ -33,6 +37,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
     
     out vec2 vTexCoord;
     out vec3 vNormal;
+    out vec3 vWorldPos;
     out vec4 vLightSpacePos;
     
     void main() {
@@ -41,6 +46,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       
       vTexCoord = aTexCoord;
       vNormal = mat3(uModel) * aNormal;
+      vWorldPos = worldPos.xyz;
       vLightSpacePos = uLightSpaceMatrix * worldPos;
     }
   `;
@@ -48,32 +54,60 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
   const fsSource = `#version 300 es
     precision mediump float;
     
-    uniform vec4 uBaseColor;
+    // PBR material uniforms
+    uniform vec3 uAlbedo;
+    uniform float uMetallic;
+    uniform float uRoughness;
     uniform bool uSelected;
+    uniform vec3 uCameraPos;
     
-    // All lighting-related uniforms and functions
-    ${lightingComplete}
+    // Lighting uniforms
+    ${lightingUniforms}
+    ${hdrUniforms}
+    ${shadowUniforms}
+    
+    // Shadow functions (needed by PBR lighting)
+    ${shadowFunctions}
+    
+    // PBR functions
+    ${pbrFunctions}
+    
+    // IBL functions
+    ${iblFunctions}
+    
+    // PBR lighting calculation
+    ${pbrLighting}
     
     in vec2 vTexCoord;
     in vec3 vNormal;
+    in vec3 vWorldPos;
     in vec4 vLightSpacePos;
     
     out vec4 fragColor;
     
     void main() {
-      vec4 color = uBaseColor;
+      vec3 N = normalize(vNormal);
+      vec3 V = normalize(uCameraPos - vWorldPos);
       
-      vec3 normal = normalize(vNormal);
-      vec3 lightDir = normalize(uLightDir);
+      vec3 finalColor = calcPBRLighting(
+        N, V, vWorldPos,
+        uAlbedo, uMetallic, uRoughness,
+        uLightDir, uLightColor, uAmbientIntensity,
+        uLightMode, uHdrTexture, uHasHdr, uHdrExposure,
+        uShadowMap, uShadowEnabled, vLightSpacePos
+      );
       
-      vec3 lighting = calcLighting(normal, lightDir, vLightSpacePos);
-      vec3 finalColor = color.rgb * lighting;
+      // Tone mapping (Reinhard)
+      finalColor = finalColor / (finalColor + vec3(1.0));
+      
+      // Gamma correction
+      finalColor = pow(finalColor, vec3(1.0 / 2.2));
       
       if (uSelected) {
         finalColor = mix(finalColor, vec3(1.0, 0.4, 0.4), 0.3);
       }
       
-      fragColor = vec4(finalColor, color.a);
+      fragColor = vec4(finalColor, 1.0);
     }
   `;
   
@@ -102,7 +136,12 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
     aNormal: gl.getAttribLocation(program, 'aNormal'),
     uModelViewProjection: gl.getUniformLocation(program, 'uModelViewProjection'),
     uModel: gl.getUniformLocation(program, 'uModel'),
-    uBaseColor: gl.getUniformLocation(program, 'uBaseColor'),
+    // PBR material
+    uAlbedo: gl.getUniformLocation(program, 'uAlbedo'),
+    uMetallic: gl.getUniformLocation(program, 'uMetallic'),
+    uRoughness: gl.getUniformLocation(program, 'uRoughness'),
+    uCameraPos: gl.getUniformLocation(program, 'uCameraPos'),
+    // Lighting
     uLightDir: gl.getUniformLocation(program, 'uLightDir'),
     uSelected: gl.getUniformLocation(program, 'uSelected'),
     uAmbientIntensity: gl.getUniformLocation(program, 'uAmbientIntensity'),
@@ -341,6 +380,22 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
     },
     
     /**
+     * Set PBR material properties
+     */
+    setMaterial(mat) {
+      if (mat.albedo) material.albedo = [...mat.albedo];
+      if (mat.metallic !== undefined) material.metallic = mat.metallic;
+      if (mat.roughness !== undefined) material.roughness = mat.roughness;
+    },
+    
+    /**
+     * Get current PBR material properties
+     */
+    getMaterial() {
+      return { ...material };
+    },
+    
+    /**
      * Render the primitive
      */
     render(vpMatrix, modelMatrix, isSelected, wireframeMode = false, lightParams = null) {
@@ -359,6 +414,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
         ambient: 0.3,
         lightColor: [1, 1, 1],
         hdrTexture: null,
+        cameraPos: [0, 0, 5],
       };
       
       mat4.multiply(mvpMatrix, vpMatrix, modelMatrix);
@@ -366,7 +422,14 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       gl.useProgram(program);
       gl.uniformMatrix4fv(locations.uModelViewProjection, false, mvpMatrix);
       gl.uniformMatrix4fv(locations.uModel, false, modelMatrix);
-      gl.uniform4fv(locations.uBaseColor, baseColor);
+      
+      // PBR material uniforms
+      gl.uniform3fv(locations.uAlbedo, material.albedo);
+      gl.uniform1f(locations.uMetallic, material.metallic);
+      gl.uniform1f(locations.uRoughness, Math.max(0.04, material.roughness)); // Clamp to avoid div by zero
+      gl.uniform3fv(locations.uCameraPos, light.cameraPos || [0, 0, 5]);
+      
+      // Lighting uniforms
       gl.uniform3fv(locations.uLightDir, light.sunDir);
       gl.uniform1i(locations.uSelected, isSelected ? 1 : 0);
       gl.uniform1f(locations.uAmbientIntensity, light.ambient);
