@@ -727,11 +727,18 @@ export function createScene(gl, sceneGraph) {
       };
       
       if (obj.type === 'primitive') {
+        // Get material from renderer
+        const material = obj.renderer?.getMaterial?.() || { albedo: [0.75, 0.75, 0.75], metallic: 0, roughness: 0.5 };
         return {
           ...base,
           type: 'primitive',
           primitiveType: obj.primitiveType,
           primitiveConfig: { ...obj.primitiveConfig },
+          material: {
+            albedo: [...material.albedo],
+            metallic: material.metallic,
+            roughness: material.roughness,
+          },
         };
       } else {
         return {
@@ -773,6 +780,10 @@ export function createScene(gl, sceneGraph) {
       if (objData.type === 'primitive') {
         // Create primitive shape
         obj = addPrimitive(objData.primitiveType, objData.name, objData.primitiveConfig || {});
+        // Restore material if present
+        if (obj && objData.material) {
+          obj.renderer?.setMaterial?.(objData.material);
+        }
       } else {
         // Load GLB model
         obj = await addObject(objData.modelPath, objData.name);
