@@ -192,6 +192,14 @@ export function createHDRTexture(gl, hdrData) {
  * @returns {WebGLTexture}
  */
 export function createPrefilteredHDRTexture(gl, hdrData, onProgress = null) {
+  // Save current WebGL state to restore later
+  const savedViewport = gl.getParameter(gl.VIEWPORT);
+  const savedFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+  const savedVAO = gl.getParameter(gl.VERTEX_ARRAY_BINDING);
+  const savedProgram = gl.getParameter(gl.CURRENT_PROGRAM);
+  const savedActiveTexture = gl.getParameter(gl.ACTIVE_TEXTURE);
+  const savedTexture = gl.getParameter(gl.TEXTURE_BINDING_2D);
+  
   // Calculate number of mip levels
   const maxDim = Math.max(hdrData.width, hdrData.height);
   const numMips = Math.floor(Math.log2(maxDim)) + 1;
@@ -287,13 +295,20 @@ export function createPrefilteredHDRTexture(gl, hdrData, onProgress = null) {
     if (onProgress) onProgress(0.1 + 0.9 * (mip / (numMips - 1)));
   }
   
-  // Clean up
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  // Clean up resources
   gl.deleteFramebuffer(fbo);
   gl.deleteVertexArray(quadVAO);
   gl.deleteProgram(blurShader.program);
   
-  // Set texture parameters
+  // Restore original WebGL state
+  gl.bindFramebuffer(gl.FRAMEBUFFER, savedFramebuffer);
+  gl.bindVertexArray(savedVAO);
+  gl.useProgram(savedProgram);
+  gl.activeTexture(savedActiveTexture);
+  gl.bindTexture(gl.TEXTURE_2D, savedTexture);
+  gl.viewport(savedViewport[0], savedViewport[1], savedViewport[2], savedViewport[3]);
+  
+  // Set texture parameters (need to rebind the HDR texture)
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
