@@ -855,6 +855,7 @@ export const sceneBuilderStyles = `
 
 /**
  * Scene Builder HTML template
+ * Panel containers are populated dynamically by componentPanels modules
  */
 export const sceneBuilderTemplate = `
   <div class="scene-builder-container">
@@ -898,269 +899,33 @@ export const sceneBuilderTemplate = `
     </div>
     
     <div class="scene-builder-layout">
-    <div class="scene-builder-sidebar">
-      <div class="sidebar-section" id="objects-panel">
-        <h3>Scene Objects</h3>
-        <div class="section-content">
-          <ul id="object-list" class="object-list"></ul>
-          <div class="import-controls">
-            <input type="file" id="model-file" accept=".glb,.gltf" style="display: none;">
-            <button id="import-btn" class="primary-btn">Import Model</button>
-            <select id="preset-models">
-              <option value="">Add Preset...</option>
-              <option value="duck.glb">Duck</option>
-            </select>
+      <div class="scene-builder-sidebar">
+        <!-- Objects Panel - populated by objectsPanel.js -->
+        <div id="objects-panel-container"></div>
+        
+        <!-- Object Panel - populated by objectPanel.js -->
+        <div id="object-panel-container"></div>
+        
+        <input type="file" id="scene-file" accept=".json" style="display: none;">
+      </div>
+      
+      <div class="scene-builder-viewport">
+        <div class="viewport-toolbar">
+          <div class="view-mode-toggle">
+            <button id="viewport-solid-btn" class="view-mode-btn active" title="Solid View">Solid</button>
+            <button id="viewport-wireframe-btn" class="view-mode-btn" title="Wireframe View">Wire</button>
           </div>
+        </div>
+        <canvas id="canvas"></canvas>
+        <div class="viewport-controls">
+          <span>Left-drag: Orbit | Right-drag: Pan | Scroll: Zoom | Double-click: Set Origin</span>
         </div>
       </div>
       
-      <div class="sidebar-section" id="object-panel" style="display: none;">
-        <h3>Object</h3>
-        <div class="section-content">
-          <div class="env-tabs">
-            <button class="env-tab active" data-tab="transform">Transform</button>
-            <button class="env-tab" data-tab="modifiers">Modifiers</button>
-          </div>
-          
-          <!-- Transform Tab Content -->
-          <div id="obj-transform-tab" class="env-tab-content active">
-            <div class="gizmo-mode-toggle">
-              <button id="gizmo-translate" class="gizmo-btn active" title="Translate (T)">T</button>
-              <button id="gizmo-rotate" class="gizmo-btn" title="Rotate (R)">R</button>
-              <button id="gizmo-scale" class="gizmo-btn" title="Scale (S)">S</button>
-            </div>
-            <div class="transform-group">
-              <label>Name</label>
-              <input type="text" id="object-name" class="name-input" placeholder="Object name">
-            </div>
-            <div class="transform-group">
-              <label>Position <button class="reset-btn" id="reset-position" title="Reset to origin">⟲</button></label>
-              <div class="vector-inputs">
-                <input type="number" id="pos-x" step="0.1" placeholder="X">
-                <input type="number" id="pos-y" step="0.1" placeholder="Y">
-                <input type="number" id="pos-z" step="0.1" placeholder="Z">
-              </div>
-            </div>
-            <div class="transform-group">
-              <label>Rotation (°) <button class="reset-btn" id="reset-rotation" title="Reset rotation">⟲</button></label>
-              <div class="vector-inputs">
-                <input type="number" id="rot-x" step="5" placeholder="X">
-                <input type="number" id="rot-y" step="5" placeholder="Y">
-                <input type="number" id="rot-z" step="5" placeholder="Z">
-              </div>
-            </div>
-            <div class="transform-group">
-              <label>Scale <button class="reset-btn" id="reset-scale" title="Reset to 1,1,1">⟲</button></label>
-              <div class="vector-inputs">
-                <input type="number" id="scale-x" step="0.1" placeholder="X" min="0.01">
-                <input type="number" id="scale-y" step="0.1" placeholder="Y" min="0.01">
-                <input type="number" id="scale-z" step="0.1" placeholder="Z" min="0.01">
-              </div>
-            </div>
-            <button id="delete-object" class="danger-btn">Delete Object</button>
-          </div>
-          
-          <!-- Modifiers Tab Content -->
-          <div id="obj-modifiers-tab" class="env-tab-content">
-            <div class="modifier-section" id="wind-modifier">
-              <label class="checkbox-label">
-                <input type="checkbox" id="object-wind-enabled">
-                <span>Wind Affects This Object</span>
-              </label>
-              <div class="modifier-settings" id="wind-modifier-settings">
-                <div class="transform-group compact-slider">
-                  <div class="slider-header">
-                    <label>Influence</label>
-                    <span id="object-wind-influence-value" class="slider-value">1.0</span>
-                  </div>
-                  <input type="range" id="object-wind-influence" min="0" max="2" step="0.1" value="1" class="slider-input">
-                </div>
-                <div class="transform-group compact-slider">
-                  <div class="slider-header">
-                    <label>Stiffness</label>
-                    <span id="object-wind-stiffness-value" class="slider-value">0.5</span>
-                  </div>
-                  <input type="range" id="object-wind-stiffness" min="0" max="1" step="0.1" value="0.5" class="slider-input">
-                </div>
-                <div class="transform-group compact-slider">
-                  <div class="slider-header">
-                    <label>Anchor Height</label>
-                    <span id="object-wind-anchor-value" class="slider-value">0.0</span>
-                  </div>
-                  <input type="range" id="object-wind-anchor" min="-2" max="5" step="0.1" value="0" class="slider-input">
-                </div>
-                <div class="transform-group">
-                  <label>Leaf Materials</label>
-                  <div id="leaf-material-list" class="material-list"></div>
-                </div>
-                <div class="transform-group">
-                  <label>Branch Materials</label>
-                  <div id="branch-material-list" class="material-list"></div>
-                </div>
-              </div>
-            </div>
-            <div class="modifier-divider"></div>
-            <div class="modifier-section" id="terrain-blend-modifier">
-              <label class="checkbox-label">
-                <input type="checkbox" id="object-terrain-blend-enabled">
-                <span>Terrain Blend</span>
-              </label>
-              <div class="modifier-settings" id="terrain-blend-settings">
-                <div class="transform-group compact-slider">
-                  <div class="slider-header">
-                    <label>Blend Distance</label>
-                    <span id="terrain-blend-distance-value" class="slider-value">0.5</span>
-                  </div>
-                  <input type="range" id="terrain-blend-distance" min="0.1" max="2" step="0.1" value="0.5" class="slider-input">
-                </div>
-                <p style="font-size: 10px; color: #666; margin-top: 4px;">Fades object edges at intersections with other geometry</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      
-      <input type="file" id="scene-file" accept=".json" style="display: none;">
-      <input type="file" id="hdr-file" accept=".hdr" style="display: none;">
-      
-    </div>
-    
-    <div class="scene-builder-viewport">
-      <div class="viewport-toolbar">
-        <div class="view-mode-toggle">
-          <button id="viewport-solid-btn" class="view-mode-btn active" title="Solid View">Solid</button>
-          <button id="viewport-wireframe-btn" class="view-mode-btn" title="Wireframe View">Wire</button>
-        </div>
-      </div>
-      <canvas id="canvas"></canvas>
-      <div class="viewport-controls">
-        <span>Left-drag: Orbit | Right-drag: Pan | Scroll: Zoom | Double-click: Set Origin</span>
+      <div class="scene-builder-sidebar-right">
+        <!-- Environment Panel - populated by environmentPanel.js -->
+        <div id="environment-panel-container"></div>
       </div>
     </div>
-    
-    <div class="scene-builder-sidebar-right">
-      <div class="sidebar-section" id="environment-panel">
-        <h3>Environment</h3>
-        <div class="section-content">
-          <div class="env-tabs">
-            <button class="env-tab active" data-tab="lighting">Lighting</button>
-            <button class="env-tab" data-tab="wind">Wind</button>
-          </div>
-          
-          <!-- Lighting Tab Content -->
-          <div id="env-lighting-tab" class="env-tab-content active">
-            <div class="light-mode-indicator">
-              <span id="current-light-mode">Sun Mode</span>
-            </div>
-            <div id="sun-controls">
-              <div class="transform-group compact-slider">
-                <div class="slider-header">
-                  <label>Azimuth</label>
-                  <span id="sun-azimuth-value" class="slider-value">45°</span>
-                </div>
-                <input type="range" id="sun-azimuth" min="0" max="360" value="45" class="slider-input">
-              </div>
-              <div class="transform-group compact-slider">
-                <div class="slider-header">
-                  <label>Elevation</label>
-                  <span id="sun-elevation-value" class="slider-value">45°</span>
-                </div>
-                <input type="range" id="sun-elevation" min="-90" max="90" value="45" class="slider-input">
-              </div>
-              <div class="shadow-controls">
-                <label class="checkbox-label">
-                  <input type="checkbox" id="shadow-enabled" checked>
-                  <span>Enable Shadows</span>
-                </label>
-                <div class="transform-group">
-                  <label>Shadow Quality</label>
-                  <div class="shadow-quality-btns">
-                    <button id="shadow-1024" class="quality-btn">1024</button>
-                    <button id="shadow-2048" class="quality-btn active">2048</button>
-                    <button id="shadow-4096" class="quality-btn">4096</button>
-                  </div>
-                </div>
-                <div class="transform-group">
-                  <label>Shadow Debug</label>
-                  <select id="shadow-debug" style="width: 100%; padding: 4px; background: #333; color: #f0f0f0; border: 1px solid #555; border-radius: 3px; font-size: 11px;">
-                    <option value="0">Off</option>
-                    <option value="1">Depth Map</option>
-                    <option value="2">UV Coords</option>
-                    <option value="3">Shadow Value</option>
-                  </select>
-                </div>
-                <label class="checkbox-label">
-                  <input type="checkbox" id="shadow-thumbnail">
-                  <span>Show Depth Thumbnail</span>
-                </label>
-              </div>
-            </div>
-            <div id="hdr-controls" style="display: none;">
-              <div class="transform-group compact-slider">
-                <div class="slider-header">
-                  <label>HDR Exposure</label>
-                  <span id="hdr-exposure-value" class="slider-value">1.0</span>
-                </div>
-                <input type="range" id="hdr-exposure" min="0.1" max="5" step="0.1" value="1" class="slider-input">
-              </div>
-              <div id="hdr-filename" class="hdr-filename">No HDR loaded</div>
-            </div>
-          </div>
-          
-          <!-- Wind Tab Content -->
-          <div id="env-wind-tab" class="env-tab-content">
-            <label class="checkbox-label">
-              <input type="checkbox" id="wind-enabled">
-              <span>Enable Wind <span id="wind-enabled-indicator" class="wind-enabled-indicator"></span></span>
-            </label>
-            <div class="transform-group">
-              <div class="wind-direction-indicator">
-                <div id="wind-direction-arrow" class="wind-direction-arrow"></div>
-              </div>
-            </div>
-            <div class="transform-group compact-slider">
-              <div class="slider-header">
-                <label>Direction</label>
-                <span id="wind-direction-value" class="slider-value">45°</span>
-              </div>
-              <input type="range" id="wind-direction" min="0" max="360" value="45" class="slider-input">
-            </div>
-            <div class="transform-group compact-slider">
-              <div class="slider-header">
-                <label>Strength</label>
-                <span id="wind-strength-value" class="slider-value">0.5</span>
-              </div>
-              <input type="range" id="wind-strength" min="0" max="2" step="0.1" value="0.5" class="slider-input">
-            </div>
-            <div class="transform-group compact-slider">
-              <div class="slider-header">
-                <label>Turbulence</label>
-                <span id="wind-turbulence-value" class="slider-value">0.5</span>
-              </div>
-              <input type="range" id="wind-turbulence" min="0" max="1" step="0.1" value="0.5" class="slider-input">
-            </div>
-            <div class="transform-group compact-slider">
-              <div class="slider-header">
-                <label>Gust Strength</label>
-                <span id="wind-gust-strength-value" class="slider-value">0.3</span>
-              </div>
-              <input type="range" id="wind-gust-strength" min="0" max="1" step="0.1" value="0.3" class="slider-input">
-            </div>
-            <div class="transform-group compact-slider">
-              <div class="slider-header">
-                <label>Debug</label>
-              </div>
-              <select id="wind-debug" style="width: 100%; padding: 4px; background: #333; color: #f0f0f0; border: 1px solid #555; border-radius: 3px; font-size: 11px;">
-                <option value="0">Off</option>
-                <option value="1">Wind Type</option>
-                <option value="2">Height Factor</option>
-                <option value="3">Displacement</option>
-              </select>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
   </div>
 `;
