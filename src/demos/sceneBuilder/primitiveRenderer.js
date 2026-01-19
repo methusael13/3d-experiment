@@ -1,6 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { generatePrimitiveGeometry, computeBounds } from './primitiveGeometry.js';
-import { hdrUniforms, hdrFunctions, shadowUniforms, shadowFunctions, lightingUniforms, lightingFunction } from './shaderChunks.js';
+import { lightingComplete } from './shaderChunks.js';
 
 /**
  * Creates a renderer for primitive geometry (cube, plane, sphere)
@@ -51,19 +51,8 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
     uniform vec4 uBaseColor;
     uniform bool uSelected;
     
-    // Include shared shader chunks
-    ${lightingUniforms}
-    ${hdrUniforms}
-    ${shadowUniforms}
-    
-    // HDR sampling functions
-    ${hdrFunctions}
-    
-    // Shadow calculation functions
-    ${shadowFunctions}
-    
-    // Lighting calculation function
-    ${lightingFunction}
+    // All lighting-related uniforms and functions
+    ${lightingComplete}
     
     in vec2 vTexCoord;
     in vec3 vNormal;

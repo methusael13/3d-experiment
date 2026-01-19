@@ -1,6 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { registerShader, unregisterShader } from './shaderManager.js';
-import { simplexNoise, windUniforms, windDisplacement, terrainBlendUniforms, terrainBlendFunctions, hdrUniforms, hdrFunctions, shadowUniforms, shadowFunctions, lightingUniforms, lightingFunction } from './shaderChunks.js';
+import { windComplete, lightingComplete, terrainBlendComplete, shadowFunctions } from './shaderChunks.js';
 
 // Generate unique ID for each renderer instance
 let rendererIdCounter = 0;
@@ -24,10 +24,8 @@ export function createObjectRenderer(gl, glbModel) {
     uniform mat4 uModel;
     uniform mat4 uLightSpaceMatrix;
     
-    // Include shared shader chunks
-    ${simplexNoise}
-    ${windUniforms}
-    ${windDisplacement}
+    // Include wind system (noise + uniforms + displacement)
+    ${windComplete}
     
     out vec2 vTexCoord;
     out vec3 vNormal;
@@ -78,27 +76,15 @@ export function createObjectRenderer(gl, glbModel) {
     uniform bool uHasTexture;
     uniform bool uSelected;
     
-    // Include shared shader chunks
-    ${lightingUniforms}
-    ${hdrUniforms}
-    ${shadowUniforms}
+    // All lighting-related uniforms and functions
+    ${lightingComplete}
     
     // Debug uniforms
     uniform int uShadowDebug; // 0=off, 1=depth, 2=lightspace UV, 3=shadow value
     uniform int uWindDebug; // 0=off, 1=wind type, 2=height factor, 3=displacement
     
-    // HDR sampling functions
-    ${hdrFunctions}
-    
-    // Shadow calculation functions
-    ${shadowFunctions}
-    
-    // Lighting calculation function
-    ${lightingFunction}
-    
-    // Terrain blend uniforms and functions
-    ${terrainBlendUniforms}
-    ${terrainBlendFunctions}
+    // Terrain blend (uniforms + functions)
+    ${terrainBlendComplete}
     
     in vec2 vTexCoord;
     in vec3 vNormal;

@@ -419,3 +419,56 @@ vec4 applyTerrainBlend(vec4 color, float fragmentDepth) {
   return color;
 }
 `;
+
+// ============================================
+// COMPOSITE CHUNKS
+// Pre-bundled combinations for common use cases
+// These ensure all dependencies are included in correct order
+// ============================================
+
+/**
+ * Complete lighting chunk for fragment shader
+ * Includes all uniforms and functions needed for calcLighting()
+ * 
+ * Usage: ${lightingComplete}
+ * Then call: vec3 lighting = calcLighting(normal, lightDir, lightSpacePos);
+ */
+export const lightingComplete = `
+// === Lighting Uniforms ===
+${lightingUniforms}
+${hdrUniforms}
+${shadowUniforms}
+
+// === Lighting Functions ===
+${hdrFunctions}
+${shadowFunctions}
+${lightingFunction}
+`;
+
+/**
+ * Complete wind chunk for vertex shader
+ * Includes noise, uniforms, and displacement calculation
+ * 
+ * Usage: ${windComplete}
+ * Then call: vec3 offset = calcWindDisplacement(worldPos, heightFactor);
+ */
+export const windComplete = `
+// === Wind System ===
+${simplexNoise}
+${windUniforms}
+${windDisplacement}
+${windHeightFactor}
+`;
+
+/**
+ * Complete terrain blend chunk for fragment shader
+ * Includes uniforms and blend functions
+ * 
+ * Usage: ${terrainBlendComplete}
+ * Then call: vec4 finalColor = applyTerrainBlend(color, gl_FragCoord.z);
+ */
+export const terrainBlendComplete = `
+// === Terrain Blend ===
+${terrainBlendUniforms}
+${terrainBlendFunctions}
+`;
