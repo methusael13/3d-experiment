@@ -490,6 +490,20 @@ export function createShaderDebugPanel(container) {
     minimizeBtn.textContent = panel.classList.contains('minimized') ? '+' : '−';
   });
   
+  // Prevent keyboard events from propagating to viewport
+  // This allows typing in the editor without triggering viewport shortcuts
+  panel.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+  });
+  
+  panel.addEventListener('keyup', (e) => {
+    e.stopPropagation();
+  });
+  
+  panel.addEventListener('keypress', (e) => {
+    e.stopPropagation();
+  });
+  
   // Initialize editor on first show
   let editorInitialized = false;
   

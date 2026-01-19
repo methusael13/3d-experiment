@@ -56,7 +56,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
   `;
   
   const fsSource = `#version 300 es
-    precision mediump float;
+    precision highp float;
     
     // PBR material uniforms
     uniform vec3 uAlbedo;
