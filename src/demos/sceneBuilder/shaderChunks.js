@@ -336,6 +336,44 @@ uniform int uLightMode; // 0 = sun, 1 = HDR
 `;
 
 /**
+ * Lighting calculation function
+ * Combines sun/HDR modes and shadow calculation
+ * Requires: hdrFunctions, shadowFunctions, lightingUniforms, hdrUniforms, shadowUniforms
+ */
+export const lightingFunction = `
+// Calculate final lighting based on mode (sun or HDR)
+vec3 calcLighting(vec3 normal, vec3 lightDir, vec4 lightSpacePos) {
+  vec3 lighting;
+  
+  if (uLightMode == 1 && uHasHdr == 1) {
+    // HDR mode: sample environment for diffuse irradiance
+    vec3 diffuseIBL = sampleHDRDiffuse(normal, uHdrExposure);
+    
+    // Add subtle directional highlight from up direction
+    float upFactor = max(dot(normal, vec3(0.0, 1.0, 0.0)), 0.0);
+    vec3 skyContrib = sampleHDR(vec3(0.0, 1.0, 0.0), uHdrExposure) * upFactor * 0.3;
+    
+    lighting = diffuseIBL + skyContrib;
+  } else {
+    // Sun mode
+    vec3 ambient = vec3(uAmbientIntensity);
+    float NdotL = max(dot(normal, lightDir), 0.0);
+    vec3 diffuse = uLightColor * NdotL;
+    
+    // Apply shadow
+    float shadow = 1.0;
+    if (uShadowEnabled == 1) {
+      shadow = calcShadow(lightSpacePos, normal, lightDir);
+    }
+    
+    lighting = ambient + diffuse * shadow;
+  }
+  
+  return lighting;
+}
+`;
+
+/**
  * Terrain blend functions for fragment shader
  * Samples scene depth and computes blend factor at intersections
  */

@@ -1,6 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { registerShader, unregisterShader } from './shaderManager.js';
-import { simplexNoise, windUniforms, windDisplacement, terrainBlendUniforms, terrainBlendFunctions, hdrUniforms, hdrFunctions, shadowUniforms, shadowFunctions, lightingUniforms } from './shaderChunks.js';
+import { simplexNoise, windUniforms, windDisplacement, terrainBlendUniforms, terrainBlendFunctions, hdrUniforms, hdrFunctions, shadowUniforms, shadowFunctions, lightingUniforms, lightingFunction } from './shaderChunks.js';
 
 // Generate unique ID for each renderer instance
 let rendererIdCounter = 0;
@@ -93,6 +93,9 @@ export function createObjectRenderer(gl, glbModel) {
     // Shadow calculation functions
     ${shadowFunctions}
     
+    // Lighting calculation function
+    ${lightingFunction}
+    
     // Terrain blend uniforms and functions
     ${terrainBlendUniforms}
     ${terrainBlendFunctions}
@@ -115,32 +118,7 @@ export function createObjectRenderer(gl, glbModel) {
       vec3 normal = normalize(vNormal);
       vec3 lightDir = normalize(uLightDir);
       
-      vec3 lighting;
-      
-      if (uLightMode == 1 && uHasHdr == 1) {
-        // HDR mode: sample environment for diffuse irradiance
-        vec3 diffuseIBL = sampleHDRDiffuse(normal, uHdrExposure);
-        
-        // Add subtle directional highlight from up direction
-        float upFactor = max(dot(normal, vec3(0.0, 1.0, 0.0)), 0.0);
-        vec3 skyContrib = sampleHDR(vec3(0.0, 1.0, 0.0), uHdrExposure) * upFactor * 0.3;
-        
-        lighting = diffuseIBL + skyContrib;
-      } else {
-        // Sun mode
-        vec3 ambient = vec3(uAmbientIntensity);
-        float NdotL = max(dot(normal, lightDir), 0.0);
-        vec3 diffuse = uLightColor * NdotL;
-        
-        // Apply shadow with slope-scaled bias
-        float shadow = 1.0;
-        if (uShadowEnabled == 1) {
-          shadow = calcShadow(vLightSpacePos, normal, lightDir);
-        }
-        
-        lighting = ambient + diffuse * shadow;
-      }
-      
+      vec3 lighting = calcLighting(normal, lightDir, vLightSpacePos);
       vec3 finalColor = color.rgb * lighting;
       
       if (uSelected) {

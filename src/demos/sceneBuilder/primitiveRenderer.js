@@ -1,6 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { generatePrimitiveGeometry, computeBounds } from './primitiveGeometry.js';
-import { hdrUniforms, hdrFunctions, shadowUniforms, shadowFunctions, lightingUniforms } from './shaderChunks.js';
+import { hdrUniforms, hdrFunctions, shadowUniforms, shadowFunctions, lightingUniforms, lightingFunction } from './shaderChunks.js';
 
 /**
  * Creates a renderer for primitive geometry (cube, plane, sphere)
@@ -62,6 +62,9 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
     // Shadow calculation functions
     ${shadowFunctions}
     
+    // Lighting calculation function
+    ${lightingFunction}
+    
     in vec2 vTexCoord;
     in vec3 vNormal;
     in vec4 vLightSpacePos;
@@ -74,26 +77,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       vec3 normal = normalize(vNormal);
       vec3 lightDir = normalize(uLightDir);
       
-      vec3 lighting;
-      
-      if (uLightMode == 1 && uHasHdr == 1) {
-        vec3 diffuseIBL = sampleHDRDiffuse(normal, uHdrExposure);
-        float upFactor = max(dot(normal, vec3(0.0, 1.0, 0.0)), 0.0);
-        vec3 skyContrib = sampleHDR(vec3(0.0, 1.0, 0.0), uHdrExposure) * upFactor * 0.3;
-        lighting = diffuseIBL + skyContrib;
-      } else {
-        vec3 ambient = vec3(uAmbientIntensity);
-        float NdotL = max(dot(normal, lightDir), 0.0);
-        vec3 diffuse = uLightColor * NdotL;
-        
-        float shadow = 1.0;
-        if (uShadowEnabled == 1) {
-          shadow = calcShadow(vLightSpacePos, normal, lightDir);
-        }
-        
-        lighting = ambient + diffuse * shadow;
-      }
-      
+      vec3 lighting = calcLighting(normal, lightDir, vLightSpacePos);
       vec3 finalColor = color.rgb * lighting;
       
       if (uSelected) {
