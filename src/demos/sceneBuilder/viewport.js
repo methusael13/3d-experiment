@@ -66,6 +66,7 @@ export function createViewport(canvasElement, options = {}) {
     shadowDebug: 0,
     hdrTexture: null,
     hdrExposure: 1.0,
+    hdrMaxMipLevel: 6.0,      // Mip levels in HDR texture for IBL roughness mapping
     lightColor: [1, 1, 1],    // Dynamic sun color (warm for sunset)
     ambient: 0.3,             // Dynamic ambient based on elevation
   };
@@ -227,6 +228,7 @@ export function createViewport(canvasElement, options = {}) {
         mode: 'hdr',
         hdrTexture: lightingState.hdrTexture,
         hdrExposure: lightingState.hdrExposure,
+        hdrMaxMipLevel: lightingState.hdrMaxMipLevel,
         // Still need these for object renderer fallbacks
         sunDir: getSunDirection(),
         ambient: lightingState.ambient,
@@ -501,11 +503,12 @@ export function createViewport(canvasElement, options = {}) {
     shadowRenderer?.setResolution(res);
   }
   
-  function setHDRTexture(texture) {
+  function setHDRTexture(texture, maxMipLevel = 6) {
     if (lightingState.hdrTexture) {
       gl.deleteTexture(lightingState.hdrTexture);
     }
     lightingState.hdrTexture = texture;
+    lightingState.hdrMaxMipLevel = maxMipLevel;
   }
   
   // Uniform scale - Controller initiates this

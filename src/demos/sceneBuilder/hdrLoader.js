@@ -189,7 +189,7 @@ export function createHDRTexture(gl, hdrData) {
  * @param {WebGL2RenderingContext} gl 
  * @param {{width: number, height: number, data: Float32Array}} hdrData 
  * @param {function} onProgress - Progress callback (0-1)
- * @returns {WebGLTexture}
+ * @returns {{texture: WebGLTexture, mipLevels: number}}
  */
 export function createPrefilteredHDRTexture(gl, hdrData, onProgress = null) {
   // Save current WebGL state to restore later
@@ -317,7 +317,7 @@ export function createPrefilteredHDRTexture(gl, hdrData, onProgress = null) {
   
   if (onProgress) onProgress(1);
   
-  return texture;
+  return { texture, mipLevels: numMips };
 }
 
 /**

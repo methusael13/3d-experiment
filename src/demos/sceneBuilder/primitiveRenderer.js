@@ -158,6 +158,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       uHdrTexture: gl.getUniformLocation(program, 'uHdrTexture'),
       uHasHdr: gl.getUniformLocation(program, 'uHasHdr'),
       uHdrExposure: gl.getUniformLocation(program, 'uHdrExposure'),
+      uHdrMaxMipLevel: gl.getUniformLocation(program, 'uHdrMaxMipLevel'),
       uLightSpaceMatrix: gl.getUniformLocation(program, 'uLightSpaceMatrix'),
       uShadowMap: gl.getUniformLocation(program, 'uShadowMap'),
       uShadowEnabled: gl.getUniformLocation(program, 'uShadowEnabled'),
@@ -524,6 +525,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       gl.uniform1i(locations.uLightMode, light.mode === 'hdr' ? 1 : 0);
       gl.uniform1i(locations.uHasHdr, light.hdrTexture ? 1 : 0);
       gl.uniform1f(locations.uHdrExposure, light.hdrExposure || 1.0);
+      gl.uniform1f(locations.uHdrMaxMipLevel, light.hdrMaxMipLevel || 6.0);
       
       gl.uniform1i(locations.uShadowEnabled, light.shadowEnabled ? 1 : 0);
       if (light.lightSpaceMatrix) {

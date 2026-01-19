@@ -226,6 +226,7 @@ export const hdrUniforms = `
 uniform sampler2D uHdrTexture;
 uniform int uHasHdr;
 uniform float uHdrExposure;
+uniform float uHdrMaxMipLevel; // Actual mip level count for IBL roughness mapping
 `;
 
 /**
@@ -525,10 +526,8 @@ vec3 cookTorranceBRDF(vec3 N, vec3 V, vec3 L, vec3 albedo, float metallic, float
 export const iblFunctions = `
 // Sample pre-filtered environment for specular IBL
 // prefilteredMap should have mip levels for roughness
-vec3 samplePrefilteredEnv(vec3 R, float roughness, sampler2D envMap) {
+vec3 samplePrefilteredEnv(vec3 R, float roughness, sampler2D envMap, float maxMipLevel) {
   // Convert roughness to mip level (0 = sharp, max = blurry)
-  // Assumes 6 mip levels (128, 64, 32, 16, 8, 4)
-  float maxMipLevel = 5.0;
   float mipLevel = roughness * maxMipLevel;
   
   // Equirectangular projection
@@ -600,7 +599,9 @@ vec3 calcPBRLighting(
     vec3 R = reflect(-V, N);
     
     // Specular IBL (pre-filtered environment)
-    vec3 prefilteredColor = samplePrefilteredEnv(R, roughness, hdrTexture) * hdrExposure;
+    // Use uHdrMaxMipLevel for proper roughness-to-mip mapping
+    float maxMip = max(uHdrMaxMipLevel - 1.0, 1.0);
+    vec3 prefilteredColor = samplePrefilteredEnv(R, roughness, hdrTexture, maxMip) * hdrExposure;
     vec3 F = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
     
     // Approximate specular IBL (simplified split-sum)

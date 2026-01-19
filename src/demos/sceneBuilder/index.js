@@ -618,9 +618,9 @@ export function createSceneBuilderDemo(container, options = {}) {
       },
       setShowShadowThumbnail: (show) => viewport.setShowShadowThumbnail(show),
       setLightMode,
-      setHDRTexture: (texture) => {
+      setHDRTexture: (texture, mipLevels = 6) => {
         lightingManager.hdrLight.texture = texture;
-        viewport.setHDRTexture(texture);
+        viewport.setHDRTexture(texture, mipLevels);
       },
       onWindChanged: () => {
         viewport.setWindParams(windManager.getShaderUniforms());

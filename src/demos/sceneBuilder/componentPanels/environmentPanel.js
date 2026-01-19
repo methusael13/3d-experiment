@@ -402,11 +402,13 @@ export function createEnvironmentPanel(panelElement, context) {
           hdrProgressFill.style.width = '10%';
           
           // Use prefiltered texture with mip levels for roughness-based IBL
-          const texture = createPrefilteredHDRTexture(gl, hdrData, (progress) => {
+          const result = createPrefilteredHDRTexture(gl, hdrData, (progress) => {
             const percent = Math.round(progress * 100);
             hdrProgressFill.style.width = `${percent}%`;
             hdrProgressText.textContent = progress < 1 ? `Pre-filtering... ${percent}%` : 'Complete!';
           });
+          
+          const { texture, mipLevels } = result;
           
           lightingManager.hdrLight.setTexture(texture, file.name);
           hdrFilename.textContent = file.name;
@@ -416,8 +418,8 @@ export function createEnvironmentPanel(panelElement, context) {
             hdrProgress.style.display = 'none';
           }, 500);
           
-          // Notify viewport about the new texture
-          setHDRTexture(texture);
+          // Notify viewport about the new texture with mip level count
+          setHDRTexture(texture, mipLevels);
           setLightMode('hdr');
           updateLightModeDisplay('hdr');
         } catch (err) {
