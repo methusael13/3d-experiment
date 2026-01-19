@@ -1,6 +1,10 @@
 import { mat4, vec3 } from 'gl-matrix';
 import { generatePrimitiveGeometry, computeBounds } from './primitiveGeometry.js';
 import { shadowUniforms, shadowFunctions, hdrUniforms, lightingUniforms, pbrFunctions, iblFunctions, pbrLighting } from './shaderChunks.js';
+import { registerShader, unregisterShader } from './shaderManager.js';
+
+// Counter for unique shader names
+let primitiveShaderCounter = 0;
 
 /**
  * Creates a renderer for primitive geometry (cube, plane, sphere)
@@ -125,35 +129,54 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
   const vs = compileShader(gl.VERTEX_SHADER, vsSource);
   const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
   
-  const program = gl.createProgram();
+  let program = gl.createProgram();
   gl.attachShader(program, vs);
   gl.attachShader(program, fs);
   gl.linkProgram(program);
   
-  const locations = {
-    aPosition: gl.getAttribLocation(program, 'aPosition'),
-    aTexCoord: gl.getAttribLocation(program, 'aTexCoord'),
-    aNormal: gl.getAttribLocation(program, 'aNormal'),
-    uModelViewProjection: gl.getUniformLocation(program, 'uModelViewProjection'),
-    uModel: gl.getUniformLocation(program, 'uModel'),
-    // PBR material
-    uAlbedo: gl.getUniformLocation(program, 'uAlbedo'),
-    uMetallic: gl.getUniformLocation(program, 'uMetallic'),
-    uRoughness: gl.getUniformLocation(program, 'uRoughness'),
-    uCameraPos: gl.getUniformLocation(program, 'uCameraPos'),
-    // Lighting
-    uLightDir: gl.getUniformLocation(program, 'uLightDir'),
-    uSelected: gl.getUniformLocation(program, 'uSelected'),
-    uAmbientIntensity: gl.getUniformLocation(program, 'uAmbientIntensity'),
-    uLightColor: gl.getUniformLocation(program, 'uLightColor'),
-    uLightMode: gl.getUniformLocation(program, 'uLightMode'),
-    uHdrTexture: gl.getUniformLocation(program, 'uHdrTexture'),
-    uHasHdr: gl.getUniformLocation(program, 'uHasHdr'),
-    uHdrExposure: gl.getUniformLocation(program, 'uHdrExposure'),
-    uLightSpaceMatrix: gl.getUniformLocation(program, 'uLightSpaceMatrix'),
-    uShadowMap: gl.getUniformLocation(program, 'uShadowMap'),
-    uShadowEnabled: gl.getUniformLocation(program, 'uShadowEnabled'),
-  };
+  // Register with shader manager for live editing
+  const shaderName = `Primitive ${primitiveType} #${primitiveShaderCounter++}`;
+  
+  function updateLocations() {
+    return {
+      aPosition: gl.getAttribLocation(program, 'aPosition'),
+      aTexCoord: gl.getAttribLocation(program, 'aTexCoord'),
+      aNormal: gl.getAttribLocation(program, 'aNormal'),
+      uModelViewProjection: gl.getUniformLocation(program, 'uModelViewProjection'),
+      uModel: gl.getUniformLocation(program, 'uModel'),
+      // PBR material
+      uAlbedo: gl.getUniformLocation(program, 'uAlbedo'),
+      uMetallic: gl.getUniformLocation(program, 'uMetallic'),
+      uRoughness: gl.getUniformLocation(program, 'uRoughness'),
+      uCameraPos: gl.getUniformLocation(program, 'uCameraPos'),
+      // Lighting
+      uLightDir: gl.getUniformLocation(program, 'uLightDir'),
+      uSelected: gl.getUniformLocation(program, 'uSelected'),
+      uAmbientIntensity: gl.getUniformLocation(program, 'uAmbientIntensity'),
+      uLightColor: gl.getUniformLocation(program, 'uLightColor'),
+      uLightMode: gl.getUniformLocation(program, 'uLightMode'),
+      uHdrTexture: gl.getUniformLocation(program, 'uHdrTexture'),
+      uHasHdr: gl.getUniformLocation(program, 'uHasHdr'),
+      uHdrExposure: gl.getUniformLocation(program, 'uHdrExposure'),
+      uLightSpaceMatrix: gl.getUniformLocation(program, 'uLightSpaceMatrix'),
+      uShadowMap: gl.getUniformLocation(program, 'uShadowMap'),
+      uShadowEnabled: gl.getUniformLocation(program, 'uShadowEnabled'),
+    };
+  }
+  
+  let locations = updateLocations();
+  
+  // Register shader for live editing
+  registerShader(shaderName, {
+    gl,
+    program,
+    vsSource,
+    fsSource,
+    onRecompile: (newProgram) => {
+      program = newProgram;
+      locations = updateLocations();
+    },
+  });
   
   // Create buffers
   let posBuffer = gl.createBuffer();
@@ -473,6 +496,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
     
     destroy() {
       destroyed = true;
+      unregisterShader(shaderName);
       gl.deleteProgram(program);
       gl.deleteProgram(outlineProgram);
       gl.deleteProgram(wireProgram);
