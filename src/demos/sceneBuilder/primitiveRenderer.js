@@ -107,9 +107,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       // Gamma correction
       finalColor = pow(finalColor, vec3(1.0 / 2.2));
       
-      if (uSelected) {
-        finalColor = mix(finalColor, vec3(1.0, 0.4, 0.4), 0.3);
-      }
+      // Selection highlighting is done via outline only (no fill tint)
       
       fragColor = vec4(finalColor, 1.0);
     }

@@ -141,9 +141,7 @@ export function createObjectRenderer(gl, glbModel) {
       // Gamma correction
       finalColor = pow(finalColor, vec3(1.0 / 2.2));
       
-      if (uSelected) {
-        finalColor = mix(finalColor, vec3(1.0, 0.4, 0.4), 0.3);
-      }
+      // Selection highlighting is done via outline only (no fill tint)
       
       // Debug visualization
       if (uShadowDebug == 1) {
