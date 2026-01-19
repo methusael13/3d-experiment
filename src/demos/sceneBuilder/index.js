@@ -170,6 +170,12 @@ export function createSceneBuilderDemo(container, options = {}) {
     canvas.addEventListener('mousemove', (e) => {
       const rect = canvas.getBoundingClientRect();
       lastKnownMousePos = [e.clientX - rect.left, e.clientY - rect.top];
+      
+      // Update uniform scale if active (this handles non-drag mouse movement)
+      if (uniformScaleActive) {
+        uniformScaleMousePos = [...lastKnownMousePos];
+        updateUniformScale(lastKnownMousePos[0], lastKnownMousePos[1]);
+      }
     });
   }
   
