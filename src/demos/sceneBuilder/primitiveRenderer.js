@@ -278,6 +278,46 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
     uColor: gl.getUniformLocation(wireProgram, 'uColor'),
   };
   
+  // Normal visualization shader (uses same wire shader)
+  let normalLineBuffer = gl.createBuffer();
+  let normalLineCount = 0;
+  
+  function generateNormalLineVertices(positions, normals, length = 0.1) {
+    // Each vertex gets a line: from position to position + normal * length
+    const vertexCount = positions.length / 3;
+    const lineVertices = new Float32Array(vertexCount * 6); // 2 points per vertex * 3 components
+    
+    for (let i = 0; i < vertexCount; i++) {
+      const px = positions[i * 3];
+      const py = positions[i * 3 + 1];
+      const pz = positions[i * 3 + 2];
+      const nx = normals[i * 3];
+      const ny = normals[i * 3 + 1];
+      const nz = normals[i * 3 + 2];
+      
+      // Start point (vertex position)
+      lineVertices[i * 6] = px;
+      lineVertices[i * 6 + 1] = py;
+      lineVertices[i * 6 + 2] = pz;
+      // End point (position + normal * length)
+      lineVertices[i * 6 + 3] = px + nx * length;
+      lineVertices[i * 6 + 4] = py + ny * length;
+      lineVertices[i * 6 + 5] = pz + nz * length;
+    }
+    
+    return lineVertices;
+  }
+  
+  function uploadNormalLines(positions, normals, length = 0.1) {
+    const lineVertices = generateNormalLineVertices(positions, normals, length);
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalLineBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, lineVertices, gl.STATIC_DRAW);
+    normalLineCount = lineVertices.length / 3; // Total vertices (2 per normal line)
+  }
+  
+  // Initial upload
+  uploadNormalLines(geometry.positions, geometry.normals);
+  
   // Generate wireframe indices
   let wireIndexBuffer = gl.createBuffer();
   let wireIndexCount = 0;
@@ -362,6 +402,20 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
     gl.drawElements(gl.LINES, wireIndexCount, gl.UNSIGNED_SHORT, 0);
   }
   
+  function renderNormals(vpMatrix, modelMatrix) {
+    mat4.multiply(mvpMatrix, vpMatrix, modelMatrix);
+    
+    gl.useProgram(wireProgram);
+    gl.uniformMatrix4fv(wireLocations.uModelViewProjection, false, mvpMatrix);
+    gl.uniform3fv(wireLocations.uColor, [0.2, 0.8, 1.0]); // Cyan for normals
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalLineBuffer);
+    gl.enableVertexAttribArray(wireLocations.aPosition);
+    gl.vertexAttribPointer(wireLocations.aPosition, 3, gl.FLOAT, false, 0, 0);
+    
+    gl.drawArrays(gl.LINES, 0, normalLineCount);
+  }
+  
   // Track destroyed state
   let destroyed = false;
   
@@ -389,6 +443,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       geometry = generatePrimitiveGeometry(primitiveType, currentConfig);
       uploadGeometry(geometry);
       uploadWireframe(geometry.indices);
+      uploadNormalLines(geometry.positions, geometry.normals);
       
       // Update gpuMeshes reference for shadow renderer
       this.gpuMeshes[0].indexCount = indexCount;
@@ -416,6 +471,15 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
      */
     getMaterial() {
       return { ...material };
+    },
+    
+    /**
+     * Render vertex normal lines for debugging
+     * @param {mat4} vpMatrix - View-projection matrix
+     * @param {mat4} modelMatrix - Model matrix
+     */
+    renderNormals(vpMatrix, modelMatrix) {
+      renderNormals(vpMatrix, modelMatrix);
     },
     
     /**
@@ -511,6 +575,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       gl.deleteBuffer(normalBuffer);
       gl.deleteBuffer(indexBuffer);
       gl.deleteBuffer(wireIndexBuffer);
+      gl.deleteBuffer(normalLineBuffer);
       // Clear gpuMeshes to prevent stale references
       this.gpuMeshes.length = 0;
     },

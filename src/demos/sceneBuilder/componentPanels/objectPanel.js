@@ -79,6 +79,14 @@ const objectPanelTemplate = `
         </div>
         <input type="range" id="primitive-subdivision" min="4" max="64" step="4" value="16" class="slider-input">
       </div>
+      <div class="modifier-divider"></div>
+      <div class="transform-group">
+        <label style="font-size: 11px; color: #888;">Debug</label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="primitive-show-normals">
+          <span>Show Normals</span>
+        </label>
+      </div>
     </div>
     
     <!-- Modifiers Tab Content -->
@@ -181,6 +189,7 @@ export function createObjectPanel(panelElement, context) {
   const primitiveSubdivision = panelElement.querySelector('#primitive-subdivision');
   const primitiveSubdivisionValue = panelElement.querySelector('#primitive-subdivision-value');
   const primitiveSubdivisionGroup = panelElement.querySelector('#primitive-subdivision-group');
+  const showNormalsCheckbox = panelElement.querySelector('#primitive-show-normals');
   
   // Cache DOM references - Modifiers tab
   const windEnabled = panelElement.querySelector('#object-wind-enabled');
@@ -273,6 +282,9 @@ export function createObjectPanel(panelElement, context) {
     } else {
       primitiveSubdivisionGroup.style.display = 'none';
     }
+    
+    // Update show normals checkbox
+    showNormalsCheckbox.checked = !!obj.showNormals;
   }
   
   /**
@@ -600,6 +612,14 @@ export function createObjectPanel(panelElement, context) {
         const newSubdiv = parseInt(e.target.value, 10);
         primitiveSubdivisionValue.textContent = newSubdiv;
         scene.updatePrimitiveConfig(obj.id, { subdivision: newSubdiv });
+      }
+    });
+    
+    // Show normals checkbox
+    showNormalsCheckbox.addEventListener('change', (e) => {
+      const obj = scene.getFirstSelected();
+      if (obj && obj.type === 'primitive') {
+        obj.showNormals = e.target.checked;
       }
     });
   }

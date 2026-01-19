@@ -368,6 +368,11 @@ export function createViewport(canvasElement, options = {}) {
         
         if (modelMatrix) {
           obj.renderer.render(vpMatrix, modelMatrix, isSelected, isWireframe, lightParams, windParams, objWindSettings, terrainBlendParams);
+          
+          // Render normal debug lines if enabled
+          if (obj.showNormals && obj.renderer.renderNormals) {
+            obj.renderer.renderNormals(vpMatrix, modelMatrix);
+          }
         }
       }
     }
