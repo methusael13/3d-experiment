@@ -652,7 +652,7 @@ export function createSceneBuilderDemo(container, options = {}) {
         return scene.getSelectedObjects();
       },
       getObjectMaterial: (objId) => {
-        const obj = scene.getObjectById(objId);
+        const obj = scene.getObject(objId);
         if (obj && obj.type === 'primitive' && obj.renderer) {
           return obj.renderer.getMaterial();
         }

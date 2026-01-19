@@ -3,10 +3,37 @@
  * Displays lighting and global wind controls
  */
 
-import { parseHDR, createHDRTexture } from '../hdrLoader';
+import { parseHDR, createPrefilteredHDRTexture } from '../hdrLoader';
 
 // Panel-specific styles
 const environmentPanelStyles = `
+  .environment-panel .hdr-progress {
+    margin-top: 8px;
+    padding: 8px;
+    background: #333;
+    border-radius: 4px;
+  }
+  
+  .environment-panel .hdr-progress-bar {
+    height: 4px;
+    background: #222;
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 4px;
+  }
+  
+  .environment-panel .hdr-progress-fill {
+    height: 100%;
+    background: #ff6666;
+    width: 0%;
+    transition: width 0.1s ease-out;
+  }
+  
+  .environment-panel .hdr-progress-text {
+    font-size: 10px;
+    color: #888;
+  }
+
   .environment-panel .wind-direction-indicator {
     width: 40px;
     height: 40px;
@@ -119,6 +146,12 @@ const environmentPanelTemplate = `
           <input type="range" id="hdr-exposure" min="0.1" max="5" step="0.1" value="1" class="slider-input">
         </div>
         <div id="hdr-filename" class="hdr-filename">No HDR loaded</div>
+        <div id="hdr-progress" class="hdr-progress" style="display: none;">
+          <div class="hdr-progress-bar">
+            <div id="hdr-progress-fill" class="hdr-progress-fill"></div>
+          </div>
+          <span id="hdr-progress-text" class="hdr-progress-text">Processing...</span>
+        </div>
       </div>
       <input type="file" id="hdr-file" accept=".hdr" style="display: none;">
     </div>
@@ -211,6 +244,9 @@ export function createEnvironmentPanel(panelElement, context) {
   const hdrExposureValue = panelElement.querySelector('#hdr-exposure-value');
   const hdrFilename = panelElement.querySelector('#hdr-filename');
   const hdrFile = panelElement.querySelector('#hdr-file');
+  const hdrProgress = panelElement.querySelector('#hdr-progress');
+  const hdrProgressFill = panelElement.querySelector('#hdr-progress-fill');
+  const hdrProgressText = panelElement.querySelector('#hdr-progress-text');
   
   // Cache DOM references - Wind tab
   const windEnabled = panelElement.querySelector('#wind-enabled');
@@ -354,12 +390,31 @@ export function createEnvironmentPanel(panelElement, context) {
       const file = e.target.files[0];
       if (file) {
         try {
+          hdrFilename.textContent = 'Loading...';
+          hdrProgress.style.display = 'block';
+          hdrProgressFill.style.width = '0%';
+          hdrProgressText.textContent = 'Parsing HDR...';
+          
           const buffer = await file.arrayBuffer();
           const hdrData = parseHDR(buffer);
           
-          const texture = createHDRTexture(gl, hdrData);
+          hdrProgressText.textContent = 'Pre-filtering for IBL...';
+          hdrProgressFill.style.width = '10%';
+          
+          // Use prefiltered texture with mip levels for roughness-based IBL
+          const texture = createPrefilteredHDRTexture(gl, hdrData, (progress) => {
+            const percent = Math.round(progress * 100);
+            hdrProgressFill.style.width = `${percent}%`;
+            hdrProgressText.textContent = progress < 1 ? `Pre-filtering... ${percent}%` : 'Complete!';
+          });
+          
           lightingManager.hdrLight.setTexture(texture, file.name);
           hdrFilename.textContent = file.name;
+          
+          // Hide progress after a short delay
+          setTimeout(() => {
+            hdrProgress.style.display = 'none';
+          }, 500);
           
           // Notify viewport about the new texture
           setHDRTexture(texture);
@@ -368,6 +423,7 @@ export function createEnvironmentPanel(panelElement, context) {
         } catch (err) {
           console.error('Failed to load HDR:', err);
           hdrFilename.textContent = 'Error loading HDR';
+          hdrProgress.style.display = 'none';
         }
       }
     });
