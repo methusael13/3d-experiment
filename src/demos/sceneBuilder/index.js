@@ -15,6 +15,7 @@ import { createLightingManager } from './lights';
 import { createScene } from './scene';
 import { createCameraController } from './cameraController';
 import { createWindManager, serializeObjectWindSettings, deserializeObjectWindSettings } from './wind';
+import { createPanelContext, createObjectsPanel, createObjectPanel, createEnvironmentPanel } from './componentPanels';
 
 /**
  * Scene Builder Demo
@@ -86,6 +87,11 @@ export function createSceneBuilderDemo(container, options = {}) {
   const objectTerrainBlendSettings = new Map(); // objectId -> { enabled, blendDistance }
   let depthPrePassRenderer = null;
   
+  // Panel instances
+  let objectsPanel = null;
+  let objectPanel = null;
+  let environmentPanel = null;
+  let panelContext = null;
   
   // ==================== GL Initialization ====================
   
@@ -111,22 +117,21 @@ export function createSceneBuilderDemo(container, options = {}) {
     
     // Wire up scene event callbacks
     scene.onSelectionChanged = () => {
-      updateObjectList();
+      objectsPanel?.update();
+      objectPanel?.update();
       updateGizmoTarget();
-      updateTransformPanel();
-      updateWindObjectPanel();
     };
     
     scene.onObjectAdded = () => {
-      updateObjectList();
+      objectsPanel?.update();
     };
     
     scene.onObjectRemoved = () => {
-      updateObjectList();
+      objectsPanel?.update();
     };
     
     scene.onGroupChanged = () => {
-      updateObjectList();
+      objectsPanel?.update();
     };
     
     return true;
@@ -205,8 +210,7 @@ export function createSceneBuilderDemo(container, options = {}) {
   function setGizmoMode(mode) {
     gizmoMode = mode;
     transformGizmo.setMode(mode);
-    container.querySelectorAll('.gizmo-btn').forEach(btn => btn.classList.remove('active'));
-    container.querySelector(`#gizmo-${mode}`).classList.add('active');
+    objectPanel?.setGizmoMode(mode);
   }
   
   // ==================== Input Handling ====================
