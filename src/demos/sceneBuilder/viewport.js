@@ -86,6 +86,8 @@ export function createViewport(canvasElement, options = {}) {
   let viewportMode = 'solid';
   let showShadowThumbnail = false;
   let gizmoMode = 'translate';
+  let showGrid = true;
+  let showAxes = true;
   
   // Mouse tracking for uniform scale
   let lastKnownMousePos = [0, 0];
@@ -325,8 +327,15 @@ export function createViewport(canvasElement, options = {}) {
       skyRenderer.renderSunSky(lightingState.sunElevation);
     }
     
-    gridRenderer.render(vpMatrix);
-    originMarkerRenderer.render(vpMatrix, cameraController.getOriginPosition());
+    // Render grid and axes (combined in gridRenderer)
+    if (showGrid || showAxes) {
+      gridRenderer.render(vpMatrix, { showGrid, showAxes });
+    }
+    
+    // Origin marker is always shown when axes are visible
+    if (showAxes) {
+      originMarkerRenderer.render(vpMatrix, cameraController.getOriginPosition());
+    }
     
     const isWireframe = viewportMode === 'wireframe';
     const lightParams = getLightParams();
@@ -470,6 +479,14 @@ export function createViewport(canvasElement, options = {}) {
     showShadowThumbnail = show;
   }
   
+  function setShowGrid(show) {
+    showGrid = show;
+  }
+  
+  function setShowAxes(show) {
+    showAxes = show;
+  }
+  
   function setShadowResolution(res) {
     lightingState.shadowResolution = res;
     shadowRenderer?.setResolution(res);
@@ -554,6 +571,8 @@ export function createViewport(canvasElement, options = {}) {
     setLightingState,
     setWindParams,
     setShowShadowThumbnail,
+    setShowGrid,
+    setShowAxes,
     setShadowResolution,
     setHDRTexture,
     

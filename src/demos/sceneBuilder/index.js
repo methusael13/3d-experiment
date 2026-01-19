@@ -270,6 +270,24 @@ export function createSceneBuilderDemo(container, options = {}) {
       menuItems.forEach(item => item.classList.remove('open'));
     });
     
+    // Grid and axes toggle
+    let showGrid = true;
+    let showAxes = true;
+    
+    container.querySelector('#menu-toggle-grid').addEventListener('click', () => {
+      showGrid = !showGrid;
+      viewport.setShowGrid(showGrid);
+      container.querySelector('#menu-toggle-grid').textContent = (showGrid ? '✓ ' : '  ') + 'Show Grid';
+      menuItems.forEach(item => item.classList.remove('open'));
+    });
+    
+    container.querySelector('#menu-toggle-axes').addEventListener('click', () => {
+      showAxes = !showAxes;
+      viewport.setShowAxes(showAxes);
+      container.querySelector('#menu-toggle-axes').textContent = (showAxes ? '✓ ' : '  ') + 'Show Axes';
+      menuItems.forEach(item => item.classList.remove('open'));
+    });
+    
     container.querySelector('#viewport-solid-btn').addEventListener('click', () => setViewportMode('solid'));
     container.querySelector('#viewport-wireframe-btn').addEventListener('click', () => setViewportMode('wireframe'));
     

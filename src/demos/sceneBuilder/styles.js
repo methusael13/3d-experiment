@@ -902,6 +902,9 @@ export const sceneBuilderTemplate = `
             <div class="submenu-dropdown">
               <button class="menu-action" id="menu-wireframe-view">Wireframe View</button>
               <button class="menu-action" id="menu-solid-view">Solid View</button>
+              <div class="menu-separator"></div>
+              <button class="menu-action" id="menu-toggle-grid">✓ Show Grid</button>
+              <button class="menu-action" id="menu-toggle-axes">✓ Show Axes</button>
             </div>
           </div>
           <div class="menu-separator"></div>

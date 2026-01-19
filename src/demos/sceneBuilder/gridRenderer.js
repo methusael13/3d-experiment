@@ -120,17 +120,21 @@ export function createGridRenderer(gl) {
     gl.bindVertexArray(null);
   }
   
-  function render(vpMatrix) {
+  function render(vpMatrix, { showGrid = true, showAxes = true } = {}) {
     gl.useProgram(gridProgram);
     gl.uniformMatrix4fv(vpLocation, false, vpMatrix);
     
     // Draw grid
-    gl.bindVertexArray(gridVAO);
-    gl.drawArrays(gl.LINES, 0, gridVertexCount);
+    if (showGrid) {
+      gl.bindVertexArray(gridVAO);
+      gl.drawArrays(gl.LINES, 0, gridVertexCount);
+    }
     
     // Draw axes
-    gl.bindVertexArray(axisVAO);
-    gl.drawArrays(gl.LINES, 0, axisVertexCount);
+    if (showAxes) {
+      gl.bindVertexArray(axisVAO);
+      gl.drawArrays(gl.LINES, 0, axisVertexCount);
+    }
     
     gl.bindVertexArray(null);
   }
