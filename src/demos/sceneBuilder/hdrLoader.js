@@ -197,12 +197,22 @@ export function createPrefilteredHDRTexture(gl, hdrData, onProgress = null) {
   const numMips = Math.floor(Math.log2(maxDim)) + 1;
   
   // Create the texture with mipmap storage
+  // Note: Using RGBA16F because RGB16F is not guaranteed color-renderable in WebGL2
   const texture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texStorage2D(gl.TEXTURE_2D, numMips, gl.RGB16F, hdrData.width, hdrData.height);
+  gl.texStorage2D(gl.TEXTURE_2D, numMips, gl.RGBA16F, hdrData.width, hdrData.height);
+  
+  // Convert RGB to RGBA for upload
+  const rgbaData = new Float32Array(hdrData.width * hdrData.height * 4);
+  for (let i = 0; i < hdrData.width * hdrData.height; i++) {
+    rgbaData[i * 4] = hdrData.data[i * 3];
+    rgbaData[i * 4 + 1] = hdrData.data[i * 3 + 1];
+    rgbaData[i * 4 + 2] = hdrData.data[i * 3 + 2];
+    rgbaData[i * 4 + 3] = 1.0;
+  }
   
   // Upload base level
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, hdrData.width, hdrData.height, gl.RGB, gl.FLOAT, hdrData.data);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, hdrData.width, hdrData.height, gl.RGBA, gl.FLOAT, rgbaData);
   
   if (onProgress) onProgress(0.1);
   
@@ -237,10 +247,10 @@ export function createPrefilteredHDRTexture(gl, hdrData, onProgress = null) {
     // Roughness increases with each mip level
     const roughness = mip / (numMips - 1);
     
-    // Create temp texture for this mip level
+    // Create temp texture for this mip level (RGBA16F for renderability)
     const tempTexture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tempTexture);
-    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGB16F, dstWidth, dstHeight);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA16F, dstWidth, dstHeight);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
@@ -321,6 +331,7 @@ function createBlurShader(gl) {
     out vec4 fragColor;
     
     const float PI = 3.14159265359;
+    const float MAX_MIP_LEVELS = 12.0;
     const int SAMPLE_COUNT = 64;
     
     // Van der Corput radical inverse
