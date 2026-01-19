@@ -421,6 +421,247 @@ vec4 applyTerrainBlend(vec4 color, float fragmentDepth) {
 `;
 
 // ============================================
+// PBR (PHYSICALLY BASED RENDERING) CHUNKS
+// Cook-Torrance BRDF with GGX/Smith
+// ============================================
+
+/**
+ * PBR material uniform declarations
+ */
+export const pbrUniforms = `
+// PBR material properties
+uniform float uMetallic;
+uniform float uRoughness;
+uniform vec3 uAlbedo;
+uniform vec3 uF0; // Fresnel reflectance at normal incidence
+`;
+
+/**
+ * Core PBR functions
+ * - Fresnel-Schlick approximation
+ * - GGX/Trowbridge-Reitz normal distribution
+ * - Smith geometry function with Schlick-GGX
+ */
+export const pbrFunctions = `
+const float PI = 3.14159265359;
+
+// Fresnel-Schlick approximation
+// F0 = reflectance at normal incidence
+vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+  return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Fresnel-Schlick with roughness for IBL
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness) {
+  return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// GGX/Trowbridge-Reitz Normal Distribution Function
+float distributionGGX(vec3 N, vec3 H, float roughness) {
+  float a = roughness * roughness;
+  float a2 = a * a;
+  float NdotH = max(dot(N, H), 0.0);
+  float NdotH2 = NdotH * NdotH;
+  
+  float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+  denom = PI * denom * denom;
+  
+  return a2 / denom;
+}
+
+// Schlick-GGX geometry function (single direction)
+float geometrySchlickGGX(float NdotV, float roughness) {
+  float r = roughness + 1.0;
+  float k = (r * r) / 8.0; // Direct lighting
+  
+  float denom = NdotV * (1.0 - k) + k;
+  return NdotV / denom;
+}
+
+// Smith geometry function (combines view and light directions)
+float geometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+  float NdotV = max(dot(N, V), 0.0);
+  float NdotL = max(dot(N, L), 0.0);
+  float ggx2 = geometrySchlickGGX(NdotV, roughness);
+  float ggx1 = geometrySchlickGGX(NdotL, roughness);
+  
+  return ggx1 * ggx2;
+}
+
+// Cook-Torrance BRDF for a single light
+// Returns specular + diffuse contribution
+vec3 cookTorranceBRDF(vec3 N, vec3 V, vec3 L, vec3 albedo, float metallic, float roughness, vec3 F0, vec3 radiance) {
+  vec3 H = normalize(V + L);
+  
+  // Cook-Torrance BRDF components
+  float NDF = distributionGGX(N, H, roughness);
+  float G = geometrySmith(N, V, L, roughness);
+  vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
+  
+  // Specular (Cook-Torrance)
+  vec3 numerator = NDF * G * F;
+  float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+  vec3 specular = numerator / denominator;
+  
+  // kS = Fresnel = specular contribution
+  // kD = 1 - kS = diffuse contribution (energy conservation)
+  vec3 kS = F;
+  vec3 kD = vec3(1.0) - kS;
+  
+  // Metals have no diffuse (all specular)
+  kD *= 1.0 - metallic;
+  
+  // Lambertian diffuse
+  float NdotL = max(dot(N, L), 0.0);
+  
+  return (kD * albedo / PI + specular) * radiance * NdotL;
+}
+`;
+
+/**
+ * IBL (Image-Based Lighting) sampling functions for PBR
+ * Samples pre-filtered environment map for specular reflections
+ */
+export const iblFunctions = `
+// Sample pre-filtered environment for specular IBL
+// prefilteredMap should have mip levels for roughness
+vec3 samplePrefilteredEnv(vec3 R, float roughness, sampler2D envMap) {
+  // Convert roughness to mip level (0 = sharp, max = blurry)
+  // Assumes 6 mip levels (128, 64, 32, 16, 8, 4)
+  float maxMipLevel = 5.0;
+  float mipLevel = roughness * maxMipLevel;
+  
+  // Equirectangular projection
+  float phi = atan(R.z, R.x);
+  float theta = asin(clamp(R.y, -1.0, 1.0));
+  vec2 uv = vec2(phi / (2.0 * PI) + 0.5, theta / PI + 0.5);
+  
+  // WebGL2 textureLod for mip sampling
+  return textureLod(envMap, uv, mipLevel).rgb;
+}
+
+// Diffuse IBL from environment (irradiance)
+// For simplicity, sample in multiple directions and average
+vec3 sampleDiffuseIBL(vec3 N, sampler2D envMap, float exposure) {
+  // Simple hemisphere sampling approximation
+  vec3 irradiance = vec3(0.0);
+  
+  // Sample in normal direction and offset directions
+  vec3 tangent = normalize(cross(N, abs(N.y) < 0.9 ? vec3(0,1,0) : vec3(1,0,0)));
+  vec3 bitangent = cross(N, tangent);
+  
+  // Main direction
+  vec2 uvN = vec2(atan(N.z, N.x) / (2.0 * PI) + 0.5, asin(clamp(N.y, -1.0, 1.0)) / PI + 0.5);
+  irradiance += textureLod(envMap, uvN, 4.0).rgb * 0.5; // Use high mip for blur
+  
+  // Offset samples
+  vec3 d1 = normalize(N + tangent * 0.5);
+  vec3 d2 = normalize(N - tangent * 0.5);
+  vec3 d3 = normalize(N + bitangent * 0.5);
+  vec3 d4 = normalize(N - bitangent * 0.5);
+  
+  vec2 uv1 = vec2(atan(d1.z, d1.x) / (2.0 * PI) + 0.5, asin(clamp(d1.y, -1.0, 1.0)) / PI + 0.5);
+  vec2 uv2 = vec2(atan(d2.z, d2.x) / (2.0 * PI) + 0.5, asin(clamp(d2.y, -1.0, 1.0)) / PI + 0.5);
+  vec2 uv3 = vec2(atan(d3.z, d3.x) / (2.0 * PI) + 0.5, asin(clamp(d3.y, -1.0, 1.0)) / PI + 0.5);
+  vec2 uv4 = vec2(atan(d4.z, d4.x) / (2.0 * PI) + 0.5, asin(clamp(d4.y, -1.0, 1.0)) / PI + 0.5);
+  
+  irradiance += textureLod(envMap, uv1, 4.0).rgb * 0.125;
+  irradiance += textureLod(envMap, uv2, 4.0).rgb * 0.125;
+  irradiance += textureLod(envMap, uv3, 4.0).rgb * 0.125;
+  irradiance += textureLod(envMap, uv4, 4.0).rgb * 0.125;
+  
+  return irradiance * exposure;
+}
+`;
+
+/**
+ * Complete PBR lighting calculation
+ * Supports both sun (analytical) and HDR IBL modes
+ */
+export const pbrLighting = `
+// Calculate PBR lighting for a fragment
+// Returns final lit color (before tone mapping)
+vec3 calcPBRLighting(
+  vec3 N, vec3 V, vec3 worldPos,
+  vec3 albedo, float metallic, float roughness,
+  vec3 lightDir, vec3 lightColor, float ambient,
+  int lightMode, sampler2D hdrTexture, int hasHdr, float hdrExposure,
+  sampler2D shadowMap, int shadowEnabled, vec4 lightSpacePos
+) {
+  // Calculate F0 (Fresnel reflectance at normal incidence)
+  // Dielectrics: ~0.04, Metals: albedo color
+  vec3 F0 = vec3(0.04);
+  F0 = mix(F0, albedo, metallic);
+  
+  vec3 Lo = vec3(0.0);
+  
+  if (lightMode == 1 && hasHdr == 1) {
+    // ============ IBL Mode ============
+    vec3 R = reflect(-V, N);
+    
+    // Specular IBL (pre-filtered environment)
+    vec3 prefilteredColor = samplePrefilteredEnv(R, roughness, hdrTexture) * hdrExposure;
+    vec3 F = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
+    
+    // Approximate specular IBL (simplified split-sum)
+    // Full accuracy would need BRDF LUT, but this is reasonable
+    vec3 kS = F;
+    vec3 kD = (1.0 - kS) * (1.0 - metallic);
+    
+    // Diffuse IBL (irradiance)
+    vec3 irradiance = sampleDiffuseIBL(N, hdrTexture, hdrExposure);
+    vec3 diffuse = irradiance * albedo;
+    
+    // Specular - scale by fresnel and roughness
+    // This is an approximation; proper split-sum would be more accurate
+    float specularScale = 1.0 - roughness * 0.5;
+    vec3 specular = prefilteredColor * F * specularScale;
+    
+    Lo = kD * diffuse + specular;
+  } else {
+    // ============ Sun Mode (Analytical Light) ============
+    vec3 L = normalize(lightDir);
+    vec3 radiance = lightColor;
+    
+    // Apply shadow
+    float shadow = 1.0;
+    if (shadowEnabled == 1) {
+      shadow = calcShadow(lightSpacePos, N, L);
+    }
+    radiance *= shadow;
+    
+    // Cook-Torrance BRDF
+    Lo = cookTorranceBRDF(N, V, L, albedo, metallic, roughness, F0, radiance);
+    
+    // Ambient (very simplified - proper AO would help)
+    vec3 ambientLight = vec3(ambient) * albedo * (1.0 - metallic * 0.5);
+    Lo += ambientLight;
+  }
+  
+  return Lo;
+}
+`;
+
+/**
+ * Complete PBR chunk for fragment shader
+ * Includes all PBR uniforms, functions, and lighting calculation
+ * Requires: shadowFunctions (for calcShadow)
+ */
+export const pbrComplete = `
+// === PBR Uniforms ===
+${pbrUniforms}
+
+// === PBR Functions ===
+${pbrFunctions}
+
+// === IBL Functions ===
+${iblFunctions}
+
+// === PBR Lighting ===
+${pbrLighting}
+`;
+
+// ============================================
 // COMPOSITE CHUNKS
 // Pre-bundled combinations for common use cases
 // These ensure all dependencies are included in correct order

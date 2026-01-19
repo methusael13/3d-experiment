@@ -267,11 +267,37 @@ export async function loadGLB(url) {
     }
   }
   
-  // Extract materials
-  result.materials = (gltf.materials || []).map(mat => ({
-    baseColorFactor: mat.pbrMetallicRoughness?.baseColorFactor || [1, 1, 1, 1],
-    baseColorTextureIndex: mat.pbrMetallicRoughness?.baseColorTexture?.index,
-  }));
+  // Extract materials (PBR Metallic-Roughness workflow)
+  result.materials = (gltf.materials || []).map(mat => {
+    const pbr = mat.pbrMetallicRoughness || {};
+    return {
+      // Base color (albedo)
+      baseColorFactor: pbr.baseColorFactor || [1, 1, 1, 1],
+      baseColorTextureIndex: pbr.baseColorTexture?.index,
+      
+      // PBR metallic-roughness
+      metallicFactor: pbr.metallicFactor ?? 1.0,
+      roughnessFactor: pbr.roughnessFactor ?? 1.0,
+      metallicRoughnessTextureIndex: pbr.metallicRoughnessTexture?.index,
+      
+      // Normal map
+      normalTextureIndex: mat.normalTexture?.index,
+      normalScale: mat.normalTexture?.scale ?? 1.0,
+      
+      // Occlusion (AO)
+      occlusionTextureIndex: mat.occlusionTexture?.index,
+      occlusionStrength: mat.occlusionTexture?.strength ?? 1.0,
+      
+      // Emissive
+      emissiveFactor: mat.emissiveFactor || [0, 0, 0],
+      emissiveTextureIndex: mat.emissiveTexture?.index,
+      
+      // Alpha mode
+      alphaMode: mat.alphaMode || 'OPAQUE',
+      alphaCutoff: mat.alphaCutoff ?? 0.5,
+      doubleSided: mat.doubleSided ?? false,
+    };
+  });
   
   return normalizeGLBModel(result);
 }
