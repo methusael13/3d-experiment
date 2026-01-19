@@ -5,7 +5,7 @@ import { createShaderDebugPanel } from './shaderDebugPanel';
 import { createLightingManager } from './lights';
 import { createScene } from './scene';
 import { createWindManager, serializeObjectWindSettings, deserializeObjectWindSettings } from './wind';
-import { createPanelContext, createObjectsPanel, createObjectPanel, createEnvironmentPanel } from './componentPanels';
+import { createPanelContext, createObjectsPanel, createObjectPanel, createEnvironmentPanel, createMaterialPanel } from './componentPanels';
 import { createViewport } from './viewport';
 
 /**
@@ -51,6 +51,7 @@ export function createSceneBuilderDemo(container, options = {}) {
   let objectsPanel = null;
   let objectPanel = null;
   let environmentPanel = null;
+  let materialPanel = null;
   let panelContext = null;
   
   // Scene file tracking
@@ -146,6 +147,7 @@ export function createSceneBuilderDemo(container, options = {}) {
     scene.onSelectionChanged = () => {
       objectsPanel?.update();
       objectPanel?.update();
+      materialPanel?.update();
       updateGizmoTarget();
       updateRenderData();
     };
@@ -606,6 +608,7 @@ export function createSceneBuilderDemo(container, options = {}) {
       onSelectionChanged: () => {
         objectsPanel?.update();
         objectPanel?.update();
+        materialPanel?.update();
         updateGizmoTarget();
         updateRenderData();
       },
@@ -643,6 +646,34 @@ export function createSceneBuilderDemo(container, options = {}) {
       panelContext
     );
     
+    // Create material panel context with required callbacks
+    const materialPanelContext = {
+      getSelectedObjects: () => {
+        return scene.getSelectedObjects();
+      },
+      getObjectMaterial: (objId) => {
+        const obj = scene.getObjectById(objId);
+        if (obj && obj.type === 'primitive' && obj.renderer) {
+          return obj.renderer.getMaterial();
+        }
+        return null;
+      },
+      setObjectMaterial: (objId, material) => {
+        const obj = scene.getObject(objId);
+        if (obj && obj.type === 'primitive' && obj.renderer) {
+          obj.renderer.setMaterial(material);
+        }
+      },
+      onMaterialChange: () => {
+        // Material changed - could trigger any needed updates
+      },
+    };
+    
+    materialPanel = createMaterialPanel(
+      container.querySelector('#material-panel-container'),
+      materialPanelContext
+    );
+    
     shaderDebugPanel = createShaderDebugPanel(viewportContainer);
     
     // Initial sync
@@ -658,6 +689,7 @@ export function createSceneBuilderDemo(container, options = {}) {
     if (objectsPanel) { objectsPanel.destroy(); objectsPanel = null; }
     if (objectPanel) { objectPanel.destroy(); objectPanel = null; }
     if (environmentPanel) { environmentPanel.destroy(); environmentPanel = null; }
+    if (materialPanel) { materialPanel.destroy(); materialPanel = null; }
     panelContext = null;
     
     if (scene) { scene.destroy(); scene = null; }

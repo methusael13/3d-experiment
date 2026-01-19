@@ -220,7 +220,7 @@ export function createViewport(canvasElement, options = {}) {
   }
   
   function getLightParams() {
-    const cameraPos = cameraController.getCamera().position;
+    const cameraPos = cameraController.getCamera().getPosition();
     
     if (lightingState.mode === 'hdr') {
       return {
