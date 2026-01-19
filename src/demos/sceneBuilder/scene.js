@@ -2,6 +2,8 @@ import { mat4 } from 'gl-matrix';
 import { loadGLB } from '../../loaders';
 import { computeBoundsFromGLB } from '../../core/sceneGraph';
 import { createObjectRenderer } from './objectRenderer';
+import { createPrimitiveRenderer } from './primitiveRenderer';
+import { computeBounds } from './primitiveGeometry';
 import { getModelUrl } from './sceneSerializer';
 
 /**
@@ -27,6 +29,78 @@ export function createScene(gl, sceneGraph) {
   let onGroupChanged = null;
   
   // ==================== Object Management ====================
+  
+  /**
+   * Add a primitive shape to the scene
+   * @param {string} primitiveType - 'cube' | 'plane' | 'sphere'
+   * @param {string} name - Display name (optional)
+   * @param {object} config - { size, subdivision }
+   */
+  function addPrimitive(primitiveType, name = null, config = {}) {
+    const id = `object-${nextObjectId++}`;
+    const typeNames = { cube: 'Cube', plane: 'Plane', sphere: 'UV Sphere' };
+    const displayName = name || typeNames[primitiveType] || 'Primitive';
+    
+    const defaultConfig = {
+      size: 1,
+      subdivision: 16,
+      ...config,
+    };
+    
+    const renderer = createPrimitiveRenderer(gl, primitiveType, defaultConfig);
+    const bounds = renderer.getBounds();
+    
+    const sceneObject = {
+      id,
+      name: displayName,
+      type: 'primitive',
+      primitiveType,
+      primitiveConfig: { ...defaultConfig },
+      model: null,
+      modelPath: null,
+      renderer,
+      position: [0, 0, 0],
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1],
+      groupId: null,
+    };
+    
+    objects.push(sceneObject);
+    
+    sceneGraph.addNode(id, {
+      position: sceneObject.position,
+      rotation: sceneObject.rotation,
+      scale: sceneObject.scale,
+      localBounds: bounds,
+      userData: { name: displayName, primitiveType },
+    });
+    
+    if (onObjectAdded) onObjectAdded(sceneObject);
+    
+    return sceneObject;
+  }
+  
+  /**
+   * Update primitive config (size, subdivision)
+   */
+  function updatePrimitiveConfig(id, newConfig) {
+    const obj = getObject(id);
+    if (!obj || obj.type !== 'primitive') return false;
+    
+    obj.primitiveConfig = { ...obj.primitiveConfig, ...newConfig };
+    obj.renderer.updateGeometry(obj.primitiveConfig);
+    
+    // Update scene graph bounds
+    const bounds = obj.renderer.getBounds();
+    sceneGraph.updateNode(id, {
+      position: obj.position,
+      rotation: obj.rotation,
+      scale: obj.scale,
+      localBounds: bounds,
+    });
+    
+    return true;
+  }
   
   /**
    * Add an object to the scene
@@ -430,13 +504,38 @@ export function createScene(gl, sceneGraph) {
     }
     if (onSelectionChanged) onSelectionChanged(selectedIds);
   }
-  
+
+  /**
+   * Select all objects in the scene
+   */
+  function selectAllObjects() {
+    objects.forEach(o => {
+      if (!selectedIds.has(o.id)) {
+        selectedIds.add(o.id);
+      }
+    });
+
+    if (onSelectionChanged) onSelectionChanged(selectedIds);
+  }
+
   /**
    * Clear all selections
    */
   function clearSelection() {
     selectedIds.clear();
+
     if (onSelectionChanged) onSelectionChanged(selectedIds);
+  }
+
+  /**
+   * Toggle selection of all scene objects
+   */
+  function toggleSelectAllObjects() {
+    if (selectedIds.size === objects.length) {
+      clearSelection();
+    } else {
+      selectAllObjects();
+    }
   }
   
   // ==================== Groups ====================
@@ -501,6 +600,39 @@ export function createScene(gl, sceneGraph) {
     }
     
     groups.delete(groupId);
+    if (onGroupChanged) onGroupChanged();
+    return true;
+  }
+  
+  /**
+   * Ungroup all groups that have members in the current selection
+   */
+  function ungroupSelection() {
+    if (selectedIds.size === 0) return false;
+    
+    // Find all unique group IDs from selected objects
+    const groupsToDissolve = new Set();
+    for (const id of selectedIds) {
+      const obj = objects.find(o => o.id === id);
+      if (obj && obj.groupId) {
+        groupsToDissolve.add(obj.groupId);
+      }
+    }
+    
+    if (groupsToDissolve.size === 0) return false;
+    
+    // Dissolve each group
+    for (const groupId of groupsToDissolve) {
+      const group = groups.get(groupId);
+      if (group) {
+        for (const childId of group.childIds) {
+          const obj = objects.find(o => o.id === childId);
+          if (obj) obj.groupId = null;
+        }
+        groups.delete(groupId);
+      }
+    }
+    
     if (onGroupChanged) onGroupChanged();
     return true;
   }
@@ -585,14 +717,29 @@ export function createScene(gl, sceneGraph) {
    * Serialize scene data for saving
    */
   function serialize() {
-    const serializedObjects = objects.map(obj => ({
-      name: obj.name,
-      modelPath: obj.modelPath,
-      position: [...obj.position],
-      rotation: [...obj.rotation],
-      scale: [...obj.scale],
-      groupId: obj.groupId || null,
-    }));
+    const serializedObjects = objects.map(obj => {
+      const base = {
+        name: obj.name,
+        position: [...obj.position],
+        rotation: [...obj.rotation],
+        scale: [...obj.scale],
+        groupId: obj.groupId || null,
+      };
+      
+      if (obj.type === 'primitive') {
+        return {
+          ...base,
+          type: 'primitive',
+          primitiveType: obj.primitiveType,
+          primitiveConfig: { ...obj.primitiveConfig },
+        };
+      } else {
+        return {
+          ...base,
+          modelPath: obj.modelPath,
+        };
+      }
+    });
     
     const serializedGroups = [];
     for (const [groupId, group] of groups) {
@@ -621,7 +768,16 @@ export function createScene(gl, sceneGraph) {
     
     // Load objects
     for (const objData of data.objects) {
-      const obj = await addObject(objData.modelPath, objData.name);
+      let obj = null;
+      
+      if (objData.type === 'primitive') {
+        // Create primitive shape
+        obj = addPrimitive(objData.primitiveType, objData.name, objData.primitiveConfig || {});
+      } else {
+        // Load GLB model
+        obj = await addObject(objData.modelPath, objData.name);
+      }
+      
       if (obj) {
         obj.position = [...objData.position];
         obj.rotation = [...objData.rotation];
@@ -691,10 +847,12 @@ export function createScene(gl, sceneGraph) {
     onGroupChanged = null;
   }
   
-  // Return public interface
+    // Return public interface
   return {
     // Object management
     addObject,
+    addPrimitive,
+    updatePrimitiveConfig,
     removeObject,
     getObject,
     getAllObjects,
@@ -717,10 +875,13 @@ export function createScene(gl, sceneGraph) {
     getSelectionCentroid,
     select,
     selectAll,
+    selectAllObjects,
     clearSelection,
+    toggleSelectAllObjects,
     
     // Groups
     createGroupFromSelection,
+    ungroupSelection,
     dissolveGroup,
     renameGroup,
     getGroup,

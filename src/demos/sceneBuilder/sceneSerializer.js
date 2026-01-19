@@ -61,9 +61,10 @@ export function isImportedModel(modelPath) {
  * @param {Object} windState - Optional global wind state
  * @param {Object} objectWindSettings - Optional per-object wind settings
  * @param {Array} groupsArray - Optional groups array
+ * @param {Array} objectTerrainBlendSettings - Optional per-object terrain blend settings
  * @returns {string} The filename that was used
  */
-export function saveScene(sceneObjects, cameraState, lightingState = null, filename = null, groups = null, windState = null, objectWindSettings = null, groupsArray = null) {
+export function saveScene(sceneObjects, cameraState, lightingState = null, filename = null, groups = null, windState = null, objectWindSettings = null, groupsArray = null, objectTerrainBlendSettings = null) {
   // Prompt for filename if not provided
   let sceneName = filename;
   if (!sceneName) {
@@ -120,6 +121,11 @@ export function saveScene(sceneObjects, cameraState, lightingState = null, filen
   // Add per-object wind settings if provided
   if (objectWindSettings) {
     sceneData.objectWindSettings = objectWindSettings;
+  }
+  
+  // Add per-object terrain blend settings if provided
+  if (objectTerrainBlendSettings) {
+    sceneData.objectTerrainBlendSettings = objectTerrainBlendSettings;
   }
   
   // Add lighting state if provided

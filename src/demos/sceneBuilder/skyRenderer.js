@@ -186,6 +186,11 @@ export function createSkyRenderer(gl) {
       gl.disable(gl.DEPTH_TEST);
       gl.useProgram(sunProgram);
       
+      // Disable any leftover vertex attributes from other renderers
+      for (let i = 1; i < 8; i++) {
+        gl.disableVertexAttribArray(i);
+      }
+      
       gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
       gl.enableVertexAttribArray(sunLocations.aPosition);
       gl.vertexAttribPointer(sunLocations.aPosition, 2, gl.FLOAT, false, 0, 0);
@@ -193,6 +198,8 @@ export function createSkyRenderer(gl) {
       gl.uniform1f(sunLocations.uSunElevation, sunElevation);
       
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      
+      gl.disableVertexAttribArray(sunLocations.aPosition);
       gl.enable(gl.DEPTH_TEST);
     },
     
@@ -207,6 +214,11 @@ export function createSkyRenderer(gl) {
       
       gl.disable(gl.DEPTH_TEST);
       gl.useProgram(hdrProgram);
+      
+      // Disable any leftover vertex attributes from other renderers
+      for (let i = 1; i < 8; i++) {
+        gl.disableVertexAttribArray(i);
+      }
       
       // Compute inverse view-projection
       mat4.invert(invVpMatrix, vpMatrix);
@@ -223,6 +235,8 @@ export function createSkyRenderer(gl) {
       gl.uniform1i(hdrLocations.uHdrTexture, 0);
       
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      
+      gl.disableVertexAttribArray(hdrLocations.aPosition);
       gl.enable(gl.DEPTH_TEST);
     },
     

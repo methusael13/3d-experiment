@@ -184,17 +184,17 @@ const environmentPanelTemplate = `
  * @returns {Object} Panel interface with update and destroy methods
  */
 export function createEnvironmentPanel(panelElement, context) {
-  const { gl, windManager, lightingManager, shadowRenderer, setLightMode, setShadowResolution, setShowShadowThumbnail } = context;
+  const { gl, windManager, lightingManager, setLightMode, setShadowResolution, setShowShadowThumbnail, setHDRTexture, onWindChanged, onLightingChanged } = context;
   
-  // Add panel-specific styles
-  const styleEl = document.createElement('style');
-  styleEl.textContent = environmentPanelStyles;
-  panelElement.appendChild(styleEl);
-  
-  // Set panel content
+  // Set panel content first
   panelElement.innerHTML = environmentPanelTemplate;
   panelElement.classList.add('environment-panel', 'sidebar-section');
   panelElement.id = 'environment-panel';
+  
+  // Add panel-specific styles after innerHTML (so they don't get overwritten)
+  const styleEl = document.createElement('style');
+  styleEl.textContent = environmentPanelStyles;
+  panelElement.appendChild(styleEl);
   
   // Cache DOM references - Lighting tab
   const currentLightMode = panelElement.querySelector('#current-light-mode');
@@ -305,17 +305,20 @@ export function createEnvironmentPanel(panelElement, context) {
     sunAzimuth.addEventListener('input', (e) => {
       lightingManager.sunLight.azimuth = parseFloat(e.target.value);
       sunAzimuthValue.textContent = `${lightingManager.sunLight.azimuth}°`;
+      onLightingChanged();
     });
     
     // Sun elevation
     sunElevation.addEventListener('input', (e) => {
       lightingManager.sunLight.elevation = parseFloat(e.target.value);
       sunElevationValue.textContent = `${lightingManager.sunLight.elevation}°`;
+      onLightingChanged();
     });
     
     // Shadow enabled
     shadowEnabled.addEventListener('change', (e) => {
       lightingManager.shadowEnabled = e.target.checked;
+      onLightingChanged();
     });
     
     // Shadow quality buttons
@@ -331,6 +334,7 @@ export function createEnvironmentPanel(panelElement, context) {
     // Shadow debug
     shadowDebug.addEventListener('change', (e) => {
       lightingManager.shadowDebug = parseInt(e.target.value, 10);
+      onLightingChanged();
     });
     
     // Shadow thumbnail
@@ -342,6 +346,7 @@ export function createEnvironmentPanel(panelElement, context) {
     hdrExposure.addEventListener('input', (e) => {
       lightingManager.hdrLight.exposure = parseFloat(e.target.value);
       hdrExposureValue.textContent = lightingManager.hdrLight.exposure.toFixed(1);
+      onLightingChanged();
     });
     
     // HDR file input
@@ -352,13 +357,12 @@ export function createEnvironmentPanel(panelElement, context) {
           const buffer = await file.arrayBuffer();
           const hdrData = parseHDR(buffer);
           
-          if (lightingManager.hdrLight.texture) {
-            gl.deleteTexture(lightingManager.hdrLight.texture);
-          }
-          
           const texture = createHDRTexture(gl, hdrData);
           lightingManager.hdrLight.setTexture(texture, file.name);
           hdrFilename.textContent = file.name;
+          
+          // Notify viewport about the new texture
+          setHDRTexture(texture);
           setLightMode('hdr');
           updateLightModeDisplay('hdr');
         } catch (err) {
@@ -372,6 +376,7 @@ export function createEnvironmentPanel(panelElement, context) {
     windEnabled.addEventListener('change', (e) => {
       windManager.enabled = e.target.checked;
       updateWindEnabledIndicator();
+      onWindChanged();
     });
     
     // Wind direction
@@ -379,29 +384,34 @@ export function createEnvironmentPanel(panelElement, context) {
       windManager.direction = parseFloat(e.target.value);
       windDirectionValue.textContent = `${windManager.direction}°`;
       updateWindDirectionArrow();
+      onWindChanged();
     });
     
     // Wind strength
     windStrength.addEventListener('input', (e) => {
       windManager.strength = parseFloat(e.target.value);
       windStrengthValue.textContent = windManager.strength.toFixed(1);
+      onWindChanged();
     });
     
     // Wind turbulence
     windTurbulence.addEventListener('input', (e) => {
       windManager.turbulence = parseFloat(e.target.value);
       windTurbulenceValue.textContent = windManager.turbulence.toFixed(1);
+      onWindChanged();
     });
     
     // Wind gust strength
     windGustStrength.addEventListener('input', (e) => {
       windManager.gustStrength = parseFloat(e.target.value);
       windGustStrengthValue.textContent = windManager.gustStrength.toFixed(1);
+      onWindChanged();
     });
     
     // Wind debug
     windDebug.addEventListener('change', (e) => {
       windManager.debug = parseInt(e.target.value, 10);
+      onWindChanged();
     });
   }
   

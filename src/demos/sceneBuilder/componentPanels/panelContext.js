@@ -51,6 +51,9 @@ export function createPanelContext(config) {
     setShowShadowThumbnail,
     setLightMode,
     loadHDRTexture,
+    setHDRTexture,
+    onWindChanged,
+    onLightingChanged,
   } = config;
   
   return {
@@ -96,5 +99,8 @@ export function createPanelContext(config) {
     setShowShadowThumbnail: setShowShadowThumbnail || (() => {}),
     setLightMode: setLightMode || (() => {}),
     loadHDRTexture: loadHDRTexture || (async () => {}),
+    setHDRTexture: setHDRTexture || (() => {}),
+    onWindChanged: onWindChanged || (() => {}),
+    onLightingChanged: onLightingChanged || (() => {}),
   };
 }

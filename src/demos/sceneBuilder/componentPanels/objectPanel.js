@@ -17,6 +17,7 @@ const objectPanelTemplate = `
   <div class="section-content">
     <div class="env-tabs">
       <button class="env-tab active" data-tab="transform">Transform</button>
+      <button class="env-tab" data-tab="edit" id="edit-tab-btn" style="display: none;">Edit</button>
       <button class="env-tab" data-tab="modifiers">Modifiers</button>
     </div>
     
@@ -56,6 +57,28 @@ const objectPanelTemplate = `
         </div>
       </div>
       <button id="delete-object" class="danger-btn">Delete Object</button>
+    </div>
+    
+    <!-- Edit Tab Content (for primitives) -->
+    <div id="obj-edit-tab" class="env-tab-content">
+      <div class="transform-group">
+        <label>Primitive Type</label>
+        <div id="primitive-type-display" style="font-size: 12px; color: #ccc; padding: 4px 0;">-</div>
+      </div>
+      <div class="transform-group compact-slider">
+        <div class="slider-header">
+          <label>Size</label>
+          <span id="primitive-size-value" class="slider-value">1.0</span>
+        </div>
+        <input type="range" id="primitive-size" min="0.1" max="10" step="0.1" value="1" class="slider-input">
+      </div>
+      <div class="transform-group compact-slider" id="primitive-subdivision-group">
+        <div class="slider-header">
+          <label>Subdivision</label>
+          <span id="primitive-subdivision-value" class="slider-value">16</span>
+        </div>
+        <input type="range" id="primitive-subdivision" min="4" max="64" step="4" value="16" class="slider-input">
+      </div>
     </div>
     
     <!-- Modifiers Tab Content -->
@@ -127,16 +150,16 @@ const objectPanelTemplate = `
 export function createObjectPanel(panelElement, context) {
   const { scene, onGizmoModeChange, onTransformUpdate, getObjectWindSettings, getObjectTerrainBlend } = context;
   
-  // Add panel-specific styles
-  const styleEl = document.createElement('style');
-  styleEl.textContent = objectPanelStyles;
-  panelElement.appendChild(styleEl);
-  
-  // Set panel content
+  // Set panel content first
   panelElement.innerHTML = objectPanelTemplate;
   panelElement.classList.add('object-panel', 'sidebar-section');
   panelElement.id = 'object-panel';
   panelElement.style.display = 'none';
+  
+  // Add panel-specific styles after innerHTML (so they don't get overwritten)
+  const styleEl = document.createElement('style');
+  styleEl.textContent = objectPanelStyles;
+  panelElement.appendChild(styleEl);
   
   // Cache DOM references - Transform tab
   const objectName = panelElement.querySelector('#object-name');
@@ -149,6 +172,15 @@ export function createObjectPanel(panelElement, context) {
   const scaleX = panelElement.querySelector('#scale-x');
   const scaleY = panelElement.querySelector('#scale-y');
   const scaleZ = panelElement.querySelector('#scale-z');
+  
+  // Cache DOM references - Edit tab (primitives)
+  const editTabBtn = panelElement.querySelector('#edit-tab-btn');
+  const primitiveTypeDisplay = panelElement.querySelector('#primitive-type-display');
+  const primitiveSize = panelElement.querySelector('#primitive-size');
+  const primitiveSizeValue = panelElement.querySelector('#primitive-size-value');
+  const primitiveSubdivision = panelElement.querySelector('#primitive-subdivision');
+  const primitiveSubdivisionValue = panelElement.querySelector('#primitive-subdivision-value');
+  const primitiveSubdivisionGroup = panelElement.querySelector('#primitive-subdivision-group');
   
   // Cache DOM references - Modifiers tab
   const windEnabled = panelElement.querySelector('#object-wind-enabled');
@@ -203,6 +235,43 @@ export function createObjectPanel(panelElement, context) {
       scaleX.value = '-';
       scaleY.value = '-';
       scaleZ.value = '-';
+    }
+  }
+  
+  /**
+   * Updates the edit tab with primitive settings
+   */
+  function updateEditTab() {
+    const selectionCount = scene.getSelectionCount();
+    
+    if (selectionCount !== 1) {
+      editTabBtn.style.display = 'none';
+      return;
+    }
+    
+    const obj = scene.getFirstSelected();
+    if (!obj || obj.type !== 'primitive') {
+      editTabBtn.style.display = 'none';
+      return;
+    }
+    
+    // Show edit tab for primitives
+    editTabBtn.style.display = '';
+    
+    const typeNames = { cube: 'Cube', plane: 'Plane', sphere: 'UV Sphere' };
+    primitiveTypeDisplay.textContent = typeNames[obj.primitiveType] || obj.primitiveType;
+    
+    const config = obj.primitiveConfig || { size: 1, subdivision: 16 };
+    primitiveSize.value = config.size;
+    primitiveSizeValue.textContent = config.size.toFixed(1);
+    
+    // Show subdivision only for sphere
+    if (obj.primitiveType === 'sphere') {
+      primitiveSubdivisionGroup.style.display = '';
+      primitiveSubdivision.value = config.subdivision || 16;
+      primitiveSubdivisionValue.textContent = config.subdivision || 16;
+    } else {
+      primitiveSubdivisionGroup.style.display = 'none';
     }
   }
   
@@ -333,12 +402,19 @@ export function createObjectPanel(panelElement, context) {
   }
   
   /**
-   * Sets the active gizmo mode
+   * Updates gizmo mode UI only (for external callers like keyboard shortcuts)
    */
   function setGizmoMode(mode) {
     currentGizmoMode = mode;
     panelElement.querySelectorAll('.gizmo-btn').forEach(btn => btn.classList.remove('active'));
     panelElement.querySelector(`#gizmo-${mode}`).classList.add('active');
+  }
+  
+  /**
+   * Internal: sets mode AND notifies controller (only used by button clicks)
+   */
+  function handleGizmoModeClick(mode) {
+    setGizmoMode(mode);
     onGizmoModeChange(mode);
   }
   
@@ -355,6 +431,7 @@ export function createObjectPanel(panelElement, context) {
     
     panelElement.style.display = 'block';
     updateTransformTab();
+    updateEditTab();
     updateModifiersTab();
   }
   
@@ -378,9 +455,9 @@ export function createObjectPanel(panelElement, context) {
     });
     
     // Gizmo mode buttons
-    panelElement.querySelector('#gizmo-translate').addEventListener('click', () => setGizmoMode('translate'));
-    panelElement.querySelector('#gizmo-rotate').addEventListener('click', () => setGizmoMode('rotate'));
-    panelElement.querySelector('#gizmo-scale').addEventListener('click', () => setGizmoMode('scale'));
+    panelElement.querySelector('#gizmo-translate').addEventListener('click', () => handleGizmoModeClick('translate'));
+    panelElement.querySelector('#gizmo-rotate').addEventListener('click', () => handleGizmoModeClick('rotate'));
+    panelElement.querySelector('#gizmo-scale').addEventListener('click', () => handleGizmoModeClick('scale'));
     
     // Object name
     objectName.addEventListener('input', (e) => {
@@ -503,6 +580,26 @@ export function createObjectPanel(panelElement, context) {
         const settings = getObjectTerrainBlend(obj.id);
         settings.blendDistance = parseFloat(e.target.value);
         terrainBlendDistanceValue.textContent = settings.blendDistance.toFixed(1);
+      }
+    });
+    
+    // Primitive size slider
+    primitiveSize.addEventListener('input', (e) => {
+      const obj = scene.getFirstSelected();
+      if (obj && obj.type === 'primitive') {
+        const newSize = parseFloat(e.target.value);
+        primitiveSizeValue.textContent = newSize.toFixed(1);
+        scene.updatePrimitiveConfig(obj.id, { size: newSize });
+      }
+    });
+    
+    // Primitive subdivision slider
+    primitiveSubdivision.addEventListener('input', (e) => {
+      const obj = scene.getFirstSelected();
+      if (obj && obj.type === 'primitive' && obj.primitiveType === 'sphere') {
+        const newSubdiv = parseInt(e.target.value, 10);
+        primitiveSubdivisionValue.textContent = newSubdiv;
+        scene.updatePrimitiveConfig(obj.id, { subdivision: newSubdiv });
       }
     });
   }

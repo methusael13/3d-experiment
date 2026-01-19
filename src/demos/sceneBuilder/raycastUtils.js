@@ -115,6 +115,42 @@ export function screenToRay(screenX, screenY, camera, canvasWidth, canvasHeight)
 }
 
 /**
+ * Ray-plane intersection
+ * @param {number[]} rayOrigin - Ray origin point
+ * @param {number[]} rayDir - Ray direction (normalized)
+ * @param {number[]} planePoint - A point on the plane
+ * @param {number[]} planeNormal - Plane normal vector
+ * @returns {number[]|null} Intersection point or null if ray is parallel/behind
+ */
+export function rayPlaneIntersect(rayOrigin, rayDir, planePoint, planeNormal) {
+  const denom = planeNormal[0] * rayDir[0] + planeNormal[1] * rayDir[1] + planeNormal[2] * rayDir[2];
+  
+  // Check if ray is nearly parallel to plane
+  if (Math.abs(denom) < 0.0001) {
+    return null;
+  }
+  
+  const diff = [
+    planePoint[0] - rayOrigin[0],
+    planePoint[1] - rayOrigin[1],
+    planePoint[2] - rayOrigin[2],
+  ];
+  
+  const t = (planeNormal[0] * diff[0] + planeNormal[1] * diff[1] + planeNormal[2] * diff[2]) / denom;
+  
+  // Only accept intersections in front of the ray
+  if (t < 0) {
+    return null;
+  }
+  
+  return [
+    rayOrigin[0] + rayDir[0] * t,
+    rayOrigin[1] + rayDir[1] * t,
+    rayOrigin[2] + rayDir[2] * t,
+  ];
+}
+
+/**
  * Raycast to Y=0 plane
  * @returns {[number, number]|null} Hit position [x, z] or null if no hit
  */

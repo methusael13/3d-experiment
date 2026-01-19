@@ -19,6 +19,10 @@ export function createDepthPrePassRenderer(gl, width, height) {
   let colorTexture = null;
   let framebuffer = null;
   
+  // Try to enable float texture rendering
+  const floatExt = gl.getExtension('EXT_color_buffer_float');
+  const useFloatTexture = !!floatExt;
+  
   // Depth-only shader with wind displacement support
   const vsSource = `#version 300 es
     precision highp float;
@@ -123,21 +127,34 @@ export function createDepthPrePassRenderer(gl, width, height) {
    */
   function createFramebuffer(w, h) {
     // Clean up existing
-    if (depthTexture) gl.deleteTexture(depthTexture);
+    if (depthTexture) gl.deleteRenderbuffer(depthTexture);
     if (colorTexture) gl.deleteTexture(colorTexture);
     if (framebuffer) gl.deleteFramebuffer(framebuffer);
     
     currentWidth = w;
     currentHeight = h;
     
-    // Create color texture to store depth values (R32F for precision)
+    // Create color texture to store depth values
+    // Use R32F if EXT_color_buffer_float is available, otherwise fall back to RGBA8
     colorTexture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, colorTexture);
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.R32F,
-      currentWidth, currentHeight, 0,
-      gl.RED, gl.FLOAT, null
-    );
+    
+    if (useFloatTexture) {
+      // High precision float texture (requires EXT_color_buffer_float)
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.R32F,
+        currentWidth, currentHeight, 0,
+        gl.RED, gl.FLOAT, null
+      );
+    } else {
+      // Fallback to RGBA8 - encode depth in RGB channels
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA8,
+        currentWidth, currentHeight, 0,
+        gl.RGBA, gl.UNSIGNED_BYTE, null
+      );
+    }
+    
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);

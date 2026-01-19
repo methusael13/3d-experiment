@@ -40,15 +40,15 @@ const objectsPanelTemplate = `
 export function createObjectsPanel(panelElement, context) {
   const { scene, container } = context;
   
-  // Add panel-specific styles
-  const styleEl = document.createElement('style');
-  styleEl.textContent = objectsPanelStyles;
-  panelElement.appendChild(styleEl);
-  
-  // Set panel content
+  // Set panel content first
   panelElement.innerHTML = objectsPanelTemplate;
   panelElement.classList.add('objects-panel', 'sidebar-section');
   panelElement.id = 'objects-panel';
+  
+  // Add panel-specific styles after innerHTML (so they don't get overwritten)
+  const styleEl = document.createElement('style');
+  styleEl.textContent = objectsPanelStyles;
+  panelElement.appendChild(styleEl);
   
   // Cache DOM references
   const objectList = panelElement.querySelector('#object-list');

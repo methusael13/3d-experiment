@@ -1,4 +1,5 @@
 import { mat4, vec3, quat } from 'gl-matrix';
+import { screenToRay, rayPlaneIntersect } from './raycastUtils.js';
 
 /**
  * Transform gizmo for translate, rotate, scale operations
@@ -12,6 +13,7 @@ export function createTransformGizmo(gl, camera) {
   
   // Callbacks
   let onTransformChange = null;
+  let onUniformScaleOverlay = null; // Callback for rendering 2D overlay
   
   // Drag state
   let isDragging = false;
@@ -19,6 +21,26 @@ export function createTransformGizmo(gl, camera) {
   let dragStartPos = [0, 0];
   let dragStartValue = 0;
   let lastDragPos = [0, 0]; // For incremental rotation
+  
+  // Arc-based rotation state
+  let rotationLastAngle = 0; // Previous angle in rotation plane for incremental updates
+  let storedCanvasWidth = 800;
+  let storedCanvasHeight = 600;
+  
+  // Uniform scale state
+  let uniformScaleActive = false;
+  let uniformScaleStartScale = [1, 1, 1];
+  let uniformScaleStartDistance = 0;
+  let uniformScaleMousePos = [0, 0];
+  let uniformScaleObjectScreenPos = [0, 0];
+  let uniformScaleStartMousePos = [0, 0];
+  let canvasWidth = 800;
+  let canvasHeight = 600;
+  
+  // 2D overlay canvas for uniform scale visualization
+  let overlayCanvas = null;
+  let overlayCtx = null;
+  let overlayContainer = null;
   
   // Gizmo shader
   const vsSource = `#version 300 es
@@ -385,6 +407,7 @@ export function createTransformGizmo(gl, camera) {
           gl.uniform3fv(locations.uColor, color);
           gl.drawArrays(gl.LINES, 0, 2);
           
+          gl.disableVertexAttribArray(locations.aPosition);
           gl.deleteBuffer(tempBuffer);
         }
       }
@@ -393,6 +416,9 @@ export function createTransformGizmo(gl, camera) {
     // Re-enable depth test and cull face
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
+    
+    // Render 2D overlay for uniform scale
+    renderUniformScaleOverlay();
   }
   
   function setMode(newMode) {
@@ -413,12 +439,95 @@ export function createTransformGizmo(gl, camera) {
     onTransformChange = callback;
   }
   
+  // ==================== Arc-Based Rotation Helpers ====================
+  
+  /**
+   * Get the rotation plane normal and basis vectors for an axis
+   */
+  function getRotationPlaneInfo(axis) {
+    // Rotation plane normal is the axis itself
+    // u and v are the two orthogonal vectors in the plane
+    if (axis === 'x') {
+      return {
+        normal: [1, 0, 0],
+        u: [0, 1, 0],  // Y direction in plane
+        v: [0, 0, 1],  // Z direction in plane
+      };
+    } else if (axis === 'y') {
+      return {
+        normal: [0, 1, 0],
+        u: [0, 0, 1],  // Z direction in plane
+        v: [1, 0, 0],  // X direction in plane
+      };
+    } else { // z
+      return {
+        normal: [0, 0, 1],
+        u: [1, 0, 0],  // X direction in plane
+        v: [0, 1, 0],  // Y direction in plane
+      };
+    }
+  }
+  
+  /**
+   * Get the angle of a point in the rotation plane (relative to pivot)
+   * Returns angle in degrees
+   */
+  function getAngleInPlane(point, pivot, axis) {
+    const planeInfo = getRotationPlaneInfo(axis);
+    
+    // Vector from pivot to point
+    const v = [
+      point[0] - pivot[0],
+      point[1] - pivot[1],
+      point[2] - pivot[2],
+    ];
+    
+    // Project onto plane basis vectors
+    const uCoord = v[0] * planeInfo.u[0] + v[1] * planeInfo.u[1] + v[2] * planeInfo.u[2];
+    const vCoord = v[0] * planeInfo.v[0] + v[1] * planeInfo.v[1] + v[2] * planeInfo.v[2];
+    
+    // Calculate angle using atan2
+    return Math.atan2(vCoord, uCoord) * 180 / Math.PI;
+  }
+  
+  /**
+   * Project mouse position onto the rotation circle and get the angle
+   * Returns null if projection fails (e.g., ray parallel to plane)
+   */
+  function getMouseAngleOnCircle(screenX, screenY, axis, cw, ch) {
+    const { rayOrigin, rayDir } = screenToRay(screenX, screenY, camera, cw, ch);
+    const planeInfo = getRotationPlaneInfo(axis);
+    
+    // Intersect ray with rotation plane (plane passes through target position)
+    const intersection = rayPlaneIntersect(
+      rayOrigin,
+      rayDir,
+      targetPosition,
+      planeInfo.normal
+    );
+    
+    if (!intersection) {
+      // Fallback: use closest approach to the plane center
+      // Project ray origin onto plane and use that direction
+      return null;
+    }
+    
+    // Get angle of intersection point relative to pivot
+    return getAngleInPlane(intersection, targetPosition, axis);
+  }
+  
+  // ==================== Mouse Interaction ====================
+  
   // Mouse interaction
-  function handleMouseDown(screenX, screenY, canvasWidth, canvasHeight) {
+  function handleMouseDown(screenX, screenY, cw, ch) {
     if (!enabled) return false;
     
+    // Store canvas dimensions for later use
+    storedCanvasWidth = cw;
+    storedCanvasHeight = ch;
+    
     // Check if clicking on a gizmo axis
-    const axis = hitTestAxis(screenX, screenY, canvasWidth, canvasHeight);
+    const axis = hitTestAxis(screenX, screenY, cw, ch);
     if (axis) {
       isDragging = true;
       activeAxis = axis;
@@ -428,7 +537,14 @@ export function createTransformGizmo(gl, camera) {
       if (mode === 'translate') {
         dragStartValue = targetPosition[{ x: 0, y: 1, z: 2 }[axis]];
       } else if (mode === 'rotate') {
-        // For rotation, we use incremental updates, so no dragStartValue needed
+        // Get initial angle on the rotation circle
+        const angle = getMouseAngleOnCircle(screenX, screenY, axis, cw, ch);
+        if (angle !== null) {
+          rotationLastAngle = angle;
+        } else {
+          // Fallback if we can't get a good angle
+          rotationLastAngle = 0;
+        }
         dragStartValue = 0;
       } else if (mode === 'scale') {
         dragStartValue = targetScale[{ x: 0, y: 1, z: 2 }[axis]];
@@ -450,15 +566,37 @@ export function createTransformGizmo(gl, camera) {
       targetPosition[axisIndex] = dragStartValue + delta;
       if (onTransformChange) onTransformChange('position', [...targetPosition]);
     } else if (mode === 'rotate') {
-      // Use incremental rotation to allow continuous rotation
-      const dx = screenX - lastDragPos[0];
-      const dy = screenY - lastDragPos[1];
-      // Z axis rotation needs to be reversed for intuitive feel
-      const sign = activeAxis === 'z' ? -1 : 1;
-      const deltaAngle = (dx + dy) * 0.5 * sign; // degrees per pixel
-      targetRotation[axisIndex] += deltaAngle;
+      // Arc-based rotation: calculate angle delta from mouse position on the rotation circle
+      const currentAngle = getMouseAngleOnCircle(screenX, screenY, activeAxis, storedCanvasWidth, storedCanvasHeight);
+      
+      if (currentAngle !== null) {
+        // Calculate signed angle difference (handles wraparound at ±180°)
+        let deltaAngle = currentAngle - rotationLastAngle;
+        
+        // Handle wraparound: if delta is > 180 or < -180, it wrapped around
+        if (deltaAngle > 180) {
+          deltaAngle -= 360;
+        } else if (deltaAngle < -180) {
+          deltaAngle += 360;
+        }
+        
+        // Apply rotation delta
+        targetRotation[axisIndex] += deltaAngle;
+        
+        // Update last angle for next frame
+        rotationLastAngle = currentAngle;
+        
+        if (onTransformChange) onTransformChange('rotation', [...targetRotation]);
+      } else {
+        // Fallback: ray was parallel to plane, use screen-space delta
+        const dx = screenX - lastDragPos[0];
+        const dy = screenY - lastDragPos[1];
+        const deltaAngle = (dx + dy) * 0.5;
+        targetRotation[axisIndex] += deltaAngle;
+        if (onTransformChange) onTransformChange('rotation', [...targetRotation]);
+      }
+      
       lastDragPos = [screenX, screenY];
-      if (onTransformChange) onTransformChange('rotation', [...targetRotation]);
     } else if (mode === 'scale') {
       const dx = screenX - dragStartPos[0];
       const dy = screenY - dragStartPos[1];
@@ -569,6 +707,147 @@ export function createTransformGizmo(gl, camera) {
     return [screenX, screenY];
   }
   
+  // ==================== Uniform Scale Mode ====================
+  
+  /**
+   * Sets the overlay container element
+   * @param {HTMLElement} container - Container element to append overlay to
+   */
+  function setOverlayContainer(container) {
+    overlayContainer = container;
+  }
+  
+  /**
+   * Sets canvas dimensions for uniform scale calculations
+   */
+  function setCanvasSize(width, height) {
+    canvasWidth = width;
+    canvasHeight = height;
+    
+    // Update overlay canvas size if it exists
+    if (overlayCanvas) {
+      overlayCanvas.width = width;
+      overlayCanvas.height = height;
+    }
+  }
+  
+  /**
+   * Creates the overlay canvas if needed
+   */
+  function ensureOverlayCanvas() {
+    if (!overlayCanvas) {
+      overlayCanvas = document.createElement('canvas');
+      overlayCanvas.width = canvasWidth;
+      overlayCanvas.height = canvasHeight;
+      overlayCanvas.style.cssText = 'position: absolute; pointer-events: none; top: 0; left: 0; background: transparent;';
+      overlayCtx = overlayCanvas.getContext('2d');
+    }
+  }
+  
+  /**
+   * Renders the uniform scale overlay (called from render())
+   */
+  function renderUniformScaleOverlay() {
+    if (!overlayCanvas || !overlayCtx) return;
+    
+    overlayCtx.clearRect(0, 0, canvasWidth, canvasHeight);
+    
+    if (!uniformScaleActive) {
+      // Remove canvas when not active
+      if (overlayCanvas.parentNode) {
+        overlayCanvas.parentNode.removeChild(overlayCanvas);
+      }
+      return;
+    }
+    
+    // Ensure canvas is in DOM
+    if (overlayContainer && !overlayCanvas.parentNode) {
+      overlayContainer.appendChild(overlayCanvas);
+    }
+    
+    // Draw line from object to mouse
+    overlayCtx.save();
+    overlayCtx.strokeStyle = '#ffff00';
+    overlayCtx.lineWidth = 2;
+    overlayCtx.setLineDash([8, 8]);
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(uniformScaleObjectScreenPos[0], uniformScaleObjectScreenPos[1]);
+    overlayCtx.lineTo(uniformScaleMousePos[0], uniformScaleMousePos[1]);
+    overlayCtx.stroke();
+    
+    // Draw center point
+    overlayCtx.fillStyle = '#ffff00';
+    overlayCtx.beginPath();
+    overlayCtx.arc(uniformScaleObjectScreenPos[0], uniformScaleObjectScreenPos[1], 6, 0, Math.PI * 2);
+    overlayCtx.fill();
+    
+    // Draw instructions
+    overlayCtx.fillStyle = '#ffffff';
+    overlayCtx.font = '12px monospace';
+    overlayCtx.fillText('Uniform Scale - Click to commit, Esc to cancel', 10, 20);
+    overlayCtx.restore();
+  }
+  
+  /**
+   * Starts uniform scale mode
+   * @param {Array} startScale - Current scale [x, y, z]
+   * @param {Array} objectScreenPosition - Screen position of object center
+   * @param {Array} mousePosition - Current mouse position
+   * @returns {boolean} - True if uniform scale started successfully
+   */
+  function startUniformScale(startScale, objectScreenPosition, mousePosition) {
+    if (!enabled) return false;
+    
+    uniformScaleActive = true;
+    uniformScaleStartScale = [...startScale];
+    uniformScaleObjectScreenPos = [...objectScreenPosition];
+    uniformScaleStartMousePos = [...mousePosition];
+    uniformScaleMousePos = [...mousePosition];
+    
+    const dx = uniformScaleStartMousePos[0] - uniformScaleObjectScreenPos[0];
+    const dy = uniformScaleStartMousePos[1] - uniformScaleObjectScreenPos[1];
+    uniformScaleStartDistance = Math.sqrt(dx * dx + dy * dy);
+    if (uniformScaleStartDistance < 10) uniformScaleStartDistance = 100;
+    
+    ensureOverlayCanvas();
+    return true;
+  }
+  
+  /**
+   * Updates uniform scale based on mouse position
+   * @param {number} mouseX - Current mouse X
+   * @param {number} mouseY - Current mouse Y
+   * @returns {Array|null} - New scale values [x, y, z] or null if not active
+   */
+  function updateUniformScale(mouseX, mouseY) {
+    if (!uniformScaleActive) return null;
+    
+    uniformScaleMousePos = [mouseX, mouseY];
+    
+    const dx = mouseX - uniformScaleObjectScreenPos[0];
+    const dy = mouseY - uniformScaleObjectScreenPos[1];
+    const scaleFactor = Math.sqrt(dx * dx + dy * dy) / uniformScaleStartDistance;
+    
+    return uniformScaleStartScale.map(s => Math.max(0.01, s * scaleFactor));
+  }
+  
+  /**
+   * Commits uniform scale (ends the mode)
+   */
+  function commitUniformScale() {
+    uniformScaleActive = false;
+  }
+  
+  /**
+   * Cancels uniform scale and returns original scale
+   * @returns {Array} - Original start scale
+   */
+  function cancelUniformScale() {
+    const originalScale = [...uniformScaleStartScale];
+    uniformScaleActive = false;
+    return originalScale;
+  }
+  
   function destroy() {
     gl.deleteProgram(program);
     gl.deleteShader(vs);
@@ -590,7 +869,15 @@ export function createTransformGizmo(gl, camera) {
     handleMouseMove,
     handleMouseUp,
     destroy,
+    // Uniform scale
+    setCanvasSize,
+    setOverlayContainer,
+    startUniformScale,
+    updateUniformScale,
+    commitUniformScale,
+    cancelUniformScale,
     get isDragging() { return isDragging; },
     get mode() { return mode; },
+    get isUniformScaleActive() { return uniformScaleActive; },
   };
 }
