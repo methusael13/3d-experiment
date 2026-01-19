@@ -1,6 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { registerShader, unregisterShader } from './shaderManager.js';
-import { simplexNoise, windUniforms, windDisplacement, terrainBlendUniforms, terrainBlendFunctions } from './shaderChunks.js';
+import { simplexNoise, windUniforms, windDisplacement, terrainBlendUniforms, terrainBlendFunctions, hdrUniforms, hdrFunctions, shadowUniforms, shadowFunctions, lightingUniforms } from './shaderChunks.js';
 
 // Generate unique ID for each renderer instance
 let rendererIdCounter = 0;

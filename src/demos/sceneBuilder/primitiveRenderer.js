@@ -1,6 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { generatePrimitiveGeometry, computeBounds } from './primitiveGeometry.js';
-import { simplexNoise, windUniforms, windDisplacement, terrainBlendUniforms, terrainBlendFunctions } from './shaderChunks.js';
+import { hdrUniforms, hdrFunctions, shadowUniforms, shadowFunctions, lightingUniforms } from './shaderChunks.js';
 
 /**
  * Creates a renderer for primitive geometry (cube, plane, sphere)
@@ -49,84 +49,24 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
     precision mediump float;
     
     uniform vec4 uBaseColor;
-    uniform vec3 uLightDir;
     uniform bool uSelected;
     
-    // Lighting uniforms
-    uniform float uAmbientIntensity;
-    uniform vec3 uLightColor;
-    uniform int uLightMode;
-    uniform sampler2D uHdrTexture;
-    uniform int uHasHdr;
-    uniform float uHdrExposure;
+    // Include shared shader chunks
+    ${lightingUniforms}
+    ${hdrUniforms}
+    ${shadowUniforms}
     
-    // Shadow uniforms
-    uniform highp sampler2D uShadowMap;
-    uniform int uShadowEnabled;
+    // HDR sampling functions
+    ${hdrFunctions}
+    
+    // Shadow calculation functions
+    ${shadowFunctions}
     
     in vec2 vTexCoord;
     in vec3 vNormal;
     in vec4 vLightSpacePos;
     
     out vec4 fragColor;
-    
-    const float PI = 3.14159265359;
-    
-    vec2 dirToEquirect(vec3 dir) {
-      float phi = atan(dir.z, dir.x);
-      float theta = asin(clamp(dir.y, -1.0, 1.0));
-      return vec2(phi / (2.0 * PI) + 0.5, theta / PI + 0.5);
-    }
-    
-    vec3 sampleHDR(vec3 dir, float exposure) {
-      vec2 uv = dirToEquirect(dir);
-      vec3 hdrColor = texture(uHdrTexture, uv).rgb * exposure;
-      return hdrColor / (hdrColor + vec3(1.0));
-    }
-    
-    vec3 sampleHDRDiffuse(vec3 normal, float exposure) {
-      vec3 result = sampleHDR(normal, exposure) * 0.5;
-      vec3 tangent = normalize(cross(normal, abs(normal.y) < 0.9 ? vec3(0,1,0) : vec3(1,0,0)));
-      vec3 bitangent = cross(normal, tangent);
-      result += sampleHDR(normalize(normal + tangent * 0.7), exposure) * 0.125;
-      result += sampleHDR(normalize(normal - tangent * 0.7), exposure) * 0.125;
-      result += sampleHDR(normalize(normal + bitangent * 0.7), exposure) * 0.125;
-      result += sampleHDR(normalize(normal - bitangent * 0.7), exposure) * 0.125;
-      return result;
-    }
-    
-    float unpackDepth(vec4 rgba) {
-      const vec4 bitShift = vec4(1.0 / (256.0 * 256.0 * 256.0), 1.0 / (256.0 * 256.0), 1.0 / 256.0, 1.0);
-      return dot(rgba, bitShift);
-    }
-    
-    float calcShadow(vec4 lightSpacePos, vec3 normal, vec3 lightDir) {
-      vec3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
-      projCoords = projCoords * 0.5 + 0.5;
-      
-      if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || 
-          projCoords.y < 0.0 || projCoords.y > 1.0) {
-        return 1.0;
-      }
-      
-      float NdotL = max(dot(normal, lightDir), 0.0);
-      float bias = 0.0005 + 0.002 * (1.0 - NdotL);
-      float currentDepth = projCoords.z;
-      
-      float shadow = 0.0;
-      vec2 texelSize = vec2(1.0 / 2048.0);
-      
-      for (int x = -1; x <= 1; x++) {
-        for (int y = -1; y <= 1; y++) {
-          vec4 packedDepth = texture(uShadowMap, projCoords.xy + vec2(x, y) * texelSize);
-          float sampledDepth = unpackDepth(packedDepth);
-          shadow += (currentDepth - bias) > sampledDepth ? 0.0 : 1.0;
-        }
-      }
-      shadow /= 9.0;
-      
-      return shadow;
-    }
     
     void main() {
       vec4 color = uBaseColor;
