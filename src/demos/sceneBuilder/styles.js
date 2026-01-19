@@ -851,6 +851,113 @@ export const sceneBuilderStyles = `
     background: #444;
     margin: 12px 0;
   }
+  
+  /* Material Panel Styles */
+  .material-panel {
+    background: #2a2a2a;
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  
+  .material-panel .panel-header {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  
+  .material-content .no-selection {
+    color: #666;
+    font-size: 11px;
+    text-align: center;
+    padding: 12px;
+  }
+  
+  .material-controls .control-group {
+    margin-bottom: 10px;
+  }
+  
+  .material-controls .control-group label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: #aaa;
+    margin-bottom: 4px;
+  }
+  
+  .material-controls .value-display {
+    color: #888;
+    font-family: monospace;
+    font-size: 10px;
+  }
+  
+  .material-controls .color-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  
+  .material-controls .albedo-color {
+    width: 48px;
+    height: 24px;
+    border: 1px solid #555;
+    border-radius: 3px;
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+  }
+  
+  .material-controls .color-hex {
+    font-family: monospace;
+    font-size: 10px;
+    color: #888;
+  }
+  
+  .material-controls .preset-buttons {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    margin-top: 12px;
+  }
+  
+  .material-controls .preset-btn {
+    padding: 5px 8px;
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 3px;
+    color: #aaa;
+    cursor: pointer;
+    font-size: 10px;
+    transition: all 0.15s;
+  }
+  
+  .material-controls .preset-btn:hover {
+    background: #444;
+    color: #fff;
+    border-color: #666;
+  }
+  
+  .glb-material-info {
+    padding: 8px;
+    background: #333;
+    border-radius: 4px;
+  }
+  
+  .glb-notice {
+    font-size: 10px;
+    color: #888;
+    margin-bottom: 8px;
+    font-style: italic;
+  }
+  
+  .glb-prop {
+    font-size: 10px;
+    color: #aaa;
+    padding: 2px 0;
+    font-family: monospace;
+  }
 `;
 
 /**
@@ -949,6 +1056,9 @@ export const sceneBuilderTemplate = `
       <div class="scene-builder-sidebar-right">
         <!-- Environment Panel - populated by createEnvironmentPanel -->
         <div id="environment-panel-container"></div>
+        
+        <!-- Material Panel - populated by createMaterialPanel -->
+        <div id="material-panel-container"></div>
       </div>
     </div>
   </div>
