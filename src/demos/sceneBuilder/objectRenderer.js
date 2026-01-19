@@ -76,24 +76,22 @@ export function createObjectRenderer(gl, glbModel) {
     uniform sampler2D uTexture;
     uniform vec4 uBaseColor;
     uniform bool uHasTexture;
-    uniform vec3 uLightDir;
     uniform bool uSelected;
     
-    // Lighting uniforms
-    uniform float uAmbientIntensity;
-    uniform vec3 uLightColor;
-    uniform int uLightMode; // 0 = sun, 1 = HDR
-    uniform sampler2D uHdrTexture;
-    uniform int uHasHdr;
-    uniform float uHdrExposure;
+    // Include shared shader chunks
+    ${lightingUniforms}
+    ${hdrUniforms}
+    ${shadowUniforms}
     
-    // Shadow uniforms
-    uniform highp sampler2D uShadowMap;
-    uniform int uShadowEnabled;
+    // Debug uniforms
     uniform int uShadowDebug; // 0=off, 1=depth, 2=lightspace UV, 3=shadow value
-    
-    // Wind debug uniform
     uniform int uWindDebug; // 0=off, 1=wind type, 2=height factor, 3=displacement
+    
+    // HDR sampling functions
+    ${hdrFunctions}
+    
+    // Shadow calculation functions
+    ${shadowFunctions}
     
     // Terrain blend uniforms and functions
     ${terrainBlendUniforms}
@@ -107,82 +105,6 @@ export function createObjectRenderer(gl, glbModel) {
     in float vDisplacementMag;
     
     out vec4 fragColor;
-    
-    const float PI = 3.14159265359;
-    
-    vec2 dirToEquirect(vec3 dir) {
-      float phi = atan(dir.z, dir.x);
-      float theta = asin(clamp(dir.y, -1.0, 1.0));
-      return vec2(phi / (2.0 * PI) + 0.5, theta / PI + 0.5);
-    }
-    
-    vec3 sampleHDR(vec3 dir, float exposure) {
-      vec2 uv = dirToEquirect(dir);
-      vec3 hdrColor = texture(uHdrTexture, uv).rgb * exposure;
-      // Reinhard tone mapping
-      return hdrColor / (hdrColor + vec3(1.0));
-    }
-    
-    // Sample HDR in multiple directions for diffuse irradiance approximation
-    vec3 sampleHDRDiffuse(vec3 normal, float exposure) {
-      // Main direction
-      vec3 result = sampleHDR(normal, exposure) * 0.5;
-      
-      // Sample in offset directions for softer ambient
-      vec3 tangent = normalize(cross(normal, abs(normal.y) < 0.9 ? vec3(0,1,0) : vec3(1,0,0)));
-      vec3 bitangent = cross(normal, tangent);
-      
-      // 4 offset samples at 45 degrees
-      result += sampleHDR(normalize(normal + tangent * 0.7), exposure) * 0.125;
-      result += sampleHDR(normalize(normal - tangent * 0.7), exposure) * 0.125;
-      result += sampleHDR(normalize(normal + bitangent * 0.7), exposure) * 0.125;
-      result += sampleHDR(normalize(normal - bitangent * 0.7), exposure) * 0.125;
-      
-      return result;
-    }
-    
-    // Unpack depth from RGBA8
-    float unpackDepth(vec4 rgba) {
-      const vec4 bitShift = vec4(1.0 / (256.0 * 256.0 * 256.0), 1.0 / (256.0 * 256.0), 1.0 / 256.0, 1.0);
-      return dot(rgba, bitShift);
-    }
-    
-    // PCF shadow sampling with manual depth comparison
-    float calcShadow(vec4 lightSpacePos, vec3 normal, vec3 lightDir) {
-      // Perspective divide
-      vec3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
-      
-      // Transform to [0,1] range
-      projCoords = projCoords * 0.5 + 0.5;
-      
-      // Check if outside shadow map
-      if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || 
-          projCoords.y < 0.0 || projCoords.y > 1.0) {
-        return 1.0; // No shadow outside map
-      }
-      
-      // Very small slope-scaled bias
-      float NdotL = max(dot(normal, lightDir), 0.0);
-      float bias = 0.0005 + 0.002 * (1.0 - NdotL);
-      
-      float currentDepth = projCoords.z;
-      
-      // PCF: sample 3x3 around current position with manual comparison
-      float shadow = 0.0;
-      vec2 texelSize = vec2(1.0 / 2048.0);
-      
-      for (int x = -1; x <= 1; x++) {
-        for (int y = -1; y <= 1; y++) {
-          vec4 packedDepth = texture(uShadowMap, projCoords.xy + vec2(x, y) * texelSize);
-          float sampledDepth = unpackDepth(packedDepth);
-          // Lit if current depth is less than stored depth (closer to light)
-          shadow += (currentDepth - bias) > sampledDepth ? 0.0 : 1.0;
-        }
-      }
-      shadow /= 9.0;
-      
-      return shadow;
-    }
     
     void main() {
       vec4 color = uBaseColor;
