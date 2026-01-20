@@ -154,7 +154,8 @@ export function createSkyRenderer(gl) {
       // Compute UV and its derivatives for seam-aware sampling
       float phi = atan(dir.z, dir.x);
       float theta = asin(clamp(dir.y, -1.0, 1.0));
-      vec2 uv = vec2(phi / TWO_PI + 0.5, theta / PI + 0.5);
+      // V is flipped: HDR files store zenith at top (V=0 in image space)
+      vec2 uv = vec2(phi / TWO_PI + 0.5, 0.5 - theta / PI);
       
       // Compute screen-space derivatives
       vec2 uvDx = dFdx(uv);
