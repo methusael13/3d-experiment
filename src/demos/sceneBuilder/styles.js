@@ -1023,8 +1023,6 @@ export const sceneBuilderTemplate = `
         <div class="menu-dropdown">
           <button class="menu-action" id="menu-sun-mode">Sun Mode</button>
           <button class="menu-action" id="menu-hdr-mode">HDR Mode</button>
-          <div class="menu-separator"></div>
-          <button class="menu-action" id="menu-load-hdr">Load HDR...</button>
         </div>
       </div>
     </div>

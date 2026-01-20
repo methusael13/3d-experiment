@@ -339,10 +339,6 @@ export function createSceneBuilderDemo(container, options = {}) {
       menuItems.forEach(item => item.classList.remove('open'));
     });
     
-    container.querySelector('#menu-load-hdr').addEventListener('click', () => {
-      environmentPanel?.openHDRFilePicker();
-    });
-    
     // Scene > Add > Shapes menu
     container.querySelector('#menu-add-cube')?.addEventListener('click', () => {
       const obj = scene.addPrimitive('cube');

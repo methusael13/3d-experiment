@@ -104,7 +104,6 @@ const environmentPanelStyles = `
   
   .environment-panel .hdr-gallery-item {
     position: relative;
-    aspect-ratio: 2 / 1;
     border-radius: 4px;
     overflow: hidden;
     cursor: pointer;
