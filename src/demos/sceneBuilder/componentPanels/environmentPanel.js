@@ -78,6 +78,125 @@ const environmentPanelStyles = `
     background: #4f4;
     box-shadow: 0 0 4px #4f4;
   }
+  
+  /* HDR Gallery Styles */
+  .environment-panel .hdr-gallery {
+    margin-top: 8px;
+    margin-bottom: 8px;
+  }
+  
+  .environment-panel .hdr-gallery-label {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 6px;
+  }
+  
+  .environment-panel .hdr-gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    max-height: 180px;
+    overflow-y: auto;
+    padding: 4px;
+    background: #222;
+    border-radius: 4px;
+  }
+  
+  .environment-panel .hdr-gallery-item {
+    position: relative;
+    aspect-ratio: 2 / 1;
+    border-radius: 4px;
+    overflow: hidden;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: border-color 0.15s, transform 0.15s;
+    background: #333;
+  }
+  
+  .environment-panel .hdr-gallery-item:hover {
+    border-color: #666;
+    transform: scale(1.02);
+  }
+  
+  .environment-panel .hdr-gallery-item.selected {
+    border-color: #ff6666;
+  }
+  
+  .environment-panel .hdr-gallery-item.loading {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  
+  .environment-panel .hdr-gallery-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  
+  .environment-panel .hdr-gallery-name {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 2px 4px;
+    background: rgba(0,0,0,0.7);
+    font-size: 9px;
+    color: #ccc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  
+  .environment-panel .hdr-gallery-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #2a2a2a 0%, #3a3a3a 100%);
+    color: #666;
+    font-size: 16px;
+  }
+  
+  .environment-panel .hdr-gallery-upload {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    background: #2a2a2a;
+    color: #888;
+    font-size: 10px;
+    gap: 2px;
+  }
+  
+  .environment-panel .hdr-gallery-upload-icon {
+    font-size: 18px;
+  }
+  
+  .environment-panel .hdr-load-btn {
+    width: 100%;
+    padding: 6px 12px;
+    margin-top: 8px;
+    background: #ff6666;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  
+  .environment-panel .hdr-load-btn:hover {
+    background: #ff8080;
+  }
+  
+  .environment-panel .hdr-load-btn:disabled {
+    background: #555;
+    cursor: not-allowed;
+  }
 `;
 
 // Panel HTML template
@@ -146,6 +265,16 @@ const environmentPanelTemplate = `
           <input type="range" id="hdr-exposure" min="0.1" max="5" step="0.1" value="1" class="slider-input">
         </div>
         <div id="hdr-filename" class="hdr-filename">No HDR loaded</div>
+        
+        <!-- HDR Gallery -->
+        <div class="hdr-gallery">
+          <div class="hdr-gallery-label">Available HDRs</div>
+          <div id="hdr-gallery-grid" class="hdr-gallery-grid">
+            <!-- Populated dynamically -->
+          </div>
+          <button id="hdr-load-btn" class="hdr-load-btn" disabled>Load Selected</button>
+        </div>
+        
         <div id="hdr-progress" class="hdr-progress" style="display: none;">
           <div class="hdr-progress-bar">
             <div id="hdr-progress-fill" class="hdr-progress-fill"></div>
@@ -248,6 +377,10 @@ export function createEnvironmentPanel(panelElement, context) {
   const hdrProgressFill = panelElement.querySelector('#hdr-progress-fill');
   const hdrProgressText = panelElement.querySelector('#hdr-progress-text');
   
+  // HDR Gallery elements
+  const hdrGalleryGrid = panelElement.querySelector('#hdr-gallery-grid');
+  const hdrLoadBtn = panelElement.querySelector('#hdr-load-btn');
+  
   // Cache DOM references - Wind tab
   const windEnabled = panelElement.querySelector('#wind-enabled');
   const windEnabledIndicator = panelElement.querySelector('#wind-enabled-indicator');
@@ -261,6 +394,173 @@ export function createEnvironmentPanel(panelElement, context) {
   const windGustStrength = panelElement.querySelector('#wind-gust-strength');
   const windGustStrengthValue = panelElement.querySelector('#wind-gust-strength-value');
   const windDebug = panelElement.querySelector('#wind-debug');
+  
+  // HDR Gallery state
+  let hdrManifest = [];
+  let selectedHdrName = null; // Persists across sun/HDR mode switches
+  let isLoadingHdr = false;
+  
+  /**
+   * Loads the HDR manifest from server
+   */
+  async function loadHdrManifest() {
+    try {
+      const response = await fetch('/ibl/manifest.json');
+      const data = await response.json();
+      hdrManifest = data.hdrs || [];
+      renderHdrGallery();
+    } catch (err) {
+      console.warn('Failed to load HDR manifest:', err);
+      hdrManifest = [];
+      renderHdrGallery();
+    }
+  }
+  
+  /**
+   * Renders the HDR gallery grid
+   */
+  function renderHdrGallery() {
+    let html = '';
+    
+    // Render each HDR from manifest
+    for (const hdr of hdrManifest) {
+      const isSelected = selectedHdrName === hdr.name;
+      html += `
+        <div class="hdr-gallery-item ${isSelected ? 'selected' : ''}" data-hdr-name="${hdr.name}">
+          <img 
+            class="hdr-gallery-thumb" 
+            src="/ibl/${hdr.name}.jpg" 
+            alt="${hdr.displayName}"
+            onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+          >
+          <div class="hdr-gallery-placeholder" style="display: none;">🌄</div>
+          <div class="hdr-gallery-name">${hdr.displayName}</div>
+        </div>
+      `;
+    }
+    
+    // Add upload button as last item
+    html += `
+      <div class="hdr-gallery-item" data-hdr-upload="true">
+        <div class="hdr-gallery-upload">
+          <span class="hdr-gallery-upload-icon">+</span>
+          <span>Upload</span>
+        </div>
+      </div>
+    `;
+    
+    hdrGalleryGrid.innerHTML = html;
+    
+    // Add click handlers
+    hdrGalleryGrid.querySelectorAll('.hdr-gallery-item').forEach(item => {
+      item.addEventListener('click', () => {
+        if (isLoadingHdr) return;
+        
+        if (item.dataset.hdrUpload) {
+          // Open file picker for custom upload
+          hdrFile.click();
+        } else {
+          // Select this HDR
+          const hdrName = item.dataset.hdrName;
+          selectHdr(hdrName);
+        }
+      });
+    });
+    
+    updateLoadButton();
+  }
+  
+  /**
+   * Selects an HDR in the gallery
+   */
+  function selectHdr(hdrName) {
+    selectedHdrName = hdrName;
+    
+    // Update visual selection
+    hdrGalleryGrid.querySelectorAll('.hdr-gallery-item').forEach(item => {
+      item.classList.toggle('selected', item.dataset.hdrName === hdrName);
+    });
+    
+    updateLoadButton();
+  }
+  
+  /**
+   * Updates the Load button state
+   */
+  function updateLoadButton() {
+    hdrLoadBtn.disabled = !selectedHdrName || isLoadingHdr;
+    hdrLoadBtn.textContent = isLoadingHdr ? 'Loading...' : 'Load Selected';
+  }
+  
+  /**
+   * Loads the selected HDR and applies it to the scene
+   */
+  async function loadSelectedHdr() {
+    if (!selectedHdrName || isLoadingHdr) return;
+    
+    isLoadingHdr = true;
+    updateLoadButton();
+    
+    // Mark the selected item as loading
+    const selectedItem = hdrGalleryGrid.querySelector(`[data-hdr-name="${selectedHdrName}"]`);
+    if (selectedItem) selectedItem.classList.add('loading');
+    
+    try {
+      const hdrPath = `/ibl/${selectedHdrName}.hdr`;
+      hdrFilename.textContent = 'Loading...';
+      hdrProgress.style.display = 'block';
+      hdrProgressFill.style.width = '0%';
+      hdrProgressText.textContent = 'Fetching HDR...';
+      
+      // Fetch the HDR file
+      const response = await fetch(hdrPath);
+      if (!response.ok) throw new Error(`Failed to fetch ${hdrPath}`);
+      
+      const buffer = await response.arrayBuffer();
+      
+      hdrProgressText.textContent = 'Parsing HDR...';
+      hdrProgressFill.style.width = '10%';
+      
+      const hdrData = parseHDR(buffer);
+      
+      hdrProgressText.textContent = 'Pre-filtering for IBL...';
+      
+      // Create prefiltered texture
+      const result = createPrefilteredHDRTexture(gl, hdrData, (progress) => {
+        const percent = Math.round(10 + progress * 90);
+        hdrProgressFill.style.width = `${percent}%`;
+        hdrProgressText.textContent = progress < 1 ? `Pre-filtering... ${percent}%` : 'Complete!';
+      });
+      
+      const { texture, mipLevels } = result;
+      
+      // Find display name
+      const hdrInfo = hdrManifest.find(h => h.name === selectedHdrName);
+      const displayName = hdrInfo ? hdrInfo.displayName : selectedHdrName;
+      
+      lightingManager.hdrLight.setTexture(texture, `${selectedHdrName}.hdr`);
+      hdrFilename.textContent = displayName;
+      
+      // Hide progress after a short delay
+      setTimeout(() => {
+        hdrProgress.style.display = 'none';
+      }, 500);
+      
+      // Notify viewport about the new texture with mip level count
+      setHDRTexture(texture, mipLevels);
+      setLightMode('hdr');
+      updateLightModeDisplay('hdr');
+      
+    } catch (err) {
+      console.error('Failed to load HDR:', err);
+      hdrFilename.textContent = 'Error loading HDR';
+      hdrProgress.style.display = 'none';
+    } finally {
+      isLoadingHdr = false;
+      updateLoadButton();
+      if (selectedItem) selectedItem.classList.remove('loading');
+    }
+  }
   
   /**
    * Updates wind direction arrow rotation
@@ -385,11 +685,18 @@ export function createEnvironmentPanel(panelElement, context) {
       onLightingChanged();
     });
     
-    // HDR file input
+    // HDR Load button
+    hdrLoadBtn.addEventListener('click', loadSelectedHdr);
+    
+    // HDR file input (for custom uploads)
     hdrFile.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (file) {
         try {
+          // Clear gallery selection for custom uploads
+          selectedHdrName = null;
+          renderHdrGallery();
+          
           hdrFilename.textContent = 'Loading...';
           hdrProgress.style.display = 'block';
           hdrProgressFill.style.width = '0%';
@@ -471,6 +778,9 @@ export function createEnvironmentPanel(panelElement, context) {
       windManager.debug = parseInt(e.target.value, 10);
       onWindChanged();
     });
+    
+    // Load HDR manifest on init
+    loadHdrManifest();
   }
   
   /**
