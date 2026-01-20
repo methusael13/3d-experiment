@@ -528,15 +528,20 @@ export const iblFunctions = `
 // prefilteredMap should have mip levels for roughness
 vec3 samplePrefilteredEnv(vec3 R, float roughness, sampler2D envMap, float maxMipLevel) {
   // Convert roughness to mip level (0 = sharp, max = blurry)
-  float mipLevel = roughness * maxMipLevel;
+  // Use perceptual roughness mapping for better visual results
+  float perceptualRoughness = roughness * roughness;
+  // Always sample at least mip 1 to avoid unfiltered aliasing artifacts
+  // The base mip (0) can have precision issues at equirectangular seams
+  float mipLevel = max(perceptualRoughness * maxMipLevel, 1.0);
   
   // Equirectangular projection (flip Y to match HDR convention)
   float phi = atan(R.z, R.x);
   float theta = asin(clamp(R.y, -1.0, 1.0));
   vec2 uv = vec2(phi / (2.0 * PI) + 0.5, 0.5 - theta / PI);
   
-  // WebGL2 textureLod for mip sampling
-  return textureLod(envMap, uv, mipLevel).rgb;
+  // Clamp HDR values to prevent overflow artifacts
+  vec3 color = textureLod(envMap, uv, mipLevel).rgb;
+  return clamp(color, 0.0, 65504.0);
 }
 
 // Diffuse IBL from environment (irradiance)
