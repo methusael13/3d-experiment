@@ -426,12 +426,22 @@ function createBlurShader(gl) {
         float NdotL = max(dot(N, L), 0.0);
         if (NdotL > 0.0) {
           vec2 sampleUV = directionToUV(L);
-          prefilteredColor += textureLod(uTexture, sampleUV, float(uMipLevel)).rgb * NdotL;
+          // Clamp extreme HDR values to prevent Inf/NaN from sun regions
+          // 65504.0 is the max representable value in float16
+          vec3 sample = textureLod(uTexture, sampleUV, float(uMipLevel)).rgb;
+          sample = clamp(sample, 0.0, 65504.0);
+          prefilteredColor += sample * NdotL;
           totalWeight += NdotL;
         }
       }
       
       prefilteredColor = prefilteredColor / max(totalWeight, 0.001);
+      
+      // Final NaN/Inf protection
+      if (any(isnan(prefilteredColor)) || any(isinf(prefilteredColor))) {
+        prefilteredColor = vec3(0.0);
+      }
+      
       fragColor = vec4(prefilteredColor, 1.0);
     }
   `;

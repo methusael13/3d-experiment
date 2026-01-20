@@ -172,7 +172,9 @@ export function createSkyRenderer(gl) {
       }
       
       // Sample with corrected gradients to avoid seam artifacts
-      vec3 hdrColor = textureGrad(uHdrTexture, uv, uvDx, uvDy).rgb * uExposure;
+      vec3 hdrColor = textureGrad(uHdrTexture, uv, uvDx, uvDy).rgb;
+      // Clamp extreme HDR values (sun can be millions) to prevent Inf/NaN
+      hdrColor = clamp(hdrColor, 0.0, 65504.0) * uExposure;
       vec3 ldr = tonemap(hdrColor);
       
       // Gamma correction
