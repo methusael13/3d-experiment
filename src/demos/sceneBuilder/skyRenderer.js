@@ -134,11 +134,13 @@ export function createSkyRenderer(gl) {
     out vec4 fragColor;
     
     const float PI = 3.14159265359;
+    const float TWO_PI = 6.28318530718;
     
+    // Convert direction to equirectangular UV
     vec2 dirToEquirect(vec3 dir) {
       float phi = atan(dir.z, dir.x);
       float theta = asin(clamp(dir.y, -1.0, 1.0));
-      return vec2(phi / (2.0 * PI) + 0.5, theta / PI + 0.5);
+      return vec2(phi / TWO_PI + 0.5, theta / PI + 0.5);
     }
     
     // Simple tone mapping (Reinhard)
@@ -148,9 +150,28 @@ export function createSkyRenderer(gl) {
     
     void main() {
       vec3 dir = normalize(vRayDir);
-      vec2 uv = dirToEquirect(dir);
       
-      vec3 hdrColor = texture(uHdrTexture, uv).rgb * uExposure;
+      // Compute UV and its derivatives for seam-aware sampling
+      float phi = atan(dir.z, dir.x);
+      float theta = asin(clamp(dir.y, -1.0, 1.0));
+      vec2 uv = vec2(phi / TWO_PI + 0.5, theta / PI + 0.5);
+      
+      // Compute screen-space derivatives
+      vec2 uvDx = dFdx(uv);
+      vec2 uvDy = dFdy(uv);
+      
+      // Fix the seam: if the U derivative is too large, we're crossing the wrap boundary
+      // In that case, wrap the derivative to be continuous
+      const float wrapThreshold = 0.5;
+      if (abs(uvDx.x) > wrapThreshold) {
+        uvDx.x = uvDx.x - sign(uvDx.x);
+      }
+      if (abs(uvDy.x) > wrapThreshold) {
+        uvDy.x = uvDy.x - sign(uvDy.x);
+      }
+      
+      // Sample with corrected gradients to avoid seam artifacts
+      vec3 hdrColor = textureGrad(uHdrTexture, uv, uvDx, uvDy).rgb * uExposure;
       vec3 ldr = tonemap(hdrColor);
       
       // Gamma correction
