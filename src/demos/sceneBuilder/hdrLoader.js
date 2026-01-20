@@ -91,10 +91,21 @@ export function parseHDR(buffer) {
         pixels[i + 1] = 0;
         pixels[i + 2] = 0;
       } else {
-        const scale = Math.pow(2, e - 128 - 8) / exposure;
-        pixels[i] = r * scale;
-        pixels[i + 1] = g * scale;
-        pixels[i + 2] = b * scale;
+        // Cap exponent to prevent Float32 overflow (e=200 gives 2^64 which is huge)
+        // We clamp to a reasonable HDR range that float16 can represent (max 65504)
+        const clampedE = Math.min(e, 200); // 2^(200-136) = 2^64, still huge but won't overflow float32
+        const scale = Math.pow(2, clampedE - 128 - 8) / exposure;
+        
+        // Also clamp final values to float16 max to prevent issues in WebGL
+        const maxHDR = 65504.0;
+        pixels[i] = Math.min(r * scale, maxHDR);
+        pixels[i + 1] = Math.min(g * scale, maxHDR);
+        pixels[i + 2] = Math.min(b * scale, maxHDR);
+        
+        // Check for NaN/Inf and replace with bright white
+        if (!Number.isFinite(pixels[i])) pixels[i] = maxHDR;
+        if (!Number.isFinite(pixels[i + 1])) pixels[i + 1] = maxHDR;
+        if (!Number.isFinite(pixels[i + 2])) pixels[i + 2] = maxHDR;
       }
     }
   }
