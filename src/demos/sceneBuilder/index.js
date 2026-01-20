@@ -393,6 +393,20 @@ export function createSceneBuilderDemo(container, options = {}) {
         menuItems.forEach(item => item.classList.remove('open'));
       });
     }
+    
+    // View > Expand/Shrink View
+    let isExpanded = false;
+    const expandViewBtn = container.querySelector('#menu-expand-view');
+    if (expandViewBtn) {
+      expandViewBtn.addEventListener('click', () => {
+        isExpanded = !isExpanded;
+        container.querySelector('.scene-builder-container').classList.toggle('expanded', isExpanded);
+        expandViewBtn.textContent = isExpanded ? 'Shrink View' : 'Expand View';
+        // Trigger viewport resize to adjust canvas
+        viewport?.resize();
+        menuItems.forEach(item => item.classList.remove('open'));
+      });
+    }
   }
   
   // ==================== Keyboard Shortcuts ====================

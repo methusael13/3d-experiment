@@ -8,6 +8,16 @@ export const sceneBuilderStyles = `
     height: 100%;
   }
   
+  .scene-builder-container.expanded {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 9999;
+    background: #1a1a1a;
+  }
+  
   /* Menu Bar */
   .menu-bar {
     display: flex;
@@ -1016,6 +1026,8 @@ export const sceneBuilderTemplate = `
           </div>
           <div class="menu-separator"></div>
           <button class="menu-action" id="menu-shader-editor">Shader Editor</button>
+          <div class="menu-separator"></div>
+          <button class="menu-action" id="menu-expand-view">Expand View</button>
         </div>
       </div>
       <div class="menu-item" id="menu-lighting">
