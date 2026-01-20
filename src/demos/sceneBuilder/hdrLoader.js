@@ -428,9 +428,9 @@ function createBlurShader(gl) {
           vec2 sampleUV = directionToUV(L);
           // Clamp extreme HDR values to prevent Inf/NaN from sun regions
           // 65504.0 is the max representable value in float16
-          vec3 sample = textureLod(uTexture, sampleUV, float(uMipLevel)).rgb;
-          sample = clamp(sample, 0.0, 65504.0);
-          prefilteredColor += sample * NdotL;
+          vec3 texSample = textureLod(uTexture, sampleUV, float(uMipLevel)).rgb;
+          texSample = clamp(texSample, 0.0, 65504.0);
+          prefilteredColor += texSample * NdotL;
           totalWeight += NdotL;
         }
       }
