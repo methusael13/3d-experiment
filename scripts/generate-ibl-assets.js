@@ -25,7 +25,7 @@ const THUMB_WIDTH = 256;
 const THUMB_HEIGHT = 128;
 
 // HDR to LDR exposure adjustment
-const EXPOSURE = 1.5;
+const EXPOSURE = 0.7;
 
 /**
  * Check if ImageMagick is installed
