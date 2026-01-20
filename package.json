@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "generate-ibl": "node scripts/generate-ibl-assets.js"
   },
   "devDependencies": {
     "vite": "^5.0.0",
