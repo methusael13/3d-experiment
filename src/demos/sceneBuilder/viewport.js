@@ -233,6 +233,7 @@ export function createViewport(canvasElement, options = {}) {
         sunDir: getSunDirection(),
         ambient: lightingState.ambient,
         lightColor: lightingState.lightColor,
+        toneMapping: lightingState.toneMapping,
         cameraPos,
       };
     }
@@ -246,6 +247,7 @@ export function createViewport(canvasElement, options = {}) {
       lightSpaceMatrix: shadowRenderer ? shadowRenderer.getLightSpaceMatrix() : null,
       shadowMap: shadowRenderer ? shadowRenderer.getTexture() : null,
       shadowDebug: lightingState.shadowDebug,
+      toneMapping: lightingState.toneMapping,
       cameraPos,
     };
   }

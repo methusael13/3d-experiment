@@ -33,11 +33,11 @@ export function createMaterialPanel(container, context) {
         </div>
         <div class="control-group">
           <label>Metallic <span class="value-display metallic-value">0.0</span></label>
-          <input type="range" class="metallic-slider" min="0" max="1" step="0.01" value="0">
+          <input type="range" class="metallic-slider slider-input" min="0" max="1" step="0.01" value="0">
         </div>
         <div class="control-group">
           <label>Roughness <span class="value-display roughness-value">0.5</span></label>
-          <input type="range" class="roughness-slider" min="0.04" max="1" step="0.01" value="0.5">
+          <input type="range" class="roughness-slider slider-input" min="0.04" max="1" step="0.01" value="0.5">
         </div>
         <div class="preset-buttons">
           <button class="preset-btn" data-preset="plastic">Plastic</button>

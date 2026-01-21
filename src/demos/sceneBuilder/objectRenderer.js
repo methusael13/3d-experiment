@@ -1,6 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { registerShader, unregisterShader } from './shaderManager.js';
-import { windComplete, shadowUniforms, shadowFunctions, hdrUniforms, lightingUniforms, pbrFunctions, iblFunctions, pbrLighting, terrainBlendComplete } from './shaderChunks.js';
+import { windComplete, shadowUniforms, shadowFunctions, hdrUniforms, lightingUniforms, pbrFunctions, iblFunctions, pbrLighting, terrainBlendComplete, toneMappingComplete } from './shaderChunks.js';
 
 // Generate unique ID for each renderer instance
 let rendererIdCounter = 0;
@@ -19,10 +19,12 @@ export function createObjectRenderer(gl, glbModel) {
     in vec3 aPosition;
     in vec2 aTexCoord;
     in vec3 aNormal;
+    in vec4 aTangent; // xyz = tangent direction, w = handedness (-1 or 1)
     
     uniform mat4 uModelViewProjection;
     uniform mat4 uModel;
     uniform mat4 uLightSpaceMatrix;
+    uniform bool uHasTangent;
     
     // Include wind system (noise + uniforms + displacement)
     ${windComplete}
@@ -34,6 +36,8 @@ export function createObjectRenderer(gl, glbModel) {
     out float vWindType;
     out float vHeightFactor;
     out float vDisplacementMag;
+    out mat3 vTBN; // Tangent-Bitangent-Normal matrix
+    out float vHasTangent;
     
     void main() {
       vec4 worldPos = uModel * vec4(aPosition, 1.0);
@@ -59,9 +63,23 @@ export function createObjectRenderer(gl, glbModel) {
       gl_Position += vp * worldOffset;
       
       vTexCoord = aTexCoord;
-      vNormal = mat3(uModel) * aNormal;
+      vec3 N = normalize(mat3(uModel) * aNormal);
+      vNormal = N;
       vWorldPos = worldPos.xyz;
       vLightSpacePos = uLightSpaceMatrix * worldPos;
+      
+      // Compute TBN matrix if tangent data is available
+      vHasTangent = uHasTangent ? 1.0 : 0.0;
+      if (uHasTangent) {
+        vec3 T = normalize(mat3(uModel) * aTangent.xyz);
+        // Re-orthogonalize T with respect to N
+        T = normalize(T - dot(T, N) * N);
+        // Compute bitangent with handedness
+        vec3 B = cross(N, T) * aTangent.w;
+        vTBN = mat3(T, B, N);
+      } else {
+        vTBN = mat3(1.0); // Identity, will use fallback in fragment shader
+      }
       
       // Pass debug info to fragment shader
       vWindType = float(uWindType);
@@ -74,8 +92,21 @@ export function createObjectRenderer(gl, glbModel) {
     precision highp float;
     
     uniform sampler2D uTexture;
+    uniform sampler2D uMetallicRoughnessTexture;
+    uniform sampler2D uNormalTexture;
+    uniform sampler2D uOcclusionTexture;
+    uniform sampler2D uEmissiveTexture;
     uniform vec4 uBaseColor;
     uniform bool uHasTexture;
+    uniform bool uHasMetallicRoughnessTexture;
+    uniform bool uHasNormalTexture;
+    uniform bool uHasOcclusionTexture;
+    uniform bool uHasEmissiveTexture;
+    uniform float uMetallicFactor;
+    uniform float uRoughnessFactor;
+    uniform float uNormalScale;
+    uniform float uOcclusionStrength;
+    uniform vec3 uEmissiveFactor;
     uniform bool uSelected;
     uniform vec3 uCameraPos;
     
@@ -103,6 +134,9 @@ export function createObjectRenderer(gl, glbModel) {
     // Terrain blend (uniforms + functions)
     ${terrainBlendComplete}
     
+    // Tone mapping
+    ${toneMappingComplete}
+    
     in vec2 vTexCoord;
     in vec3 vNormal;
     in vec3 vWorldPos;
@@ -110,6 +144,8 @@ export function createObjectRenderer(gl, glbModel) {
     in float vWindType;
     in float vHeightFactor;
     in float vDisplacementMag;
+    in mat3 vTBN;
+    in float vHasTangent;
     
     out vec4 fragColor;
     
@@ -120,12 +156,56 @@ export function createObjectRenderer(gl, glbModel) {
       }
       
       vec3 N = normalize(vNormal);
+      
+      // Apply normal map if available
+      if (uHasNormalTexture) {
+        vec3 normalMap = texture(uNormalTexture, vTexCoord).rgb * 2.0 - 1.0;
+        normalMap.xy *= uNormalScale;
+        
+        // Use vertex TBN if available, otherwise fall back to screen-space derivatives
+        if (vHasTangent > 0.5) {
+          // Use pre-computed TBN from vertex shader (more accurate)
+          N = normalize(vTBN * normalMap);
+        } else {
+          // Fallback: approximate tangent frame from screen-space derivatives
+          vec3 dp1 = dFdx(vWorldPos);
+          vec3 dp2 = dFdy(vWorldPos);
+          vec2 duv1 = dFdx(vTexCoord);
+          vec2 duv2 = dFdy(vTexCoord);
+          
+          vec3 dp2perp = cross(dp2, N);
+          vec3 dp1perp = cross(N, dp1);
+          vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+          vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+          
+          float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+          mat3 TBN = mat3(T * invmax, B * invmax, N);
+          
+          N = normalize(TBN * normalMap);
+        }
+      }
+      
       vec3 V = normalize(uCameraPos - vWorldPos);
       
-      // GLB models: use base color as albedo, default metallic=0, roughness from texture or 0.5
+      // GLB models: use base color as albedo
       vec3 albedo = color.rgb;
-      float metallic = 0.0;
-      float roughness = 0.5;
+      
+      // Sample metallic-roughness from texture if available
+      // glTF spec: roughness is in G channel, metallic is in B channel
+      float metallic = uMetallicFactor;
+      float roughness = uRoughnessFactor;
+      if (uHasMetallicRoughnessTexture) {
+        vec4 mrSample = texture(uMetallicRoughnessTexture, vTexCoord);
+        roughness *= mrSample.g;
+        metallic *= mrSample.b;
+      }
+      
+      // Sample ambient occlusion
+      float ao = 1.0;
+      if (uHasOcclusionTexture) {
+        ao = texture(uOcclusionTexture, vTexCoord).r;
+        ao = mix(1.0, ao, uOcclusionStrength);
+      }
       
       vec3 finalColor = calcPBRLighting(
         N, V, vWorldPos,
@@ -135,8 +215,19 @@ export function createObjectRenderer(gl, glbModel) {
         uShadowMap, uShadowEnabled, vLightSpacePos
       );
       
-      // Tone mapping (Reinhard)
-      finalColor = finalColor / (finalColor + vec3(1.0));
+      // Apply ambient occlusion to the final lighting
+      finalColor *= ao;
+      
+      // Add emissive contribution (before tone mapping)
+      if (uHasEmissiveTexture) {
+        vec3 emissive = texture(uEmissiveTexture, vTexCoord).rgb * uEmissiveFactor;
+        finalColor += emissive;
+      } else if (length(uEmissiveFactor) > 0.0) {
+        finalColor += uEmissiveFactor;
+      }
+      
+      // Apply tone mapping
+      finalColor = applyToneMapping(finalColor, uToneMapping);
       
       // Gamma correction
       finalColor = pow(finalColor, vec3(1.0 / 2.2));
@@ -211,102 +302,86 @@ export function createObjectRenderer(gl, glbModel) {
   
   const vs = compileShader(gl.VERTEX_SHADER, vsSource);
   const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+
+  // Get locations - will be updated on shader recompile
+  const mapShaderLocations = (shaderProgram) => ({
+    aPosition: gl.getAttribLocation(shaderProgram, 'aPosition'),
+    aTexCoord: gl.getAttribLocation(shaderProgram, 'aTexCoord'),
+    aNormal: gl.getAttribLocation(shaderProgram, 'aNormal'),
+    aTangent: gl.getAttribLocation(shaderProgram, 'aTangent'),
+    uHasTangent: gl.getUniformLocation(shaderProgram, 'uHasTangent'),
+    uModelViewProjection: gl.getUniformLocation(shaderProgram, 'uModelViewProjection'),
+    uModel: gl.getUniformLocation(shaderProgram, 'uModel'),
+    uTexture: gl.getUniformLocation(shaderProgram, 'uTexture'),
+    uBaseColor: gl.getUniformLocation(shaderProgram, 'uBaseColor'),
+    uHasTexture: gl.getUniformLocation(shaderProgram, 'uHasTexture'),
+    uLightDir: gl.getUniformLocation(shaderProgram, 'uLightDir'),
+    uSelected: gl.getUniformLocation(shaderProgram, 'uSelected'),
+    uAmbientIntensity: gl.getUniformLocation(shaderProgram, 'uAmbientIntensity'),
+    uLightColor: gl.getUniformLocation(shaderProgram, 'uLightColor'),
+    uSkyColor: gl.getUniformLocation(shaderProgram, 'uSkyColor'),
+    uGroundColor: gl.getUniformLocation(shaderProgram, 'uGroundColor'),
+    uLightMode: gl.getUniformLocation(shaderProgram, 'uLightMode'),
+    uHdrTexture: gl.getUniformLocation(shaderProgram, 'uHdrTexture'),
+    uHasHdr: gl.getUniformLocation(shaderProgram, 'uHasHdr'),
+    uHdrExposure: gl.getUniformLocation(shaderProgram, 'uHdrExposure'),
+    uLightSpaceMatrix: gl.getUniformLocation(shaderProgram, 'uLightSpaceMatrix'),
+    uShadowMap: gl.getUniformLocation(shaderProgram, 'uShadowMap'),
+    uShadowEnabled: gl.getUniformLocation(shaderProgram, 'uShadowEnabled'),
+    uShadowBias: gl.getUniformLocation(shaderProgram, 'uShadowBias'),
+    uShadowDebug: gl.getUniformLocation(shaderProgram, 'uShadowDebug'),
+    uWindDebug: gl.getUniformLocation(shaderProgram, 'uWindDebug'),
+    // Wind uniforms
+    uWindEnabled: gl.getUniformLocation(shaderProgram, 'uWindEnabled'),
+    uWindTime: gl.getUniformLocation(shaderProgram, 'uWindTime'),
+    uWindStrength: gl.getUniformLocation(shaderProgram, 'uWindStrength'),
+    uWindDirection: gl.getUniformLocation(shaderProgram, 'uWindDirection'),
+    uWindTurbulence: gl.getUniformLocation(shaderProgram, 'uWindTurbulence'),
+    uWindType: gl.getUniformLocation(shaderProgram, 'uWindType'),
+    uWindInfluence: gl.getUniformLocation(shaderProgram, 'uWindInfluence'),
+    uWindStiffness: gl.getUniformLocation(shaderProgram, 'uWindStiffness'),
+    uWindAnchorHeight: gl.getUniformLocation(shaderProgram, 'uWindAnchorHeight'),
+    uWindPhysicsDisplacement: gl.getUniformLocation(shaderProgram, 'uWindPhysicsDisplacement'),
+    // Terrain blend uniforms
+    uTerrainBlendEnabled: gl.getUniformLocation(shaderProgram, 'uTerrainBlendEnabled'),
+    uTerrainBlendDistance: gl.getUniformLocation(shaderProgram, 'uTerrainBlendDistance'),
+    uSceneDepthTexture: gl.getUniformLocation(shaderProgram, 'uSceneDepthTexture'),
+    uScreenSize: gl.getUniformLocation(shaderProgram, 'uScreenSize'),
+    uNearPlane: gl.getUniformLocation(shaderProgram, 'uNearPlane'),
+    uFarPlane: gl.getUniformLocation(shaderProgram, 'uFarPlane'),
+    uCameraPos: gl.getUniformLocation(shaderProgram, 'uCameraPos'),
+    // PBR material uniforms
+    uMetallicRoughnessTexture: gl.getUniformLocation(shaderProgram, 'uMetallicRoughnessTexture'),
+    uHasMetallicRoughnessTexture: gl.getUniformLocation(shaderProgram, 'uHasMetallicRoughnessTexture'),
+    uMetallicFactor: gl.getUniformLocation(shaderProgram, 'uMetallicFactor'),
+    uRoughnessFactor: gl.getUniformLocation(shaderProgram, 'uRoughnessFactor'),
+    // Normal map
+    uNormalTexture: gl.getUniformLocation(shaderProgram, 'uNormalTexture'),
+    uHasNormalTexture: gl.getUniformLocation(shaderProgram, 'uHasNormalTexture'),
+    uNormalScale: gl.getUniformLocation(shaderProgram, 'uNormalScale'),
+    // Occlusion
+    uOcclusionTexture: gl.getUniformLocation(shaderProgram, 'uOcclusionTexture'),
+    uHasOcclusionTexture: gl.getUniformLocation(shaderProgram, 'uHasOcclusionTexture'),
+    uOcclusionStrength: gl.getUniformLocation(shaderProgram, 'uOcclusionStrength'),
+    // Emissive
+    uEmissiveTexture: gl.getUniformLocation(shaderProgram, 'uEmissiveTexture'),
+    uHasEmissiveTexture: gl.getUniformLocation(shaderProgram, 'uHasEmissiveTexture'),
+    uEmissiveFactor: gl.getUniformLocation(shaderProgram, 'uEmissiveFactor'),
+    // Tone mapping
+    uToneMapping: gl.getUniformLocation(shaderProgram, 'uToneMapping'),
+  });
   
   let program = gl.createProgram();
   gl.attachShader(program, vs);
   gl.attachShader(program, fs);
   gl.linkProgram(program);
-  
+
   // Get locations - will be updated on shader recompile
-  let locations = {
-    aPosition: gl.getAttribLocation(program, 'aPosition'),
-    aTexCoord: gl.getAttribLocation(program, 'aTexCoord'),
-    aNormal: gl.getAttribLocation(program, 'aNormal'),
-    uModelViewProjection: gl.getUniformLocation(program, 'uModelViewProjection'),
-    uModel: gl.getUniformLocation(program, 'uModel'),
-    uTexture: gl.getUniformLocation(program, 'uTexture'),
-    uBaseColor: gl.getUniformLocation(program, 'uBaseColor'),
-    uHasTexture: gl.getUniformLocation(program, 'uHasTexture'),
-    uLightDir: gl.getUniformLocation(program, 'uLightDir'),
-    uSelected: gl.getUniformLocation(program, 'uSelected'),
-    uAmbientIntensity: gl.getUniformLocation(program, 'uAmbientIntensity'),
-    uLightColor: gl.getUniformLocation(program, 'uLightColor'),
-    uLightMode: gl.getUniformLocation(program, 'uLightMode'),
-    uHdrTexture: gl.getUniformLocation(program, 'uHdrTexture'),
-    uHasHdr: gl.getUniformLocation(program, 'uHasHdr'),
-    uHdrExposure: gl.getUniformLocation(program, 'uHdrExposure'),
-    uLightSpaceMatrix: gl.getUniformLocation(program, 'uLightSpaceMatrix'),
-    uShadowMap: gl.getUniformLocation(program, 'uShadowMap'),
-    uShadowEnabled: gl.getUniformLocation(program, 'uShadowEnabled'),
-    uShadowBias: gl.getUniformLocation(program, 'uShadowBias'),
-    uShadowDebug: gl.getUniformLocation(program, 'uShadowDebug'),
-    uWindDebug: gl.getUniformLocation(program, 'uWindDebug'),
-    // Wind uniforms
-    uWindEnabled: gl.getUniformLocation(program, 'uWindEnabled'),
-    uWindTime: gl.getUniformLocation(program, 'uWindTime'),
-    uWindStrength: gl.getUniformLocation(program, 'uWindStrength'),
-    uWindDirection: gl.getUniformLocation(program, 'uWindDirection'),
-    uWindTurbulence: gl.getUniformLocation(program, 'uWindTurbulence'),
-    uWindType: gl.getUniformLocation(program, 'uWindType'),
-    uWindInfluence: gl.getUniformLocation(program, 'uWindInfluence'),
-    uWindStiffness: gl.getUniformLocation(program, 'uWindStiffness'),
-    uWindAnchorHeight: gl.getUniformLocation(program, 'uWindAnchorHeight'),
-    uWindPhysicsDisplacement: gl.getUniformLocation(program, 'uWindPhysicsDisplacement'),
-    // Terrain blend uniforms
-    uTerrainBlendEnabled: gl.getUniformLocation(program, 'uTerrainBlendEnabled'),
-    uTerrainBlendDistance: gl.getUniformLocation(program, 'uTerrainBlendDistance'),
-    uSceneDepthTexture: gl.getUniformLocation(program, 'uSceneDepthTexture'),
-    uScreenSize: gl.getUniformLocation(program, 'uScreenSize'),
-    uNearPlane: gl.getUniformLocation(program, 'uNearPlane'),
-    uFarPlane: gl.getUniformLocation(program, 'uFarPlane'),
-    uCameraPos: gl.getUniformLocation(program, 'uCameraPos'),
-  };
+  let locations = mapShaderLocations(program);
   
   // Function to update uniform locations after shader recompile
   function updateLocations(newProgram) {
-    locations = {
-      aPosition: gl.getAttribLocation(newProgram, 'aPosition'),
-      aTexCoord: gl.getAttribLocation(newProgram, 'aTexCoord'),
-      aNormal: gl.getAttribLocation(newProgram, 'aNormal'),
-      uModelViewProjection: gl.getUniformLocation(newProgram, 'uModelViewProjection'),
-      uModel: gl.getUniformLocation(newProgram, 'uModel'),
-      uTexture: gl.getUniformLocation(newProgram, 'uTexture'),
-      uBaseColor: gl.getUniformLocation(newProgram, 'uBaseColor'),
-      uHasTexture: gl.getUniformLocation(newProgram, 'uHasTexture'),
-      uLightDir: gl.getUniformLocation(newProgram, 'uLightDir'),
-      uSelected: gl.getUniformLocation(newProgram, 'uSelected'),
-      uAmbientIntensity: gl.getUniformLocation(newProgram, 'uAmbientIntensity'),
-      uLightColor: gl.getUniformLocation(newProgram, 'uLightColor'),
-      uLightMode: gl.getUniformLocation(newProgram, 'uLightMode'),
-      uHdrTexture: gl.getUniformLocation(newProgram, 'uHdrTexture'),
-      uHasHdr: gl.getUniformLocation(newProgram, 'uHasHdr'),
-      uHdrExposure: gl.getUniformLocation(newProgram, 'uHdrExposure'),
-      uLightSpaceMatrix: gl.getUniformLocation(newProgram, 'uLightSpaceMatrix'),
-      uShadowMap: gl.getUniformLocation(newProgram, 'uShadowMap'),
-      uShadowEnabled: gl.getUniformLocation(newProgram, 'uShadowEnabled'),
-      uShadowBias: gl.getUniformLocation(newProgram, 'uShadowBias'),
-      uShadowDebug: gl.getUniformLocation(newProgram, 'uShadowDebug'),
-      uWindDebug: gl.getUniformLocation(newProgram, 'uWindDebug'),
-      // Wind uniforms
-      uWindEnabled: gl.getUniformLocation(newProgram, 'uWindEnabled'),
-      uWindTime: gl.getUniformLocation(newProgram, 'uWindTime'),
-      uWindStrength: gl.getUniformLocation(newProgram, 'uWindStrength'),
-      uWindDirection: gl.getUniformLocation(newProgram, 'uWindDirection'),
-      uWindTurbulence: gl.getUniformLocation(newProgram, 'uWindTurbulence'),
-      uWindType: gl.getUniformLocation(newProgram, 'uWindType'),
-      uWindInfluence: gl.getUniformLocation(newProgram, 'uWindInfluence'),
-      uWindStiffness: gl.getUniformLocation(newProgram, 'uWindStiffness'),
-      uWindAnchorHeight: gl.getUniformLocation(newProgram, 'uWindAnchorHeight'),
-      uWindPhysicsDisplacement: gl.getUniformLocation(newProgram, 'uWindPhysicsDisplacement'),
-      // Terrain blend uniforms
-      uTerrainBlendEnabled: gl.getUniformLocation(newProgram, 'uTerrainBlendEnabled'),
-      uTerrainBlendDistance: gl.getUniformLocation(newProgram, 'uTerrainBlendDistance'),
-      uSceneDepthTexture: gl.getUniformLocation(newProgram, 'uSceneDepthTexture'),
-      uScreenSize: gl.getUniformLocation(newProgram, 'uScreenSize'),
-      uNearPlane: gl.getUniformLocation(newProgram, 'uNearPlane'),
-      uFarPlane: gl.getUniformLocation(newProgram, 'uFarPlane'),
-      uCameraPos: gl.getUniformLocation(newProgram, 'uCameraPos'),
-    };
+    locations = mapShaderLocations(newProgram);
   }
   
   // Register shader with shader manager for hot-reload
@@ -343,6 +418,13 @@ export function createObjectRenderer(gl, glbModel) {
       gl.bufferData(gl.ARRAY_BUFFER, mesh.normals, gl.STATIC_DRAW);
     }
     
+    let tangentBuffer = null;
+    if (mesh.tangents) {
+      tangentBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, tangentBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, mesh.tangents, gl.STATIC_DRAW);
+    }
+    
     let indexBuffer = null;
     let indexCount = 0;
     let indexType = gl.UNSIGNED_SHORT;
@@ -357,22 +439,50 @@ export function createObjectRenderer(gl, glbModel) {
     }
     
     return {
-      posBuffer, uvBuffer, normalBuffer, indexBuffer,
+      posBuffer, uvBuffer, normalBuffer, tangentBuffer, indexBuffer,
       indexCount, indexType,
       vertexCount: mesh.positions.length / 3,
       materialIndex: mesh.materialIndex,
     };
   });
   
-  // Create textures
-  const gpuTextures = glbModel.textures.map(imageData => {
+  // Identify which texture indices are used for sRGB color data (base color, emissive)
+  // vs linear data (metallic-roughness, normal, occlusion)
+  const srgbTextureIndices = new Set();
+  for (const material of glbModel.materials) {
+    if (material.baseColorTextureIndex !== undefined) {
+      srgbTextureIndices.add(material.baseColorTextureIndex);
+    }
+    if (material.emissiveTextureIndex !== undefined) {
+      srgbTextureIndices.add(material.emissiveTextureIndex);
+    }
+    // Note: metallic-roughness, normal, occlusion stay linear (data textures)
+  }
+  
+  // Create textures with proper wrapping, mipmaps, and color space
+  const gpuTextures = glbModel.textures.map((imageData, index) => {
     const texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imageData);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    
+    // Use SRGB8_ALPHA8 for color textures (base color, emissive)
+    // This tells GPU to convert sRGB→linear when sampling
+    // Use RGBA for data textures (metallic-roughness, normal, occlusion)
+    const isSrgb = srgbTextureIndices.has(index);
+    const internalFormat = isSrgb ? gl.SRGB8_ALPHA8 : gl.RGBA;
+    
+    gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, gl.RGBA, gl.UNSIGNED_BYTE, imageData);
+    
+    // Generate mipmaps for better filtering
+    gl.generateMipmap(gl.TEXTURE_2D);
+    
+    // Use REPEAT wrapping (most GLB models expect this)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    
+    // Use trilinear filtering with mipmaps
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    
     return texture;
   });
   
@@ -592,10 +702,13 @@ export function createObjectRenderer(gl, glbModel) {
       gl.uniform1i(locations.uSelected, isSelected ? 1 : 0);
       gl.uniform1f(locations.uAmbientIntensity, light.ambient);
       gl.uniform3fv(locations.uLightColor, light.lightColor);
+      gl.uniform3fv(locations.uSkyColor, light.skyColor || [0.4, 0.6, 1.0]);
+      gl.uniform3fv(locations.uGroundColor, light.groundColor || [0.3, 0.25, 0.2]);
       gl.uniform1i(locations.uLightMode, light.mode === 'hdr' ? 1 : 0);
       gl.uniform1i(locations.uHasHdr, light.hdrTexture ? 1 : 0);
       gl.uniform1f(locations.uHdrExposure, light.hdrExposure || 1.0);
       gl.uniform3fv(locations.uCameraPos, light.cameraPos || [0, 0, 5]);
+      gl.uniform1i(locations.uToneMapping, light.toneMapping !== undefined ? light.toneMapping : 3); // Default ACES
       
       // Shadow uniforms
       gl.uniform1i(locations.uShadowEnabled, light.shadowEnabled ? 1 : 0);
@@ -685,9 +798,31 @@ export function createObjectRenderer(gl, glbModel) {
           gl.vertexAttribPointer(locations.aNormal, 3, gl.FLOAT, false, 0, 0);
         }
         
-        const material = glbModel.materials[gpuMesh.materialIndex] || { baseColorFactor: [1, 1, 1, 1] };
+        // Tangent attribute for proper normal mapping (vec4: xyz=tangent, w=handedness)
+        if (gpuMesh.tangentBuffer && locations.aTangent >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, gpuMesh.tangentBuffer);
+          gl.enableVertexAttribArray(locations.aTangent);
+          gl.vertexAttribPointer(locations.aTangent, 4, gl.FLOAT, false, 0, 0);
+          gl.uniform1i(locations.uHasTangent, 1);
+        } else {
+          if (locations.aTangent >= 0) {
+            gl.disableVertexAttribArray(locations.aTangent);
+          }
+          gl.uniform1i(locations.uHasTangent, 0);
+        }
+        
+        const material = glbModel.materials[gpuMesh.materialIndex] || { 
+          baseColorFactor: [1, 1, 1, 1],
+          metallicFactor: 0.0,
+          roughnessFactor: 0.5
+        };
         gl.uniform4fv(locations.uBaseColor, material.baseColorFactor);
         
+        // PBR factors
+        gl.uniform1f(locations.uMetallicFactor, material.metallicFactor ?? 0.0);
+        gl.uniform1f(locations.uRoughnessFactor, material.roughnessFactor ?? 0.5);
+        
+        // Base color texture
         if (material.baseColorTextureIndex !== undefined && gpuTextures[material.baseColorTextureIndex]) {
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, gpuTextures[material.baseColorTextureIndex]);
@@ -695,6 +830,52 @@ export function createObjectRenderer(gl, glbModel) {
           gl.uniform1i(locations.uHasTexture, 1);
         } else {
           gl.uniform1i(locations.uHasTexture, 0);
+        }
+        
+        // Metallic-roughness texture (glTF: G=roughness, B=metallic)
+        if (material.metallicRoughnessTextureIndex !== undefined && gpuTextures[material.metallicRoughnessTextureIndex]) {
+          gl.activeTexture(gl.TEXTURE4);
+          gl.bindTexture(gl.TEXTURE_2D, gpuTextures[material.metallicRoughnessTextureIndex]);
+          gl.uniform1i(locations.uMetallicRoughnessTexture, 4);
+          gl.uniform1i(locations.uHasMetallicRoughnessTexture, 1);
+        } else {
+          gl.uniform1i(locations.uHasMetallicRoughnessTexture, 0);
+        }
+        
+        // Normal map texture
+        if (material.normalTextureIndex !== undefined && gpuTextures[material.normalTextureIndex]) {
+          gl.activeTexture(gl.TEXTURE5);
+          gl.bindTexture(gl.TEXTURE_2D, gpuTextures[material.normalTextureIndex]);
+          gl.uniform1i(locations.uNormalTexture, 5);
+          gl.uniform1i(locations.uHasNormalTexture, 1);
+          gl.uniform1f(locations.uNormalScale, material.normalScale ?? 1.0);
+        } else {
+          gl.uniform1i(locations.uHasNormalTexture, 0);
+          gl.uniform1f(locations.uNormalScale, 1.0);
+        }
+        
+        // Occlusion texture (R channel)
+        if (material.occlusionTextureIndex !== undefined && gpuTextures[material.occlusionTextureIndex]) {
+          gl.activeTexture(gl.TEXTURE6);
+          gl.bindTexture(gl.TEXTURE_2D, gpuTextures[material.occlusionTextureIndex]);
+          gl.uniform1i(locations.uOcclusionTexture, 6);
+          gl.uniform1i(locations.uHasOcclusionTexture, 1);
+          gl.uniform1f(locations.uOcclusionStrength, material.occlusionStrength ?? 1.0);
+        } else {
+          gl.uniform1i(locations.uHasOcclusionTexture, 0);
+          gl.uniform1f(locations.uOcclusionStrength, 1.0);
+        }
+        
+        // Emissive texture
+        if (material.emissiveTextureIndex !== undefined && gpuTextures[material.emissiveTextureIndex]) {
+          gl.activeTexture(gl.TEXTURE7);
+          gl.bindTexture(gl.TEXTURE_2D, gpuTextures[material.emissiveTextureIndex]);
+          gl.uniform1i(locations.uEmissiveTexture, 7);
+          gl.uniform1i(locations.uHasEmissiveTexture, 1);
+          gl.uniform3fv(locations.uEmissiveFactor, material.emissiveFactor || [1, 1, 1]);
+        } else {
+          gl.uniform1i(locations.uHasEmissiveTexture, 0);
+          gl.uniform3fv(locations.uEmissiveFactor, material.emissiveFactor || [0, 0, 0]);
         }
         
         if (gpuMesh.indexBuffer) {
@@ -728,6 +909,7 @@ export function createObjectRenderer(gl, glbModel) {
         gl.deleteBuffer(m.posBuffer);
         if (m.uvBuffer) gl.deleteBuffer(m.uvBuffer);
         if (m.normalBuffer) gl.deleteBuffer(m.normalBuffer);
+        if (m.tangentBuffer) gl.deleteBuffer(m.tangentBuffer);
         if (m.indexBuffer) gl.deleteBuffer(m.indexBuffer);
       });
       gpuWireframes.forEach(w => {

@@ -210,7 +210,14 @@ export function createScene(gl, sceneGraph) {
     const obj = getObject(id);
     if (!obj) return null;
     
-    const newObj = await addObject(obj.modelPath, `${obj.name} (copy)`);
+    let newObj = null;
+    if (obj.type === 'primitive') {
+      newObj = addPrimitive(obj.primitiveType, `${obj.name} (copy)`, obj.primitiveConfig);
+      newObj.renderer.setMaterial(obj.renderer.getMaterial());
+    } else {
+      newObj = await addObject(obj.modelPath, `${obj.name} (copy)`);
+    }
+
     if (newObj) {
       newObj.position = [obj.position[0] + 0.5, obj.position[1], obj.position[2] + 0.5];
       newObj.rotation = [...obj.rotation];

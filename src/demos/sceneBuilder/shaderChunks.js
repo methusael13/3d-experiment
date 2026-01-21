@@ -333,6 +333,8 @@ export const lightingUniforms = `
 uniform vec3 uLightDir;
 uniform float uAmbientIntensity;
 uniform vec3 uLightColor;
+uniform vec3 uSkyColor;    // Hemisphere ambient sky color (based on sun elevation)
+uniform vec3 uGroundColor; // Hemisphere ambient ground bounce color
 uniform int uLightMode; // 0 = sun, 1 = HDR
 `;
 
@@ -528,11 +530,11 @@ export const iblFunctions = `
 // prefilteredMap should have mip levels for roughness
 vec3 samplePrefilteredEnv(vec3 R, float roughness, sampler2D envMap, float maxMipLevel) {
   // Convert roughness to mip level (0 = sharp, max = blurry)
-  // Use perceptual roughness mapping for better visual results
-  float perceptualRoughness = roughness * roughness;
+  // Linear mapping to match pre-filter shader which stores roughness linearly per mip:
+  //   mip_level = roughness * (numMips - 1)
   // Always sample at least mip 1 to avoid unfiltered aliasing artifacts
   // The base mip (0) can have precision issues at equirectangular seams
-  float mipLevel = max(perceptualRoughness * maxMipLevel, 1.0);
+  float mipLevel = max(roughness * maxMipLevel, 1.0);
   
   // Equirectangular projection (flip Y to match HDR convention)
   float phi = atan(R.z, R.x);
@@ -627,7 +629,10 @@ vec3 calcPBRLighting(
   } else {
     // ============ Sun Mode (Analytical Light) ============
     vec3 L = normalize(lightDir);
-    vec3 radiance = lightColor;
+    
+    // Boost radiance by PI to compensate for Lambertian /PI division
+    // This maintains energy conservation while keeping visually pleasing brightness
+    vec3 radiance = lightColor * PI;
     
     // Apply shadow
     float shadow = 1.0;
@@ -639,8 +644,12 @@ vec3 calcPBRLighting(
     // Cook-Torrance BRDF
     Lo = cookTorranceBRDF(N, V, L, albedo, metallic, roughness, F0, radiance);
     
-    // Ambient (very simplified - proper AO would help)
-    vec3 ambientLight = vec3(ambient) * albedo * (1.0 - metallic * 0.5);
+    // Hemisphere ambient: sky color from above, ground bounce from below
+    // Uses elevation-based colors from uniforms for time-of-day variation
+    float skyFactor = N.y * 0.5 + 0.5;       // 0=down, 1=up
+    vec3 ambientColor = mix(uGroundColor, uSkyColor, skyFactor);
+    
+    vec3 ambientLight = ambientColor * ambient * albedo * (1.0 - metallic * 0.5);
     Lo += ambientLight;
   }
   
@@ -718,4 +727,93 @@ export const terrainBlendComplete = `
 // === Terrain Blend ===
 ${terrainBlendUniforms}
 ${terrainBlendFunctions}
+`;
+
+// ============================================
+// TONE MAPPING
+// Various HDR→LDR operators for final output
+// ============================================
+
+/**
+ * Tone mapping uniform declaration
+ * 0=None, 1=Reinhard, 2=Reinhard Luminance, 3=ACES Filmic, 4=Uncharted 2
+ */
+export const toneMappingUniforms = `
+uniform int uToneMapping; // 0=none, 1=reinhard, 2=reinhardLum, 3=aces, 4=uncharted
+`;
+
+/**
+ * Tone mapping operator functions
+ * Apply after PBR lighting, before gamma correction
+ */
+export const toneMappingFunctions = `
+// Reinhard: simple but can wash out colors
+vec3 tonemapReinhard(vec3 color) {
+  return color / (color + vec3(1.0));
+}
+
+// Reinhard on luminance: preserves color ratios better
+vec3 tonemapReinhardLuminance(vec3 color) {
+  float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  float lumaTM = luma / (1.0 + luma);
+  return color * (lumaTM / max(luma, 0.0001));
+}
+
+// ACES Filmic: film-like response, good saturation
+// Approximation by Krzysztof Narkowicz
+vec3 tonemapACES(vec3 color) {
+  const float a = 2.51;
+  const float b = 0.03;
+  const float c = 2.43;
+  const float d = 0.59;
+  const float e = 0.14;
+  return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
+}
+
+// Uncharted 2 tone mapping (John Hable)
+vec3 uncharted2Tonemap(vec3 x) {
+  const float A = 0.15; // Shoulder Strength
+  const float B = 0.50; // Linear Strength
+  const float C = 0.10; // Linear Angle
+  const float D = 0.20; // Toe Strength
+  const float E = 0.02; // Toe Numerator
+  const float F = 0.30; // Toe Denominator
+  return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+}
+
+vec3 tonemapUncharted2(vec3 color) {
+  const float W = 11.2; // Linear White Point
+  const float exposureBias = 2.0;
+  vec3 curr = uncharted2Tonemap(exposureBias * color);
+  vec3 whiteScale = vec3(1.0) / uncharted2Tonemap(vec3(W));
+  return curr * whiteScale;
+}
+
+// Apply selected tone mapping operator
+vec3 applyToneMapping(vec3 color, int mode) {
+  if (mode == 0) {
+    // None - clamp only
+    return clamp(color, 0.0, 1.0);
+  } else if (mode == 1) {
+    return tonemapReinhard(color);
+  } else if (mode == 2) {
+    return tonemapReinhardLuminance(color);
+  } else if (mode == 3) {
+    return tonemapACES(color);
+  } else if (mode == 4) {
+    return tonemapUncharted2(color);
+  }
+  return tonemapACES(color); // Default fallback
+}
+`;
+
+/**
+ * Complete tone mapping chunk
+ * Usage: ${toneMappingComplete}
+ * Then call: finalColor = applyToneMapping(hdrColor, uToneMapping);
+ */
+export const toneMappingComplete = `
+// === Tone Mapping ===
+${toneMappingUniforms}
+${toneMappingFunctions}
 `;

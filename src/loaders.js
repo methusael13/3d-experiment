@@ -128,32 +128,61 @@ const TYPE_SIZES = {
 
 /**
  * Convert raw buffer to properly typed array using accessor metadata
+ * 
+ * gltf-loader-ts accessorData() returns a Uint8Array view of the raw buffer
+ * starting at the accessor's position. We need to:
+ * 1. Create a typed view of the correct type (Float32, Uint16, etc.)
+ * 2. Handle interleaved data if byteStride is set
+ * 
+ * @param {Uint8Array} rawBuffer - Raw buffer data from accessorData()
+ * @param {object} accessor - glTF accessor object
+ * @param {object} bufferView - glTF buffer view object (for stride info)
  */
-function toTypedArray(rawBuffer, accessor) {
+function toTypedArray(rawBuffer, accessor, bufferView = null) {
   const TypedArray = GLTF_COMPONENT_TYPE_ARRAYS[accessor.componentType];
   const numComponents = TYPE_SIZES[accessor.type];
   const count = accessor.count;
   const length = count * numComponents;
-  
-  const byteOffset = accessor.byteOffset || 0;
-  const result = new TypedArray(length);
-  const dataView = new DataView(rawBuffer.buffer, rawBuffer.byteOffset + byteOffset);
-  
   const bytesPerElement = TypedArray.BYTES_PER_ELEMENT;
-  for (let i = 0; i < length; i++) {
-    const offset = i * bytesPerElement;
-    if (TypedArray === Float32Array) {
-      result[i] = dataView.getFloat32(offset, true);
-    } else if (TypedArray === Uint32Array) {
-      result[i] = dataView.getUint32(offset, true);
-    } else if (TypedArray === Uint16Array) {
-      result[i] = dataView.getUint16(offset, true);
-    } else if (TypedArray === Int16Array) {
-      result[i] = dataView.getInt16(offset, true);
-    } else if (TypedArray === Uint8Array) {
-      result[i] = dataView.getUint8(offset);
-    } else if (TypedArray === Int8Array) {
-      result[i] = dataView.getInt8(offset);
+  
+  // Tightly packed element size
+  const elementSize = numComponents * bytesPerElement;
+  
+  // Buffer view stride (0 or undefined means tightly packed)
+  const stride = bufferView?.byteStride || elementSize;
+  
+  // Accessor's byte offset within the buffer view
+  // gltf-loader-ts accessorData() returns data starting at bufferView start,
+  // so we need to add the accessor's byteOffset manually
+  const accessorByteOffset = accessor.byteOffset || 0;
+  
+  // Always use DataView to read data - handles unaligned byte offsets safely
+  // Direct TypedArray construction fails when rawBuffer.byteOffset isn't aligned
+  // to the element size (e.g., Float32Array needs offset divisible by 4)
+  const result = new TypedArray(length);
+  const dataView = new DataView(rawBuffer.buffer, rawBuffer.byteOffset);
+  
+  for (let i = 0; i < count; i++) {
+    // Each element is stride bytes apart, starting from accessor's offset
+    const elementOffset = accessorByteOffset + i * stride;
+    
+    for (let j = 0; j < numComponents; j++) {
+      const componentOffset = elementOffset + j * bytesPerElement;
+      const resultIndex = i * numComponents + j;
+      
+      if (TypedArray === Float32Array) {
+        result[resultIndex] = dataView.getFloat32(componentOffset, true);
+      } else if (TypedArray === Uint32Array) {
+        result[resultIndex] = dataView.getUint32(componentOffset, true);
+      } else if (TypedArray === Uint16Array) {
+        result[resultIndex] = dataView.getUint16(componentOffset, true);
+      } else if (TypedArray === Int16Array) {
+        result[resultIndex] = dataView.getInt16(componentOffset, true);
+      } else if (TypedArray === Uint8Array) {
+        result[resultIndex] = dataView.getUint8(componentOffset);
+      } else if (TypedArray === Int8Array) {
+        result[resultIndex] = dataView.getInt8(componentOffset);
+      }
     }
   }
   
@@ -241,25 +270,36 @@ export async function loadGLB(url) {
         if (primitive.attributes.POSITION !== undefined) {
           const rawData = await asset.accessorData(primitive.attributes.POSITION);
           const accessor = gltf.accessors[primitive.attributes.POSITION];
-          meshData.positions = toTypedArray(rawData, accessor);
+          const bufferView = accessor.bufferView !== undefined ? gltf.bufferViews[accessor.bufferView] : null;
+          meshData.positions = toTypedArray(rawData, accessor, bufferView);
         }
         
         if (primitive.attributes.TEXCOORD_0 !== undefined) {
           const rawData = await asset.accessorData(primitive.attributes.TEXCOORD_0);
           const accessor = gltf.accessors[primitive.attributes.TEXCOORD_0];
-          meshData.uvs = toTypedArray(rawData, accessor);
+          const bufferView = accessor.bufferView !== undefined ? gltf.bufferViews[accessor.bufferView] : null;
+          meshData.uvs = toTypedArray(rawData, accessor, bufferView);
         }
         
         if (primitive.attributes.NORMAL !== undefined) {
           const rawData = await asset.accessorData(primitive.attributes.NORMAL);
           const accessor = gltf.accessors[primitive.attributes.NORMAL];
-          meshData.normals = toTypedArray(rawData, accessor);
+          const bufferView = accessor.bufferView !== undefined ? gltf.bufferViews[accessor.bufferView] : null;
+          meshData.normals = toTypedArray(rawData, accessor, bufferView);
+        }
+        
+        if (primitive.attributes.TANGENT !== undefined) {
+          const rawData = await asset.accessorData(primitive.attributes.TANGENT);
+          const accessor = gltf.accessors[primitive.attributes.TANGENT];
+          const bufferView = accessor.bufferView !== undefined ? gltf.bufferViews[accessor.bufferView] : null;
+          meshData.tangents = toTypedArray(rawData, accessor, bufferView);
         }
         
         if (primitive.indices !== undefined) {
           const rawData = await asset.accessorData(primitive.indices);
           const accessor = gltf.accessors[primitive.indices];
-          meshData.indices = toTypedArray(rawData, accessor);
+          const bufferView = accessor.bufferView !== undefined ? gltf.bufferViews[accessor.bufferView] : null;
+          meshData.indices = toTypedArray(rawData, accessor, bufferView);
         }
         
         result.meshes.push(meshData);

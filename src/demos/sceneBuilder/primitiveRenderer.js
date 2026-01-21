@@ -1,6 +1,6 @@
 import { mat4, vec3 } from 'gl-matrix';
 import { generatePrimitiveGeometry, computeBounds } from './primitiveGeometry.js';
-import { shadowUniforms, shadowFunctions, hdrUniforms, lightingUniforms, pbrFunctions, iblFunctions, pbrLighting } from './shaderChunks.js';
+import { shadowUniforms, shadowFunctions, hdrUniforms, lightingUniforms, pbrFunctions, iblFunctions, pbrLighting, toneMappingComplete } from './shaderChunks.js';
 import { registerShader, unregisterShader } from './shaderManager.js';
 
 // Counter for unique shader names
@@ -82,6 +82,9 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
     // PBR lighting calculation
     ${pbrLighting}
     
+    // Tone mapping
+    ${toneMappingComplete}
+    
     in vec2 vTexCoord;
     in vec3 vNormal;
     in vec3 vWorldPos;
@@ -101,8 +104,8 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
         uShadowMap, uShadowEnabled, vLightSpacePos
       );
       
-      // Tone mapping (Reinhard)
-      finalColor = finalColor / (finalColor + vec3(1.0));
+      // Apply tone mapping
+      finalColor = applyToneMapping(finalColor, uToneMapping);
       
       // Gamma correction
       finalColor = pow(finalColor, vec3(1.0 / 2.2));
@@ -152,6 +155,8 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       uSelected: gl.getUniformLocation(program, 'uSelected'),
       uAmbientIntensity: gl.getUniformLocation(program, 'uAmbientIntensity'),
       uLightColor: gl.getUniformLocation(program, 'uLightColor'),
+      uSkyColor: gl.getUniformLocation(program, 'uSkyColor'),
+      uGroundColor: gl.getUniformLocation(program, 'uGroundColor'),
       uLightMode: gl.getUniformLocation(program, 'uLightMode'),
       uHdrTexture: gl.getUniformLocation(program, 'uHdrTexture'),
       uHasHdr: gl.getUniformLocation(program, 'uHasHdr'),
@@ -160,6 +165,7 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       uLightSpaceMatrix: gl.getUniformLocation(program, 'uLightSpaceMatrix'),
       uShadowMap: gl.getUniformLocation(program, 'uShadowMap'),
       uShadowEnabled: gl.getUniformLocation(program, 'uShadowEnabled'),
+      uToneMapping: gl.getUniformLocation(program, 'uToneMapping'),
     };
   }
   
@@ -520,12 +526,15 @@ export function createPrimitiveRenderer(gl, primitiveType, config = {}) {
       gl.uniform1i(locations.uSelected, isSelected ? 1 : 0);
       gl.uniform1f(locations.uAmbientIntensity, light.ambient);
       gl.uniform3fv(locations.uLightColor, light.lightColor);
+      gl.uniform3fv(locations.uSkyColor, light.skyColor || [0.4, 0.6, 1.0]);
+      gl.uniform3fv(locations.uGroundColor, light.groundColor || [0.3, 0.25, 0.2]);
       gl.uniform1i(locations.uLightMode, light.mode === 'hdr' ? 1 : 0);
       gl.uniform1i(locations.uHasHdr, light.hdrTexture ? 1 : 0);
       gl.uniform1f(locations.uHdrExposure, light.hdrExposure || 1.0);
       gl.uniform1f(locations.uHdrMaxMipLevel, light.hdrMaxMipLevel || 6.0);
       
       gl.uniform1i(locations.uShadowEnabled, light.shadowEnabled ? 1 : 0);
+      gl.uniform1i(locations.uToneMapping, light.toneMapping !== undefined ? light.toneMapping : 3); // Default ACES
       if (light.lightSpaceMatrix) {
         gl.uniformMatrix4fv(locations.uLightSpaceMatrix, false, light.lightSpaceMatrix);
       }

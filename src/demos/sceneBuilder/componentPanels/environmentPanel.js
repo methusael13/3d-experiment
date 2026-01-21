@@ -3,7 +3,8 @@
  * Displays lighting and global wind controls
  */
 
-import { parseHDR, createPrefilteredHDRTexture } from '../hdrLoader';
+import { parseHDR, createPrefilteredHDRTextureWithMIS } from '../hdrLoader';
+import { TONE_MAPPING, TONE_MAPPING_NAMES } from '../lights';
 
 // Panel-specific styles
 const environmentPanelStyles = `
@@ -227,6 +228,13 @@ const environmentPanelTemplate = `
           </div>
           <input type="range" id="sun-elevation" min="-90" max="90" value="45" class="slider-input">
         </div>
+        <div class="transform-group compact-slider">
+          <div class="slider-header">
+            <label>Ambient</label>
+            <span id="sun-ambient-value" class="slider-value">0.15</span>
+          </div>
+          <input type="range" id="sun-ambient" min="0" max="1" step="0.05" value="0.15" class="slider-input">
+        </div>
         <div class="shadow-controls">
           <label class="checkbox-label">
             <input type="checkbox" id="shadow-enabled" checked>
@@ -282,6 +290,18 @@ const environmentPanelTemplate = `
         </div>
       </div>
       <input type="file" id="hdr-file" accept=".hdr" style="display: none;">
+      
+      <!-- Global Tone Mapping (shown for both sun and HDR modes) -->
+      <div class="transform-group" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #444;">
+        <label>Tone Mapping</label>
+        <select id="tone-mapping" style="width: 100%; padding: 4px; background: #333; color: #f0f0f0; border: 1px solid #555; border-radius: 3px; font-size: 11px;">
+          <option value="none">None (Linear)</option>
+          <option value="reinhard">Reinhard</option>
+          <option value="reinhardLum">Reinhard (Luminance)</option>
+          <option value="aces">ACES Filmic</option>
+          <option value="uncharted">Uncharted 2</option>
+        </select>
+      </div>
     </div>
     
     <!-- Wind Tab Content -->
@@ -365,9 +385,12 @@ export function createEnvironmentPanel(panelElement, context) {
   const sunAzimuthValue = panelElement.querySelector('#sun-azimuth-value');
   const sunElevation = panelElement.querySelector('#sun-elevation');
   const sunElevationValue = panelElement.querySelector('#sun-elevation-value');
+  const sunAmbient = panelElement.querySelector('#sun-ambient');
+  const sunAmbientValue = panelElement.querySelector('#sun-ambient-value');
   const shadowEnabled = panelElement.querySelector('#shadow-enabled');
   const shadowDebug = panelElement.querySelector('#shadow-debug');
   const shadowThumbnail = panelElement.querySelector('#shadow-thumbnail');
+  const toneMapping = panelElement.querySelector('#tone-mapping');
   const hdrExposure = panelElement.querySelector('#hdr-exposure');
   const hdrExposureValue = panelElement.querySelector('#hdr-exposure-value');
   const hdrFilename = panelElement.querySelector('#hdr-filename');
@@ -525,10 +548,10 @@ export function createEnvironmentPanel(panelElement, context) {
       hdrProgressText.textContent = 'Pre-filtering for IBL...';
       
       // Create prefiltered texture
-      const result = createPrefilteredHDRTexture(gl, hdrData, (progress) => {
+      const result = createPrefilteredHDRTextureWithMIS(gl, hdrData, (progress) => {
         const percent = Math.round(10 + progress * 90);
         hdrProgressFill.style.width = `${percent}%`;
-        hdrProgressText.textContent = progress < 1 ? `Pre-filtering... ${percent}%` : 'Complete!';
+        hdrProgressText.textContent = progress < 1 ? `Pre-filtering (MIS)... ${percent}%` : 'Complete!';
       });
       
       const { texture, mipLevels } = result;
@@ -594,6 +617,8 @@ export function createEnvironmentPanel(panelElement, context) {
     sunAzimuthValue.textContent = `${lightingManager.sunLight.azimuth}°`;
     sunElevation.value = lightingManager.sunLight.elevation;
     sunElevationValue.textContent = `${lightingManager.sunLight.elevation}°`;
+    sunAmbient.value = lightingManager.sunLight.ambientIntensity;
+    sunAmbientValue.textContent = lightingManager.sunLight.ambientIntensity.toFixed(2);
     shadowEnabled.checked = lightingManager.shadowEnabled;
     hdrExposure.value = lightingManager.hdrLight.exposure;
     hdrExposureValue.textContent = lightingManager.hdrLight.exposure.toFixed(1);
@@ -601,6 +626,10 @@ export function createEnvironmentPanel(panelElement, context) {
     // Update shadow quality buttons
     panelElement.querySelectorAll('.quality-btn').forEach(btn => btn.classList.remove('active'));
     panelElement.querySelector(`#shadow-${lightingManager.sunLight.shadowResolution}`)?.classList.add('active');
+    
+    // Update tone mapping dropdown
+    const tmValue = Object.entries(TONE_MAPPING_NAMES).find(([_, v]) => v === lightingManager.toneMapping)?.[0] || 'aces';
+    toneMapping.value = tmValue;
     
     // Update wind UI
     windEnabled.checked = windManager.enabled;
@@ -650,6 +679,13 @@ export function createEnvironmentPanel(panelElement, context) {
       onLightingChanged();
     });
     
+    // Sun ambient intensity
+    sunAmbient.addEventListener('input', (e) => {
+      lightingManager.sunLight.ambientIntensity = parseFloat(e.target.value);
+      sunAmbientValue.textContent = lightingManager.sunLight.ambientIntensity.toFixed(2);
+      onLightingChanged();
+    });
+    
     // Shadow enabled
     shadowEnabled.addEventListener('change', (e) => {
       lightingManager.shadowEnabled = e.target.checked;
@@ -675,6 +711,13 @@ export function createEnvironmentPanel(panelElement, context) {
     // Shadow thumbnail
     shadowThumbnail.addEventListener('change', (e) => {
       setShowShadowThumbnail(e.target.checked);
+    });
+    
+    // Tone mapping
+    toneMapping.addEventListener('change', (e) => {
+      const value = e.target.value;
+      lightingManager.toneMapping = TONE_MAPPING_NAMES[value] ?? TONE_MAPPING.ACES;
+      onLightingChanged();
     });
     
     // HDR exposure
@@ -707,11 +750,11 @@ export function createEnvironmentPanel(panelElement, context) {
           hdrProgressText.textContent = 'Pre-filtering for IBL...';
           hdrProgressFill.style.width = '10%';
           
-          // Use prefiltered texture with mip levels for roughness-based IBL
-          const result = createPrefilteredHDRTexture(gl, hdrData, (progress) => {
+          // Use prefiltered texture with MIS for production-quality IBL
+          const result = createPrefilteredHDRTextureWithMIS(gl, hdrData, (progress) => {
             const percent = Math.round(progress * 100);
             hdrProgressFill.style.width = `${percent}%`;
-            hdrProgressText.textContent = progress < 1 ? `Pre-filtering... ${percent}%` : 'Complete!';
+            hdrProgressText.textContent = progress < 1 ? `Pre-filtering (MIS)... ${percent}%` : 'Complete!';
           });
           
           const { texture, mipLevels } = result;

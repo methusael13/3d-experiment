@@ -126,6 +126,7 @@ export function createSceneBuilderDemo(container, options = {}) {
       hdrExposure: lightingManager.hdrLight.exposure,
       lightColor: lightingManager.sunLight.getSunColor(),
       ambient: lightingManager.sunLight.getAmbient(),
+      toneMapping: lightingManager.toneMapping,
     });
   }
   

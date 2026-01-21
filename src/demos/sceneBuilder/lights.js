@@ -80,6 +80,7 @@ export class SunLight extends Light {
     this.elevation = 45;    // Vertical angle (degrees)
     this.castsShadow = true;
     this.shadowResolution = 2048;
+    this.ambientIntensity = 0.15; // Multiplier for ambient (lower = darker shadows)
   }
   
   /**
@@ -96,15 +97,20 @@ export class SunLight extends Light {
   }
   
   /**
-   * Get ambient based on sun elevation (day/night cycle)
+   * Get ambient based on sun elevation (day/night cycle) and user intensity multiplier
    */
   getAmbient() {
+    // Calculate base ambient from elevation (day/night cycle)
+    let baseAmbient;
     if (this.elevation <= 0) {
       // Night mode: low ambient when sun below horizon
-      return 0.1 + (this.elevation + 90) / 900;
+      baseAmbient = 0.1 + (this.elevation + 90) / 900;
+    } else {
+      // Day mode: ramp up ambient with elevation
+      baseAmbient = 0.2 + this.elevation / 180;
     }
-    // Day mode: ramp up ambient
-    return 0.2 + this.elevation / 180;
+    // Apply user-controllable intensity multiplier
+    return baseAmbient * this.ambientIntensity;
   }
   
   /**
@@ -124,6 +130,57 @@ export class SunLight extends Light {
     return [0.4, 0.5, 0.7];
   }
   
+  /**
+   * Get sky color for hemisphere ambient lighting based on elevation
+   */
+  getSkyColor() {
+    if (this.elevation < -10) {
+      // Night: dark blue-gray sky
+      return [0.1, 0.12, 0.2];
+    }
+    if (this.elevation < 5) {
+      // Twilight/dawn: purple-orange gradient
+      const t = (this.elevation + 10) / 15; // 0 at -10°, 1 at 5°
+      return [
+        0.1 + 0.5 * t,  // R: 0.1 -> 0.6
+        0.12 + 0.28 * t, // G: 0.12 -> 0.4
+        0.2 + 0.3 * t   // B: 0.2 -> 0.5
+      ];
+    }
+    if (this.elevation < 20) {
+      // Sunrise/sunset: warm orange sky
+      const t = (this.elevation - 5) / 15; // 0 at 5°, 1 at 20°
+      return [
+        0.6 - 0.2 * t,  // R: 0.6 -> 0.4
+        0.4 + 0.2 * t,  // G: 0.4 -> 0.6
+        0.5 + 0.5 * t   // B: 0.5 -> 1.0
+      ];
+    }
+    // Day: bright blue sky
+    return [0.4, 0.6, 1.0];
+  }
+  
+  /**
+   * Get ground color for hemisphere ambient lighting based on elevation
+   */
+  getGroundColor() {
+    if (this.elevation < 0) {
+      // Night: very dark ground
+      return [0.05, 0.05, 0.08];
+    }
+    if (this.elevation < 20) {
+      // Low sun: warm ground bounce
+      const t = this.elevation / 20;
+      return [
+        0.2 + 0.1 * t,  // R: 0.2 -> 0.3
+        0.15 + 0.1 * t, // G: 0.15 -> 0.25
+        0.1 + 0.1 * t   // B: 0.1 -> 0.2
+      ];
+    }
+    // Day: neutral warm ground
+    return [0.3, 0.25, 0.2];
+  }
+  
   getLightParams() {
     return {
       ...super.getLightParams(),
@@ -131,6 +188,8 @@ export class SunLight extends Light {
       sunDir: this.getDirection(),
       ambient: this.getAmbient(),
       lightColor: this.getSunColor(),
+      skyColor: this.getSkyColor(),
+      groundColor: this.getGroundColor(),
       shadowResolution: this.shadowResolution,
     };
   }
@@ -141,6 +200,7 @@ export class SunLight extends Light {
       azimuth: this.azimuth,
       elevation: this.elevation,
       shadowResolution: this.shadowResolution,
+      ambientIntensity: this.ambientIntensity,
     };
   }
   
@@ -149,6 +209,7 @@ export class SunLight extends Light {
     if (data.azimuth !== undefined) this.azimuth = data.azimuth;
     if (data.elevation !== undefined) this.elevation = data.elevation;
     if (data.shadowResolution !== undefined) this.shadowResolution = data.shadowResolution;
+    if (data.ambientIntensity !== undefined) this.ambientIntensity = data.ambientIntensity;
     // Legacy support: sunAzimuth/sunElevation
     if (data.sunAzimuth !== undefined) this.azimuth = data.sunAzimuth;
     if (data.sunElevation !== undefined) this.elevation = data.sunElevation;
@@ -277,6 +338,24 @@ export class PointLight extends Light {
   }
 }
 
+// Tone mapping mode constants
+export const TONE_MAPPING = {
+  NONE: 0,
+  REINHARD: 1,
+  REINHARD_LUMINANCE: 2,
+  ACES: 3,
+  UNCHARTED2: 4,
+};
+
+// String to mode mapping for UI
+export const TONE_MAPPING_NAMES = {
+  'none': TONE_MAPPING.NONE,
+  'reinhard': TONE_MAPPING.REINHARD,
+  'reinhardLum': TONE_MAPPING.REINHARD_LUMINANCE,
+  'aces': TONE_MAPPING.ACES,
+  'uncharted': TONE_MAPPING.UNCHARTED2,
+};
+
 /**
  * Lighting Manager - manages all lights in the scene
  */
@@ -288,6 +367,7 @@ export class LightingManager {
     this.activeMode = 'sun'; // 'sun' | 'hdr'
     this.shadowEnabled = true;
     this.shadowDebug = 0;
+    this.toneMapping = TONE_MAPPING.ACES; // Default to ACES (good saturation)
   }
   
   /**
@@ -342,6 +422,9 @@ export class LightingManager {
       params.shadowBias = 0.003;
     }
     
+    // Add tone mapping
+    params.toneMapping = this.toneMapping;
+    
     // Add point lights (for future multi-light support)
     params.pointLights = this.pointLights.map(p => p.getLightParams());
     
@@ -355,6 +438,7 @@ export class LightingManager {
     return {
       mode: this.activeMode,
       shadowEnabled: this.shadowEnabled,
+      toneMapping: this.toneMapping,
       sun: this.sunLight.serialize(),
       hdr: this.hdrLight.serialize(),
       pointLights: this.pointLights.map(p => p.serialize()),
@@ -400,6 +484,11 @@ export class LightingManager {
     // Legacy shadowResolution
     if (data.shadowResolution !== undefined) {
       this.sunLight.shadowResolution = data.shadowResolution;
+    }
+    
+    // Tone mapping
+    if (data.toneMapping !== undefined) {
+      this.toneMapping = data.toneMapping;
     }
   }
 }
