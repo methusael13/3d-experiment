@@ -1,5 +1,5 @@
 import { createCamera } from '../../core/camera';
-import { screenToRay, raycastToGround } from './raycastUtils';
+import { screenToRay, raycastToGround } from '../../core/utils/raycastUtils';
 
 /**
  * Camera Controller - manages camera state, orbit controls, and input handling

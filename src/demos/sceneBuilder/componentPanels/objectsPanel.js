@@ -3,7 +3,7 @@
  * Displays scene objects list and import controls
  */
 
-import { importModelFile } from '../sceneSerializer';
+import { importModelFile } from '../../../loaders';
 
 // Panel-specific styles
 const objectsPanelStyles = `

@@ -3,8 +3,8 @@
  * Displays lighting and global wind controls
  */
 
-import { parseHDR, createPrefilteredHDRTextureWithMIS } from '../hdrLoader';
-import { TONE_MAPPING, TONE_MAPPING_NAMES } from '../lights';
+import { HDRLoader } from '../../../loaders';
+import { TONE_MAPPING, TONE_MAPPING_NAMES } from '../../../core/sceneObjects/lights';
 
 // Panel-specific styles
 const environmentPanelStyles = `
@@ -543,12 +543,12 @@ export function createEnvironmentPanel(panelElement, context) {
       hdrProgressText.textContent = 'Parsing HDR...';
       hdrProgressFill.style.width = '10%';
       
-      const hdrData = parseHDR(buffer);
+      const hdrData = HDRLoader.parse(buffer);
       
       hdrProgressText.textContent = 'Pre-filtering for IBL...';
       
       // Create prefiltered texture
-      const result = createPrefilteredHDRTextureWithMIS(gl, hdrData, (progress) => {
+      const result = HDRLoader.createPrefilteredTextureWithMIS(gl, hdrData, (progress) => {
         const percent = Math.round(10 + progress * 90);
         hdrProgressFill.style.width = `${percent}%`;
         hdrProgressText.textContent = progress < 1 ? `Pre-filtering (MIS)... ${percent}%` : 'Complete!';
@@ -602,8 +602,8 @@ export function createEnvironmentPanel(panelElement, context) {
    * Updates lighting mode display
    */
   function updateLightModeDisplay(mode) {
-    currentLightMode.textContent = mode === 'sun' ? 'Sun Mode' : 'HDR Mode';
-    sunControls.style.display = mode === 'sun' ? 'block' : 'none';
+    currentLightMode.textContent = mode === 'directional' ? 'Sun Mode' : 'HDR Mode';
+    sunControls.style.display = mode === 'directional' ? 'block' : 'none';
     hdrControls.style.display = mode === 'hdr' ? 'block' : 'none';
   }
   
@@ -745,13 +745,13 @@ export function createEnvironmentPanel(panelElement, context) {
           hdrProgressText.textContent = 'Parsing HDR...';
           
           const buffer = await file.arrayBuffer();
-          const hdrData = parseHDR(buffer);
+          const hdrData = HDRLoader.parse(buffer);
           
           hdrProgressText.textContent = 'Pre-filtering for IBL...';
           hdrProgressFill.style.width = '10%';
           
           // Use prefiltered texture with MIS for production-quality IBL
-          const result = createPrefilteredHDRTextureWithMIS(gl, hdrData, (progress) => {
+          const result = HDRLoader.createPrefilteredTextureWithMIS(gl, hdrData, (progress) => {
             const percent = Math.round(progress * 100);
             hdrProgressFill.style.width = `${percent}%`;
             hdrProgressText.textContent = progress < 1 ? `Pre-filtering (MIS)... ${percent}%` : 'Complete!';

@@ -172,7 +172,7 @@ export function createMaterialPanel(container, context) {
     // Use first selected object
     const obj = selected[0];
     currentObjectId = obj.id;
-    isPrimitive = obj.type === 'primitive';
+    isPrimitive = obj.objectType === 'primitive';
     
     if (isPrimitive) {
       // Show editable controls

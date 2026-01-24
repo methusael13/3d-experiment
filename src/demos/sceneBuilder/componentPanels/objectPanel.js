@@ -259,7 +259,7 @@ export function createObjectPanel(panelElement, context) {
     }
     
     const obj = scene.getFirstSelected();
-    if (!obj || obj.type !== 'primitive') {
+    if (!obj || obj.objectType !== 'primitive') {
       editTabBtn.style.display = 'none';
       return;
     }
@@ -598,7 +598,7 @@ export function createObjectPanel(panelElement, context) {
     // Primitive size slider
     primitiveSize.addEventListener('input', (e) => {
       const obj = scene.getFirstSelected();
-      if (obj && obj.type === 'primitive') {
+      if (obj && obj.objectType === 'primitive') {
         const newSize = parseFloat(e.target.value);
         primitiveSizeValue.textContent = newSize.toFixed(1);
         scene.updatePrimitiveConfig(obj.id, { size: newSize });
@@ -608,7 +608,7 @@ export function createObjectPanel(panelElement, context) {
     // Primitive subdivision slider
     primitiveSubdivision.addEventListener('input', (e) => {
       const obj = scene.getFirstSelected();
-      if (obj && obj.type === 'primitive' && obj.primitiveType === 'sphere') {
+      if (obj && obj.objectType === 'primitive' && obj.primitiveType === 'sphere') {
         const newSubdiv = parseInt(e.target.value, 10);
         primitiveSubdivisionValue.textContent = newSubdiv;
         scene.updatePrimitiveConfig(obj.id, { subdivision: newSubdiv });
@@ -618,7 +618,7 @@ export function createObjectPanel(panelElement, context) {
     // Show normals checkbox
     showNormalsCheckbox.addEventListener('change', (e) => {
       const obj = scene.getFirstSelected();
-      if (obj && obj.type === 'primitive') {
+      if (obj && obj.objectType === 'primitive') {
         obj.showNormals = e.target.checked;
       }
     });

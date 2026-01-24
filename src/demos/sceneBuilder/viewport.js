@@ -1,12 +1,14 @@
 import { createAnimationLoop } from '../../core/animationLoop';
-import { createGridRenderer } from './gridRenderer';
-import { createTransformGizmo } from './transformGizmo';
-import { createOriginMarkerRenderer } from './originMarkerRenderer';
-import { createSkyRenderer } from './skyRenderer';
-import { createShadowRenderer } from './shadowRenderer';
-import { createDepthPrePassRenderer } from './depthPrePassRenderer';
+import { 
+  createGridRenderer, 
+  createOriginMarkerRenderer, 
+  createSkyRenderer,
+  createShadowRenderer,
+  createDepthPrePassRenderer,
+} from '../../core/renderers';
+import { createTransformGizmo } from './gizmos';
 import { createCameraController } from './cameraController';
-import { screenToRay, projectToScreen } from './raycastUtils';
+import { screenToRay, projectToScreen } from '../../core/utils/raycastUtils';
 
 /**
  * Viewport - The View in MVC
@@ -29,8 +31,16 @@ export function createViewport(canvasElement, options = {}) {
     onBackgroundClicked = (shiftKey) => {},
   } = options;
   
+  // Device pixel ratio for HiDPI displays
+  const dpr = window.devicePixelRatio || 1;
+  
+  // Logical (CSS) dimensions
   const CANVAS_WIDTH = width;
   const CANVAS_HEIGHT = height;
+  
+  // Physical (rendering) dimensions
+  const RENDER_WIDTH = Math.floor(width * dpr);
+  const RENDER_HEIGHT = Math.floor(height * dpr);
   
   // WebGL context and renderers
   let gl = null;
@@ -56,19 +66,18 @@ export function createViewport(canvasElement, options = {}) {
     getModelMatrix: () => null,
   };
   
-  // Lighting state (controlled by Controller)
+  // Lighting params (pre-computed by LightingManager, passed by Controller)
+  // This is a SceneLightingParams object with type, direction, effectiveColor, etc.
+  let lightParams = null;
+  
+  // Additional lighting state that viewport manages
   let lightingState = {
-    mode: 'sun',
     shadowEnabled: true,
-    sunAzimuth: 45,
-    sunElevation: 45,
     shadowResolution: 2048,
-    shadowDebug: 0,
+    sunElevation: 45,     // Needed for sky renderer
     hdrTexture: null,
     hdrExposure: 1.0,
-    hdrMaxMipLevel: 6.0,      // Mip levels in HDR texture for IBL roughness mapping
-    lightColor: [1, 1, 1],    // Dynamic sun color (warm for sunset)
-    ambient: 0.3,             // Dynamic ambient based on elevation
+    hdrMaxMipLevel: 6.0,
   };
   
   // Wind state (controlled by Controller)
@@ -96,7 +105,7 @@ export function createViewport(canvasElement, options = {}) {
   // ==================== GL Initialization ====================
   
   function initGL() {
-    gl = canvasElement.getContext('webgl2');
+    gl = canvasElement.getContext('webgl2', { antialias: true });
     if (!gl) {
       console.error('WebGL 2 not supported');
       return false;
@@ -110,7 +119,7 @@ export function createViewport(canvasElement, options = {}) {
     originMarkerRenderer = createOriginMarkerRenderer(gl);
     skyRenderer = createSkyRenderer(gl);
     shadowRenderer = createShadowRenderer(gl, lightingState.shadowResolution);
-    depthPrePassRenderer = createDepthPrePassRenderer(gl, CANVAS_WIDTH, CANVAS_HEIGHT);
+    depthPrePassRenderer = createDepthPrePassRenderer(gl, RENDER_WIDTH, RENDER_HEIGHT);
     
     return true;
   }
@@ -176,7 +185,7 @@ export function createViewport(canvasElement, options = {}) {
   // ==================== Input Handling ====================
   
   function handleCanvasClick(screenX, screenY, shiftKey = false) {
-    if (!sceneGraph || sceneGraph.size() === 0) {
+    if (!sceneGraph || sceneGraph.size === 0) {
       onBackgroundClicked(shiftKey);
       return;
     }
@@ -210,46 +219,50 @@ export function createViewport(canvasElement, options = {}) {
   
   // ==================== Lighting Helpers ====================
   
-  function getSunDirection() {
-    const azimuthRad = lightingState.sunAzimuth * Math.PI / 180;
-    const elevationRad = lightingState.sunElevation * Math.PI / 180;
-    return [
-      Math.cos(elevationRad) * Math.sin(azimuthRad),
-      Math.sin(elevationRad),
-      Math.cos(elevationRad) * Math.cos(azimuthRad),
-    ];
-  }
-  
-  function getLightParams() {
+  /**
+   * Get complete light params for rendering.
+   * Merges pre-computed lightParams from LightingManager with viewport-managed state.
+   */
+  function getCompleteLightParams() {
     const cameraPos = cameraController.getCamera().getPosition();
     
-    if (lightingState.mode === 'hdr') {
+    if (!lightParams) {
+      // Fallback if no light params set yet
       return {
-        mode: 'hdr',
-        hdrTexture: lightingState.hdrTexture,
-        hdrExposure: lightingState.hdrExposure,
-        hdrMaxMipLevel: lightingState.hdrMaxMipLevel,
-        // Still need these for object renderer fallbacks
-        sunDir: getSunDirection(),
-        ambient: lightingState.ambient,
-        lightColor: lightingState.lightColor,
-        toneMapping: lightingState.toneMapping,
+        type: 'directional',
+        direction: [0.5, 0.707, 0.5],
+        effectiveColor: [1, 1, 1],
+        ambient: 0.3,
+        shadowEnabled: lightingState.shadowEnabled,
+        lightSpaceMatrix: shadowRenderer ? shadowRenderer.getLightSpaceMatrix() : null,
+        shadowMap: shadowRenderer ? shadowRenderer.getTexture() : null,
         cameraPos,
       };
     }
     
+    // Merge pre-computed lightParams with shadow renderer state and camera position
     return {
-      mode: 'sun',
-      sunDir: getSunDirection(),
-      ambient: lightingState.ambient,
-      lightColor: lightingState.lightColor,
-      shadowEnabled: lightingState.shadowEnabled,
-      lightSpaceMatrix: shadowRenderer ? shadowRenderer.getLightSpaceMatrix() : null,
-      shadowMap: shadowRenderer ? shadowRenderer.getTexture() : null,
-      shadowDebug: lightingState.shadowDebug,
-      toneMapping: lightingState.toneMapping,
+      ...lightParams,
+      // Override shadow map/matrix from viewport's shadow renderer
+      shadowEnabled: lightParams.shadowEnabled && lightingState.shadowEnabled,
+      lightSpaceMatrix: shadowRenderer ? shadowRenderer.getLightSpaceMatrix() : lightParams.lightSpaceMatrix,
+      shadowMap: shadowRenderer ? shadowRenderer.getTexture() : lightParams.shadowMap,
+      // Override HDR texture from viewport state if in HDR mode
+      hdrTexture: lightParams.type === 'hdr' ? lightingState.hdrTexture : null,
+      // Add camera position
       cameraPos,
     };
+  }
+  
+  /**
+   * Get sun direction from pre-computed lightParams (for shadow pass)
+   */
+  function getSunDirection() {
+    if (lightParams && lightParams.type === 'directional' && lightParams.direction) {
+      return [...lightParams.direction];
+    }
+    // Fallback
+    return [0.5, 0.707, 0.5];
   }
   
   // ==================== Render Loop ====================
@@ -278,8 +291,9 @@ export function createViewport(canvasElement, options = {}) {
     const vpMatrix = cameraController.getViewProjectionMatrix();
     const allObjects = renderData.objects;
     
-    // Shadow pass
-    if (lightingState.mode === 'sun' && lightingState.shadowEnabled && allObjects.length > 0) {
+    // Shadow pass (only for directional light mode with shadows enabled)
+    const isDirectionalMode = !lightParams || lightParams.type === 'directional';
+    if (isDirectionalMode && lightingState.shadowEnabled && allObjects.length > 0) {
       const sunDir = getSunDirection();
       const shadowCoverage = 5;
       shadowRenderer.beginShadowPass(sunDir, shadowCoverage);
@@ -295,7 +309,7 @@ export function createViewport(canvasElement, options = {}) {
         }
       }
       
-      shadowRenderer.endShadowPass(CANVAS_WIDTH, CANVAS_HEIGHT);
+      shadowRenderer.endShadowPass(RENDER_WIDTH, RENDER_HEIGHT);
     }
     
     // Depth pre-pass for terrain blend
@@ -325,11 +339,12 @@ export function createViewport(canvasElement, options = {}) {
         }
       }
       
-      depthPrePassRenderer.endPass(CANVAS_WIDTH, CANVAS_HEIGHT);
+      depthPrePassRenderer.endPass(RENDER_WIDTH, RENDER_HEIGHT);
     }
     
     // Sky
-    if (lightingState.mode === 'hdr' && lightingState.hdrTexture) {
+    const isHDRMode = lightParams && lightParams.type === 'hdr';
+    if (isHDRMode && lightingState.hdrTexture) {
       skyRenderer.renderHDRSky(vpMatrix, lightingState.hdrTexture, lightingState.hdrExposure);
     } else {
       skyRenderer.renderSunSky(lightingState.sunElevation);
@@ -346,7 +361,7 @@ export function createViewport(canvasElement, options = {}) {
     }
     
     const isWireframe = viewportMode === 'wireframe';
-    const lightParams = getLightParams();
+    const completeLightParams = getCompleteLightParams();
     const camera = cameraController.getCamera();
     
     for (const obj of allObjects) {
@@ -361,7 +376,7 @@ export function createViewport(canvasElement, options = {}) {
             enabled: true,
             blendDistance: terrainSettings.blendDistance,
             depthTexture: depthPrePassRenderer.getDepthTexture(),
-            screenSize: [CANVAS_WIDTH, CANVAS_HEIGHT],
+            screenSize: [RENDER_WIDTH, RENDER_HEIGHT],
             nearPlane: camera.near || 0.1,
             farPlane: camera.far || 100,
           };
@@ -371,7 +386,7 @@ export function createViewport(canvasElement, options = {}) {
         const modelMatrix = renderData.getModelMatrix(obj);
         
         if (modelMatrix) {
-          obj.renderer.render(vpMatrix, modelMatrix, isSelected, isWireframe, lightParams, windParams, objWindSettings, terrainBlendParams);
+          obj.renderer.render(vpMatrix, modelMatrix, isSelected, isWireframe, completeLightParams, windParams, objWindSettings, terrainBlendParams);
           
           // Render normal debug lines if enabled
           if (obj.showNormals && obj.renderer.renderNormals) {
@@ -383,16 +398,21 @@ export function createViewport(canvasElement, options = {}) {
     
     transformGizmo.render(vpMatrix);
     
-    if (showShadowThumbnail && lightingState.shadowEnabled && lightingState.mode === 'sun') {
-      shadowRenderer.renderDebugThumbnail(10, 10, 150, CANVAS_WIDTH, CANVAS_HEIGHT);
+    if (showShadowThumbnail && lightingState.shadowEnabled && isDirectionalMode) {
+      shadowRenderer.renderDebugThumbnail(10 * dpr, 10 * dpr, 150 * dpr, RENDER_WIDTH, RENDER_HEIGHT);
     }
   }
   
   // ==================== Public API ====================
   
   function init() {
-    canvasElement.width = CANVAS_WIDTH;
-    canvasElement.height = CANVAS_HEIGHT;
+    // Set physical canvas size (high resolution for HiDPI)
+    canvasElement.width = RENDER_WIDTH;
+    canvasElement.height = RENDER_HEIGHT;
+    
+    // Set CSS display size (logical pixels)
+    canvasElement.style.width = CANVAS_WIDTH + 'px';
+    canvasElement.style.height = CANVAS_HEIGHT + 'px';
     
     if (!initGL()) return false;
     initCamera();
@@ -464,6 +484,24 @@ export function createViewport(canvasElement, options = {}) {
     Object.assign(lightingState, state);
     if (state.shadowResolution && shadowRenderer) {
       shadowRenderer.setResolution(state.shadowResolution);
+    }
+  }
+  
+  /**
+   * Set pre-computed light params from LightingManager.
+   * This is the primary way to update lighting - pass the result of lightingManager.getLightParams()
+   */
+  function setLightParams(params) {
+    lightParams = params;
+    
+    // Also extract values needed for viewport-specific rendering (sky, etc.)
+    if (params) {
+      if (params.type === 'directional' && params.elevation !== undefined) {
+        lightingState.sunElevation = params.elevation;
+      }
+      if (params.shadowEnabled !== undefined) {
+        lightingState.shadowEnabled = params.shadowEnabled;
+      }
     }
   }
   
@@ -583,6 +621,7 @@ export function createViewport(canvasElement, options = {}) {
     // Viewport settings
     setViewportMode,
     setLightingState,
+    setLightParams,
     setWindParams,
     setShowShadowThumbnail,
     setShowGrid,

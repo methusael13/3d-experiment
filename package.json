@@ -10,6 +10,8 @@
     "generate-ibl": "node scripts/generate-ibl-assets.js"
   },
   "devDependencies": {
+    "@types/node": "^25.0.9",
+    "typescript": "^5.9.3",
     "vite": "^5.0.0",
     "vitest": "^4.0.17"
   },

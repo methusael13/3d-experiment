@@ -1,9 +1,9 @@
 import { createSceneGraph } from '../../core/sceneGraph';
 import { sceneBuilderStyles, sceneBuilderTemplate } from './styles';
-import { saveScene, parseCameraState, parseLightingState, clearImportedModels } from './sceneSerializer';
+import { saveScene, parseCameraState, parseLightingState, clearImportedModels } from '../../loaders';
 import { createShaderDebugPanel } from './shaderDebugPanel';
-import { createLightingManager } from './lights';
-import { createScene } from './scene';
+import { createLightingManager } from './lightingManager';
+import { createScene } from '../../core/Scene';
 import { createWindManager, serializeObjectWindSettings, deserializeObjectWindSettings } from './wind';
 import { createPanelContext, createObjectsPanel, createObjectPanel, createEnvironmentPanel, createMaterialPanel } from './componentPanels';
 import { createViewport } from './viewport';
@@ -116,17 +116,23 @@ export function createSceneBuilderDemo(container, options = {}) {
   }
   
   function updateLightingState() {
+    // Get pre-computed light params from lightingManager (includes direction, effectiveColor, etc.)
+    // Note: We don't pass shadowRenderer since viewport owns it and will add shadow map/matrix
+    const lightParams = lightingManager.getLightParams(null);
+    
+    // Add elevation for sky renderer (not in standard lightParams interface)
+    if (lightParams.type === 'directional') {
+      lightParams.elevation = lightingManager.sunLight.elevation;
+    }
+    
+    // Pass the complete light params to viewport
+    viewport.setLightParams(lightParams);
+    
+    // Also update viewport-specific settings (shadow resolution, HDR exposure)
     viewport.setLightingState({
-      mode: lightingManager.activeMode,
-      shadowEnabled: lightingManager.shadowEnabled,
-      sunAzimuth: lightingManager.sunLight.azimuth,
-      sunElevation: lightingManager.sunLight.elevation,
       shadowResolution: lightingManager.sunLight.shadowResolution,
-      shadowDebug: lightingManager.shadowDebug,
+      sunElevation: lightingManager.sunLight.elevation,
       hdrExposure: lightingManager.hdrLight.exposure,
-      lightColor: lightingManager.sunLight.getSunColor(),
-      ambient: lightingManager.sunLight.getAmbient(),
-      toneMapping: lightingManager.toneMapping,
     });
   }
   
@@ -331,7 +337,7 @@ export function createSceneBuilderDemo(container, options = {}) {
     });
     
     container.querySelector('#menu-sun-mode').addEventListener('click', () => {
-      setLightMode('sun');
+      setLightMode('directional');
       menuItems.forEach(item => item.classList.remove('open'));
     });
     
@@ -664,15 +670,16 @@ export function createSceneBuilderDemo(container, options = {}) {
       },
       getObjectMaterial: (objId) => {
         const obj = scene.getObject(objId);
-        if (obj && obj.type === 'primitive' && obj.renderer) {
-          return obj.renderer.getMaterial();
+        console.debug('Received object: ', obj);
+        if (obj && obj.objectType === 'primitive') {
+          return obj.getMaterial();
         }
         return null;
       },
       setObjectMaterial: (objId, material) => {
         const obj = scene.getObject(objId);
-        if (obj && obj.type === 'primitive' && obj.renderer) {
-          obj.renderer.setMaterial(material);
+        if (obj && obj.objectType === 'primitive') {
+          obj.setMaterial(material);
         }
       },
       onMaterialChange: () => {
