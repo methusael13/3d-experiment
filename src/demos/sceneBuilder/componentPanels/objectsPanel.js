@@ -3,7 +3,7 @@
  * Displays scene objects list and import controls
  */
 
-import { importModelFile } from '../../../loaders';
+import { importModelFile, importGLTFDirectory } from '../../../loaders';
 
 // Panel-specific styles
 const objectsPanelStyles = `
@@ -21,8 +21,10 @@ const objectsPanelTemplate = `
   <div class="section-content">
     <ul id="object-list" class="object-list"></ul>
     <div class="import-controls">
-      <input type="file" id="model-file" accept=".glb,.gltf" style="display: none;">
-      <button id="import-btn" class="primary-btn">Import Model</button>
+      <input type="file" id="model-file" accept=".glb" style="display: none;">
+      <input type="file" id="model-folder" webkitdirectory directory style="display: none;">
+      <button id="import-btn" class="primary-btn">Import GLB</button>
+      <button id="import-folder-btn" class="secondary-btn">Import glTF Folder</button>
       <select id="preset-models">
         <option value="">Add Preset...</option>
         <option value="duck.glb">Duck</option>
@@ -53,7 +55,9 @@ export function createObjectsPanel(panelElement, context) {
   // Cache DOM references
   const objectList = panelElement.querySelector('#object-list');
   const importBtn = panelElement.querySelector('#import-btn');
+  const importFolderBtn = panelElement.querySelector('#import-folder-btn');
   const modelFile = panelElement.querySelector('#model-file');
+  const modelFolder = panelElement.querySelector('#model-folder');
   const presetModels = panelElement.querySelector('#preset-models');
   
   /**
@@ -151,7 +155,7 @@ export function createObjectsPanel(panelElement, context) {
     // Import button
     importBtn.addEventListener('click', () => modelFile.click());
     
-    // Model file input
+    // Model file input (GLB files)
     modelFile.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (file) {
@@ -159,6 +163,27 @@ export function createObjectsPanel(panelElement, context) {
         const obj = await scene.addObject(modelPath, displayName);
         if (obj) scene.select(obj.id);
       }
+      // Reset input so same file can be selected again
+      modelFile.value = '';
+    });
+    
+    // Folder input for glTF directory import
+    importFolderBtn.addEventListener('click', () => modelFolder.click());
+    
+    modelFolder.addEventListener('change', async (e) => {
+      const files = e.target.files;
+      if (files && files.length > 0) {
+        const result = await importGLTFDirectory(files);
+        if (result) {
+          const { modelPath, displayName } = result;
+          const obj = await scene.addObject(modelPath, displayName);
+          if (obj) scene.select(obj.id);
+        } else {
+          console.error('Failed to import glTF folder - no .gltf file found');
+        }
+      }
+      // Reset input so same folder can be selected again
+      modelFolder.value = '';
     });
     
     // Preset models dropdown

@@ -282,6 +282,18 @@ export class GLBLoader extends BaseLoader<GLBModel> {
     // Extract materials (PBR Metallic-Roughness workflow)
     result.materials = (gltf.materials || []).map(mat => {
       const pbr = mat.pbrMetallicRoughness || {};
+      
+      // Parse KHR_materials_transmission extension
+      const transmissionExt = (mat.extensions as Record<string, unknown>)?.['KHR_materials_transmission'] as {
+        transmissionFactor?: number;
+        transmissionTexture?: { index: number };
+      } | undefined;
+      
+      // Parse KHR_materials_ior extension
+      const iorExt = (mat.extensions as Record<string, unknown>)?.['KHR_materials_ior'] as {
+        ior?: number;
+      } | undefined;
+      
       return {
         baseColorFactor: (pbr.baseColorFactor || [1, 1, 1, 1]) as [number, number, number, number],
         baseColorTextureIndex: pbr.baseColorTexture?.index,
@@ -297,6 +309,11 @@ export class GLBLoader extends BaseLoader<GLBModel> {
         alphaMode: (mat.alphaMode || 'OPAQUE') as 'OPAQUE' | 'MASK' | 'BLEND',
         alphaCutoff: mat.alphaCutoff ?? 0.5,
         doubleSided: mat.doubleSided ?? false,
+        // KHR_materials_transmission
+        transmission: transmissionExt?.transmissionFactor ?? 0.0,
+        transmissionTextureIndex: transmissionExt?.transmissionTexture?.index,
+        // KHR_materials_ior (default 1.5 per glTF spec)
+        ior: iorExt?.ior ?? 1.5,
       };
     });
     

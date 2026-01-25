@@ -54,6 +54,7 @@ export {
   sceneSerializer,
   // Backward-compatible functions
   importModelFile,
+  importGLTFDirectory,
   getModelUrl,
   isImportedModel,
   clearImportedModels,

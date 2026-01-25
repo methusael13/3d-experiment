@@ -119,6 +119,9 @@ interface MainShaderLocations {
   uHasEmissiveTexture: WebGLUniformLocation | null;
   uEmissiveFactor: WebGLUniformLocation | null;
   uToneMapping: WebGLUniformLocation | null;
+  // Transmission
+  uTransmission: WebGLUniformLocation | null;
+  uIor: WebGLUniformLocation | null;
 }
 
 interface OutlineLocations {
@@ -323,8 +326,55 @@ export class ObjectRenderer {
     uniform int uShadowDebug;
     uniform int uWindDebug;
     
+    // Transmission uniforms
+    uniform float uTransmission;
+    uniform float uIor;
+    
     ${terrainBlendComplete}
     ${toneMappingComplete}
+    
+    // Refraction helper using Snell's law
+    vec3 calcRefractedRay(vec3 V, vec3 N, float ior) {
+      float eta = 1.0 / ior; // Air (1.0) to material
+      float cosI = dot(N, V);
+      
+      // Handle back-facing surfaces
+      if (cosI < 0.0) {
+        N = -N;
+        cosI = -cosI;
+        eta = ior; // Material to air
+      }
+      
+      float sinT2 = eta * eta * (1.0 - cosI * cosI);
+      
+      // Total internal reflection
+      if (sinT2 > 1.0) {
+        return reflect(-V, N);
+      }
+      
+      float cosT = sqrt(1.0 - sinT2);
+      return eta * (-V) + (eta * cosI - cosT) * N;
+    }
+    
+    // Sample environment map with refracted direction
+    vec3 sampleEnvMapRefracted(vec3 refractedDir, float roughness) {
+      if (uHasHdr == 0) {
+        // Fallback to hemisphere color if no HDR
+        float skyFactor = refractedDir.y * 0.5 + 0.5;
+        return mix(vec3(0.3, 0.25, 0.2), vec3(0.4, 0.6, 1.0), skyFactor) * uAmbientIntensity;
+      }
+      
+      // Convert direction to equirectangular UV
+      float phi = atan(refractedDir.z, refractedDir.x);
+      float theta = asin(clamp(refractedDir.y, -1.0, 1.0));
+      vec2 uv = vec2(phi / (2.0 * 3.14159265) + 0.5, theta / 3.14159265 + 0.5);
+      
+      // Sample with mip level based on roughness
+      float mipLevel = roughness * 6.0;
+      vec3 envColor = textureLod(uHdrTexture, uv, mipLevel).rgb;
+      
+      return envColor * uHdrExposure;
+    }
     
     in vec2 vTexCoord;
     in vec3 vNormal;
@@ -444,7 +494,29 @@ export class ObjectRenderer {
         return;
       }
       
-      vec4 finalFragment = vec4(finalColor, color.a);
+      // Apply transmission (environment map refraction)
+      float finalAlpha = color.a;
+      if (uTransmission > 0.0) {
+        // Calculate refracted ray
+        vec3 refractedDir = calcRefractedRay(V, N, uIor);
+        
+        // Sample environment with refracted direction
+        vec3 transmittedColor = sampleEnvMapRefracted(refractedDir, roughness);
+        
+        // Fresnel effect - more reflection at grazing angles
+        float NdotV = max(dot(N, V), 0.0);
+        float fresnelFactor = pow(1.0 - NdotV, 5.0);
+        float effectiveTransmission = uTransmission * (1.0 - fresnelFactor * 0.5);
+        
+        // Blend transmitted color with surface color
+        // For high transmission, the surface becomes mostly transparent
+        finalColor = mix(finalColor, transmittedColor, effectiveTransmission);
+        
+        // Adjust alpha for blending (optional, for partial transparency)
+        finalAlpha = mix(finalAlpha, 1.0, effectiveTransmission);
+      }
+      
+      vec4 finalFragment = vec4(finalColor, finalAlpha);
       
       if (uTerrainBlendEnabled == 1) {
         finalFragment = applyTerrainBlend(finalFragment, gl_FragCoord.z);
@@ -597,6 +669,9 @@ export class ObjectRenderer {
       uHasEmissiveTexture: gl.getUniformLocation(p, 'uHasEmissiveTexture'),
       uEmissiveFactor: gl.getUniformLocation(p, 'uEmissiveFactor'),
       uToneMapping: gl.getUniformLocation(p, 'uToneMapping'),
+      // Transmission
+      uTransmission: gl.getUniformLocation(p, 'uTransmission'),
+      uIor: gl.getUniformLocation(p, 'uIor'),
     };
   }
   
@@ -1041,6 +1116,10 @@ export class ObjectRenderer {
         gl.uniform1i(loc.uHasEmissiveTexture, 0);
         gl.uniform3fv(loc.uEmissiveFactor, material.emissiveFactor || [0, 0, 0]);
       }
+      
+      // Transmission (KHR_materials_transmission)
+      gl.uniform1f(loc.uTransmission, (material as GLBMaterial).transmission ?? 0.0);
+      gl.uniform1f(loc.uIor, (material as GLBMaterial).ior ?? 1.5);
       
       if (gpuMesh.indexBuffer) {
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gpuMesh.indexBuffer);

@@ -79,6 +79,11 @@ export interface GLBMaterial {
   alphaMode: 'OPAQUE' | 'MASK' | 'BLEND';
   alphaCutoff: number;
   doubleSided: boolean;
+  // KHR_materials_transmission extension
+  transmission: number;
+  transmissionTextureIndex?: number;
+  // KHR_materials_ior extension
+  ior: number;
 }
 
 /**

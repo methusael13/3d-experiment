@@ -19,8 +19,13 @@ import type {
  */
 export interface ImportedModelData {
   blobUrl: string;
-  arrayBuffer: ArrayBuffer;
+  /** Original file for efficient streaming (when available) */
+  file?: File;
+  /** ArrayBuffer for downloaded/save scenarios */
+  arrayBuffer?: ArrayBuffer;
   originalName: string;
+  /** Additional blob URLs for glTF resources (bin files, textures) */
+  resourceBlobUrls?: Map<string, string>;
 }
 
 /**
@@ -232,8 +237,143 @@ export class SceneSerializer {
   clearImportedModels(): void {
     for (const [, data] of this.importedModels) {
       URL.revokeObjectURL(data.blobUrl);
+      // Also revoke resource blob URLs for glTF models
+      if (data.resourceBlobUrls) {
+        for (const resourceUrl of data.resourceBlobUrls.values()) {
+          URL.revokeObjectURL(resourceUrl);
+        }
+      }
     }
     this.importedModels.clear();
+  }
+
+  /**
+   * Import a glTF directory (folder containing .gltf, .bin, and texture files)
+   * @param files - FileList from a directory input
+   * @returns Import result with model path and display name, or null if no .gltf found
+   */
+  async importGLTFDirectory(files: FileList): Promise<ImportResult | null> {
+    // Build a map of relative paths to files
+    const fileMap = new Map<string, File>();
+    let gltfFile: File | null = null;
+    let gltfRelativePath = '';
+    
+    for (const file of Array.from(files)) {
+      // webkitRelativePath gives us "folderName/path/to/file.ext"
+      const relativePath = file.webkitRelativePath;
+      const pathParts = relativePath.split('/');
+      // Remove the top-level folder name to get internal path
+      const internalPath = pathParts.slice(1).join('/');
+      
+      fileMap.set(internalPath, file);
+      
+      // Find the main .gltf file (usually at root or named scene.gltf)
+      if (file.name.endsWith('.gltf')) {
+        // Prefer root-level .gltf or first found
+        if (!gltfFile || pathParts.length === 2) {
+          gltfFile = file;
+          gltfRelativePath = internalPath;
+        }
+      }
+    }
+    
+    if (!gltfFile) {
+      console.error('No .gltf file found in the selected directory');
+      return null;
+    }
+    
+    // Get the directory containing the .gltf file
+    const gltfDir = gltfRelativePath.includes('/') 
+      ? gltfRelativePath.substring(0, gltfRelativePath.lastIndexOf('/') + 1)
+      : '';
+    
+    // Read and parse the glTF JSON
+    const gltfText = await gltfFile.text();
+    let gltfJson: any;
+    try {
+      gltfJson = JSON.parse(gltfText);
+    } catch (e) {
+      console.error('Failed to parse glTF JSON:', e);
+      return null;
+    }
+    
+    // Create blob URLs for all referenced resources
+    const resourceBlobUrls = new Map<string, string>();
+    
+    // Helper to resolve and create blob URL for a URI
+    const resolveBlobUrl = (uri: string): string | null => {
+      // Skip data URIs - they're already embedded
+      if (uri.startsWith('data:')) {
+        return null;
+      }
+      
+      // Decode URI components and resolve relative path
+      const decodedUri = decodeURIComponent(uri);
+      const resolvedPath = gltfDir + decodedUri;
+      
+      const file = fileMap.get(resolvedPath) || fileMap.get(decodedUri);
+      if (!file) {
+        console.warn(`Referenced file not found: ${uri} (resolved: ${resolvedPath})`);
+        return null;
+      }
+      
+      // Create blob URL directly from File (efficient - no copying)
+      const blobUrl = URL.createObjectURL(file);
+      resourceBlobUrls.set(uri, blobUrl);
+      return blobUrl;
+    };
+    
+    // Rewrite buffer URIs
+    if (gltfJson.buffers) {
+      for (const buffer of gltfJson.buffers) {
+        if (buffer.uri && !buffer.uri.startsWith('data:')) {
+          const blobUrl = resolveBlobUrl(buffer.uri);
+          if (blobUrl) {
+            buffer.uri = blobUrl;
+          }
+        }
+      }
+    }
+    
+    // Rewrite image URIs
+    if (gltfJson.images) {
+      for (const image of gltfJson.images) {
+        if (image.uri && !image.uri.startsWith('data:')) {
+          const blobUrl = resolveBlobUrl(image.uri);
+          if (blobUrl) {
+            image.uri = blobUrl;
+          }
+        }
+      }
+    }
+    
+    // Create blob URL for the modified glTF JSON
+    const modifiedGltfBlob = new Blob([JSON.stringify(gltfJson)], { type: 'model/gltf+json' });
+    const gltfBlobUrl = URL.createObjectURL(modifiedGltfBlob);
+    
+    // Generate unique model path
+    const timestamp = Date.now();
+    const folderName = gltfFile.webkitRelativePath.split('/')[0];
+    const cleanName = folderName.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const modelFilename = `imported_${timestamp}_${cleanName}`;
+    const modelPath = `/models/${modelFilename}`;
+    
+    // Store the imported model data
+    this.importedModels.set(modelPath, {
+      blobUrl: gltfBlobUrl,
+      file: gltfFile,
+      originalName: folderName,
+      resourceBlobUrls,
+    });
+    
+    console.log(`glTF directory imported: ${folderName}`);
+    console.log(`  - Main file: ${gltfFile.name}`);
+    console.log(`  - Resources: ${resourceBlobUrls.size} blob URLs created`);
+    
+    return {
+      modelPath,
+      displayName: cleanName.replace('.gltf', '').replace(/_/g, ' '),
+    };
   }
 
   /**
@@ -372,8 +512,19 @@ export class SceneSerializer {
       for (const modelPath of importedModelsUsed) {
         const imported = this.importedModels.get(modelPath);
         if (imported) {
-          const modelBlob = new Blob([imported.arrayBuffer], { type: 'model/gltf-binary' });
-          const modelUrl = URL.createObjectURL(modelBlob);
+          // Use file if available (more efficient), otherwise use arrayBuffer
+          let modelUrl: string;
+          if (imported.file) {
+            modelUrl = URL.createObjectURL(imported.file);
+          } else if (imported.arrayBuffer) {
+            const modelBlob = new Blob([imported.arrayBuffer], { type: 'model/gltf-binary' });
+            modelUrl = URL.createObjectURL(modelBlob);
+          } else {
+            // Already have a blob URL, can't re-download
+            console.warn(`Cannot download model ${modelPath}: no file or arrayBuffer available`);
+            continue;
+          }
+          
           const modelA = document.createElement('a');
           modelA.href = modelUrl;
           modelA.download = modelPath.replace('/models/', '');
@@ -510,6 +661,14 @@ export function isImportedModel(modelPath: string): boolean {
  */
 export function clearImportedModels(): void {
   sceneSerializer.clearImportedModels();
+}
+
+/**
+ * Import a glTF directory (folder containing .gltf, .bin, and texture files)
+ * @deprecated Use sceneSerializer.importGLTFDirectory() instead
+ */
+export async function importGLTFDirectory(files: FileList): Promise<ImportResult | null> {
+  return sceneSerializer.importGLTFDirectory(files);
 }
 
 /**

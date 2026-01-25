@@ -308,6 +308,22 @@ export const sceneBuilderStyles = `
     background: #ff8888;
   }
   
+  .secondary-btn {
+    padding: 6px 12px;
+    background: #333;
+    color: #ccc;
+    border: 1px solid #555;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+  }
+  
+  .secondary-btn:hover {
+    background: #444;
+    color: #f0f0f0;
+    border-color: #666;
+  }
+  
   .danger-btn {
     padding: 8px 12px;
     background: transparent;
