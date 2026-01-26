@@ -3,7 +3,7 @@
  * Handles objects, selection, and grouping using the new class hierarchy
  */
 
-import { mat4, vec3 } from 'gl-matrix';
+import { mat4, vec3, quat } from 'gl-matrix';
 import { SceneGraph, type SceneNodeOptions } from './sceneGraph';
 import {
   type AnySceneObject,
@@ -62,6 +62,7 @@ export interface SerializedScene {
 export interface GizmoTarget {
   position: [number, number, number] | null;
   rotation: [number, number, number] | null;
+  rotationQuat: quat | null;
   scale: [number, number, number] | null;
   isMultiSelect: boolean;
 }
@@ -387,7 +388,7 @@ export class Scene {
   getGizmoTarget(): GizmoTarget {
     const selected = this.getSelectedObjects();
     if (selected.length === 0) {
-      return { position: null, rotation: null, scale: null, isMultiSelect: false };
+      return { position: null, rotation: null, rotationQuat: null, scale: null, isMultiSelect: false };
     }
     
     if (selected.length === 1) {
@@ -395,6 +396,7 @@ export class Scene {
       return {
         position: [obj.position[0], obj.position[1], obj.position[2]],
         rotation: [obj.rotation[0], obj.rotation[1], obj.rotation[2]],
+        rotationQuat: quat.clone(obj.rotationQuat),
         scale: [obj.scale[0], obj.scale[1], obj.scale[2]],
         isMultiSelect: false,
       };
@@ -404,15 +406,17 @@ export class Scene {
     return {
       position: centroid,
       rotation: [0, 0, 0],
+      rotationQuat: quat.create(),
       scale: [1, 1, 1],
       isMultiSelect: true,
     };
   }
   
   /**
-   * Apply transform value from gizmo
+   * Apply transform value from gizmo.
+   * For rotation, pass a quat instead of Euler values.
    */
-  applyTransform(type: TransformType, value: [number, number, number]): void {
+  applyTransform(type: TransformType, value: [number, number, number] | quat): void {
     const selected = this.getSelectedObjects();
     if (selected.length === 0) return;
     
@@ -420,17 +424,18 @@ export class Scene {
       // Single selection: apply value directly
       const obj = selected[0];
       if (type === 'position') {
-        obj.position[0] = value[0];
-        obj.position[1] = value[1];
-        obj.position[2] = value[2];
+        const pos = value as [number, number, number];
+        obj.position[0] = pos[0];
+        obj.position[1] = pos[1];
+        obj.position[2] = pos[2];
       } else if (type === 'rotation') {
-        obj.rotation[0] = value[0];
-        obj.rotation[1] = value[1];
-        obj.rotation[2] = value[2];
+        // Rotation is now passed as quaternion
+        quat.copy(obj.rotationQuat, value as quat);
       } else if (type === 'scale') {
-        obj.scale[0] = value[0];
-        obj.scale[1] = value[1];
-        obj.scale[2] = value[2];
+        const scl = value as [number, number, number];
+        obj.scale[0] = scl[0];
+        obj.scale[1] = scl[1];
+        obj.scale[2] = scl[2];
       }
       this.updateObjectTransform(obj.id);
     } else {

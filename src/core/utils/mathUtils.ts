@@ -5,6 +5,7 @@
  */
 
 import { mat4, vec3, quat, ReadonlyVec3, ReadonlyQuat } from 'gl-matrix';
+import { Vec3 } from '../types';
 
 /**
  * 3D point with named components
@@ -204,4 +205,122 @@ export const slerpRotation = (
   const result = quat.create();
   quat.slerp(result, from, to, t);
   return result;
+};
+
+export const toVec3 = (vector: Vec3) =>
+  vec3.fromValues(vector[0], vector[1], vector[2]);
+
+// ==================== Euler ↔ Quaternion Conversions ====================
+
+/**
+ * Convert Euler angles (degrees, intrinsic XYZ order) to quaternion.
+ * 
+ * Intrinsic XYZ means: first rotate around local X, then local Y, then local Z.
+ * This is equivalent to extrinsic ZYX (world axes in reverse order).
+ * 
+ * The quaternion multiplication order for intrinsic XYZ is: qz * qy * qx
+ * (applied right-to-left, so X is applied first to the object)
+ * 
+ * @param euler - [rx, ry, rz] in degrees
+ * @returns Quaternion representing the rotation
+ */
+export const eulerToQuat = (euler: [number, number, number]): quat => {
+  const degToRad = Math.PI / 180;
+  
+  const rx = euler[0] * degToRad;
+  const ry = euler[1] * degToRad;
+  const rz = euler[2] * degToRad;
+  
+  // Half angles
+  const cx = Math.cos(rx / 2);
+  const sx = Math.sin(rx / 2);
+  const cy = Math.cos(ry / 2);
+  const sy = Math.sin(ry / 2);
+  const cz = Math.cos(rz / 2);
+  const sz = Math.sin(rz / 2);
+  
+  // Intrinsic XYZ = extrinsic ZYX
+  // q = qz * qy * qx (multiplication order)
+  const q = quat.create();
+  q[0] = sx * cy * cz - cx * sy * sz;  // x
+  q[1] = cx * sy * cz + sx * cy * sz;  // y
+  q[2] = cx * cy * sz - sx * sy * cz;  // z
+  q[3] = cx * cy * cz + sx * sy * sz;  // w
+  
+  return q;
+};
+
+/**
+ * Convert quaternion to Euler angles (degrees, intrinsic XYZ order).
+ * 
+ * Extracts Euler angles that, when applied as intrinsic XYZ rotations,
+ * produce the same rotation as the input quaternion.
+ * 
+ * @param q - Quaternion to convert
+ * @returns [rx, ry, rz] in degrees
+ */
+export const quatToEuler = (q: ReadonlyQuat): vec3 => {
+  const radToDeg = 180 / Math.PI;
+  
+  const x = q[0], y = q[1], z = q[2], w = q[3];
+  
+  // Rotation matrix elements (only the ones we need)
+  // For intrinsic XYZ, we extract from the matrix differently
+  const m00 = 1 - 2 * (y * y + z * z);
+  const m01 = 2 * (x * y + w * z);
+  const m02 = 2 * (x * z - w * y);
+  const m10 = 2 * (x * y - w * z);
+  const m11 = 1 - 2 * (x * x + z * z);
+  const m12 = 2 * (y * z + w * x);
+  const m20 = 2 * (x * z + w * y);
+  const m21 = 2 * (y * z - w * x);
+  const m22 = 1 - 2 * (x * x + y * y);
+  
+  let rx: number, ry: number, rz: number;
+  
+  // For intrinsic XYZ (extrinsic ZYX), the matrix is:
+  // R = Rz * Ry * Rx
+  // m02 = -sin(ry), so ry = -asin(m02)
+  
+  const sinRy = -m02;
+  
+  if (Math.abs(sinRy) >= 0.9999) {
+    // Gimbal lock: ry ≈ ±90°
+    ry = sinRy > 0 ? Math.PI / 2 : -Math.PI / 2;
+    // In gimbal lock, rz and rx become coupled
+    // Set rz = 0 and solve for rx
+    rz = 0;
+    rx = Math.atan2(-m21, m11);
+  } else {
+    ry = Math.asin(sinRy);
+    // m12 / m22 = tan(rx) when cos(ry) ≠ 0
+    rx = Math.atan2(m12, m22);
+    // m01 / m00 = tan(rz) when cos(ry) ≠ 0
+    rz = Math.atan2(m01, m00);
+  }
+  
+  return vec3.fromValues(rx * radToDeg, ry * radToDeg, rz * radToDeg);
+};
+
+/**
+ * Check if two Euler angle triplets represent the same rotation.
+ * Handles wrap-around and equivalent representations.
+ * 
+ * @param a - First Euler angles [rx, ry, rz] in degrees
+ * @param b - Second Euler angles [rx, ry, rz] in degrees
+ * @param tolerance - Angle tolerance in degrees (default 0.001)
+ * @returns true if rotations are equivalent
+ */
+export const eulerEquals = (
+  a: [number, number, number],
+  b: [number, number, number],
+  tolerance: number = 0.001
+): boolean => {
+  // Convert both to quaternions and compare
+  const qa = eulerToQuat(a);
+  const qb = eulerToQuat(b);
+  
+  // Quaternions q and -q represent the same rotation
+  const dot = quat.dot(qa, qb);
+  return Math.abs(Math.abs(dot) - 1) < tolerance * Math.PI / 180;
 };

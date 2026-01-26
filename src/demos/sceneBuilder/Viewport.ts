@@ -1,4 +1,4 @@
-import { mat4 } from 'gl-matrix';
+import { mat4, quat } from 'gl-matrix';
 import type { Vec2, Vec3, RGB } from '../../core/types';
 import { createAnimationLoop, AnimationLoop } from '../../core/animationLoop';
 import {
@@ -33,7 +33,8 @@ import type {
 export interface ViewportCallbacks {
   onFps?: (fps: number) => void;
   onUpdate?: (deltaTime: number) => void;
-  onGizmoTransform?: (type: 'position' | 'rotation' | 'scale', value: Vec3) => void;
+  /** For rotation, value is quat; for position/scale, value is Vec3 */
+  onGizmoTransform?: (type: 'position' | 'rotation' | 'scale', value: Vec3 | quat) => void;
   onGizmoDragEnd?: () => void;
   onUniformScaleChange?: (newScale: Vec3) => void;
   onUniformScaleCommit?: () => void;
@@ -176,7 +177,7 @@ export class Viewport {
   // Callbacks (all optional)
   private readonly onFps: (fps: number) => void;
   private readonly onUpdate: (deltaTime: number) => void;
-  private readonly onGizmoTransform: (type: 'position' | 'rotation' | 'scale', value: Vec3) => void;
+  private readonly onGizmoTransform: (type: 'position' | 'rotation' | 'scale', value: Vec3 | quat) => void;
   private readonly onGizmoDragEnd: () => void;
   private readonly onUniformScaleChange: (newScale: Vec3) => void;
   private readonly onUniformScaleCommit: () => void;
@@ -644,6 +645,19 @@ export class Viewport {
     }
     this.transformGizmo?.setEnabled(true);
     this.transformGizmo?.setTarget(position, rotation || [0, 0, 0], scale || [1, 1, 1]);
+  }
+  
+  /**
+   * Set gizmo target with quaternion rotation directly.
+   * Avoids Euler→Quat→Euler conversion for better precision on selection changes.
+   */
+  setGizmoTargetWithQuat(position: Vec3 | null | undefined, rotationQuat: quat, scale?: Vec3): void {
+    if (!position) {
+      this.transformGizmo?.setEnabled(false);
+      return;
+    }
+    this.transformGizmo?.setEnabled(true);
+    this.transformGizmo?.setTargetWithQuat(position, rotationQuat, scale || [1, 1, 1]);
   }
 
   setGizmoTargetPositionAndScale(position: Vec3 | null | undefined, scale?: Vec3): void {

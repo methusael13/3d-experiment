@@ -3,6 +3,7 @@
  * Orchestrates Model (Scene), View (Viewport), and UI (Panels)
  */
 
+import { quat } from 'gl-matrix';
 import { createSceneGraph, type SceneGraph } from '../../core/sceneGraph';
 import { sceneBuilderStyles, sceneBuilderTemplate } from './styles';
 import { saveScene, parseCameraState, parseLightingState, clearImportedModels, type CameraState as SerializerCameraState } from '../../loaders';
@@ -95,8 +96,9 @@ export class SceneBuilder implements SceneBuilderDemo {
   
   // ==================== Viewport Callbacks ====================
   
-  private handleGizmoTransform = (type: 'position' | 'rotation' | 'scale', value: Vec3): void => {
-    this.scene?.applyTransform(type as any, value);
+  private handleGizmoTransform = (type: 'position' | 'rotation' | 'scale', value: Vec3 | quat): void => {
+    // value is quat for rotation, Vec3 for position/scale
+    this.scene?.applyTransform(type, value as any);
     this.objectPanel?.update();
   };
   
@@ -136,7 +138,12 @@ export class SceneBuilder implements SceneBuilderDemo {
   private updateGizmoTarget(): void {
     if (!this.scene || !this.viewport) return;
     const target = this.scene.getGizmoTarget();
-    this.viewport.setGizmoTarget(target.position ?? null, target.rotation ?? undefined, target.scale ?? undefined);
+    if (target.position && target.rotationQuat) {
+      // Pass quat directly to avoid Euler→Quat conversion drift
+      this.viewport.setGizmoTargetWithQuat(target.position, target.rotationQuat, target.scale ?? undefined);
+    } else {
+      this.viewport.setGizmoTarget(target.position ?? null, target.rotation ?? undefined, target.scale ?? undefined);
+    }
     this.scene.resetTransformTracking();
   }
   

@@ -6,6 +6,8 @@
 import { mat4, vec3, quat } from 'gl-matrix';
 import { BaseGizmo, GizmoCamera, GizmoAxis, AXIS_COLORS } from './BaseGizmo';
 import { screenToRay, rayPlaneIntersect } from '../../../core/utils/raycastUtils';
+import { Vec3 } from '../../../core/types';
+import { toVec3 } from '../../../core/utils/mathUtils';
 
 /**
  * Rotate gizmo with circular rings for each axis
@@ -16,7 +18,7 @@ export class RotateGizmo extends BaseGizmo {
   private static readonly SEGMENTS = 32;
   
   // Drag state - vector-based tracking for smooth rotation
-  private rotationLastVec: [number, number, number] = [1, 0, 0];
+  private rotationLastVec: Vec3 = [1, 0, 0];
 
   constructor(gl: WebGL2RenderingContext, camera: GizmoCamera) {
     super(gl, camera);
@@ -29,19 +31,19 @@ export class RotateGizmo extends BaseGizmo {
     // World-space basis for each axis
     const worldBasis = {
       x: {
-        normal: [1, 0, 0] as [number, number, number],
-        u: [0, 1, 0] as [number, number, number],
-        v: [0, 0, 1] as [number, number, number],
+        normal: [1, 0, 0] as Vec3,
+        u: [0, 1, 0] as Vec3,
+        v: [0, 0, 1] as Vec3,
       },
       y: {
-        normal: [0, 1, 0] as [number, number, number],
-        u: [0, 0, 1] as [number, number, number],
-        v: [1, 0, 0] as [number, number, number],
+        normal: [0, 1, 0] as Vec3,
+        u: [0, 0, 1] as Vec3,
+        v: [1, 0, 0] as Vec3,
       },
       z: {
-        normal: [0, 0, 1] as [number, number, number],
-        u: [1, 0, 0] as [number, number, number],
-        v: [0, 1, 0] as [number, number, number],
+        normal: [0, 0, 1] as Vec3,
+        u: [1, 0, 0] as Vec3,
+        v: [0, 1, 0] as Vec3,
       },
     };
     
@@ -53,7 +55,7 @@ export class RotateGizmo extends BaseGizmo {
     const rotMat = this.getRotationMatrix();
     const basis = worldBasis[axis];
     
-    const rotateVec = (v: [number, number, number]): [number, number, number] => {
+    const rotateVec = (v: Vec3): Vec3 => {
       const result = vec3.create();
       vec3.transformMat4(result, v as unknown as vec3, rotMat);
       return [result[0], result[1], result[2]];
@@ -69,7 +71,7 @@ export class RotateGizmo extends BaseGizmo {
   /**
    * Get normalized direction vector from center to point on rotation plane
    */
-  private getVectorOnPlane(screenX: number, screenY: number, axis: 'x' | 'y' | 'z'): [number, number, number] | null {
+  private getVectorOnPlane(screenX: number, screenY: number, axis: 'x' | 'y' | 'z'): Vec3 | null {
     const { rayOrigin, rayDir } = screenToRay(screenX, screenY, this.camera as any, this.canvasWidth, this.canvasHeight);
     const planeInfo = this.getRotationPlaneInfo(axis);
     
@@ -102,24 +104,24 @@ export class RotateGizmo extends BaseGizmo {
    * Returns angle in radians
    */
   private signedAngleBetweenVectors(
-    v1: [number, number, number],
-    v2: [number, number, number],
-    normal: [number, number, number]
+    v1: Vec3,
+    v2: Vec3,
+    normal: Vec3
   ): number {
+    const vv1 = toVec3(v1);
+    const vv2 = toVec3(v2);
+
     // Dot product for angle magnitude
-    const dot = v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
+    const dot = vec3.dot(vv1, vv2);
     const cosAngle = Math.max(-1, Math.min(1, dot)); // Clamp for numerical stability
     const angle = Math.acos(cosAngle);
     
     // Cross product for sign determination
-    const cross = [
-      v1[1] * v2[2] - v1[2] * v2[1],
-      v1[2] * v2[0] - v1[0] * v2[2],
-      v1[0] * v2[1] - v1[1] * v2[0],
-    ];
+    const cross1to2 = vec3.create();
+    vec3.cross(cross1to2, vv1, vv2);
     
     // Sign is determined by whether cross product aligns with plane normal
-    const signDot = cross[0] * normal[0] + cross[1] * normal[1] + cross[2] * normal[2];
+    const signDot = Math.sign(vec3.dot(cross1to2, toVec3(normal)));
     
     return signDot >= 0 ? angle : -angle;
   }
@@ -127,9 +129,9 @@ export class RotateGizmo extends BaseGizmo {
   /**
    * Get point on circle for an axis (respects local/world orientation)
    */
-  private getCirclePoint(axis: 'x' | 'y' | 'z', angle: number, radius: number): [number, number, number] {
+  private getCirclePoint(axis: 'x' | 'y' | 'z', angle: number, radius: number): Vec3 {
     // Local space point on circle
-    let localPoint: [number, number, number];
+    let localPoint: Vec3;
     switch (axis) {
       case 'x':
         localPoint = [0, Math.cos(angle) * radius, Math.sin(angle) * radius];
@@ -155,8 +157,8 @@ export class RotateGizmo extends BaseGizmo {
   /**
    * Get normal vector for circle segment (respects local/world orientation)
    */
-  private getCircleNormal(axis: 'x' | 'y' | 'z', angle: number): [number, number, number] {
-    let localNormal: [number, number, number];
+  private getCircleNormal(axis: 'x' | 'y' | 'z', angle: number): Vec3 {
+    let localNormal: Vec3;
     switch (axis) {
       case 'x':
         localNormal = [0, Math.cos(angle), Math.sin(angle)];
@@ -198,7 +200,7 @@ export class RotateGizmo extends BaseGizmo {
         const normal = this.getCircleNormal(axis, angle);
         
         // World position
-        const worldPos: [number, number, number] = [
+        const worldPos: Vec3 = [
           this.targetPosition[0] + localPoint[0] * scale,
           this.targetPosition[1] + localPoint[1] * scale,
           this.targetPosition[2] + localPoint[2] * scale,
@@ -277,13 +279,13 @@ export class RotateGizmo extends BaseGizmo {
         gl.vertexAttribPointer(loc.aPosition, 3, gl.FLOAT, false, 0, 0);
         
         const isSelected = this.isDraggingFlag && this.activeAxis === axis;
-        let color: [number, number, number];
+        let color: Vec3;
         if (isSelected) {
-          color = AXIS_COLORS[`${axis}Highlight` as keyof typeof AXIS_COLORS] as [number, number, number];
+          color = AXIS_COLORS[`${axis}Highlight` as keyof typeof AXIS_COLORS] as Vec3;
         } else if (isFront) {
           color = AXIS_COLORS[axis];
         } else {
-          color = AXIS_COLORS[`${axis}Dim` as keyof typeof AXIS_COLORS] as [number, number, number];
+          color = AXIS_COLORS[`${axis}Dim` as keyof typeof AXIS_COLORS] as Vec3;
         }
         
         this.setColor(color);
@@ -323,12 +325,12 @@ export class RotateGizmo extends BaseGizmo {
     // Draw grid lines along U direction
     for (let i = -gridLines; i <= gridLines; i++) {
       const offset = (i / gridLines) * gridSize;
-      const p1: [number, number, number] = [
+      const p1: Vec3 = [
         planeInfo.u[0] * offset - planeInfo.v[0] * gridSize,
         planeInfo.u[1] * offset - planeInfo.v[1] * gridSize,
         planeInfo.u[2] * offset - planeInfo.v[2] * gridSize,
       ];
-      const p2: [number, number, number] = [
+      const p2: Vec3 = [
         planeInfo.u[0] * offset + planeInfo.v[0] * gridSize,
         planeInfo.u[1] * offset + planeInfo.v[1] * gridSize,
         planeInfo.u[2] * offset + planeInfo.v[2] * gridSize,
@@ -348,12 +350,12 @@ export class RotateGizmo extends BaseGizmo {
     // Draw grid lines along V direction
     for (let i = -gridLines; i <= gridLines; i++) {
       const offset = (i / gridLines) * gridSize;
-      const p1: [number, number, number] = [
+      const p1: Vec3 = [
         planeInfo.v[0] * offset - planeInfo.u[0] * gridSize,
         planeInfo.v[1] * offset - planeInfo.u[1] * gridSize,
         planeInfo.v[2] * offset - planeInfo.u[2] * gridSize,
       ];
-      const p2: [number, number, number] = [
+      const p2: Vec3 = [
         planeInfo.v[0] * offset + planeInfo.u[0] * gridSize,
         planeInfo.v[1] * offset + planeInfo.u[1] * gridSize,
         planeInfo.v[2] * offset + planeInfo.u[2] * gridSize,
@@ -438,17 +440,12 @@ export class RotateGizmo extends BaseGizmo {
     quat.multiply(this.targetRotationQuat, deltaQuat, this.targetRotationQuat);
     quat.normalize(this.targetRotationQuat, this.targetRotationQuat);
     
-    // Convert to Euler only for output callback (UI display)
-    const euler = this.quatToEuler(this.targetRotationQuat);
-    this.targetRotation[0] = euler[0];
-    this.targetRotation[1] = euler[1];
-    this.targetRotation[2] = euler[2];
-    
     // Update last vector for next frame
     this.rotationLastVec = currentVec;
     
+    // Output quaternion directly - no Euler conversion!
     if (this.onTransformChange) {
-      this.onTransformChange('rotation', [...this.targetRotation]);
+      this.onTransformChange('rotation', quat.clone(this.targetRotationQuat));
     }
     
     return true;

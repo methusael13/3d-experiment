@@ -171,7 +171,10 @@ export interface SerializedSceneObject {
   id?: string;
   name: string;
   position: [number, number, number];
+  /** Euler rotation in degrees (backward compatibility) */
   rotation: [number, number, number];
+  /** Quaternion rotation (primary storage, new format) */
+  rotationQuat?: [number, number, number, number];
   scale: [number, number, number];
   visible?: boolean;
   groupId?: string | null;

@@ -17,8 +17,12 @@ export interface GizmoCamera {
 
 /**
  * Callback type for transform changes
+ * For rotation, value is a quat (4 elements); for position/scale, value is Vec3 (3 elements)
  */
-export type TransformChangeCallback = (type: 'position' | 'rotation' | 'scale', value: Vec3) => void;
+export type TransformChangeCallback = (
+  type: 'position' | 'rotation' | 'scale',
+  value: Vec3 | quat
+) => void;
 
 /**
  * Gizmo axis type
@@ -304,6 +308,7 @@ export abstract class BaseGizmo {
   /**
    * Set target transform
    * Converts Euler rotation to quaternion at entry point
+   * @deprecated Use setTargetWithQuat for better precision
    */
   setTarget(position: Vec3, rotation: Vec3, scale: Vec3): void {
     this.targetPosition = [...position];
@@ -312,6 +317,18 @@ export abstract class BaseGizmo {
     
     // Convert Euler to quaternion at entry (XYZ intrinsic order)
     this.targetRotationQuat = this.eulerToQuat(rotation);
+  }
+  
+  /**
+   * Set target transform with quaternion rotation directly.
+   * Avoids Euler→Quat conversion for better precision.
+   */
+  setTargetWithQuat(position: Vec3, rotationQuat: quat, scale: Vec3): void {
+    this.targetPosition = [...position];
+    quat.copy(this.targetRotationQuat, rotationQuat);
+    this.targetScale = [...scale];
+    // Update Euler for display purposes only
+    this.targetRotation = [...this.quatToEuler(rotationQuat)];
   }
   
   /**
@@ -372,7 +389,9 @@ export abstract class BaseGizmo {
   }
   
   /**
-   * Convert Euler angles (degrees, XYZ order) to quaternion
+   * Convert Euler angles (degrees, XYZ intrinsic order) to quaternion.
+   * Must match SceneObject.getModelMatrix() which applies: rotateX -> rotateY -> rotateZ
+   * For intrinsic XYZ, quaternion multiplication is: q = qx * qy * qz
    */
   protected eulerToQuat(euler: Vec3): quat {
     const q = quat.create();
@@ -387,39 +406,58 @@ export abstract class BaseGizmo {
     quat.setAxisAngle(qy, [0, 1, 0], euler[1] * degToRad);
     quat.setAxisAngle(qz, [0, 0, 1], euler[2] * degToRad);
     
-    // Multiply in XYZ order: q = qz * qy * qx (gl-matrix convention)
-    quat.multiply(q, qy, qx);
-    quat.multiply(q, qz, q);
+    // Intrinsic XYZ: first X, then Y (in X-rotated frame), then Z (in XY-rotated frame)
+    // Quaternion order: q = qx * qy * qz
+    quat.multiply(q, qx, qy);
+    quat.multiply(q, q, qz);
     
     return q;
   }
   
   /**
-   * Convert quaternion to Euler angles (degrees, XYZ order)
-   * Based on standard quaternion-to-Euler conversion
+   * Convert quaternion to Euler angles (degrees, XYZ intrinsic order).
+   * Must produce values that when fed to SceneObject.getModelMatrix() (rotateX->Y->Z)
+   * recreate the same rotation as the quaternion.
+   * 
+   * For intrinsic XYZ (Tait-Bryan angles), given rotation matrix from quat:
+   * R = Rx(a) * Ry(b) * Rz(c)
    */
   protected quatToEuler(q: quat): Vec3 {
     const radToDeg = 180 / Math.PI;
     
-    // Extract rotation matrix components from quaternion
+    // Build rotation matrix from quaternion
     const x = q[0], y = q[1], z = q[2], w = q[3];
     
-    // Compute Euler angles (XYZ intrinsic order)
-    const sinr_cosp = 2 * (w * x + y * z);
-    const cosr_cosp = 1 - 2 * (x * x + y * y);
-    const rx = Math.atan2(sinr_cosp, cosr_cosp);
+    // Rotation matrix elements (column-major like gl-matrix)
+    const m00 = 1 - 2 * (y * y + z * z);
+    const m01 = 2 * (x * y + w * z);
+    const m02 = 2 * (x * z - w * y);
+    const m10 = 2 * (x * y - w * z);
+    const m11 = 1 - 2 * (x * x + z * z);
+    const m12 = 2 * (y * z + w * x);
+    const m20 = 2 * (x * z + w * y);
+    const m21 = 2 * (y * z - w * x);
+    const m22 = 1 - 2 * (x * x + y * y);
     
-    const sinp = 2 * (w * y - z * x);
-    let ry: number;
-    if (Math.abs(sinp) >= 1) {
-      ry = Math.sign(sinp) * Math.PI / 2; // Gimbal lock
+    // Extract XYZ intrinsic Euler angles from rotation matrix
+    // For R = Rx * Ry * Rz:
+    // ry = -asin(m02)
+    // rx = atan2(m12, m22)
+    // rz = atan2(m01, m00)
+    
+    let rx: number, ry: number, rz: number;
+    
+    // Check for gimbal lock (m02 = ±1)
+    if (Math.abs(m02) >= 0.9999) {
+      // Gimbal lock: ry = ±90°
+      ry = m02 < 0 ? Math.PI / 2 : -Math.PI / 2;
+      rz = 0;
+      rx = Math.atan2(-m10, m11);
     } else {
-      ry = Math.asin(sinp);
+      ry = -Math.asin(Math.max(-1, Math.min(1, m02)));
+      rx = Math.atan2(m12, m22);
+      rz = Math.atan2(m01, m00);
     }
-    
-    const siny_cosp = 2 * (w * z + x * y);
-    const cosy_cosp = 1 - 2 * (y * y + z * z);
-    const rz = Math.atan2(siny_cosp, cosy_cosp);
     
     return [rx * radToDeg, ry * radToDeg, rz * radToDeg];
   }

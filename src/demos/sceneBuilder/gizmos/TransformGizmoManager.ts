@@ -3,7 +3,7 @@
  * Provides the same API as the old createTransformGizmo() factory function
  */
 
-import { mat4 } from 'gl-matrix';
+import { mat4, quat } from 'gl-matrix';
 import type { Vec3 } from '../../../core/types';
 import { GizmoCamera, TransformChangeCallback, GizmoOrientation } from './BaseGizmo';
 import { TranslateGizmo } from './TranslateGizmo';
@@ -33,13 +33,16 @@ export class TransformGizmoManager {
   private enabled = false;
   
   // Store current target for re-applying on mode change
+  // rotationQuat is the authoritative source; rotation (Euler) kept for legacy
   private currentTarget: {
     position: [number, number, number];
     rotation: [number, number, number];
+    rotationQuat: quat;
     scale: [number, number, number];
   } = {
     position: [0, 0, 0],
     rotation: [0, 0, 0],
+    rotationQuat: quat.create(),
     scale: [1, 1, 1],
   };
   
@@ -62,7 +65,20 @@ export class TransformGizmoManager {
     this.scaleGizmo.setOnChange((type, value) => this.handleChange(type, value));
   }
   
-  private handleChange(type: 'position' | 'rotation' | 'scale', value: [number, number, number]): void {
+  private handleChange(type: 'position' | 'rotation' | 'scale', value: Vec3 | quat): void {
+    // Keep currentTarget in sync with gizmo changes
+    // so mode switches use the latest values
+    if (type === 'position') {
+      const pos = value as Vec3;
+      this.currentTarget.position = [...pos];
+    } else if (type === 'rotation') {
+      // Rotation is now quat
+      quat.copy(this.currentTarget.rotationQuat, value as quat);
+    } else if (type === 'scale') {
+      const scl = value as Vec3;
+      this.currentTarget.scale = [...scl];
+    }
+    
     if (this.onTransformChange) {
       this.onTransformChange(type, value);
     }
@@ -89,9 +105,10 @@ export class TransformGizmoManager {
   
   setMode(newMode: GizmoMode): void {
     this.mode = newMode;
-    // Re-apply target to active gizmo on mode change (fixes issue #3)
+    // Re-apply target to active gizmo on mode change using quaternion directly
+    // This avoids Euler→Quat conversion drift when switching modes
     const target = this.currentTarget;
-    this.getActiveGizmo().setTarget(target.position, target.rotation, target.scale);
+    this.getActiveGizmo().setTargetWithQuat(target.position, target.rotationQuat, target.scale);
   }
   
   setOrientation(newOrientation: GizmoOrientation): void {
@@ -104,12 +121,36 @@ export class TransformGizmoManager {
   
   setTarget(position: Vec3, rotation: Vec3, scale: Vec3): void {
     // Store current target for re-applying on mode change
-    this.currentTarget = { position: [...position], rotation: [...rotation], scale: [...scale] };
+    // Also convert Euler to quat for authoritative storage
+    this.currentTarget.position = [...position];
+    this.currentTarget.rotation = [...rotation];
+    this.currentTarget.scale = [...scale];
+    // Convert and store quat
+    this.currentTarget.rotationQuat = this.rotateGizmo['eulerToQuat'](rotation);
     
     this.translateGizmo.setTarget(position, rotation, scale);
     this.rotateGizmo.setTarget(position, rotation, scale);
     this.scaleGizmo.setTarget(position, rotation, scale);
     this.uniformScaleGizmo.setTarget(position, rotation, scale);
+  }
+  
+  /**
+   * Set target with quaternion rotation directly.
+   * Avoids Euler→Quat conversion for better precision on selection changes.
+   */
+  setTargetWithQuat(position: Vec3, rotationQuat: quat, scale: Vec3): void {
+    // Store quat directly as the authoritative source
+    this.currentTarget.position = [...position];
+    this.currentTarget.scale = [...scale];
+    quat.copy(this.currentTarget.rotationQuat, rotationQuat);
+    // Store Euler for legacy (approximate)
+    this.currentTarget.rotation = [...this.rotateGizmo['quatToEuler'](rotationQuat)];
+    
+    // Pass quat directly to avoid conversion
+    this.translateGizmo.setTargetWithQuat(position, rotationQuat, scale);
+    this.rotateGizmo.setTargetWithQuat(position, rotationQuat, scale);
+    this.scaleGizmo.setTargetWithQuat(position, rotationQuat, scale);
+    this.uniformScaleGizmo.setTargetWithQuat(position, rotationQuat, scale);
   }
   
   /**

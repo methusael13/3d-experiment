@@ -322,9 +322,17 @@ export class ObjectPanel implements ObjectPanelAPI {
         const [type, axis] = inputId.split('-');
         const axisIndex = { x: 0, y: 1, z: 2 }[axis] as number;
         
-        if (type === 'pos') obj.position[axisIndex] = value;
-        else if (type === 'rot') obj.rotation[axisIndex] = value;
-        else if (type === 'scale') obj.scale[axisIndex] = Math.max(0.01, value);
+        if (type === 'pos') {
+          obj.position[axisIndex] = value;
+        } else if (type === 'rot') {
+          // rotation is a getter that computes Euler from quat
+          // We need read-modify-write pattern
+          const currentRot = [...obj.rotation] as [number, number, number];
+          currentRot[axisIndex] = value;
+          obj.rotation = currentRot;  // Setter converts back to quat
+        } else if (type === 'scale') {
+          obj.scale[axisIndex] = Math.max(0.01, value);
+        }
         
         scene.updateObjectTransform(obj.id);
         onTransformUpdate();
