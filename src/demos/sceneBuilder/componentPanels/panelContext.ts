@@ -10,7 +10,7 @@ import type { LightingManager } from '../lightingManager';
 import type { CameraController } from '../CameraController';
 import type { GizmoMode } from '../gizmos';
 import type { GizmoOrientation } from '../gizmos/BaseGizmo';
-import type { ShadowRenderer } from '../../../core/renderers';
+import type { ShadowRenderer, ContactShadowSettings } from '../../../core/renderers';
 
 // ==================== Types ====================
 
@@ -50,7 +50,9 @@ export interface PanelContext {
   onObjectListUpdate(): void;
   onSelectionChanged(): void;
   setShadowResolution(resolution: number): void;
+  setShadowEnabled(enabled: boolean): void;
   setShowShadowThumbnail(show: boolean): void;
+  setContactShadowSettings(settings: ContactShadowSettings): void;
   setLightMode(mode: 'directional' | 'hdr'): void;
   loadHDRTexture(file: File): Promise<void>;
   setHDRTexture(texture: WebGLTexture | null): void;
@@ -81,7 +83,9 @@ export interface PanelContextConfig {
   onObjectListUpdate?: () => void;
   onSelectionChanged?: () => void;
   setShadowResolution?: (resolution: number) => void;
+  setShadowEnabled?: (enabled: boolean) => void;
   setShowShadowThumbnail?: (show: boolean) => void;
+  setContactShadowSettings?: (settings: ContactShadowSettings) => void;
   setLightMode?: (mode: 'directional' | 'hdr') => void;
   loadHDRTexture?: (file: File) => Promise<void>;
   setHDRTexture?: (texture: WebGLTexture | null) => void;
@@ -119,7 +123,9 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     onObjectListUpdate,
     onSelectionChanged,
     setShadowResolution,
+    setShadowEnabled,
     setShowShadowThumbnail,
+    setContactShadowSettings,
     setLightMode,
     loadHDRTexture,
     setHDRTexture,
@@ -168,7 +174,9 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     onObjectListUpdate: onObjectListUpdate || (() => {}),
     onSelectionChanged: onSelectionChanged || (() => {}),
     setShadowResolution: setShadowResolution || (() => {}),
+    setShadowEnabled: setShadowEnabled || (() => {}),
     setShowShadowThumbnail: setShowShadowThumbnail || (() => {}),
+    setContactShadowSettings: setContactShadowSettings || (() => {}),
     setLightMode: setLightMode || (() => {}),
     loadHDRTexture: loadHDRTexture || (async () => {}),
     setHDRTexture: setHDRTexture || (() => {}),

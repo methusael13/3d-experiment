@@ -71,12 +71,6 @@ const environmentPanelTemplate = `
         <div class="transform-group compact-slider"><div class="slider-header"><label>Azimuth</label><span id="sun-azimuth-value" class="slider-value">45°</span></div><input type="range" id="sun-azimuth" min="0" max="360" value="45" class="slider-input"></div>
         <div class="transform-group compact-slider"><div class="slider-header"><label>Elevation</label><span id="sun-elevation-value" class="slider-value">45°</span></div><input type="range" id="sun-elevation" min="-90" max="90" value="45" class="slider-input"></div>
         <div class="transform-group compact-slider"><div class="slider-header"><label>Ambient</label><span id="sun-ambient-value" class="slider-value">0.15</span></div><input type="range" id="sun-ambient" min="0" max="1" step="0.05" value="0.15" class="slider-input"></div>
-        <div class="shadow-controls">
-          <label class="checkbox-label"><input type="checkbox" id="shadow-enabled" checked><span>Enable Shadows</span></label>
-          <div class="transform-group"><label>Shadow Quality</label><div class="shadow-quality-btns"><button id="shadow-1024" class="quality-btn">1024</button><button id="shadow-2048" class="quality-btn active">2048</button><button id="shadow-4096" class="quality-btn">4096</button></div></div>
-          <div class="transform-group"><label>Shadow Debug</label><select id="shadow-debug" style="width: 100%; padding: 4px; background: #333; color: #f0f0f0; border: 1px solid #555; border-radius: 3px; font-size: 11px;"><option value="0">Off</option><option value="1">Depth Map</option><option value="2">UV Coords</option><option value="3">Shadow Value</option></select></div>
-          <label class="checkbox-label"><input type="checkbox" id="shadow-thumbnail"><span>Show Depth Thumbnail</span></label>
-        </div>
       </div>
       <div id="hdr-controls" style="display: none;">
         <div class="transform-group compact-slider"><div class="slider-header"><label>HDR Exposure</label><span id="hdr-exposure-value" class="slider-value">1.0</span></div><input type="range" id="hdr-exposure" min="0.1" max="5" step="0.1" value="1" class="slider-input"></div>
@@ -128,9 +122,6 @@ export class EnvironmentPanel implements EnvironmentPanelAPI {
   private sunElevationValue!: HTMLSpanElement;
   private sunAmbient!: HTMLInputElement;
   private sunAmbientValue!: HTMLSpanElement;
-  private shadowEnabled!: HTMLInputElement;
-  private shadowDebug!: HTMLSelectElement;
-  private shadowThumbnail!: HTMLInputElement;
   private toneMapping!: HTMLSelectElement;
   private hdrExposure!: HTMLInputElement;
   private hdrExposureValue!: HTMLSpanElement;
@@ -191,9 +182,6 @@ export class EnvironmentPanel implements EnvironmentPanelAPI {
     this.sunElevationValue = p.querySelector('#sun-elevation-value')!;
     this.sunAmbient = p.querySelector('#sun-ambient')!;
     this.sunAmbientValue = p.querySelector('#sun-ambient-value')!;
-    this.shadowEnabled = p.querySelector('#shadow-enabled')!;
-    this.shadowDebug = p.querySelector('#shadow-debug')!;
-    this.shadowThumbnail = p.querySelector('#shadow-thumbnail')!;
     this.toneMapping = p.querySelector('#tone-mapping')!;
     this.hdrExposure = p.querySelector('#hdr-exposure')!;
     this.hdrExposureValue = p.querySelector('#hdr-exposure-value')!;
@@ -220,7 +208,7 @@ export class EnvironmentPanel implements EnvironmentPanelAPI {
   }
   
   private setup(): void {
-    const { setLightMode, setShadowResolution, setShowShadowThumbnail, setHDRTexture, onWindChanged, onLightingChanged } = this.context;
+    const { setLightMode, setHDRTexture, onWindChanged, onLightingChanged } = this.context;
     const p = this.panelElement;
     
     // Tab switching
@@ -252,29 +240,6 @@ export class EnvironmentPanel implements EnvironmentPanelAPI {
       this.lightingManager.sunLight.ambientIntensity = parseFloat(this.sunAmbient.value);
       this.sunAmbientValue.textContent = this.lightingManager.sunLight.ambientIntensity.toFixed(2);
       onLightingChanged();
-    });
-    
-    this.shadowEnabled.addEventListener('change', () => {
-      this.lightingManager.shadowEnabled = this.shadowEnabled.checked;
-      onLightingChanged();
-    });
-    
-    [1024, 2048, 4096].forEach(res => {
-      p.querySelector(`#shadow-${res}`)!.addEventListener('click', () => {
-        this.lightingManager.sunLight.shadowResolution = res;
-        setShadowResolution(res);
-        p.querySelectorAll('.quality-btn').forEach(btn => btn.classList.remove('active'));
-        p.querySelector(`#shadow-${res}`)?.classList.add('active');
-      });
-    });
-    
-    this.shadowDebug.addEventListener('change', () => {
-      this.lightingManager.shadowDebug = parseInt(this.shadowDebug.value, 10);
-      onLightingChanged();
-    });
-    
-    this.shadowThumbnail.addEventListener('change', () => {
-      setShowShadowThumbnail(this.shadowThumbnail.checked);
     });
     
     this.toneMapping.addEventListener('change', () => {
@@ -507,13 +472,8 @@ export class EnvironmentPanel implements EnvironmentPanelAPI {
     this.sunElevationValue.textContent = `${this.lightingManager.sunLight.elevation}°`;
     this.sunAmbient.value = String(this.lightingManager.sunLight.ambientIntensity);
     this.sunAmbientValue.textContent = this.lightingManager.sunLight.ambientIntensity.toFixed(2);
-    this.shadowEnabled.checked = this.lightingManager.shadowEnabled;
     this.hdrExposure.value = String(this.lightingManager.hdrLight.exposure);
     this.hdrExposureValue.textContent = this.lightingManager.hdrLight.exposure.toFixed(1);
-    
-    // Update shadow quality buttons
-    this.panelElement.querySelectorAll('.quality-btn').forEach(btn => btn.classList.remove('active'));
-    this.panelElement.querySelector(`#shadow-${this.lightingManager.sunLight.shadowResolution}`)?.classList.add('active');
     
     // Update tone mapping dropdown
     const tmValue = Object.entries(TONE_MAPPING_NAMES).find(([_, v]) => v === this.lightingManager.toneMapping)?.[0] || 'aces';

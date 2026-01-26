@@ -12,6 +12,11 @@ import {
   SkyRenderer,
   ShadowRenderer,
   DepthPrePassRenderer,
+  ContactShadowRenderer,
+  type ContactShadowSettings,
+  ForwardPipeline,
+  type RenderObject,
+  type PipelineCamera,
 } from '../../core/renderers';
 import { TransformGizmoManager, GizmoMode } from './gizmos';
 import type { GizmoOrientation } from './gizmos/BaseGizmo';
@@ -123,6 +128,10 @@ export class Viewport {
   private skyRenderer: SkyRenderer | null = null;
   private shadowRenderer: ShadowRenderer | null = null;
   private depthPrePassRenderer: DepthPrePassRenderer | null = null;
+  private contactShadowRenderer: ContactShadowRenderer | null = null;
+  
+  // Render pipeline (manages all passes)
+  private pipeline: ForwardPipeline | null = null;
 
   // Transform gizmo
   private transformGizmo: TransformGizmoManager | null = null;
@@ -164,6 +173,15 @@ export class Viewport {
   private hdrTexture: WebGLTexture | null = null;
   private hdrMaxMipLevel = 6.0;
   private shadowResolution = 2048;
+
+  private shadowEnabled = true;
+  private contactShadowSettings: ContactShadowSettings = {
+    enabled: true,
+    maxDistance: 1.0,
+    thickness: 0.1,
+    steps: 16,
+    intensity: 0.8,
+  };
 
   // Pure view settings (not duplicated elsewhere)
   private viewportMode: 'solid' | 'wireframe' = 'solid';
@@ -235,23 +253,19 @@ export class Viewport {
     this.animationLoop?.stop();
     this.animationLoop = null;
 
-    this.gridRenderer?.destroy();
+    // Pipeline handles cleanup of its own passes
+    this.pipeline?.destroy();
+    this.pipeline = null;
+    
     this.gridRenderer = null;
-
-    this.originMarkerRenderer?.destroy();
     this.originMarkerRenderer = null;
+    this.skyRenderer = null;
+    this.shadowRenderer = null;
+    this.depthPrePassRenderer = null;
+    this.contactShadowRenderer = null;
 
     this.transformGizmo?.destroy();
     this.transformGizmo = null;
-
-    this.skyRenderer?.destroy();
-    this.skyRenderer = null;
-
-    this.shadowRenderer?.destroy();
-    this.shadowRenderer = null;
-
-    this.depthPrePassRenderer?.destroy();
-    this.depthPrePassRenderer = null;
 
     if (this.hdrTexture && this.gl) {
       this.gl.deleteTexture(this.hdrTexture);
@@ -278,6 +292,19 @@ export class Viewport {
     this.skyRenderer = createSkyRenderer(gl);
     this.shadowRenderer = createShadowRenderer(gl, this.shadowResolution);
     this.depthPrePassRenderer = createDepthPrePassRenderer(gl, this.renderWidth, this.renderHeight);
+    this.contactShadowRenderer = new ContactShadowRenderer(gl, this.contactShadowSettings);
+    this.contactShadowRenderer.resize(this.renderWidth, this.renderHeight);
+    
+    // Initialize ForwardPipeline
+    this.pipeline = new ForwardPipeline(gl, {
+      width: this.renderWidth,
+      height: this.renderHeight,
+      shadowRenderer: this.shadowRenderer!,
+      depthPrePassRenderer: this.depthPrePassRenderer!,
+      skyRenderer: this.skyRenderer!,
+      gridRenderer: this.gridRenderer!,
+      originMarkerRenderer: this.originMarkerRenderer!,
+    });
 
     return true;
   }
@@ -420,30 +447,10 @@ export class Viewport {
   }
 
   /**
-   * Get sun direction from lightParams (for shadow pass)
-   */
-  private getSunDirection(): Vec3 {
-    if (this.lightParams && this.lightParams.type === 'directional' && 'direction' in this.lightParams) {
-      return [...(this.lightParams as any).direction] as Vec3;
-    }
-    return [0.5, 0.707, 0.5];
-  }
-
-  /**
-   * Get sun elevation from lightParams (for sky rendering)
-   */
-  private getSunElevation(): number {
-    if (this.lightParams && this.lightParams.type === 'directional' && 'elevation' in this.lightParams) {
-      return (this.lightParams as any).elevation;
-    }
-    return 45;
-  }
-
-  /**
-   * Check if shadows are enabled (from lightParams)
+   * Check if shadows are enabled (from local state + lightParams)
    */
   private isShadowEnabled(): boolean {
-    return this.lightParams?.shadowEnabled ?? true;
+    return this.shadowEnabled && (this.lightParams?.shadowEnabled ?? true);
   }
 
   /**
@@ -456,6 +463,46 @@ export class Viewport {
     return 1.0;
   }
 
+  // ==================== Render Objects Helper ====================
+  
+  /**
+   * Build RenderObject array from current RenderData
+   */
+  private buildRenderObjects(): RenderObject[] {
+    return this.renderData.objects
+      .map(obj => {
+        const modelMatrix = this.renderData.getModelMatrix(obj);
+        if (!modelMatrix || !obj.renderer) return null;
+        
+        return {
+          id: obj.id,
+          modelMatrix,
+          renderer: obj.renderer,
+          gpuMeshes: obj.renderer.gpuMeshes || [],
+          isSelected: this.renderData.selectedIds.has(obj.id),
+          windSettings: this.renderData.objectWindSettings.get(obj.id) || null,
+          terrainBlendSettings: this.renderData.objectTerrainBlendSettings.get(obj.id) || null,
+          showNormals: obj.showNormals || false,
+        } as RenderObject;
+      })
+      .filter((o): o is RenderObject => o !== null);
+  }
+  
+  /**
+   * Create a PipelineCamera adapter from CameraController
+   */
+  private getPipelineCamera(): PipelineCamera {
+    const camera = this.cameraController!.getCamera();
+    return {
+      getViewProjectionMatrix: () => camera.getViewProjectionMatrix(),
+      getViewMatrix: () => camera.getViewMatrix(),
+      getProjectionMatrix: () => camera.getProjectionMatrix(),
+      getPosition: () => camera.getPosition(),
+      near: camera.near,
+      far: camera.far,
+    };
+  }
+
   // ==================== Render Loop ====================
 
   private startRendering(): void {
@@ -466,144 +513,50 @@ export class Viewport {
       this.render(deltaTime);
     });
   }
-
-  private render(deltaTime: number): void {
-    if (!this.gl || !this.cameraController) return;
-
-    const dt = deltaTime / 1000;
-    const gl = this.gl;
-
-    // Let controller update wind physics
-    this.onUpdate(dt);
-
-    // Update wind time
-    this.windParams.time += dt;
-
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-    const vpMatrix = this.cameraController.getViewProjectionMatrix();
-    const allObjects = this.renderData.objects;
-
-    // Shadow pass (only for directional light mode with shadows enabled)
-    const isDirectionalMode = !this.lightParams || this.lightParams.type === 'directional';
+  
+  /**
+   * Pipeline-based render method
+   */
+  private renderWithPipeline(dt: number): void {
+    if (!this.pipeline || !this.cameraController) return;
+    
+    // Build render objects from RenderData
+    const objects = this.buildRenderObjects();
+    
+    // Get pipeline camera adapter
+    const camera = this.getPipelineCamera();
+    
+    // Get complete light params
+    const lightParams = this.getCompleteLightParams();
+    
+    // Update pipeline context
+    this.pipeline.updateContext(camera, lightParams, this.windParams, dt);
+    this.pipeline.setOriginPosition(this.cameraController.getOriginPosition() as Vec3);
+    
+    // Update pipeline settings
+    this.pipeline.updateSettings({
+      shadowEnabled: this.isShadowEnabled(),
+      contactShadowEnabled: this.contactShadowSettings.enabled,
+      contactShadowSettings: this.contactShadowSettings,
+      wireframeMode: this.viewportMode === 'wireframe',
+      showGrid: this.showGrid,
+      showAxes: this.showAxes,
+    });
+    
+    // Set HDR texture if in HDR mode
+    if (this.lightParams?.type === 'hdr' && this.hdrTexture) {
+      this.pipeline.setTexture('hdr', this.hdrTexture);
+    }
+    
+    // Render through pipeline
+    this.pipeline.render(objects);
+    
+    // Gizmo (always rendered separately - it's interactive)
+    this.transformGizmo?.render(this.cameraController.getViewProjectionMatrix());
+    
+    // Shadow debug thumbnail (rendered after pipeline)
     const shadowEnabled = this.isShadowEnabled();
-
-    if (isDirectionalMode && shadowEnabled && allObjects.length > 0 && this.shadowRenderer) {
-      const sunDir = this.getSunDirection();
-      const shadowCoverage = 5;
-      this.shadowRenderer.beginShadowPass(sunDir, shadowCoverage);
-
-      for (const obj of allObjects) {
-        if (obj.renderer && obj.renderer.gpuMeshes && obj.renderer.gpuMeshes.length > 0) {
-          const modelMatrix = this.renderData.getModelMatrix(obj);
-          if (modelMatrix) {
-            const objWindSettings = this.renderData.objectWindSettings.get(obj.id) || null;
-            this.shadowRenderer.renderObject(obj.renderer.gpuMeshes, modelMatrix, this.windParams, objWindSettings);
-          }
-        }
-      }
-
-      this.shadowRenderer.endShadowPass(this.renderWidth, this.renderHeight);
-    }
-
-    // Depth pre-pass for terrain blend
-    const hasTerrainBlendObjects = Array.from(this.renderData.objectTerrainBlendSettings.values()).some(
-      (s) => s.enabled
-    );
-
-    if (hasTerrainBlendObjects && allObjects.length > 1 && this.depthPrePassRenderer) {
-      this.depthPrePassRenderer.beginPass(vpMatrix);
-
-      for (const obj of allObjects) {
-        if (obj.renderer && obj.renderer.gpuMeshes && obj.renderer.gpuMeshes.length > 0) {
-          const modelMatrix = this.renderData.getModelMatrix(obj);
-          const objWindSettings = this.renderData.objectWindSettings.get(obj.id) || null;
-          const terrainSettings = this.renderData.objectTerrainBlendSettings.get(obj.id);
-          const isTerrainBlendTarget = terrainSettings?.enabled || false;
-
-          if (modelMatrix) {
-            this.depthPrePassRenderer.renderObject(
-              obj.renderer.gpuMeshes,
-              vpMatrix,
-              modelMatrix,
-              this.windParams,
-              objWindSettings,
-              isTerrainBlendTarget
-            );
-          }
-        }
-      }
-
-      this.depthPrePassRenderer.endPass(this.renderWidth, this.renderHeight);
-    }
-
-    // Sky
-    const isHDRMode = this.lightParams?.type === 'hdr';
-    if (isHDRMode && this.hdrTexture && this.skyRenderer) {
-      this.skyRenderer.renderHDRSky(vpMatrix, this.hdrTexture, this.getHDRExposure());
-    } else if (this.skyRenderer) {
-      this.skyRenderer.renderSunSky(this.getSunElevation());
-    }
-
-    // Render grid and axes
-    if ((this.showGrid || this.showAxes) && this.gridRenderer) {
-      this.gridRenderer.render(vpMatrix, { showGrid: this.showGrid, showAxes: this.showAxes });
-    }
-
-    // Origin marker
-    if (this.showAxes && this.originMarkerRenderer) {
-      const origin = this.cameraController.getOriginPosition();
-      this.originMarkerRenderer.render(vpMatrix, [origin[0], origin[1], origin[2]] as Vec3);
-    }
-
-    const isWireframe = this.viewportMode === 'wireframe';
-    const completeLightParams = this.getCompleteLightParams();
-    const camera = this.cameraController.getCamera();
-
-    for (const obj of allObjects) {
-      if (obj.renderer && obj.renderer.gpuMeshes) {
-        const objWindSettings = this.renderData.objectWindSettings.get(obj.id) || null;
-        const terrainSettings = this.renderData.objectTerrainBlendSettings.get(obj.id);
-
-        let terrainBlendParams: TerrainBlendParams | null = null;
-        if (terrainSettings?.enabled && hasTerrainBlendObjects && this.depthPrePassRenderer) {
-          terrainBlendParams = {
-            enabled: true,
-            blendDistance: terrainSettings.blendDistance,
-            depthTexture: this.depthPrePassRenderer.getDepthTexture(),
-            screenSize: [this.renderWidth, this.renderHeight],
-        nearPlane: (camera as any).near || 0.1,
-        farPlane: (camera as any).far || 100,
-          };
-        }
-
-        const isSelected = this.renderData.selectedIds.has(obj.id);
-        const modelMatrix = this.renderData.getModelMatrix(obj);
-
-        if (modelMatrix) {
-          obj.renderer.render(
-            vpMatrix,
-            modelMatrix,
-            isSelected,
-            isWireframe,
-            completeLightParams,
-            this.windParams,
-            objWindSettings,
-            terrainBlendParams
-          );
-
-          // Render normal debug lines if enabled
-          if (obj.showNormals && 'renderNormals' in obj.renderer) {
-            (obj.renderer as any).renderNormals(vpMatrix, modelMatrix);
-          }
-        }
-      }
-    }
-
-    // Gizmo
-    this.transformGizmo?.render(vpMatrix);
-
-    // Shadow debug thumbnail
+    const isDirectionalMode = !this.lightParams || this.lightParams.type === 'directional';
     if (this.showShadowThumbnail && shadowEnabled && isDirectionalMode && this.shadowRenderer) {
       this.shadowRenderer.renderDebugThumbnail(
         10 * this.dpr,
@@ -613,6 +566,19 @@ export class Viewport {
         this.renderHeight
       );
     }
+  }
+
+  private render(deltaTime: number): void {
+    if (!this.gl || !this.cameraController) return;
+
+    const dt = deltaTime / 1000;
+    
+    // Let controller update wind physics
+    this.onUpdate(dt);
+
+    // Update wind time
+    this.windParams.time += dt;
+    this.renderWithPipeline(dt);
   }
 
   // ==================== Public API ====================
@@ -723,6 +689,19 @@ export class Viewport {
   setShadowResolution(res: number): void {
     this.shadowResolution = res;
     this.shadowRenderer?.setResolution(res);
+  }
+
+  setShadowEnabled(enabled: boolean): void {
+    this.shadowEnabled = enabled;
+  }
+
+  setContactShadowSettings(settings: ContactShadowSettings): void {
+    this.contactShadowSettings = { ...settings };
+    this.contactShadowRenderer?.setSettings(settings);
+  }
+
+  getContactShadowSettings(): ContactShadowSettings {
+    return { ...this.contactShadowSettings };
   }
 
   setHDRTexture(texture: WebGLTexture | null, maxMipLevel = 6): void {

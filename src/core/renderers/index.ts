@@ -18,3 +18,9 @@ export type { WindParams, ObjectWindSettings, TerrainBlendParams } from './Objec
 export { ShadowRenderer, createShadowRenderer } from './ShadowRenderer';
 
 export { DepthPrePassRenderer, createDepthPrePassRenderer } from './DepthPrePassRenderer';
+
+export { ContactShadowRenderer } from './ContactShadowRenderer';
+export type { ContactShadowSettings } from './ContactShadowRenderer';
+
+// Render Pipeline
+export * from './pipeline';

@@ -22,11 +22,14 @@ import {
   ObjectPanel,
   EnvironmentPanel,
   MaterialPanel,
+  RenderingPanel,
   type PanelContext,
   type TerrainBlendSettings,
   type ObjectPanelAPI,
   type EnvironmentPanelAPI,
+  type RenderingPanelAPI,
 } from './componentPanels';
+import type { ContactShadowSettings } from '../../core/renderers';
 import { Viewport, type ViewportOptions } from './Viewport';
 import type { GizmoMode, GizmoOrientation } from './gizmos';
 import type { Vec3 } from '../../core/types';
@@ -76,6 +79,7 @@ export class SceneBuilder implements SceneBuilderDemo {
   private objectPanel: ObjectPanelAPI | null = null;
   private environmentPanel: EnvironmentPanelAPI | null = null;
   private materialPanel: MaterialPanel | null = null;
+  private renderingPanel: RenderingPanelAPI | null = null;
   
   // State
   private currentSceneFilename: string | null = null;
@@ -700,7 +704,13 @@ export class SceneBuilder implements SceneBuilderDemo {
         this.lightingManager.sunLight.shadowResolution = res;
         this.viewport?.setShadowResolution(res);
       },
+      setShadowEnabled: (enabled: boolean) => {
+        this.viewport?.setShadowEnabled(enabled);
+      },
       setShowShadowThumbnail: (show: boolean) => this.viewport?.setShowShadowThumbnail(show),
+      setContactShadowSettings: (settings: ContactShadowSettings) => {
+        this.viewport?.setContactShadowSettings(settings);
+      },
       setLightMode: this.setLightMode,
       setHDRTexture: (texture: WebGLTexture | null) => {
         this.lightingManager.hdrLight.setTexture(texture);
@@ -754,6 +764,15 @@ export class SceneBuilder implements SceneBuilderDemo {
       materialPanelContext
     );
     
+    // Create rendering panel (using environment panel container for now, can be moved later)
+    const renderingPanelContainer = this.container.querySelector('#rendering-panel-container');
+    if (renderingPanelContainer) {
+      this.renderingPanel = new RenderingPanel(
+        renderingPanelContainer as HTMLElement,
+        this.panelContext
+      );
+    }
+    
     this.shaderDebugPanel = new ShaderDebugPanel(viewportContainer);
     
     // Initial sync
@@ -791,6 +810,11 @@ export class SceneBuilder implements SceneBuilderDemo {
     if (this.materialPanel) {
       this.materialPanel.destroy();
       this.materialPanel = null;
+    }
+    
+    if (this.renderingPanel) {
+      this.renderingPanel.destroy();
+      this.renderingPanel = null;
     }
     
     this.panelContext = null;

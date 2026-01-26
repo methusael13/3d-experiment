@@ -3,7 +3,7 @@
  * Uses CameraObject from core for camera state and matrix computation
  */
 
-import { mat4 } from 'gl-matrix';
+import { mat4, vec3 } from 'gl-matrix';
 import type { Vec3 } from '../../core/types';
 import { CameraObject, CameraState } from '../../core/sceneObjects/CameraObject';
 import { raycastToGround } from '../../core/utils/raycastUtils';
@@ -129,9 +129,8 @@ export class CameraController {
     this.camera.resetOrigin();
   }
 
-  getOriginPosition(): number[] {
-    const origin = this.camera.origin;
-    return [origin[0], origin[1], origin[2]];
+  getOriginPosition(): vec3 {
+    return vec3.clone(this.camera.origin);
   }
 
   // ==================== View Presets ====================

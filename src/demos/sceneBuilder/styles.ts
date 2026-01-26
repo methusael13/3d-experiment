@@ -1004,6 +1004,105 @@ export const sceneBuilderStyles = `
     padding: 2px 0;
     font-family: monospace;
   }
+  
+  /* Rendering Panel Styles */
+  .panel-section {
+    background: #2a2a2a;
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  
+  .panel-section .panel-header {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: bold;
+  }
+  
+  .panel-group {
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #3a3a3a;
+  }
+  
+  .panel-group:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+    padding-bottom: 0;
+  }
+  
+  .panel-group-title {
+    font-size: 10px;
+    color: #aaa;
+    margin-bottom: 6px;
+    font-weight: bold;
+  }
+  
+  .panel-group-disabled {
+    opacity: 0.5;
+  }
+  
+  .panel-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 11px;
+    color: #ccc;
+  }
+  
+  .panel-row:last-child {
+    margin-bottom: 0;
+  }
+  
+  .panel-row label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    flex: 1;
+  }
+  
+  .panel-row select {
+    background: #333;
+    color: #f0f0f0;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 10px;
+    cursor: pointer;
+  }
+  
+  .panel-row select:hover {
+    border-color: #666;
+  }
+  
+  .panel-row input[type="range"] {
+    flex: 1;
+    height: 4px;
+    accent-color: #ff6666;
+  }
+  
+  .panel-row input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: #ff6666;
+  }
+  
+  .panel-row span {
+    min-width: 30px;
+    text-align: right;
+    font-family: monospace;
+    font-size: 10px;
+    color: #888;
+  }
+  
+  .disabled-row {
+    opacity: 0.5;
+    pointer-events: none;
+  }
 `;
 
 /**
@@ -1102,6 +1201,9 @@ export const sceneBuilderTemplate = `
       <div class="scene-builder-sidebar-right">
         <!-- Environment Panel - populated by createEnvironmentPanel -->
         <div id="environment-panel-container"></div>
+        
+        <!-- Rendering Panel - populated by RenderingPanel -->
+        <div id="rendering-panel-container"></div>
         
         <!-- Material Panel - populated by createMaterialPanel -->
         <div id="material-panel-container"></div>

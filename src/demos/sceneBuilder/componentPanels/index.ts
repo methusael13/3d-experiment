@@ -38,3 +38,9 @@ export {
   type EnvironmentPanelAPI,
   createEnvironmentPanel,
 } from './EnvironmentPanel';
+
+// RenderingPanel
+export {
+  RenderingPanel,
+  type RenderingPanelAPI,
+} from './RenderingPanel';
