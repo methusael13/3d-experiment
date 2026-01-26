@@ -150,6 +150,7 @@ class DepthPrePass extends RenderPass {
 
 /**
  * Sky Pass - Renders sky/environment background
+ * Uses Rayleigh/Mie atmospheric scattering for directional light mode
  */
 class SkyPass extends RenderPass {
   private skyRenderer: SkyRenderer;
@@ -163,11 +164,15 @@ class SkyPass extends RenderPass {
     const isHDR = context.lightParams.type === 'hdr';
     
     if (isHDR && context.textures.hdr) {
-      const exposure = (context.lightParams as any).exposure || 1.0;
+      const exposure = (context.lightParams as any).hdrExposure || (context.lightParams as any).exposure || 1.0;
       this.skyRenderer.renderHDRSky(context.vpMatrix, context.textures.hdr, exposure);
     } else if (context.lightParams.type === 'directional') {
-      const elevation = (context.lightParams as any).elevation || 45;
-      this.skyRenderer.renderSunSky(elevation);
+      // Get sun direction from directional light params
+      const dirLight = context.lightParams as DirectionalLightParams;
+      const sunDirection: Vec3 = [...dirLight.direction] as Vec3;
+      const sunIntensity = 20.0; // Can be made configurable
+      
+      this.skyRenderer.renderSunSky(context.vpMatrix, sunDirection, sunIntensity);
     }
   }
   
