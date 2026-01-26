@@ -49,6 +49,10 @@ const environmentPanelStyles = `
   .environment-panel .hdr-load-btn { width: 100%; padding: 6px 12px; margin-top: 8px; background: #ff6666; color: #fff; border: none; border-radius: 4px; font-size: 11px; font-weight: 500; cursor: pointer; transition: background 0.15s; }
   .environment-panel .hdr-load-btn:hover { background: #ff8080; }
   .environment-panel .hdr-load-btn:disabled { background: #555; cursor: not-allowed; }
+  .environment-panel .light-mode-toggle { display: flex; gap: 4px; margin-bottom: 12px; }
+  .environment-panel .light-mode-btn { flex: 1; padding: 6px 12px; background: #333; color: #aaa; border: 1px solid #444; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s; }
+  .environment-panel .light-mode-btn:hover { background: #444; color: #fff; }
+  .environment-panel .light-mode-btn.active { background: #ff6666; color: #fff; border-color: #ff6666; }
 `;
 
 const environmentPanelTemplate = `
@@ -59,7 +63,10 @@ const environmentPanelTemplate = `
       <button class="env-tab" data-tab="wind">Wind</button>
     </div>
     <div id="env-lighting-tab" class="env-tab-content active">
-      <div class="light-mode-indicator"><span id="current-light-mode">Sun Mode</span></div>
+      <div class="light-mode-toggle">
+        <button id="light-mode-sun" class="light-mode-btn active">☀️ Sun</button>
+        <button id="light-mode-hdr" class="light-mode-btn">🌄 HDR</button>
+      </div>
       <div id="sun-controls">
         <div class="transform-group compact-slider"><div class="slider-header"><label>Azimuth</label><span id="sun-azimuth-value" class="slider-value">45°</span></div><input type="range" id="sun-azimuth" min="0" max="360" value="45" class="slider-input"></div>
         <div class="transform-group compact-slider"><div class="slider-header"><label>Elevation</label><span id="sun-elevation-value" class="slider-value">45°</span></div><input type="range" id="sun-elevation" min="-90" max="90" value="45" class="slider-input"></div>
@@ -111,7 +118,8 @@ export class EnvironmentPanel implements EnvironmentPanelAPI {
   private isLoadingHdr = false;
   
   // Cached DOM elements
-  private currentLightMode!: HTMLSpanElement;
+  private lightModeSunBtn!: HTMLButtonElement;
+  private lightModeHdrBtn!: HTMLButtonElement;
   private sunControls!: HTMLDivElement;
   private hdrControls!: HTMLDivElement;
   private sunAzimuth!: HTMLInputElement;
@@ -173,7 +181,8 @@ export class EnvironmentPanel implements EnvironmentPanelAPI {
   
   private cacheDOM(): void {
     const p = this.panelElement;
-    this.currentLightMode = p.querySelector('#current-light-mode')!;
+    this.lightModeSunBtn = p.querySelector('#light-mode-sun')!;
+    this.lightModeHdrBtn = p.querySelector('#light-mode-hdr')!;
     this.sunControls = p.querySelector('#sun-controls')!;
     this.hdrControls = p.querySelector('#hdr-controls')!;
     this.sunAzimuth = p.querySelector('#sun-azimuth')!;
@@ -284,6 +293,17 @@ export class EnvironmentPanel implements EnvironmentPanelAPI {
     this.hdrFile.addEventListener('change', async () => {
       const file = (this.hdrFile as HTMLInputElement).files?.[0];
       if (file) await this.loadHdrFromFile(file);
+    });
+    
+    // Light mode toggle buttons
+    this.lightModeSunBtn.addEventListener('click', () => {
+      setLightMode('directional');
+      this.updateLightModeDisplay('directional');
+    });
+    
+    this.lightModeHdrBtn.addEventListener('click', () => {
+      setLightMode('hdr');
+      this.updateLightModeDisplay('hdr');
     });
     
     // Wind controls
@@ -461,7 +481,11 @@ export class EnvironmentPanel implements EnvironmentPanelAPI {
   // ==================== Public API ====================
   
   updateLightModeDisplay(mode: 'directional' | 'hdr'): void {
-    this.currentLightMode.textContent = mode === 'directional' ? 'Sun Mode' : 'HDR Mode';
+    // Update button states
+    this.lightModeSunBtn.classList.toggle('active', mode === 'directional');
+    this.lightModeHdrBtn.classList.toggle('active', mode === 'hdr');
+    
+    // Show/hide relevant controls
     this.sunControls.style.display = mode === 'directional' ? 'block' : 'none';
     this.hdrControls.style.display = mode === 'hdr' ? 'block' : 'none';
   }
