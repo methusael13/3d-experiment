@@ -27,6 +27,9 @@ const objectPanelTemplate = `
         <button id="gizmo-translate" class="gizmo-btn active" title="Translate (T)">T</button>
         <button id="gizmo-rotate" class="gizmo-btn" title="Rotate (R)">R</button>
         <button id="gizmo-scale" class="gizmo-btn" title="Scale (S)">S</button>
+        <span class="gizmo-separator">|</span>
+        <button id="gizmo-world" class="gizmo-btn orientation-btn active" title="World Space">W</button>
+        <button id="gizmo-local" class="gizmo-btn orientation-btn" title="Local Space">L</button>
       </div>
       <div class="transform-group">
         <label>Name</label>
@@ -209,6 +212,7 @@ export function createObjectPanel(panelElement, context) {
   const terrainBlendDistanceValue = panelElement.querySelector('#terrain-blend-distance-value');
   
   let currentGizmoMode = 'translate';
+  let currentOrientation = 'world';
   
   /**
    * Updates the transform tab with current selection
@@ -418,7 +422,7 @@ export function createObjectPanel(panelElement, context) {
    */
   function setGizmoMode(mode) {
     currentGizmoMode = mode;
-    panelElement.querySelectorAll('.gizmo-btn').forEach(btn => btn.classList.remove('active'));
+    panelElement.querySelectorAll('.gizmo-btn:not(.orientation-btn)').forEach(btn => btn.classList.remove('active'));
     panelElement.querySelector(`#gizmo-${mode}`).classList.add('active');
   }
   
@@ -428,6 +432,25 @@ export function createObjectPanel(panelElement, context) {
   function handleGizmoModeClick(mode) {
     setGizmoMode(mode);
     onGizmoModeChange(mode);
+  }
+  
+  /**
+   * Updates gizmo orientation UI
+   */
+  function setGizmoOrientation(orientation) {
+    currentOrientation = orientation;
+    panelElement.querySelectorAll('.orientation-btn').forEach(btn => btn.classList.remove('active'));
+    panelElement.querySelector(`#gizmo-${orientation}`).classList.add('active');
+  }
+  
+  /**
+   * Internal: sets orientation AND notifies controller
+   */
+  function handleOrientationClick(orientation) {
+    setGizmoOrientation(orientation);
+    if (context.onGizmoOrientationChange) {
+      context.onGizmoOrientationChange(orientation);
+    }
   }
   
   /**
@@ -470,6 +493,10 @@ export function createObjectPanel(panelElement, context) {
     panelElement.querySelector('#gizmo-translate').addEventListener('click', () => handleGizmoModeClick('translate'));
     panelElement.querySelector('#gizmo-rotate').addEventListener('click', () => handleGizmoModeClick('rotate'));
     panelElement.querySelector('#gizmo-scale').addEventListener('click', () => handleGizmoModeClick('scale'));
+    
+    // Gizmo orientation buttons
+    panelElement.querySelector('#gizmo-world').addEventListener('click', () => handleOrientationClick('world'));
+    panelElement.querySelector('#gizmo-local').addEventListener('click', () => handleOrientationClick('local'));
     
     // Object name
     objectName.addEventListener('input', (e) => {
@@ -639,5 +666,7 @@ export function createObjectPanel(panelElement, context) {
     destroy,
     setGizmoMode,
     getGizmoMode: () => currentGizmoMode,
+    setGizmoOrientation,
+    getGizmoOrientation: () => currentOrientation,
   };
 }

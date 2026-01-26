@@ -4,13 +4,16 @@
  */
 
 import { mat4 } from 'gl-matrix';
-import { GizmoCamera, TransformChangeCallback } from './BaseGizmo';
+import type { Vec3 } from '../../../core/types';
+import { GizmoCamera, TransformChangeCallback, GizmoOrientation } from './BaseGizmo';
 import { TranslateGizmo } from './TranslateGizmo';
 import { RotateGizmo } from './RotateGizmo';
 import { ScaleGizmo } from './ScaleGizmo';
 import { UniformScaleGizmo } from './UniformScaleGizmo';
 
 export type GizmoMode = 'translate' | 'rotate' | 'scale';
+// GizmoOrientation is re-exported from BaseGizmo
+export type { GizmoOrientation } from './BaseGizmo';
 
 /**
  * Manager that holds all gizmo types and delegates to the active one
@@ -26,7 +29,19 @@ export class TransformGizmoManager {
   private readonly uniformScaleGizmo: UniformScaleGizmo;
   
   private mode: GizmoMode = 'translate';
+  private orientation: GizmoOrientation = 'world';
   private enabled = false;
+  
+  // Store current target for re-applying on mode change
+  private currentTarget: {
+    position: [number, number, number];
+    rotation: [number, number, number];
+    scale: [number, number, number];
+  } = {
+    position: [0, 0, 0],
+    rotation: [0, 0, 0],
+    scale: [1, 1, 1],
+  };
   
   // Callbacks
   private onTransformChange: TransformChangeCallback | null = null;
@@ -74,13 +89,42 @@ export class TransformGizmoManager {
   
   setMode(newMode: GizmoMode): void {
     this.mode = newMode;
+    // Re-apply target to active gizmo on mode change (fixes issue #3)
+    const target = this.currentTarget;
+    this.getActiveGizmo().setTarget(target.position, target.rotation, target.scale);
   }
   
-  setTarget(position: [number, number, number], rotation: [number, number, number], scale: [number, number, number]): void {
+  setOrientation(newOrientation: GizmoOrientation): void {
+    this.orientation = newOrientation;
+    // Pass to all gizmos
+    this.translateGizmo.setOrientation(newOrientation);
+    this.rotateGizmo.setOrientation(newOrientation);
+    this.scaleGizmo.setOrientation(newOrientation);
+  }
+  
+  setTarget(position: Vec3, rotation: Vec3, scale: Vec3): void {
+    // Store current target for re-applying on mode change
+    this.currentTarget = { position: [...position], rotation: [...rotation], scale: [...scale] };
+    
     this.translateGizmo.setTarget(position, rotation, scale);
     this.rotateGizmo.setTarget(position, rotation, scale);
     this.scaleGizmo.setTarget(position, rotation, scale);
     this.uniformScaleGizmo.setTarget(position, rotation, scale);
+  }
+  
+  /**
+   * Set target position and scale only, preserving gizmos' internal rotation quaternion.
+   * Used after drag end to avoid Euler→Quat conversion drift.
+   */
+  setTargetPositionAndScale(position: Vec3, scale: Vec3): void {
+    // Update stored target (rotation not changed)
+    this.currentTarget.position = [...position];
+    this.currentTarget.scale = [...scale];
+    
+    this.translateGizmo.setTargetPositionAndScale(position, scale);
+    this.rotateGizmo.setTargetPositionAndScale(position, scale);
+    this.scaleGizmo.setTargetPositionAndScale(position, scale);
+    this.uniformScaleGizmo.setTargetPositionAndScale(position, scale);
   }
   
   setEnabled(value: boolean): void {
@@ -135,11 +179,11 @@ export class TransformGizmoManager {
   
   // ==================== Uniform Scale API ====================
   
-  startUniformScale(startScale: [number, number, number], objectScreenPos: [number, number], mousePos: [number, number]): boolean {
-    return this.uniformScaleGizmo.startUniformScale(startScale as [number, number, number], objectScreenPos, mousePos);
+  startUniformScale(startScale: Vec3, objectScreenPos: [number, number], mousePos: [number, number]): boolean {
+    return this.uniformScaleGizmo.startUniformScale(startScale, objectScreenPos, mousePos);
   }
   
-  updateUniformScale(mouseX: number, mouseY: number): [number, number, number] | null {
+  updateUniformScale(mouseX: number, mouseY: number): Vec3 | null {
     return this.uniformScaleGizmo.updateUniformScale(mouseX, mouseY);
   }
   
@@ -147,11 +191,11 @@ export class TransformGizmoManager {
     this.uniformScaleGizmo.commitUniformScale();
   }
   
-  cancelUniformScale(): [number, number, number] {
+  cancelUniformScale(): Vec3 {
     return this.uniformScaleGizmo.cancelUniformScale();
   }
   
-  setOnUniformScaleChange(callback: ((newScale: [number, number, number]) => void) | null): void {
+  setOnUniformScaleChange(callback: ((newScale: Vec3) => void) | null): void {
     this.uniformScaleGizmo.setOnUniformScaleChange(callback);
   }
   
@@ -189,6 +233,7 @@ export function createTransformGizmo(gl: WebGL2RenderingContext, camera: GizmoCa
   return {
     render: (vpMatrix: mat4) => manager.render(vpMatrix),
     setMode: (mode: GizmoMode) => manager.setMode(mode),
+    setOrientation: (orientation: GizmoOrientation) => manager.setOrientation(orientation),
     setTarget: (position: [number, number, number], rotation: [number, number, number], scale: [number, number, number]) => 
       manager.setTarget(position, rotation, scale),
     setEnabled: (value: boolean) => manager.setEnabled(value),

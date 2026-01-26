@@ -3,13 +3,14 @@
  * Provides shared shader, screen-space scaling, and common utilities
  */
 
-import { mat4, vec3 } from 'gl-matrix';
+import { mat4, vec3, quat } from 'gl-matrix';
+import type { Vec3, RGB } from '../../../core/types';
 
 /**
  * Camera interface for gizmo rendering
  */
 export interface GizmoCamera {
-  getPosition(): [number, number, number];
+  getPosition(): Vec3;
   getViewProjectionMatrix(): mat4;
   getFOV?(): number;
 }
@@ -17,7 +18,7 @@ export interface GizmoCamera {
 /**
  * Callback type for transform changes
  */
-export type TransformChangeCallback = (type: 'position' | 'rotation' | 'scale', value: [number, number, number]) => void;
+export type TransformChangeCallback = (type: 'position' | 'rotation' | 'scale', value: Vec3) => void;
 
 /**
  * Gizmo axis type
@@ -25,18 +26,23 @@ export type TransformChangeCallback = (type: 'position' | 'rotation' | 'scale', 
 export type GizmoAxis = 'x' | 'y' | 'z' | null;
 
 /**
+ * Gizmo orientation mode
+ */
+export type GizmoOrientation = 'world' | 'local';
+
+/**
  * Colors for gizmo axes
  */
-export const AXIS_COLORS = {
-  x: [1.0, 0.2, 0.2] as [number, number, number],      // Red
-  y: [0.2, 0.9, 0.2] as [number, number, number],      // Green
-  z: [0.2, 0.4, 1.0] as [number, number, number],      // Blue
-  xHighlight: [1.0, 0.6, 0.0] as [number, number, number],  // Orange
-  yHighlight: [1.0, 1.0, 0.0] as [number, number, number],  // Yellow
-  zHighlight: [0.0, 1.0, 1.0] as [number, number, number],  // Cyan
-  xDim: [0.3, 0.1, 0.1] as [number, number, number],
-  yDim: [0.1, 0.25, 0.1] as [number, number, number],
-  zDim: [0.1, 0.15, 0.3] as [number, number, number],
+export const AXIS_COLORS: Record<string, RGB> = {
+  x: [1.0, 0.2, 0.2],      // Red
+  y: [0.2, 0.9, 0.2],      // Green
+  z: [0.2, 0.4, 1.0],      // Blue
+  xHighlight: [1.0, 0.6, 0.0],  // Orange
+  yHighlight: [1.0, 1.0, 0.0],  // Yellow
+  zHighlight: [0.0, 1.0, 1.0],  // Cyan
+  xDim: [0.3, 0.1, 0.1],
+  yDim: [0.1, 0.25, 0.1],
+  zDim: [0.1, 0.15, 0.3],
 };
 
 /**
@@ -62,14 +68,16 @@ export abstract class BaseGizmo {
   protected static shaderRefCount = 0;
   
   // Target transform
-  protected targetPosition: [number, number, number] = [0, 0, 0];
-  protected targetRotation: [number, number, number] = [0, 0, 0];
-  protected targetScale: [number, number, number] = [1, 1, 1];
+  protected targetPosition: Vec3 = [0, 0, 0];
+  protected targetRotation: Vec3 = [0, 0, 0];
+  protected targetRotationQuat: quat = quat.create(); // Internal quaternion representation
+  protected targetScale: Vec3 = [1, 1, 1];
   
   // State
   protected enabled = false;
   protected isDraggingFlag = false;
   protected activeAxis: GizmoAxis = null;
+  protected orientation: GizmoOrientation = 'world';
   
   // Canvas dimensions for hit testing
   protected canvasWidth = 800;
@@ -224,7 +232,7 @@ export abstract class BaseGizmo {
   /**
    * Set color uniform
    */
-  protected setColor(color: [number, number, number]): void {
+  protected setColor(color: RGB): void {
     const loc = BaseGizmo.shaderLocations!;
     this.gl.uniform3fv(loc.uColor, color);
   }
@@ -232,9 +240,9 @@ export abstract class BaseGizmo {
   /**
    * Get color for axis based on drag state
    */
-  protected getAxisColor(axis: 'x' | 'y' | 'z'): [number, number, number] {
+  protected getAxisColor(axis: 'x' | 'y' | 'z'): RGB {
     if (this.isDraggingFlag && this.activeAxis === axis) {
-      return AXIS_COLORS[`${axis}Highlight` as keyof typeof AXIS_COLORS] as [number, number, number];
+      return AXIS_COLORS[`${axis}Highlight`];
     }
     return AXIS_COLORS[axis];
   }
@@ -242,7 +250,7 @@ export abstract class BaseGizmo {
   /**
    * Project world position to screen coordinates
    */
-  protected projectToScreen(worldPos: [number, number, number]): [number, number] {
+  protected projectToScreen(worldPos: Vec3): [number, number] {
     const vpMatrix = this.camera.getViewProjectionMatrix();
     const pos4 = [worldPos[0], worldPos[1], worldPos[2], 1];
     
@@ -266,7 +274,7 @@ export abstract class BaseGizmo {
   /**
    * Get world position for axis endpoint (in screen-space scaled coordinates)
    */
-  protected getAxisEndpoint(axis: 'x' | 'y' | 'z', length = 1.0): [number, number, number] {
+  protected getAxisEndpoint(axis: 'x' | 'y' | 'z', length = 1.0): Vec3 {
     const scale = this.getScreenSpaceScale();
     const scaledLength = length * scale;
     
@@ -295,11 +303,26 @@ export abstract class BaseGizmo {
   
   /**
    * Set target transform
+   * Converts Euler rotation to quaternion at entry point
    */
-  setTarget(position: [number, number, number], rotation: [number, number, number], scale: [number, number, number]): void {
+  setTarget(position: Vec3, rotation: Vec3, scale: Vec3): void {
     this.targetPosition = [...position];
     this.targetRotation = [...rotation];
     this.targetScale = [...scale];
+    
+    // Convert Euler to quaternion at entry (XYZ intrinsic order)
+    this.targetRotationQuat = this.eulerToQuat(rotation);
+  }
+  
+  /**
+   * Set target position and scale only, preserving the internal rotation quaternion.
+   * Used when syncing after drag end to avoid Euler→Quat conversion drift.
+   */
+  setTargetPositionAndScale(position: Vec3, scale: Vec3): void {
+    this.targetPosition = [...position];
+    this.targetScale = [...scale];
+    // Note: targetRotation (Euler) is NOT updated - it may be stale
+    // but that's fine since we use targetRotationQuat internally
   }
   
   /**
@@ -327,8 +350,104 @@ export abstract class BaseGizmo {
   /**
    * Get current target position
    */
-  getTargetPosition(): [number, number, number] {
+  getTargetPosition(): Vec3 {
     return [...this.targetPosition];
+  }
+  
+  /**
+   * Set gizmo orientation mode (world or local)
+   */
+  setOrientation(mode: GizmoOrientation): void {
+    this.orientation = mode;
+  }
+  
+  /**
+   * Get rotation matrix from internal quaternion
+   * Uses mat4.fromQuat for numerical stability
+   */
+  protected getRotationMatrix(): mat4 {
+    const rotMat = mat4.create();
+    mat4.fromQuat(rotMat, this.targetRotationQuat);
+    return rotMat;
+  }
+  
+  /**
+   * Convert Euler angles (degrees, XYZ order) to quaternion
+   */
+  protected eulerToQuat(euler: Vec3): quat {
+    const q = quat.create();
+    const degToRad = Math.PI / 180;
+    
+    // Create individual axis rotations
+    const qx = quat.create();
+    const qy = quat.create();
+    const qz = quat.create();
+    
+    quat.setAxisAngle(qx, [1, 0, 0], euler[0] * degToRad);
+    quat.setAxisAngle(qy, [0, 1, 0], euler[1] * degToRad);
+    quat.setAxisAngle(qz, [0, 0, 1], euler[2] * degToRad);
+    
+    // Multiply in XYZ order: q = qz * qy * qx (gl-matrix convention)
+    quat.multiply(q, qy, qx);
+    quat.multiply(q, qz, q);
+    
+    return q;
+  }
+  
+  /**
+   * Convert quaternion to Euler angles (degrees, XYZ order)
+   * Based on standard quaternion-to-Euler conversion
+   */
+  protected quatToEuler(q: quat): Vec3 {
+    const radToDeg = 180 / Math.PI;
+    
+    // Extract rotation matrix components from quaternion
+    const x = q[0], y = q[1], z = q[2], w = q[3];
+    
+    // Compute Euler angles (XYZ intrinsic order)
+    const sinr_cosp = 2 * (w * x + y * z);
+    const cosr_cosp = 1 - 2 * (x * x + y * y);
+    const rx = Math.atan2(sinr_cosp, cosr_cosp);
+    
+    const sinp = 2 * (w * y - z * x);
+    let ry: number;
+    if (Math.abs(sinp) >= 1) {
+      ry = Math.sign(sinp) * Math.PI / 2; // Gimbal lock
+    } else {
+      ry = Math.asin(sinp);
+    }
+    
+    const siny_cosp = 2 * (w * z + x * y);
+    const cosy_cosp = 1 - 2 * (y * y + z * z);
+    const rz = Math.atan2(siny_cosp, cosy_cosp);
+    
+    return [rx * radToDeg, ry * radToDeg, rz * radToDeg];
+  }
+  
+  /**
+   * Get axis direction in world space based on orientation mode
+   * In world mode, returns standard basis vectors
+   * In local mode, returns rotated basis vectors
+   */
+  protected getAxisDirection(axis: 'x' | 'y' | 'z'): Vec3 {
+    // Standard basis vectors
+    const basisVectors: Record<'x' | 'y' | 'z', Vec3> = {
+      x: [1, 0, 0],
+      y: [0, 1, 0],
+      z: [0, 0, 1],
+    };
+    
+    if (this.orientation === 'world') {
+      return basisVectors[axis];
+    }
+    
+    // Local mode: rotate the basis vector by object's rotation
+    const rotMat = this.getRotationMatrix();
+    const basis = vec3.fromValues(...basisVectors[axis]);
+    const result = vec3.create();
+    vec3.transformMat4(result, basis, rotMat);
+    
+    return [result[0], result[1], result[2]];
   }
   
   // ==================== Abstract Methods ====================

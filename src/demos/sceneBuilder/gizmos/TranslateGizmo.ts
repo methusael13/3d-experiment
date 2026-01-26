@@ -3,7 +3,7 @@
  * Extends BaseGizmo with arrow geometry for X/Y/Z axis translation
  */
 
-import { mat4 } from 'gl-matrix';
+import { mat4, vec3, quat } from 'gl-matrix';
 import { BaseGizmo, GizmoCamera, GizmoAxis } from './BaseGizmo';
 
 /**
@@ -20,7 +20,7 @@ export class TranslateGizmo extends BaseGizmo {
   
   // Drag state
   private dragStartPos: [number, number] = [0, 0];
-  private dragStartValue = 0;
+  private dragStartPosition: [number, number, number] = [0, 0, 0];
 
   constructor(gl: WebGL2RenderingContext, camera: GizmoCamera) {
     super(gl, camera);
@@ -98,6 +98,40 @@ export class TranslateGizmo extends BaseGizmo {
   }
   
   /**
+   * Override setupModelMatrix to apply rotation in local mode
+   */
+  protected setupModelMatrix(): void {
+    mat4.identity(this.modelMatrix);
+    mat4.translate(this.modelMatrix, this.modelMatrix, this.targetPosition as unknown as vec3);
+    
+    // In local mode, apply object rotation so gizmo axes align with object
+    if (this.orientation === 'local') {
+      const rotMat = this.getRotationMatrix();
+      mat4.multiply(this.modelMatrix, this.modelMatrix, rotMat);
+    }
+    
+    const scale = this.getScreenSpaceScale();
+    mat4.scale(this.modelMatrix, this.modelMatrix, [scale, scale, scale]);
+  }
+  
+  /**
+   * Override getAxisEndpoint to return rotated endpoints in local mode
+   */
+  protected getAxisEndpoint(axis: 'x' | 'y' | 'z', length = 1.0): [number, number, number] {
+    const scale = this.getScreenSpaceScale();
+    const scaledLength = length * scale;
+    
+    // Get axis direction (rotated in local mode)
+    const axisDir = this.getAxisDirection(axis);
+    
+    return [
+      this.targetPosition[0] + axisDir[0] * scaledLength,
+      this.targetPosition[1] + axisDir[1] * scaledLength,
+      this.targetPosition[2] + axisDir[2] * scaledLength,
+    ];
+  }
+  
+  /**
    * Hit test to find which axis was clicked
    */
   private hitTestAxis(screenX: number, screenY: number): GizmoAxis {
@@ -172,9 +206,7 @@ export class TranslateGizmo extends BaseGizmo {
       this.isDraggingFlag = true;
       this.activeAxis = axis;
       this.dragStartPos = [screenX, screenY];
-      
-      const axisIndex = { x: 0, y: 1, z: 2 }[axis];
-      this.dragStartValue = this.targetPosition[axisIndex];
+      this.dragStartPosition = [...this.targetPosition];
       
       return true;
     }
@@ -185,14 +217,18 @@ export class TranslateGizmo extends BaseGizmo {
   handleMouseMove(screenX: number, screenY: number): boolean {
     if (!this.isDraggingFlag || !this.activeAxis) return false;
     
-    const axisIndex = { x: 0, y: 1, z: 2 }[this.activeAxis];
-    
     // Calculate delta based on screen movement
     const dx = screenX - this.dragStartPos[0];
     const dy = screenY - this.dragStartPos[1];
     const delta = (dx - dy) * 0.01;
     
-    this.targetPosition[axisIndex] = this.dragStartValue + delta;
+    // Get axis direction (world or local based on orientation)
+    const axisDir = this.getAxisDirection(this.activeAxis);
+    
+    // Apply delta along the axis direction
+    this.targetPosition[0] = this.dragStartPosition[0] + axisDir[0] * delta;
+    this.targetPosition[1] = this.dragStartPosition[1] + axisDir[1] * delta;
+    this.targetPosition[2] = this.dragStartPosition[2] + axisDir[2] * delta;
     
     if (this.onTransformChange) {
       this.onTransformChange('position', [...this.targetPosition]);

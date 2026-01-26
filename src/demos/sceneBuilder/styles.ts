@@ -470,6 +470,26 @@ export const sceneBuilderStyles = `
     color: #000;
   }
   
+  .gizmo-separator {
+    color: #555;
+    padding: 0 4px;
+    align-self: center;
+    font-size: 14px;
+  }
+  
+  .gizmo-btn.orientation-btn {
+    background: #2a2a2a;
+  }
+  
+  .gizmo-btn.orientation-btn:hover {
+    background: #3a3a3a;
+  }
+  
+  .gizmo-btn.orientation-btn.active {
+    background: #555;
+    color: #fff;
+  }
+  
   .scene-controls {
     display: flex;
     flex-direction: column;

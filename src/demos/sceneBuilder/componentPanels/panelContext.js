@@ -44,6 +44,7 @@ export function createPanelContext(config) {
     
     // Callbacks
     onGizmoModeChange,
+    onGizmoOrientationChange,
     onTransformUpdate,
     onObjectListUpdate,
     onSelectionChanged,
@@ -92,6 +93,7 @@ export function createPanelContext(config) {
     
     // Callbacks
     onGizmoModeChange: onGizmoModeChange || (() => {}),
+    onGizmoOrientationChange: onGizmoOrientationChange || (() => {}),
     onTransformUpdate: onTransformUpdate || (() => {}),
     onObjectListUpdate: onObjectListUpdate || (() => {}),
     onSelectionChanged: onSelectionChanged || (() => {}),

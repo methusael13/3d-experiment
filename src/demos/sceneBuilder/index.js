@@ -6,7 +6,7 @@ import { createLightingManager } from './lightingManager';
 import { createScene } from '../../core/Scene';
 import { createWindManager, serializeObjectWindSettings, deserializeObjectWindSettings } from './wind';
 import { createPanelContext, createObjectsPanel, createObjectPanel, createEnvironmentPanel, createMaterialPanel } from './componentPanels';
-import { createViewport } from './viewport';
+import { createViewport } from './Viewport';
 
 /**
  * Scene Builder Demo - Controller
@@ -68,6 +68,9 @@ export function createSceneBuilderDemo(container, options = {}) {
   
   function handleGizmoDragEnd() {
     scene.resetTransformTracking();
+    // Sync gizmo target position/scale only - preserves internal rotation quaternion
+    // This prevents Euler→Quat conversion drift on every drag cycle
+    updateGizmoTargetAfterDrag();
   }
   
   function handleUniformScaleChange(newScale) {
@@ -103,6 +106,15 @@ export function createSceneBuilderDemo(container, options = {}) {
     const target = scene.getGizmoTarget();
     viewport.setGizmoTarget(target.position, target.rotation, target.scale);
     scene.resetTransformTracking();
+  }
+  
+  /**
+   * Update gizmo target position/scale only after drag ends.
+   * Preserves gizmo's internal rotation quaternion to avoid Euler→Quat conversion drift.
+   */
+  function updateGizmoTargetAfterDrag() {
+    const target = scene.getGizmoTarget();
+    viewport.setGizmoTargetPositionAndScale(target.position, target.scale);
   }
   
   function updateRenderData() {
@@ -181,6 +193,11 @@ export function createSceneBuilderDemo(container, options = {}) {
     gizmoMode = mode;
     viewport.setGizmoMode(mode);
     objectPanel?.setGizmoMode(mode);
+  }
+  
+  function setGizmoOrientation(orientation) {
+    viewport.setGizmoOrientation(orientation);
+    objectPanel?.setGizmoOrientation(orientation);
   }
   
   // ==================== Uniform Scale ====================
@@ -620,6 +637,7 @@ export function createSceneBuilderDemo(container, options = {}) {
       objectWindSettings,
       objectTerrainBlendSettings,
       onGizmoModeChange: setGizmoMode,
+      onGizmoOrientationChange: setGizmoOrientation,
       onTransformUpdate: updateGizmoTarget,
       onObjectListUpdate: () => objectsPanel?.update(),
       onSelectionChanged: () => {

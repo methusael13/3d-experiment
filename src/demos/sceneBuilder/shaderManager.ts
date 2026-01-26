@@ -3,20 +3,45 @@
  * Central registry for live shader editing and hot-reloading
  */
 
-// Global shader registry
-const shaderRegistry = new Map();
+// ==================== Types ====================
+
+export interface ShaderConfig {
+  gl: WebGL2RenderingContext;
+  program: WebGLProgram;
+  vsSource: string;
+  fsSource: string;
+  onRecompile?: (program: WebGLProgram) => void;
+}
+
+interface ShaderEntry {
+  gl: WebGL2RenderingContext;
+  program: WebGLProgram;
+  vsSource: string;
+  originalFsSource: string;
+  currentFsSource: string;
+  onRecompile?: (program: WebGLProgram) => void;
+}
+
+export interface CompileResult {
+  success: boolean;
+  error: string | null;
+}
+
+export interface ApplyAllResult {
+  successes: number;
+  failures: Array<{ name: string; error: string }>;
+}
+
+// ==================== Global Registry ====================
+
+const shaderRegistry = new Map<string, ShaderEntry>();
+
+// ==================== Registry Functions ====================
 
 /**
  * Register a shader with the manager
- * @param {string} name - Unique shader name (e.g., "Object Main", "Shadow")
- * @param {object} config
- * @param {WebGL2RenderingContext} config.gl - WebGL context
- * @param {WebGLProgram} config.program - Current program
- * @param {string} config.vsSource - Vertex shader source (kept for recompilation)
- * @param {string} config.fsSource - Fragment shader source
- * @param {function} config.onRecompile - Callback when shader is recompiled (receives new program)
  */
-export function registerShader(name, config) {
+export function registerShader(name: string, config: ShaderConfig): void {
   shaderRegistry.set(name, {
     gl: config.gl,
     program: config.program,
@@ -30,21 +55,21 @@ export function registerShader(name, config) {
 /**
  * Unregister a shader
  */
-export function unregisterShader(name) {
+export function unregisterShader(name: string): void {
   shaderRegistry.delete(name);
 }
 
 /**
  * Get list of all registered shader names
  */
-export function getShaderList() {
+export function getShaderList(): string[] {
   return Array.from(shaderRegistry.keys());
 }
 
 /**
  * Get current fragment shader source for a shader
  */
-export function getShaderSource(name) {
+export function getShaderSource(name: string): string | null {
   const entry = shaderRegistry.get(name);
   return entry ? entry.currentFsSource : null;
 }
@@ -52,16 +77,32 @@ export function getShaderSource(name) {
 /**
  * Get original fragment shader source (for reset)
  */
-export function getOriginalSource(name) {
+export function getOriginalSource(name: string): string | null {
   const entry = shaderRegistry.get(name);
   return entry ? entry.originalFsSource : null;
+}
+
+// ==================== Compilation ====================
+
+interface ShaderCompileResult {
+  success: boolean;
+  error: string | null;
+  shader: WebGLShader | null;
 }
 
 /**
  * Compile a shader from source
  */
-function compileShader(gl, type, source) {
+function compileShader(
+  gl: WebGL2RenderingContext,
+  type: number,
+  source: string
+): ShaderCompileResult {
   const shader = gl.createShader(type);
+  if (!shader) {
+    return { success: false, error: 'Failed to create shader', shader: null };
+  }
+  
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   
@@ -76,9 +117,8 @@ function compileShader(gl, type, source) {
 
 /**
  * Attempt to compile and update a shader with new fragment source
- * @returns {{ success: boolean, error: string|null }}
  */
-export function compileAndUpdate(name, newFsSource) {
+export function compileAndUpdate(name: string, newFsSource: string): CompileResult {
   const entry = shaderRegistry.get(name);
   if (!entry) {
     return { success: false, error: `Shader "${name}" not found` };
@@ -95,21 +135,27 @@ export function compileAndUpdate(name, newFsSource) {
   // Compile new fragment shader
   const fsResult = compileShader(gl, gl.FRAGMENT_SHADER, newFsSource);
   if (!fsResult.success) {
-    gl.deleteShader(vsResult.shader);
+    gl.deleteShader(vsResult.shader!);
     return { success: false, error: `Fragment shader error:\n${fsResult.error}` };
   }
   
   // Link new program
   const newProgram = gl.createProgram();
-  gl.attachShader(newProgram, vsResult.shader);
-  gl.attachShader(newProgram, fsResult.shader);
+  if (!newProgram) {
+    gl.deleteShader(vsResult.shader!);
+    gl.deleteShader(fsResult.shader!);
+    return { success: false, error: 'Failed to create program' };
+  }
+  
+  gl.attachShader(newProgram, vsResult.shader!);
+  gl.attachShader(newProgram, fsResult.shader!);
   gl.linkProgram(newProgram);
   
   if (!gl.getProgramParameter(newProgram, gl.LINK_STATUS)) {
     const error = gl.getProgramInfoLog(newProgram);
     gl.deleteProgram(newProgram);
-    gl.deleteShader(vsResult.shader);
-    gl.deleteShader(fsResult.shader);
+    gl.deleteShader(vsResult.shader!);
+    gl.deleteShader(fsResult.shader!);
     return { success: false, error: `Link error:\n${error}` };
   }
   
@@ -122,8 +168,8 @@ export function compileAndUpdate(name, newFsSource) {
   }
   
   // Clean up compiled shaders (program retains references)
-  gl.deleteShader(vsResult.shader);
-  gl.deleteShader(fsResult.shader);
+  gl.deleteShader(vsResult.shader!);
+  gl.deleteShader(fsResult.shader!);
   
   return { success: true, error: null };
 }
@@ -131,7 +177,7 @@ export function compileAndUpdate(name, newFsSource) {
 /**
  * Reset shader to original source
  */
-export function resetShader(name) {
+export function resetShader(name: string): CompileResult {
   const entry = shaderRegistry.get(name);
   if (!entry) {
     return { success: false, error: `Shader "${name}" not found` };
@@ -143,7 +189,7 @@ export function resetShader(name) {
 /**
  * Check if a shader is modified from original
  */
-export function isModified(name) {
+export function isModified(name: string): boolean {
   const entry = shaderRegistry.get(name);
   if (!entry) return false;
   return entry.currentFsSource !== entry.originalFsSource;
@@ -152,31 +198,32 @@ export function isModified(name) {
 /**
  * Get all shader names that match a pattern (e.g., all "Object Main" shaders)
  */
-export function getShadersMatching(pattern) {
+export function getShadersMatching(pattern: string): string[] {
   return Array.from(shaderRegistry.keys()).filter(name => name.startsWith(pattern));
 }
 
 /**
  * Apply the same source to all shaders matching a prefix
- * @returns {{ successes: number, failures: Array<{name: string, error: string}> }}
  */
-export function applyToAllMatching(prefix, newFsSource) {
+export function applyToAllMatching(prefix: string, newFsSource: string): ApplyAllResult {
   const matchingShaders = getShadersMatching(prefix);
-  const results = { successes: 0, failures: [] };
+  const results: ApplyAllResult = { successes: 0, failures: [] };
   
   for (const name of matchingShaders) {
     const result = compileAndUpdate(name, newFsSource);
     if (result.success) {
       results.successes++;
     } else {
-      results.failures.push({ name, error: result.error });
+      results.failures.push({ name, error: result.error || 'Unknown error' });
     }
   }
   
   return results;
 }
 
-// Export registry for debugging
-export function getRegistry() {
+/**
+ * Get the registry for debugging
+ */
+export function getRegistry(): Map<string, ShaderEntry> {
   return shaderRegistry;
 }

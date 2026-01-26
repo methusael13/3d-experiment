@@ -3,7 +3,7 @@
  * Extends BaseGizmo with cube handles at axis endpoints
  */
 
-import { mat4 } from 'gl-matrix';
+import { mat4, vec3 } from 'gl-matrix';
 import { BaseGizmo, GizmoCamera, GizmoAxis } from './BaseGizmo';
 
 export class ScaleGizmo extends BaseGizmo {
@@ -14,7 +14,7 @@ export class ScaleGizmo extends BaseGizmo {
   private static readonly BOX_SIZE = 0.06;
   
   private dragStartPos: [number, number] = [0, 0];
-  private dragStartValue = 0;
+  private dragStartScale: [number, number, number] = [1, 1, 1];
 
   constructor(gl: WebGL2RenderingContext, camera: GizmoCamera) {
     super(gl, camera);
@@ -65,6 +65,40 @@ export class ScaleGizmo extends BaseGizmo {
     return buffer;
   }
   
+  /**
+   * Override setupModelMatrix to apply rotation in local mode
+   */
+  protected setupModelMatrix(): void {
+    mat4.identity(this.modelMatrix);
+    mat4.translate(this.modelMatrix, this.modelMatrix, this.targetPosition as unknown as vec3);
+    
+    // In local mode, apply object rotation so gizmo axes align with object
+    if (this.orientation === 'local') {
+      const rotMat = this.getRotationMatrix();
+      mat4.multiply(this.modelMatrix, this.modelMatrix, rotMat);
+    }
+    
+    const scale = this.getScreenSpaceScale();
+    mat4.scale(this.modelMatrix, this.modelMatrix, [scale, scale, scale]);
+  }
+  
+  /**
+   * Override getAxisEndpoint to return rotated endpoints in local mode
+   */
+  protected getAxisEndpoint(axis: 'x' | 'y' | 'z', length = 1.0): [number, number, number] {
+    const scale = this.getScreenSpaceScale();
+    const scaledLength = length * scale;
+    
+    // Get axis direction (rotated in local mode)
+    const axisDir = this.getAxisDirection(axis);
+    
+    return [
+      this.targetPosition[0] + axisDir[0] * scaledLength,
+      this.targetPosition[1] + axisDir[1] * scaledLength,
+      this.targetPosition[2] + axisDir[2] * scaledLength,
+    ];
+  }
+  
   private hitTestAxis(screenX: number, screenY: number): GizmoAxis {
     const L = ScaleGizmo.AXIS_LENGTH;
     const hitRadius = 30;
@@ -111,7 +145,7 @@ export class ScaleGizmo extends BaseGizmo {
       this.isDraggingFlag = true;
       this.activeAxis = axis;
       this.dragStartPos = [screenX, screenY];
-      this.dragStartValue = this.targetScale[{ x: 0, y: 1, z: 2 }[axis]];
+      this.dragStartScale = [...this.targetScale];
       return true;
     }
     return false;
@@ -122,7 +156,11 @@ export class ScaleGizmo extends BaseGizmo {
     const axisIndex = { x: 0, y: 1, z: 2 }[this.activeAxis];
     const dx = screenX - this.dragStartPos[0];
     const dy = screenY - this.dragStartPos[1];
-    this.targetScale[axisIndex] = Math.max(0.01, this.dragStartValue + (dx - dy) * 0.01);
+    const delta = (dx - dy) * 0.01;
+    
+    // Scale is always applied along local axes (this is standard behavior)
+    this.targetScale[axisIndex] = Math.max(0.01, this.dragStartScale[axisIndex] + delta);
+    
     if (this.onTransformChange) this.onTransformChange('scale', [...this.targetScale]);
     return true;
   }
