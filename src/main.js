@@ -1,6 +1,6 @@
 import './style.css';
 import { createModelViewerDemo } from './demos/modelViewer/index';
-import { createSceneBuilderDemo } from './demos/sceneBuilder/index';
+import { createSceneBuilderDemo } from './demos/sceneBuilder/SceneBuilder';
 
 // Canvas dimensions
 const CANVAS_WIDTH = 1200;
