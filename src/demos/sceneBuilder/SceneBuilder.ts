@@ -5,7 +5,7 @@
 
 import { createSceneGraph, type SceneGraph } from '../../core/sceneGraph';
 import { sceneBuilderStyles, sceneBuilderTemplate } from './styles';
-import { saveScene, parseCameraState, parseLightingState, clearImportedModels } from '../../loaders';
+import { saveScene, parseCameraState, parseLightingState, clearImportedModels, type CameraState as SerializerCameraState } from '../../loaders';
 import { ShaderDebugPanel } from './ShaderDebugPanel';
 import { createLightingManager, type LightingManager } from './lightingManager';
 import { createScene, type Scene } from '../../core/Scene';
@@ -95,8 +95,8 @@ export class SceneBuilder implements SceneBuilderDemo {
   
   // ==================== Viewport Callbacks ====================
   
-  private handleGizmoTransform = (type: string, value: Vec3): void => {
-    this.scene?.applyTransform(type, value);
+  private handleGizmoTransform = (type: 'position' | 'rotation' | 'scale', value: Vec3): void => {
+    this.scene?.applyTransform(type as any, value);
     this.objectPanel?.update();
   };
   
@@ -136,20 +136,20 @@ export class SceneBuilder implements SceneBuilderDemo {
   private updateGizmoTarget(): void {
     if (!this.scene || !this.viewport) return;
     const target = this.scene.getGizmoTarget();
-    this.viewport.setGizmoTarget(target.position, target.rotation, target.scale);
+    this.viewport.setGizmoTarget(target.position ?? null, target.rotation ?? undefined, target.scale ?? undefined);
     this.scene.resetTransformTracking();
   }
   
   private updateGizmoTargetAfterDrag(): void {
     if (!this.scene || !this.viewport) return;
     const target = this.scene.getGizmoTarget();
-    this.viewport.setGizmoTargetPositionAndScale(target.position, target.scale);
+    this.viewport.setGizmoTargetPositionAndScale(target.position ?? null, target.scale ?? undefined);
   }
   
   private updateRenderData(): void {
     if (!this.scene || !this.viewport) return;
     this.viewport.setRenderData({
-      objects: this.scene.getAllObjects(),
+      objects: this.scene.getAllObjects() as any,
       objectWindSettings: this.objectWindSettings,
       objectTerrainBlendSettings: this.objectTerrainBlendSettings,
       selectedIds: this.scene.getSelectedIds(),
@@ -168,8 +168,6 @@ export class SceneBuilder implements SceneBuilderDemo {
     this.viewport.setLightParams(lightParams);
     this.viewport.setLightingState({
       shadowResolution: this.lightingManager.sunLight.shadowResolution,
-      sunElevation: this.lightingManager.sunLight.elevation,
-      hdrExposure: this.lightingManager.hdrLight.exposure,
     });
   }
   
@@ -233,7 +231,7 @@ export class SceneBuilder implements SceneBuilderDemo {
     const obj = this.scene.getFirstSelected();
     if (!obj) return;
     
-    const objectScreenPos = this.viewport.projectObjectToScreen(obj.position);
+    const objectScreenPos = this.viewport.projectObjectToScreen(obj.position as Vec3);
     const mousePos = this.viewport.getLastMousePos();
     this.viewport.startUniformScale([...obj.scale] as Vec3, objectScreenPos, mousePos);
   }
@@ -450,7 +448,7 @@ export class SceneBuilder implements SceneBuilderDemo {
     
     const savedFilename = saveScene(
       sceneData.objects,
-      this.viewport.getCameraState(),
+      this.viewport.getCameraState() as SerializerCameraState,
       this.getLightingState(),
       this.currentSceneFilename,
       new Map(),
@@ -549,7 +547,7 @@ export class SceneBuilder implements SceneBuilderDemo {
   private async loadSceneData(sceneData: any): Promise<void> {
     if (!this.scene || !this.viewport) return;
     
-    this.viewport.setCameraState(parseCameraState(sceneData));
+    this.viewport.setCameraState(parseCameraState(sceneData) as SerializerCameraState);
     
     const lightingState = parseLightingState(sceneData);
     if (lightingState) this.setLightingStateFromLoad(lightingState);
@@ -660,7 +658,7 @@ export class SceneBuilder implements SceneBuilderDemo {
     this.viewport.setSceneGraph(this.sceneGraph);
     
     // Create scene (Model)
-    const gl = this.viewport.getGL();
+    const gl = this.viewport.getGL()!;
     this.scene = createScene(gl, this.sceneGraph);
     this.setupModelEvents();
     
@@ -673,7 +671,7 @@ export class SceneBuilder implements SceneBuilderDemo {
     this.panelContext = createPanelContext({
       container: this.container,
       scene: this.scene,
-      gl,
+      gl: gl,
       windManager: this.windManager,
       lightingManager: this.lightingManager,
       shadowRenderer: null,
@@ -697,9 +695,9 @@ export class SceneBuilder implements SceneBuilderDemo {
       },
       setShowShadowThumbnail: (show: boolean) => this.viewport?.setShowShadowThumbnail(show),
       setLightMode: this.setLightMode,
-      setHDRTexture: (texture: WebGLTexture, mipLevels = 6) => {
-        this.lightingManager.hdrLight.texture = texture;
-        this.viewport?.setHDRTexture(texture, mipLevels);
+      setHDRTexture: (texture: WebGLTexture | null) => {
+        this.lightingManager.hdrLight.setTexture(texture);
+        this.viewport?.setHDRTexture(texture);
       },
       onWindChanged: () => {
         this.viewport?.setWindParams(this.windManager.getShaderUniforms());

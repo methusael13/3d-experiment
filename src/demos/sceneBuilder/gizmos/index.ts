@@ -14,4 +14,4 @@ export { UniformScaleGizmo } from './UniformScaleGizmo';
 
 // Manager and factory
 export { TransformGizmoManager, createTransformGizmo } from './TransformGizmoManager';
-export type { GizmoMode } from './TransformGizmoManager';
+export type { GizmoMode, GizmoOrientation } from './TransformGizmoManager';

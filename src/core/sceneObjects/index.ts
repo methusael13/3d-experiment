@@ -23,7 +23,7 @@ export { RenderableObject } from './RenderableObject';
 
 // Concrete scene objects
 export { ModelObject, type GLBModel } from './ModelObject';
-export { CameraObject, type ProjectionMode, type SerializedCameraObject } from './CameraObject';
+export { CameraObject, type ProjectionMode, type SerializedCameraObject, type CameraState } from './CameraObject';
 
 // Lights (explicit exports to avoid conflicts with ./types)
 export { 

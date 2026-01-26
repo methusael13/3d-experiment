@@ -15,7 +15,7 @@ import {
 } from '../../core/renderers';
 import { TransformGizmoManager, GizmoMode } from './gizmos';
 import type { GizmoOrientation } from './gizmos/BaseGizmo';
-import { createCameraController, CameraController as CameraControllerClass } from './CameraController';
+import { createCameraController, CameraController, type CameraState } from './CameraController';
 import { screenToRay, projectToScreen } from '../../core/utils/raycastUtils';
 import type { SceneLightingParams } from '../../core/sceneObjects/lights';
 import type {
@@ -90,26 +90,6 @@ export interface ViewportCamera {
 }
 
 /**
- * Camera controller interface
- */
-export interface ICameraController {
-  getCamera(): ViewportCamera;
-  getViewProjectionMatrix(): mat4;
-  getOriginPosition(): number[];
-  setupEventListeners(handlers: {
-    onGizmoCheck: () => boolean;
-    onGizmoMouseDown: (x: number, y: number) => boolean;
-    onGizmoMouseMove: (x: number, y: number) => void;
-    onGizmoMouseUp: () => void;
-    onClick: (x: number, y: number, shiftKey: boolean) => void;
-  }): void;
-  serialize(): unknown;
-  deserialize(state: unknown): void;
-  resetOrigin(): void;
-  setView(view: string): void;
-}
-
-/**
  * Scene graph interface for raycasting
  */
 export interface SceneGraph {
@@ -147,7 +127,7 @@ export class Viewport {
   private transformGizmo: TransformGizmoManager | null = null;
 
   // Camera
-  private cameraController: ICameraController | null = null;
+  private cameraController: CameraController | null = null;
 
   // Animation loop
   private animationLoop: AnimationLoop | null = null;
@@ -308,7 +288,7 @@ export class Viewport {
       canvas: this.canvas,
       width: this.logicalWidth,
       height: this.logicalHeight,
-    }) as ICameraController;
+    });
 
     // Set up input handling with gizmo integration
     this.cameraController.setupEventListeners({
@@ -657,7 +637,7 @@ export class Viewport {
 
   // ==================== Gizmo Control ====================
 
-  setGizmoTarget(position: Vec3 | null, rotation?: Vec3, scale?: Vec3): void {
+  setGizmoTarget(position: Vec3 | null | undefined, rotation?: Vec3, scale?: Vec3): void {
     if (!position) {
       this.transformGizmo?.setEnabled(false);
       return;
@@ -666,7 +646,7 @@ export class Viewport {
     this.transformGizmo?.setTarget(position, rotation || [0, 0, 0], scale || [1, 1, 1]);
   }
 
-  setGizmoTargetPositionAndScale(position: Vec3 | null, scale?: Vec3): void {
+  setGizmoTargetPositionAndScale(position: Vec3 | null | undefined, scale?: Vec3): void {
     if (!position) {
       this.transformGizmo?.setEnabled(false);
       return;
@@ -762,12 +742,14 @@ export class Viewport {
 
   // ==================== Camera ====================
 
-  getCameraState(): unknown {
-    return this.cameraController?.serialize();
+  getCameraState(): CameraState | null {
+    return this.cameraController?.serialize() ?? null;
   }
 
-  setCameraState(state: unknown): void {
-    this.cameraController?.deserialize(state);
+  setCameraState(state: CameraState | Partial<CameraState> | null): void {
+    if (state) {
+      this.cameraController?.deserialize(state);
+    }
   }
 
   resetCameraOrigin(): void {

@@ -51,7 +51,7 @@ export interface PanelContext {
   onSelectionChanged(): void;
   setShadowResolution(resolution: number): void;
   setShowShadowThumbnail(show: boolean): void;
-  setLightMode(mode: 'sun' | 'hdr'): void;
+  setLightMode(mode: 'directional' | 'hdr'): void;
   loadHDRTexture(file: File): Promise<void>;
   setHDRTexture(texture: WebGLTexture | null): void;
   onWindChanged(): void;
@@ -82,7 +82,7 @@ export interface PanelContextConfig {
   onSelectionChanged?: () => void;
   setShadowResolution?: (resolution: number) => void;
   setShowShadowThumbnail?: (show: boolean) => void;
-  setLightMode?: (mode: 'sun' | 'hdr') => void;
+  setLightMode?: (mode: 'directional' | 'hdr') => void;
   loadHDRTexture?: (file: File) => Promise<void>;
   setHDRTexture?: (texture: WebGLTexture | null) => void;
   onWindChanged?: () => void;
