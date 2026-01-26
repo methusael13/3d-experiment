@@ -8,6 +8,7 @@ import type {
   SerializedModelObject,
   PBRMaterial,
   PrimitiveConfig,
+  PrimitiveType,
   ObjectWindSettings,
   TerrainBlendParams,
 } from '../core/sceneObjects/types';
@@ -121,10 +122,17 @@ export interface SerializedScene {
 }
 
 /**
- * Scene object interface for saving (minimal shape expected)
+ * Scene object interface for saving
  */
 export interface SaveableSceneObject {
   name: string;
+  /** 'primitive' or 'model' */
+  type?: 'primitive' | 'model';
+  /** For primitives */
+  primitiveType?: string;
+  primitiveConfig?: PrimitiveConfig;
+  material?: PBRMaterial;
+  /** For models */
   modelPath?: string;
   position: [number, number, number] | Float32Array;
   rotation: [number, number, number] | Float32Array;
@@ -419,14 +427,50 @@ export class SceneSerializer {
         if (obj.modelPath && this.importedModels.has(obj.modelPath)) {
           importedModelsUsed.push(obj.modelPath);
         }
-        return {
+        
+        // Base object data
+        const baseData = {
           name: obj.name,
-          modelPath: obj.modelPath,
           position: [...obj.position] as [number, number, number],
           rotation: [...obj.rotation] as [number, number, number],
           scale: [...obj.scale] as [number, number, number],
           groupId: obj.groupId || null,
         };
+        
+        // Add type-specific data
+        if (obj.type === 'primitive') {
+          return {
+            ...baseData,
+            type: 'primitive' as const,
+            primitiveType: obj.primitiveType as PrimitiveType,
+            primitiveConfig: obj.primitiveConfig!,
+            material: obj.material!,
+          } satisfies SerializedPrimitiveObject;
+        } else if (obj.modelPath) {
+          return {
+            ...baseData,
+            type: 'model' as const,
+            modelPath: obj.modelPath,
+          } satisfies SerializedModelObject;
+        }
+        
+        // Fallback for legacy/unknown objects - try to guess type
+        if (obj.primitiveType) {
+          return {
+            ...baseData,
+            type: 'primitive' as const,
+            primitiveType: obj.primitiveType as PrimitiveType,
+            primitiveConfig: obj.primitiveConfig ?? { size: 1, subdivision: 16 },
+            material: obj.material ?? { albedo: [0.8, 0.8, 0.8], metallic: 0, roughness: 0.5 },
+          } satisfies SerializedPrimitiveObject;
+        }
+        
+        // Default to model type for backward compatibility
+        return {
+          ...baseData,
+          type: 'model' as const,
+          modelPath: '',
+        } satisfies SerializedModelObject;
       }),
       camera: cameraState,
     };
