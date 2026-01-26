@@ -45,7 +45,7 @@ export class DirectionalLight extends Light {
   public shadowResolution: number = 2048;
   
   /** Ambient intensity multiplier (lower = darker shadows) */
-  public ambientIntensity: number = 0.15;
+  public ambientIntensity: number = 1.0;
   
   constructor(name: string = 'Sun') {
     super('directional', name);
