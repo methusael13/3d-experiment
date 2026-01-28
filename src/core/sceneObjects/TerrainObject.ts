@@ -222,26 +222,52 @@ export class TerrainObject extends RenderableObject {
   }
   
   /**
-   * Generate heightmap using fractal noise
+   * Generate heightmap using fractal noise with domain warping
    */
   private generateHeightmap(): void {
     if (!this.heightmap) return;
     
     const { resolution, noise } = this.params;
-    const { scale, octaves, lacunarity, persistence, heightScale, ridgeWeight, offset, seed } = noise;
+    const { scale, octaves, lacunarity, persistence, heightScale, ridgeWeight, offset, seed,
+            warpStrength, warpScale, warpOctaves, rotateOctaves, octaveRotation } = noise;
     
     // Simple seeded random for noise permutation
     const rng = this.createSeededRandom(seed);
     const perm = this.generatePermutation(rng);
     
+    // Create a separate permutation for warping noise (different pattern)
+    const warpRng = this.createSeededRandom(seed + 7919); // Different prime offset
+    const warpPerm = this.generatePermutation(warpRng);
+    
+    // Precompute rotation angles for each octave (in radians)
+    const octaveAngles: number[] = [];
+    if (rotateOctaves) {
+      const baseAngle = (octaveRotation * Math.PI) / 180;
+      for (let i = 0; i < octaves; i++) {
+        octaveAngles.push(baseAngle * i);
+      }
+    }
+    
     for (let y = 0; y < resolution; y++) {
       for (let x = 0; x < resolution; x++) {
-        const nx = (x / resolution + offset[0]) * scale;
-        const ny = (y / resolution + offset[1]) * scale;
+        let nx = (x / resolution + offset[0]) * scale;
+        let ny = (y / resolution + offset[1]) * scale;
         
-        // Generate fBm and ridged noise
-        const fbmValue = this.fbm(nx, ny, octaves, lacunarity, persistence, perm);
-        const ridgedValue = this.ridged(nx, ny, octaves, lacunarity, persistence, perm);
+        // Apply domain warping
+        if (warpStrength > 0) {
+          const warped = this.domainWarp(nx, ny, warpStrength, warpScale, warpOctaves, warpPerm);
+          nx = warped.x;
+          ny = warped.y;
+        }
+        
+        // Generate fBm and ridged noise with optional octave rotation
+        const fbmValue = rotateOctaves
+          ? this.fbmRotated(nx, ny, octaves, lacunarity, persistence, perm, octaveAngles)
+          : this.fbm(nx, ny, octaves, lacunarity, persistence, perm);
+        
+        const ridgedValue = rotateOctaves
+          ? this.ridgedRotated(nx, ny, octaves, lacunarity, persistence, perm, octaveAngles)
+          : this.ridged(nx, ny, octaves, lacunarity, persistence, perm);
         
         // Blend between fBm and ridged
         const height = fbmValue * (1 - ridgeWeight) + ridgedValue * ridgeWeight;
@@ -249,6 +275,58 @@ export class TerrainObject extends RenderableObject {
         this.heightmap[y * resolution + x] = height * heightScale;
       }
     }
+  }
+  
+  /**
+   * Apply domain warping to coordinates
+   * This distorts the input coordinates using noise to break up repetitive patterns
+   */
+  private domainWarp(
+    x: number, y: number,
+    strength: number,
+    warpScale: number,
+    warpOctaves: number,
+    perm: Uint8Array
+  ): { x: number; y: number } {
+    // Sample noise at offset positions to get warp vectors
+    // Using different offsets ensures X and Y warps are independent
+    const offsetX1 = 5.2;
+    const offsetY1 = 1.3;
+    const offsetX2 = 9.7;
+    const offsetY2 = 2.8;
+    
+    let warpX = 0;
+    let warpY = 0;
+    
+    // Multi-octave warping for more organic distortion
+    let amplitude = 1;
+    let frequency = 1;
+    let maxAmp = 0;
+    
+    for (let i = 0; i < warpOctaves; i++) {
+      warpX += amplitude * this.noise2D(
+        (x + offsetX1) * warpScale * frequency,
+        (y + offsetY1) * warpScale * frequency,
+        perm
+      );
+      warpY += amplitude * this.noise2D(
+        (x + offsetX2) * warpScale * frequency,
+        (y + offsetY2) * warpScale * frequency,
+        perm
+      );
+      maxAmp += amplitude;
+      amplitude *= 0.5;
+      frequency *= 2;
+    }
+    
+    // Normalize and apply strength
+    warpX = (warpX / maxAmp) * strength;
+    warpY = (warpY / maxAmp) * strength;
+    
+    return {
+      x: x + warpX,
+      y: y + warpY,
+    };
   }
   
   /**
@@ -768,6 +846,80 @@ export class TerrainObject extends RenderableObject {
     
     for (let i = 0; i < octaves; i++) {
       let signal = this.noise2D(x * frequency, y * frequency, perm);
+      signal = 1 - Math.abs(signal);
+      signal = signal * signal;
+      signal *= weight;
+      
+      weight = Math.min(1, Math.max(0, signal * 2));
+      value += signal * amplitude;
+      
+      amplitude *= persistence;
+      frequency *= lacunarity;
+    }
+    
+    return value;
+  }
+  
+  /**
+   * Fractal Brownian Motion with per-octave rotation
+   * Rotates sample coordinates for each octave to break axis-aligned patterns
+   */
+  private fbmRotated(
+    x: number, y: number,
+    octaves: number,
+    lacunarity: number,
+    persistence: number,
+    perm: Uint8Array,
+    octaveAngles: number[]
+  ): number {
+    let value = 0;
+    let amplitude = 1;
+    let frequency = 1;
+    let maxValue = 0;
+    
+    for (let i = 0; i < octaves; i++) {
+      // Rotate coordinates for this octave
+      const angle = octaveAngles[i] || 0;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const rx = x * cos - y * sin;
+      const ry = x * sin + y * cos;
+      
+      value += amplitude * this.noise2D(rx * frequency, ry * frequency, perm);
+      maxValue += amplitude;
+      amplitude *= persistence;
+      frequency *= lacunarity;
+    }
+    
+    return (value / maxValue + 1) / 2; // Normalize to [0, 1]
+  }
+  
+  /**
+   * Ridged multifractal noise with per-octave rotation
+   * Rotates sample coordinates for each octave to break axis-aligned ridge patterns
+   */
+  private ridgedRotated(
+    x: number, y: number,
+    octaves: number,
+    lacunarity: number,
+    persistence: number,
+    perm: Uint8Array,
+    octaveAngles: number[]
+  ): number {
+    let value = 0;
+    let amplitude = 1;
+    let frequency = 1;
+    let weight = 1;
+    
+    for (let i = 0; i < octaves; i++) {
+      // Rotate coordinates for this octave
+      const angle = octaveAngles[i] || 0;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const rx = x * cos - y * sin;
+      const ry = x * sin + y * cos;
+      
+      let signal = this.noise2D(rx * frequency, ry * frequency, perm);
       signal = 1 - Math.abs(signal);
       signal = signal * signal;
       signal *= weight;

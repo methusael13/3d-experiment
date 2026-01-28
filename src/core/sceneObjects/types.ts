@@ -279,6 +279,20 @@ export interface TerrainNoiseParams {
   ridgeWeight: number;
   /** Noise offset for panning */
   offset: [number, number];
+  
+  // Domain warping parameters
+  /** Domain warp strength - how much coordinates are distorted (0-2, default 0.5) */
+  warpStrength: number;
+  /** Domain warp scale - scale of the warping noise (default 2.0) */
+  warpScale: number;
+  /** Number of warp iterations (1-3, default 1) */
+  warpOctaves: number;
+  
+  // Per-octave rotation
+  /** Enable per-octave rotation to break axis-aligned patterns */
+  rotateOctaves: boolean;
+  /** Base rotation angle in degrees per octave (default 37) */
+  octaveRotation: number;
 }
 
 /**
@@ -379,6 +393,13 @@ export function createDefaultTerrainParams(): TerrainParams {
       heightScale: 2.0,
       ridgeWeight: 0.5,
       offset: [0, 0],
+      // Domain warping
+      warpStrength: 0.5,
+      warpScale: 2.0,
+      warpOctaves: 1,
+      // Per-octave rotation
+      rotateOctaves: true,
+      octaveRotation: 37,
     },
     erosion: {
       enabled: true,

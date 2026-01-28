@@ -203,6 +203,44 @@ const terrainPanelTemplate = `
   </div>
   
   <div class="modifier-divider"></div>
+  <div class="section-title">Domain Warping</div>
+  <div class="transform-group compact-slider">
+    <div class="slider-header">
+      <label>Warp Strength</label>
+      <span id="terrain-warp-strength-val" class="slider-value">0.5</span>
+    </div>
+    <input type="range" id="terrain-warp-strength" min="0" max="2" step="0.05" value="0.5" class="slider-input">
+  </div>
+  <div class="transform-group compact-slider">
+    <div class="slider-header">
+      <label>Warp Scale</label>
+      <span id="terrain-warp-scale-val" class="slider-value">2.0</span>
+    </div>
+    <input type="range" id="terrain-warp-scale" min="0.5" max="5" step="0.1" value="2" class="slider-input">
+  </div>
+  <div class="transform-group compact-slider">
+    <div class="slider-header">
+      <label>Warp Octaves</label>
+      <span id="terrain-warp-octaves-val" class="slider-value">1</span>
+    </div>
+    <input type="range" id="terrain-warp-octaves" min="1" max="3" step="1" value="1" class="slider-input">
+  </div>
+  
+  <div class="modifier-divider"></div>
+  <div class="section-title">Octave Rotation</div>
+  <label class="checkbox-label">
+    <input type="checkbox" id="terrain-rotate-octaves" checked>
+    <span>Rotate Octaves (reduces patterns)</span>
+  </label>
+  <div class="transform-group compact-slider">
+    <div class="slider-header">
+      <label>Rotation Angle</label>
+      <span id="terrain-octave-rotation-val" class="slider-value">37°</span>
+    </div>
+    <input type="range" id="terrain-octave-rotation" min="10" max="60" step="1" value="37" class="slider-input">
+  </div>
+  
+  <div class="modifier-divider"></div>
   <div class="section-title">Hydraulic Erosion</div>
   <label class="checkbox-label">
     <input type="checkbox" id="terrain-erosion-enabled" checked>
@@ -345,6 +383,19 @@ export class TerrainPanel {
   private ridge!: HTMLInputElement;
   private ridgeVal!: HTMLSpanElement;
   
+  // Domain warping controls
+  private warpStrength!: HTMLInputElement;
+  private warpStrengthVal!: HTMLSpanElement;
+  private warpScale!: HTMLInputElement;
+  private warpScaleVal!: HTMLSpanElement;
+  private warpOctaves!: HTMLInputElement;
+  private warpOctavesVal!: HTMLSpanElement;
+  
+  // Octave rotation controls
+  private rotateOctaves!: HTMLInputElement;
+  private octaveRotation!: HTMLInputElement;
+  private octaveRotationVal!: HTMLSpanElement;
+  
   private erosionEnabled!: HTMLInputElement;
   private erosionSettings!: HTMLDivElement;
   private erosionIterations!: HTMLInputElement;
@@ -413,6 +464,19 @@ export class TerrainPanel {
     this.ridge = c.querySelector('#terrain-ridge') as HTMLInputElement;
     this.ridgeVal = c.querySelector('#terrain-ridge-val') as HTMLSpanElement;
     
+    // Domain warping
+    this.warpStrength = c.querySelector('#terrain-warp-strength') as HTMLInputElement;
+    this.warpStrengthVal = c.querySelector('#terrain-warp-strength-val') as HTMLSpanElement;
+    this.warpScale = c.querySelector('#terrain-warp-scale') as HTMLInputElement;
+    this.warpScaleVal = c.querySelector('#terrain-warp-scale-val') as HTMLSpanElement;
+    this.warpOctaves = c.querySelector('#terrain-warp-octaves') as HTMLInputElement;
+    this.warpOctavesVal = c.querySelector('#terrain-warp-octaves-val') as HTMLSpanElement;
+    
+    // Octave rotation
+    this.rotateOctaves = c.querySelector('#terrain-rotate-octaves') as HTMLInputElement;
+    this.octaveRotation = c.querySelector('#terrain-octave-rotation') as HTMLInputElement;
+    this.octaveRotationVal = c.querySelector('#terrain-octave-rotation-val') as HTMLSpanElement;
+    
     this.erosionEnabled = c.querySelector('#terrain-erosion-enabled') as HTMLInputElement;
     this.erosionSettings = c.querySelector('#terrain-erosion-settings') as HTMLDivElement;
     this.erosionIterations = c.querySelector('#terrain-erosion-iterations') as HTMLInputElement;
@@ -472,6 +536,15 @@ export class TerrainPanel {
       this.syncToTerrain();
     });
     this.setupSlider(this.ridge, this.ridgeVal, v => v.toFixed(2));
+    
+    // Domain warping sliders
+    this.setupSlider(this.warpStrength, this.warpStrengthVal, v => v.toFixed(2));
+    this.setupSlider(this.warpScale, this.warpScaleVal, v => v.toFixed(1));
+    this.setupSlider(this.warpOctaves, this.warpOctavesVal, v => String(Math.round(v)));
+    
+    // Octave rotation
+    this.rotateOctaves.addEventListener('change', () => this.syncToTerrain());
+    this.setupSlider(this.octaveRotation, this.octaveRotationVal, v => `${Math.round(v)}°`);
     
     this.setupSlider(this.erosionIterations, this.erosionIterationsVal, v => {
       if (v >= 1000000) return `${(v / 1000000).toFixed(1)}M`;
@@ -578,6 +651,15 @@ export class TerrainPanel {
     params.noise.heightScale = parseFloat(this.heightScale.value);
     params.noise.ridgeWeight = parseFloat(this.ridge.value);
     
+    // Domain warping
+    params.noise.warpStrength = parseFloat(this.warpStrength.value);
+    params.noise.warpScale = parseFloat(this.warpScale.value);
+    params.noise.warpOctaves = parseInt(this.warpOctaves.value, 10);
+    
+    // Octave rotation
+    params.noise.rotateOctaves = this.rotateOctaves.checked;
+    params.noise.octaveRotation = parseFloat(this.octaveRotation.value);
+    
     // Erosion params
     params.erosion.enabled = this.erosionEnabled.checked;
     params.erosion.iterations = parseInt(this.erosionIterations.value, 10);
@@ -628,6 +710,19 @@ export class TerrainPanel {
     this.heightScaleVal.textContent = params.noise.heightScale.toFixed(1);
     this.ridge.value = String(params.noise.ridgeWeight);
     this.ridgeVal.textContent = params.noise.ridgeWeight.toFixed(2);
+    
+    // Domain warping
+    this.warpStrength.value = String(params.noise.warpStrength);
+    this.warpStrengthVal.textContent = params.noise.warpStrength.toFixed(2);
+    this.warpScale.value = String(params.noise.warpScale);
+    this.warpScaleVal.textContent = params.noise.warpScale.toFixed(1);
+    this.warpOctaves.value = String(params.noise.warpOctaves);
+    this.warpOctavesVal.textContent = String(params.noise.warpOctaves);
+    
+    // Octave rotation
+    this.rotateOctaves.checked = params.noise.rotateOctaves;
+    this.octaveRotation.value = String(params.noise.octaveRotation);
+    this.octaveRotationVal.textContent = `${Math.round(params.noise.octaveRotation)}°`;
     
     // Erosion params
     this.erosionEnabled.checked = params.erosion.enabled;
