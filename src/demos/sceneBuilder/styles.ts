@@ -120,6 +120,18 @@ export const sceneBuilderStyles = `
   
   .menu-action:hover {
     background: #ff6666;
+  }
+  
+  .menu-action:disabled,
+  .menu-action[disabled] {
+    opacity: 0.5;
+    color: #666;
+    cursor: not-allowed;
+  }
+  
+  .menu-action:disabled:hover,
+  .menu-action[disabled]:hover {
+    background: transparent;
     color: #000;
   }
   
