@@ -209,10 +209,12 @@ class OpaquePass extends RenderPass {
   execute(context: RenderContext, objects: RenderObject[]): void {
     // Build complete light params with shared textures
     // Use 'as any' to handle the lightSpaceMatrix null vs undefined difference
+    // Override shadowEnabled from pipeline settings (UI toggle) rather than lightParams
     const completeLightParams = {
       ...context.lightParams,
+      shadowEnabled: context.settings.shadowEnabled,
       lightSpaceMatrix: context.textures.lightSpaceMatrix ?? undefined,
-      shadowMap: context.textures.shadowMap ?? undefined,
+      shadowMap: context.settings.shadowEnabled ? (context.textures.shadowMap ?? undefined) : undefined,
       hdrTexture: context.textures.hdr ?? undefined,
       cameraPos: context.cameraPos,
     } as any;
