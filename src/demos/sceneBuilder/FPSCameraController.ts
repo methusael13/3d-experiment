@@ -7,16 +7,20 @@
  * - Height sampling from terrain (always 1.8m above ground)
  * - Bounds clamping to terrain area
  * - Gimbal lock prevention via pitch clamping
+ * 
+ * Uses InputManager for ALL input - no direct DOM access.
  */
 
 import { mat4, vec3 } from 'gl-matrix';
 import type { Vec3 } from '../../core/types';
 import type { TerrainObject } from '../../core/sceneObjects';
+import type { InputManager, InputEvent } from './InputManager';
 
 // ==================== Constants ====================
 
 const PLAYER_HEIGHT = 1.8; // Meters above terrain
 const MOVE_SPEED = 5.0;    // Units per second
+const SPRINT_MULTIPLIER = 2.0; // Sprint speed multiplier
 const MOUSE_SENSITIVITY = 0.002;
 const MAX_PITCH = Math.PI / 2 - 0.01; // ~89 degrees to prevent gimbal lock
 const MIN_PITCH = -MAX_PITCH;
@@ -46,6 +50,7 @@ export class FPSCameraController {
     backward: false,
     left: false,
     right: false,
+    sprint: false,
   };
   
   // Cached matrices
@@ -60,18 +65,18 @@ export class FPSCameraController {
     minZ: 0, maxZ: 0,
   };
   
-  // Canvas reference for pointer lock
-  private canvas: HTMLCanvasElement | null = null;
+  // InputManager reference (owns pointer lock)
+  private inputManager: InputManager | null = null;
   private isActive = false;
   
   // Callbacks
   private onExitCallback: (() => void) | null = null;
   
-  // Event handler references for cleanup
-  private boundMouseMove: ((e: MouseEvent) => void) | null = null;
-  private boundKeyDown: ((e: KeyboardEvent) => void) | null = null;
-  private boundKeyUp: ((e: KeyboardEvent) => void) | null = null;
-  private boundPointerLockChange: (() => void) | null = null;
+  // Bound handlers for cleanup
+  private boundPointerMove: ((e: InputEvent) => void) | null = null;
+  private boundPointerLockChange: ((e: InputEvent) => void) | null = null;
+  private boundKeyDown: ((e: InputEvent<KeyboardEvent>) => void) | null = null;
+  private boundKeyUp: ((e: InputEvent<KeyboardEvent>) => void) | null = null;
   
   constructor() {
     // Initialize projection matrix with typical FPS FOV
@@ -84,15 +89,20 @@ export class FPSCameraController {
    * Activate FPS mode on a terrain
    */
   activate(
-    canvas: HTMLCanvasElement,
+    canvas: HTMLCanvasElement, // Only used for aspect ratio
     terrain: TerrainObject,
+    inputManager: InputManager,
     callbacks: FPSCameraCallbacks = {}
   ): boolean {
     if (this.isActive) return false;
     
-    this.canvas = canvas;
     this.terrain = terrain;
+    this.inputManager = inputManager;
     this.onExitCallback = callbacks.onExit || null;
+    
+    // Update projection for canvas aspect ratio
+    const aspectRatio = canvas.width / canvas.height;
+    mat4.perspective(this.projMatrix, Math.PI / 3, aspectRatio, 0.1, 1000);
     
     // Calculate terrain bounds
     const params = terrain.params;
@@ -118,13 +128,13 @@ export class FPSCameraController {
     this.pitch = 0;
     
     // Reset movement keys
-    this.keys = { forward: false, backward: false, left: false, right: false };
+    this.keys = { forward: false, backward: false, left: false, right: false, sprint: false };
     
-    // Set up event listeners
-    this.setupEventListeners();
+    // Set up InputManager event subscriptions
+    this.setupInputSubscriptions();
     
-    // Request pointer lock
-    canvas.requestPointerLock();
+    // Request pointer lock via InputManager
+    inputManager.requestPointerLock();
     
     this.isActive = true;
     return true;
@@ -136,60 +146,67 @@ export class FPSCameraController {
   deactivate(): void {
     if (!this.isActive) return;
     
-    this.removeEventListeners();
+    this.removeInputSubscriptions();
     
-    // Exit pointer lock
-    if (document.pointerLockElement === this.canvas) {
-      document.exitPointerLock();
-    }
+    // Exit pointer lock via InputManager
+    this.inputManager?.exitPointerLock();
     
     this.isActive = false;
     this.terrain = null;
-    this.canvas = null;
+    this.inputManager = null;
   }
   
-  // ==================== Event Handling ====================
+  // ==================== Input Subscriptions ====================
   
-  private setupEventListeners(): void {
-    this.boundMouseMove = (e: MouseEvent) => this.handleMouseMove(e);
-    this.boundKeyDown = (e: KeyboardEvent) => this.handleKeyDown(e);
-    this.boundKeyUp = (e: KeyboardEvent) => this.handleKeyUp(e);
-    this.boundPointerLockChange = () => this.handlePointerLockChange();
+  private setupInputSubscriptions(): void {
+    if (!this.inputManager) return;
     
-    document.addEventListener('mousemove', this.boundMouseMove);
-    document.addEventListener('keydown', this.boundKeyDown);
-    document.addEventListener('keyup', this.boundKeyUp);
-    document.addEventListener('pointerlockchange', this.boundPointerLockChange);
+    // Pointer-locked mouse movement
+    this.boundPointerMove = (e: InputEvent) => this.handlePointerMove(e);
+    this.inputManager.on('fps', 'pointermove', this.boundPointerMove);
+    
+    // Pointer lock state changes
+    this.boundPointerLockChange = (e: InputEvent) => this.handlePointerLockChange(e);
+    this.inputManager.on('fps', 'pointerlockchange', this.boundPointerLockChange);
+    
+    // Keyboard events
+    this.boundKeyDown = (e: InputEvent<KeyboardEvent>) => this.handleKeyDown(e);
+    this.boundKeyUp = (e: InputEvent<KeyboardEvent>) => this.handleKeyUp(e);
+    this.inputManager.on('fps', 'keydown', this.boundKeyDown);
+    this.inputManager.on('fps', 'keyup', this.boundKeyUp);
   }
   
-  private removeEventListeners(): void {
-    if (this.boundMouseMove) {
-      document.removeEventListener('mousemove', this.boundMouseMove);
-    }
-    if (this.boundKeyDown) {
-      document.removeEventListener('keydown', this.boundKeyDown);
-    }
-    if (this.boundKeyUp) {
-      document.removeEventListener('keyup', this.boundKeyUp);
+  private removeInputSubscriptions(): void {
+    if (!this.inputManager) return;
+    
+    if (this.boundPointerMove) {
+      this.inputManager.off('fps', 'pointermove', this.boundPointerMove);
     }
     if (this.boundPointerLockChange) {
-      document.removeEventListener('pointerlockchange', this.boundPointerLockChange);
+      this.inputManager.off('fps', 'pointerlockchange', this.boundPointerLockChange);
+    }
+    if (this.boundKeyDown) {
+      this.inputManager.off('fps', 'keydown', this.boundKeyDown);
+    }
+    if (this.boundKeyUp) {
+      this.inputManager.off('fps', 'keyup', this.boundKeyUp);
     }
     
-    this.boundMouseMove = null;
+    this.boundPointerMove = null;
+    this.boundPointerLockChange = null;
     this.boundKeyDown = null;
     this.boundKeyUp = null;
-    this.boundPointerLockChange = null;
   }
   
-  private handleMouseMove(e: MouseEvent): void {
+  // ==================== Event Handlers ====================
+  
+  private handlePointerMove(e: InputEvent): void {
     if (!this.isActive) return;
-    if (document.pointerLockElement !== this.canvas) return;
     
     // Update yaw (horizontal) and pitch (vertical)
     // No vertical inversion: positive movementY = look down
-    this.yaw -= e.movementX * MOUSE_SENSITIVITY;
-    this.pitch -= e.movementY * MOUSE_SENSITIVITY;
+    this.yaw -= (e.movementX || 0) * MOUSE_SENSITIVITY;
+    this.pitch -= (e.movementY || 0) * MOUSE_SENSITIVITY;
     
     // Clamp pitch to prevent gimbal lock
     this.pitch = Math.max(MIN_PITCH, Math.min(MAX_PITCH, this.pitch));
@@ -199,40 +216,49 @@ export class FPSCameraController {
     while (this.yaw >= Math.PI * 2) this.yaw -= Math.PI * 2;
   }
   
-  private handleKeyDown(e: KeyboardEvent): void {
+  private handlePointerLockChange(e: InputEvent): void {
+    // If pointer lock was released externally, exit FPS mode
+    if (this.isActive && e.locked === false) {
+      this.exit();
+    }
+  }
+  
+  private handleKeyDown(e: InputEvent<KeyboardEvent>): void {
     if (!this.isActive) return;
     
-    // Prevent default for movement keys
-    const key = e.key.toLowerCase();
+    const key = e.key?.toLowerCase();
     
     switch (key) {
       case 'w':
         this.keys.forward = true;
-        e.preventDefault();
+        e.originalEvent.preventDefault();
         break;
       case 's':
         this.keys.backward = true;
-        e.preventDefault();
+        e.originalEvent.preventDefault();
         break;
       case 'a':
         this.keys.left = true;
-        e.preventDefault();
+        e.originalEvent.preventDefault();
         break;
       case 'd':
         this.keys.right = true;
-        e.preventDefault();
+        e.originalEvent.preventDefault();
+        break;
+      case 'shift':
+        this.keys.sprint = true;
         break;
       case 'escape':
         this.exit();
-        e.preventDefault();
+        e.originalEvent.preventDefault();
         break;
     }
   }
   
-  private handleKeyUp(e: KeyboardEvent): void {
+  private handleKeyUp(e: InputEvent<KeyboardEvent>): void {
     if (!this.isActive) return;
     
-    const key = e.key.toLowerCase();
+    const key = e.key?.toLowerCase();
     
     switch (key) {
       case 'w':
@@ -247,13 +273,9 @@ export class FPSCameraController {
       case 'd':
         this.keys.right = false;
         break;
-    }
-  }
-  
-  private handlePointerLockChange(): void {
-    // If pointer lock was released externally (e.g., clicking outside), exit FPS mode
-    if (this.isActive && document.pointerLockElement !== this.canvas) {
-      this.exit();
+      case 'shift':
+        this.keys.sprint = false;
+        break;
     }
   }
   
@@ -302,7 +324,8 @@ export class FPSCameraController {
     // Normalize and apply speed
     const len = Math.sqrt(dx * dx + dz * dz);
     if (len > 0) {
-      const speed = MOVE_SPEED * deltaTime;
+      const baseSpeed = MOVE_SPEED * deltaTime;
+      const speed = this.keys.sprint ? baseSpeed * SPRINT_MULTIPLIER : baseSpeed;
       dx = (dx / len) * speed;
       dz = (dz / len) * speed;
       

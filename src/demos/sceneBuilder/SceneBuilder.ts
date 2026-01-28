@@ -496,7 +496,13 @@ export class SceneBuilder implements SceneBuilderDemo {
     }
     
     // Activate FPS mode
-    const success = this.fpsController.activate(canvas, terrain, {
+    const inputManager = this.viewport?.getInputManager();
+    if (!inputManager) {
+      console.error('[SceneBuilder] InputManager not available');
+      return;
+    }
+    
+    const success = this.fpsController.activate(canvas, terrain, inputManager, {
       onExit: () => this.exitFPSMode(),
     });
     

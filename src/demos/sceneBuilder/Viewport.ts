@@ -851,6 +851,10 @@ export class Viewport {
   getGL(): WebGL2RenderingContext | null {
     return this.gl;
   }
+  
+  getInputManager(): InputManager | null {
+    return this.inputManager;
+  }
 
   // ==================== State Queries ====================
 

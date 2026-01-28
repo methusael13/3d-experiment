@@ -22,7 +22,9 @@ export type InputEventType =
   | 'keyup' 
   | 'dblclick'
   | 'contextmenu'
-  | 'mouseleave';
+  | 'mouseleave'
+  | 'pointermove'       // Pointer-locked mouse movement (movementX/Y)
+  | 'pointerlockchange'; // Pointer lock state changed
 
 export interface InputEvent<T = Event> {
   originalEvent: T;
@@ -34,6 +36,11 @@ export interface InputEvent<T = Event> {
   shiftKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
+  // Pointer lock mouse movement
+  movementX?: number;
+  movementY?: number;
+  // Pointer lock state
+  locked?: boolean;
 }
 
 type EventHandler<T = Event> = (event: InputEvent<T>) => void | boolean;
@@ -56,6 +63,11 @@ export class InputManager {
   // Bound event handler references for cleanup
   private boundHandlers: Map<string, EventListener> = new Map();
   
+  // Pointer lock state
+  private pointerLocked = false;
+  private boundPointerLockChange: (() => void) | null = null;
+  private boundPointerLockMouseMove: ((e: MouseEvent) => void) | null = null;
+  
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     
@@ -65,6 +77,70 @@ export class InputManager {
     this.handlers.set('global', {});
     
     this.setupEventListeners();
+    this.setupPointerLockListeners();
+  }
+  
+  // ==================== Pointer Lock Management ====================
+  
+  /**
+   * Request pointer lock on the canvas
+   */
+  requestPointerLock(): void {
+    this.canvas.requestPointerLock();
+  }
+  
+  /**
+   * Exit pointer lock
+   */
+  exitPointerLock(): void {
+    if (document.pointerLockElement === this.canvas) {
+      document.exitPointerLock();
+    }
+  }
+  
+  /**
+   * Check if pointer is currently locked
+   */
+  isPointerLocked(): boolean {
+    return this.pointerLocked;
+  }
+  
+  /**
+   * Set up pointer lock event listeners (document level)
+   */
+  private setupPointerLockListeners(): void {
+    // Track pointer lock state changes
+    this.boundPointerLockChange = () => {
+      const wasLocked = this.pointerLocked;
+      this.pointerLocked = document.pointerLockElement === this.canvas;
+      
+      if (wasLocked !== this.pointerLocked) {
+        this.dispatch('pointerlockchange', {
+          originalEvent: new Event('pointerlockchange'),
+          x: 0,
+          y: 0,
+          locked: this.pointerLocked,
+        });
+      }
+    };
+    
+    document.addEventListener('pointerlockchange', this.boundPointerLockChange);
+    
+    // Track mouse movement when pointer is locked
+    this.boundPointerLockMouseMove = (e: MouseEvent) => {
+      if (!this.pointerLocked) return;
+      
+      // Dispatch pointermove with movement deltas
+      this.dispatch('pointermove', {
+        originalEvent: e,
+        x: 0,
+        y: 0,
+        movementX: e.movementX,
+        movementY: e.movementY,
+      });
+    };
+    
+    document.addEventListener('mousemove', this.boundPointerLockMouseMove);
   }
   
   // ==================== Channel Management ====================
@@ -288,6 +364,19 @@ export class InputManager {
       element.removeEventListener(type, handler);
     }
     this.boundHandlers.clear();
+    
+    // Remove pointer lock listeners
+    if (this.boundPointerLockChange) {
+      document.removeEventListener('pointerlockchange', this.boundPointerLockChange);
+    }
+    if (this.boundPointerLockMouseMove) {
+      document.removeEventListener('mousemove', this.boundPointerLockMouseMove);
+    }
+    
+    // Exit pointer lock if active
+    if (this.pointerLocked) {
+      this.exitPointerLock();
+    }
     
     // Clear all handlers
     for (const channelHandlers of this.handlers.values()) {
