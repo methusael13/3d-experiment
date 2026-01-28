@@ -6,6 +6,7 @@
 
 import type { TerrainObject, TerrainProgressCallback } from '../../../core/sceneObjects';
 import type { TerrainParams, TerrainNoiseParams, TerrainErosionParams, TerrainMaterialParams } from '../../../core/sceneObjects/types';
+import { TERRAIN_PRESETS, getTerrainPreset, type TerrainPreset } from './terrainPresets';
 
 // ==================== Styles (minimal, only terrain-specific) ====================
 
@@ -121,11 +122,62 @@ export const terrainPanelStyles = `
   .terrain-panel .section-title:first-child {
     margin-top: 0;
   }
+  
+  .terrain-panel .preset-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  
+  .terrain-panel .preset-select {
+    flex: 1;
+    padding: 5px 8px;
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 3px;
+    color: #f0f0f0;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  
+  .terrain-panel .preset-select:hover {
+    border-color: #666;
+  }
+  
+  .terrain-panel .reset-btn {
+    padding: 5px 10px;
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 3px;
+    color: #ccc;
+    cursor: pointer;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  
+  .terrain-panel .reset-btn:hover {
+    background: #444;
+    border-color: #666;
+  }
 `;
 
 // ==================== Template ====================
 
 const terrainPanelTemplate = `
+  <div class="section-title">Preset</div>
+  <div class="preset-row">
+    <select id="terrain-preset" class="preset-select">
+      <option value="default">Default</option>
+      <option value="rolling-hills">Rolling Hills</option>
+      <option value="alpine-mountains">Alpine Mountains</option>
+      <option value="desert-dunes">Desert Dunes</option>
+      <option value="rocky-badlands">Rocky Badlands</option>
+      <option value="volcanic-island">Volcanic Island</option>
+    </select>
+    <button id="terrain-reset-preset" class="reset-btn" title="Reset to preset values">↺ Reset</button>
+  </div>
+  
+  <div class="modifier-divider"></div>
   <div class="section-title">Resolution</div>
   <div class="transform-group">
     <label>Resolution</label>
@@ -363,8 +415,11 @@ export class TerrainPanel {
   private terrain: TerrainObject | null = null;
   private onUpdate: (() => void) | null = null;
   private onBoundsChanged: ((worldSize: number, heightScale: number) => void) | null = null;
+  private currentPresetKey: string = 'default';
   
   // DOM references
+  private presetSelect!: HTMLSelectElement;
+  private resetPresetBtn!: HTMLButtonElement;
   private resolution!: HTMLSelectElement;
   private worldSize!: HTMLInputElement;
   private worldSizeVal!: HTMLSpanElement;
@@ -445,6 +500,10 @@ export class TerrainPanel {
   
   private cacheDOM(): void {
     const c = this.container;
+    
+    // Preset controls
+    this.presetSelect = c.querySelector('#terrain-preset') as HTMLSelectElement;
+    this.resetPresetBtn = c.querySelector('#terrain-reset-preset') as HTMLButtonElement;
     
     this.resolution = c.querySelector('#terrain-resolution') as HTMLSelectElement;
     this.worldSize = c.querySelector('#terrain-world-size') as HTMLInputElement;
@@ -600,6 +659,58 @@ export class TerrainPanel {
     
     // Update button
     this.updateBtn.addEventListener('click', () => this.handleUpdate());
+    
+    // Preset selection
+    this.presetSelect.addEventListener('change', () => {
+      this.currentPresetKey = this.presetSelect.value;
+      this.applyPreset(this.currentPresetKey);
+    });
+    
+    // Reset to preset
+    this.resetPresetBtn.addEventListener('click', () => {
+      this.applyPreset(this.currentPresetKey);
+    });
+  }
+  
+  /**
+   * Apply a preset to the terrain (excludes resolution and worldSize)
+   */
+  private applyPreset(presetKey: string): void {
+    const preset = getTerrainPreset(presetKey);
+    if (!preset || !this.terrain) return;
+    
+    const params = this.terrain.params;
+    
+    // Apply noise params (excluding offset which is derived)
+    params.noise.seed = preset.noise.seed;
+    params.noise.scale = preset.noise.scale;
+    params.noise.octaves = preset.noise.octaves;
+    params.noise.lacunarity = preset.noise.lacunarity;
+    params.noise.persistence = preset.noise.persistence;
+    params.noise.heightScale = preset.noise.heightScale;
+    params.noise.ridgeWeight = preset.noise.ridgeWeight;
+    params.noise.warpStrength = preset.noise.warpStrength;
+    params.noise.warpScale = preset.noise.warpScale;
+    params.noise.warpOctaves = preset.noise.warpOctaves;
+    params.noise.rotateOctaves = preset.noise.rotateOctaves;
+    params.noise.octaveRotation = preset.noise.octaveRotation;
+    
+    // Apply erosion params
+    params.erosion = { ...preset.erosion };
+    
+    // Apply material params
+    params.material = { 
+      ...preset.material,
+      // Deep copy colors
+      waterColor: [...preset.material.waterColor] as [number, number, number],
+      grassColor: [...preset.material.grassColor] as [number, number, number],
+      rockColor: [...preset.material.rockColor] as [number, number, number],
+      snowColor: [...preset.material.snowColor] as [number, number, number],
+      dirtColor: [...preset.material.dirtColor] as [number, number, number],
+    };
+    
+    // Update UI to reflect new values
+    this.syncFromTerrain();
   }
   
   private setupSlider(slider: HTMLInputElement, valueDisplay: HTMLSpanElement, format: (v: number) => string, syncOnInput = true): void {
