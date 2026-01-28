@@ -194,7 +194,7 @@ const terrainPanelTemplate = `
       <label>World Size</label>
       <span id="terrain-world-size-val" class="slider-value">10</span>
     </div>
-    <input type="range" id="terrain-world-size" min="1" max="1000" step="10" value="10" class="slider-input">
+    <input type="range" id="terrain-world-size" min="10" max="1000" step="10" value="10" class="slider-input">
   </div>
   
   <div class="modifier-divider"></div>
