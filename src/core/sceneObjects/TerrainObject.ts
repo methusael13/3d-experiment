@@ -1297,6 +1297,27 @@ export class TerrainObject extends RenderableObject {
   }
   
   /**
+   * Alias for getHeightmap() - for FPS camera height sampling
+   */
+  getHeightfield(): Float32Array | null {
+    return this.heightmap;
+  }
+  
+  /**
+   * Get the world transformation matrix
+   */
+  getWorldMatrix(): mat4 {
+    const m = mat4.create();
+    mat4.fromRotationTranslationScale(
+      m,
+      this.rotation,
+      this.position,
+      this.scale
+    );
+    return m;
+  }
+  
+  /**
    * Get the erosion map data
    */
   getErosionMap(): Float32Array | null {

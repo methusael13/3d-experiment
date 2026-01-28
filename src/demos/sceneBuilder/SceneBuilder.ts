@@ -31,8 +31,10 @@ import {
 } from './componentPanels';
 import type { ContactShadowSettings } from '../../core/renderers';
 import { Viewport, type ViewportOptions } from './Viewport';
+import { FPSCameraController } from './FPSCameraController';
 import type { GizmoMode, GizmoOrientation } from './gizmos';
 import type { Vec3 } from '../../core/types';
+import type { TerrainObject } from '../../core/sceneObjects';
 
 // ==================== Types ====================
 
@@ -85,6 +87,11 @@ export class SceneBuilder implements SceneBuilderDemo {
   private currentSceneFilename: string | null = null;
   private gizmoMode: GizmoMode = 'translate';
   private viewportMode: 'solid' | 'wireframe' = 'solid';
+  
+  // FPS Camera Mode
+  private fpsController: FPSCameraController | null = null;
+  private fpsMode = false;
+  private lastFrameTime = 0;
   
   constructor(container: HTMLElement, options: SceneBuilderOptions = {}) {
     this.container = container;
@@ -433,6 +440,106 @@ export class SceneBuilder implements SceneBuilderDemo {
         menuItems.forEach(item => item.classList.remove('open'));
       });
     }
+    
+    // View > Viewport > FPS Camera
+    const fpsCameraBtn = this.container.querySelector('#menu-fps-camera') as HTMLButtonElement;
+    if (fpsCameraBtn) {
+      fpsCameraBtn.addEventListener('click', () => {
+        this.enterFPSMode();
+        menuItems.forEach(item => item.classList.remove('open'));
+      });
+    }
+  }
+  
+  // ==================== FPS Camera Mode ====================
+  
+  /**
+   * Update FPS camera menu item enabled state based on selection
+   */
+  private updateFPSMenuState(): void {
+    const fpsCameraBtn = this.container.querySelector('#menu-fps-camera') as HTMLButtonElement;
+    if (!fpsCameraBtn) return;
+    
+    // Enable only if exactly one terrain is selected
+    const selectedTerrain = this.getSelectedTerrain();
+    fpsCameraBtn.disabled = !selectedTerrain;
+  }
+  
+  /**
+   * Get selected terrain if exactly one terrain is selected
+   */
+  private getSelectedTerrain(): TerrainObject | null {
+    if (!this.scene) return null;
+    const selectedObjects = this.scene.getSelectedObjects();
+    if (selectedObjects.length !== 1) return null;
+    
+    const obj = selectedObjects[0] as any;
+    if (obj.objectType === 'terrain' && obj.hasGenerated?.()) {
+      return obj as TerrainObject;
+    }
+    return null;
+  }
+  
+  /**
+   * Enter FPS camera mode on selected terrain
+   */
+  private enterFPSMode(): void {
+    const terrain = this.getSelectedTerrain();
+    if (!terrain || !this.viewport) return;
+    
+    const canvas = this.container.querySelector('#canvas') as HTMLCanvasElement;
+    if (!canvas) return;
+    
+    // Create FPS controller if needed
+    if (!this.fpsController) {
+      this.fpsController = new FPSCameraController();
+    }
+    
+    // Activate FPS mode
+    const success = this.fpsController.activate(canvas, terrain, {
+      onExit: () => this.exitFPSMode(),
+    });
+    
+    if (!success) return;
+    
+    this.fpsMode = true;
+    this.lastFrameTime = performance.now();
+    
+    // Update viewport to FPS mode
+    this.viewport.setFPSMode(true, this.fpsController);
+    
+    // Hide UI elements
+    this.setUIVisibility(false);
+    
+    console.log('[SceneBuilder] Entered FPS mode');
+  }
+  
+  /**
+   * Exit FPS camera mode
+   */
+  private exitFPSMode(): void {
+    if (!this.fpsMode) return;
+    
+    this.fpsMode = false;
+    
+    // Restore viewport to editor mode
+    this.viewport?.setFPSMode(false, null);
+    
+    // Show UI elements
+    this.setUIVisibility(true);
+    
+    console.log('[SceneBuilder] Exited FPS mode');
+  }
+  
+  /**
+   * Show/hide editor UI during FPS mode
+   */
+  private setUIVisibility(visible: boolean): void {
+    // Hide sidebars and menu bar in FPS mode
+    const sidebars = this.container.querySelectorAll('.scene-builder-sidebar, .scene-builder-sidebar-right, .menu-bar, .viewport-toolbar, .viewport-controls');
+    sidebars.forEach(el => {
+      (el as HTMLElement).style.display = visible ? '' : 'none';
+    });
   }
   
   private addPrimitive(type: 'cube' | 'plane' | 'sphere'): void {

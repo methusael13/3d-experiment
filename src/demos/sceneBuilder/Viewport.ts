@@ -670,6 +670,15 @@ export class Viewport {
 
   // ==================== Viewport Settings ====================
 
+  setFPSMode(enabled: boolean, controller: any): void {
+    // FPS mode stub - full implementation requires camera integration
+    // When enabled: switch to FPS camera, disable orbit controls
+    // When disabled: restore orbit camera
+    // Note: CameraController doesn't have an 'enabled' property yet
+    // This is a placeholder for future FPS camera integration
+    console.log(`[Viewport] FPS mode ${enabled ? 'enabled' : 'disabled'}`);
+  }
+  
   setViewportMode(mode: 'solid' | 'wireframe'): void {
     this.viewportMode = mode;
   }

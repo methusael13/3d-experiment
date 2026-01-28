@@ -1159,6 +1159,8 @@ export const sceneBuilderTemplate = `
               <div class="menu-separator"></div>
               <button class="menu-action" id="menu-toggle-grid">✓ Show Grid</button>
               <button class="menu-action" id="menu-toggle-axes">✓ Show Axes</button>
+              <div class="menu-separator"></div>
+              <button class="menu-action" id="menu-fps-camera" disabled>FPS Camera</button>
             </div>
           </div>
           <div class="menu-separator"></div>
