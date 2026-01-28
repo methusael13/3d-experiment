@@ -596,8 +596,10 @@ export class Viewport {
     // Render through pipeline
     this.pipeline.render(objects);
     
-    // Gizmo (always rendered separately - it's interactive)
-    this.transformGizmo?.render(this.cameraController.getViewProjectionMatrix());
+    // Gizmo (skip in FPS mode)
+    if (!this.fpsMode) {
+      this.transformGizmo?.render(this.cameraController.getViewProjectionMatrix());
+    }
     
     // Shadow debug thumbnail (rendered after pipeline)
     const shadowEnabled = this.isShadowEnabled();

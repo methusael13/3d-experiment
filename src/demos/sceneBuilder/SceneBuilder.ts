@@ -611,6 +611,9 @@ export class SceneBuilder implements SceneBuilderDemo {
       if (!this.scene || !this.viewport) return;
       if ((e.target as HTMLElement).tagName === 'INPUT') return;
       
+      // Skip all editor shortcuts when in FPS mode (FPS handles its own keys)
+      if (this.fpsMode) return;
+      
       if (e.key === 'Escape' && this.viewport.isUniformScaleActive()) {
         this.cancelUniformScale();
         return;
