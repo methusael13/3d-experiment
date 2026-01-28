@@ -209,6 +209,7 @@ export class SceneBuilder implements SceneBuilderDemo {
       this.materialPanel?.update();
       this.updateGizmoTarget();
       this.updateRenderData();
+      this.updateFPSMenuState();
     };
     
     this.scene.onObjectAdded = () => {
