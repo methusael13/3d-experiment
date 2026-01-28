@@ -730,6 +730,35 @@ export class SceneBuilder implements SceneBuilderDemo {
     this.objectPanel?.update();
     this.environmentPanel?.update();
     this.updateRenderData();
+    
+    // Update camera bounds if terrain was loaded
+    this.updateCameraBoundsForLoadedTerrain();
+  }
+  
+  /**
+   * Update camera limits based on loaded terrain
+   */
+  private updateCameraBoundsForLoadedTerrain(): void {
+    if (!this.scene || !this.viewport) return;
+    
+    // Find first terrain object and update camera bounds
+    const allObjects = this.scene.getAllObjects();
+    for (const obj of allObjects) {
+      if ((obj as any).objectType === 'terrain') {
+        const terrain = obj as TerrainObject;
+        const params = terrain.params;
+        const worldSize = params.worldSize;
+        const heightScale = params.noise.heightScale;
+        
+        // Same calculation as onTerrainBoundsChanged
+        const diagonal = worldSize * Math.SQRT2 * 0.5;
+        const maxHeight = worldSize * heightScale;
+        const sceneRadius = Math.sqrt(diagonal * diagonal + maxHeight * maxHeight);
+        
+        this.viewport?.updateCameraForSceneBounds(sceneRadius);
+        break; // Only need first terrain
+      }
+    }
   }
   
   // ==================== Object Operations ====================
