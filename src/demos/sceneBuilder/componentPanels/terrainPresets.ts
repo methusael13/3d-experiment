@@ -38,7 +38,7 @@ export const DEFAULT_PRESET: TerrainPreset = {
   referenceWorldSize: 10,
   noise: {
     seed: 12345,
-    scale: 3.0,
+    scale: 1.0,
     octaves: 6,
     lacunarity: 2.0,
     persistence: 0.5,
@@ -90,7 +90,7 @@ export const ROLLING_HILLS_PRESET: TerrainPreset = {
   referenceWorldSize: 10,
   noise: {
     seed: 42,
-    scale: 2.5,
+    scale: 1.0,
     octaves: 4,
     lacunarity: 2.0,
     persistence: 0.4,
@@ -142,7 +142,7 @@ export const ALPINE_MOUNTAINS_PRESET: TerrainPreset = {
   referenceWorldSize: 10,
   noise: {
     seed: 8675309,
-    scale: 4.0,
+    scale: 1.0,
     octaves: 8,
     lacunarity: 2.2,
     persistence: 0.55,
@@ -194,7 +194,7 @@ export const DESERT_DUNES_PRESET: TerrainPreset = {
   referenceWorldSize: 10,
   noise: {
     seed: 1001,
-    scale: 5.0,
+    scale: 1.0,
     octaves: 5,
     lacunarity: 2.5,
     persistence: 0.35,
@@ -246,7 +246,7 @@ export const ROCKY_BADLANDS_PRESET: TerrainPreset = {
   referenceWorldSize: 10,
   noise: {
     seed: 666,
-    scale: 3.5,
+    scale: 1.0,
     octaves: 7,
     lacunarity: 2.3,
     persistence: 0.6,
@@ -298,7 +298,7 @@ export const VOLCANIC_ISLAND_PRESET: TerrainPreset = {
   referenceWorldSize: 10,
   noise: {
     seed: 2012,
-    scale: 2.0,
+    scale: 1.0,
     octaves: 6,
     lacunarity: 2.0,
     persistence: 0.5,
