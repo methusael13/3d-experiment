@@ -320,12 +320,17 @@ export class ShadowRenderer implements IShadowRenderer {
   
   private calculateLightMatrix(sunDir: vec3 | number[], sceneSize: number, cameraPos?: vec3 | number[]): mat4 {
     // Center shadow frustum around camera position (or origin if not provided)
+    // Keep Y at a reasonable height to ensure we capture terrain heights
     const center: vec3 = cameraPos 
-      ? [cameraPos[0] as number, 0, cameraPos[2] as number]  // Use camera XZ, but keep Y at ground level
+      ? [cameraPos[0] as number, 0, cameraPos[2] as number]  // Use camera XZ, Y at ground
       : [0, 0, 0];
     
-    // Light position: far away in the direction of the sun, offset from center
-    const lightDistance = sceneSize * 2;
+    // Estimate max terrain height - for large terrains this could be significant
+    // Shadow coverage of 30 units with typical heightScale could mean heights up to ~150
+    const estimatedMaxHeight = sceneSize * 3;
+    
+    // Light position: far enough to encompass all terrain heights
+    const lightDistance = sceneSize * 2 + estimatedMaxHeight;
     const lightPos: vec3 = [
       center[0] + (sunDir[0] as number) * lightDistance,
       center[1] + (sunDir[1] as number) * lightDistance,
@@ -345,11 +350,13 @@ export class ShadowRenderer implements IShadowRenderer {
     mat4.lookAt(this.lightViewMatrix, lightPos, target, up);
     
     // Orthographic projection covering scene
-    const halfSize = sceneSize;
-    const near = 1;
-    const far = lightDistance * 2 + sceneSize * 2;
+    // Use larger vertical bounds to capture tall terrain
+    const halfSizeXZ = sceneSize;
+    const halfSizeY = sceneSize + estimatedMaxHeight;
+    const near = 0.1;  // Small near plane to avoid clipping
+    const far = lightDistance * 2 + sceneSize * 2 + estimatedMaxHeight;
     
-    mat4.ortho(this.lightProjMatrix, -halfSize, halfSize, -halfSize, halfSize, near, far);
+    mat4.ortho(this.lightProjMatrix, -halfSizeXZ, halfSizeXZ, -halfSizeY, halfSizeY, near, far);
     
     // Combined light space matrix
     mat4.multiply(this.lightSpaceMatrix, this.lightProjMatrix, this.lightViewMatrix);
