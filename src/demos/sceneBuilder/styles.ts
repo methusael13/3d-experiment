@@ -1133,6 +1133,8 @@ export const sceneBuilderTemplate = `
                   <button class="menu-action" id="menu-add-uvsphere">UV Sphere</button>
                 </div>
               </div>
+              <div class="menu-separator"></div>
+              <button class="menu-action" id="menu-add-terrain">Terrain</button>
             </div>
           </div>
           <div class="menu-separator"></div>

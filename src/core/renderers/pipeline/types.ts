@@ -7,6 +7,7 @@ import { mat4 } from 'gl-matrix';
 import type { Vec3 } from '../../types';
 import type { SceneLightingParams } from '../../sceneObjects/lights';
 import type { WindParams, ObjectWindSettings, TerrainBlendParams, IRenderer, GPUMesh } from '../../sceneObjects/types';
+import type { TerrainObject } from '../../sceneObjects';
 
 /**
  * Settings for terrain blending per object
@@ -33,12 +34,14 @@ export interface ContactShadowSettings {
 export interface RenderObject {
   id: string;
   modelMatrix: mat4;
-  renderer: IRenderer;
+  renderer: IRenderer | null;
   gpuMeshes: GPUMesh[];
   isSelected: boolean;
   windSettings: ObjectWindSettings | null;
   terrainBlendSettings: TerrainBlendSettings | null;
   showNormals?: boolean;
+  /** Terrain object reference (for terrain type objects) */
+  terrain?: TerrainObject;
 }
 
 /**

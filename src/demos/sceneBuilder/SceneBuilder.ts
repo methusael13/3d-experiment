@@ -392,6 +392,11 @@ export class SceneBuilder implements SceneBuilderDemo {
       menuItems.forEach(item => item.classList.remove('open'));
     });
     
+    this.container.querySelector('#menu-add-terrain')?.addEventListener('click', () => {
+      this.addTerrain();
+      menuItems.forEach(item => item.classList.remove('open'));
+    });
+    
     // Scene > Group Selection
     this.container.querySelector('#menu-group')?.addEventListener('click', () => {
       if (this.scene && this.scene.getSelectionCount() >= 2) {
@@ -437,6 +442,17 @@ export class SceneBuilder implements SceneBuilderDemo {
       this.scene.select(obj.id);
       this.objectsPanel?.update();
       this.objectPanel?.update();
+    }
+  }
+  
+  private async addTerrain(): Promise<void> {
+    if (!this.scene) return;
+    const obj = await this.scene.addTerrain();
+    if (obj) {
+      this.scene.select(obj.id);
+      this.objectsPanel?.update();
+      this.objectPanel?.update();
+      this.updateRenderData();
     }
   }
   
@@ -721,6 +737,13 @@ export class SceneBuilder implements SceneBuilderDemo {
       },
       onLightingChanged: () => {
         this.updateLightingState();
+      },
+      onTerrainBoundsChanged: (worldSize: number, heightScale: number) => {
+        // Calculate scene radius from terrain bounds: diagonal of XZ plane + max height
+        const diagonal = worldSize * Math.SQRT2 * 0.5; // Half diagonal
+        const maxHeight = worldSize * heightScale; // Height is scaled by worldSize
+        const sceneRadius = Math.sqrt(diagonal * diagonal + maxHeight * maxHeight);
+        this.viewport?.updateCameraForSceneBounds(sceneRadius);
       },
     });
     

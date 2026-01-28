@@ -5,6 +5,8 @@
 
 // ==================== Types ====================
 
+export type ShaderType = 'vertex' | 'fragment';
+
 export interface ShaderConfig {
   gl: WebGL2RenderingContext;
   program: WebGLProgram;
@@ -16,7 +18,8 @@ export interface ShaderConfig {
 interface ShaderEntry {
   gl: WebGL2RenderingContext;
   program: WebGLProgram;
-  vsSource: string;
+  originalVsSource: string;
+  currentVsSource: string;
   originalFsSource: string;
   currentFsSource: string;
   onRecompile?: (program: WebGLProgram) => void;
@@ -45,7 +48,8 @@ export function registerShader(name: string, config: ShaderConfig): void {
   shaderRegistry.set(name, {
     gl: config.gl,
     program: config.program,
-    vsSource: config.vsSource,
+    originalVsSource: config.vsSource,
+    currentVsSource: config.vsSource,
     originalFsSource: config.fsSource,
     currentFsSource: config.fsSource,
     onRecompile: config.onRecompile,
@@ -69,17 +73,19 @@ export function getShaderList(): string[] {
 /**
  * Get current fragment shader source for a shader
  */
-export function getShaderSource(name: string): string | null {
+export function getShaderSource(name: string, type: ShaderType = 'fragment'): string | null {
   const entry = shaderRegistry.get(name);
-  return entry ? entry.currentFsSource : null;
+  if (!entry) return null;
+  return type === 'vertex' ? entry.currentVsSource : entry.currentFsSource;
 }
 
 /**
- * Get original fragment shader source (for reset)
+ * Get original shader source (for reset)
  */
-export function getOriginalSource(name: string): string | null {
+export function getOriginalSource(name: string, type: ShaderType = 'fragment'): string | null {
   const entry = shaderRegistry.get(name);
-  return entry ? entry.originalFsSource : null;
+  if (!entry) return null;
+  return type === 'vertex' ? entry.originalVsSource : entry.originalFsSource;
 }
 
 // ==================== Compilation ====================
@@ -116,35 +122,32 @@ function compileShader(
 }
 
 /**
- * Attempt to compile and update a shader with new fragment source
+ * Compile and link a program with given VS and FS sources
  */
-export function compileAndUpdate(name: string, newFsSource: string): CompileResult {
-  const entry = shaderRegistry.get(name);
-  if (!entry) {
-    return { success: false, error: `Shader "${name}" not found` };
-  }
-  
-  const { gl, vsSource, onRecompile } = entry;
-  
+function compileAndLinkProgram(
+  gl: WebGL2RenderingContext,
+  vsSource: string,
+  fsSource: string
+): { success: boolean; error: string | null; program: WebGLProgram | null } {
   // Compile vertex shader
   const vsResult = compileShader(gl, gl.VERTEX_SHADER, vsSource);
   if (!vsResult.success) {
-    return { success: false, error: `Vertex shader error:\n${vsResult.error}` };
+    return { success: false, error: `Vertex shader error:\n${vsResult.error}`, program: null };
   }
   
-  // Compile new fragment shader
-  const fsResult = compileShader(gl, gl.FRAGMENT_SHADER, newFsSource);
+  // Compile fragment shader
+  const fsResult = compileShader(gl, gl.FRAGMENT_SHADER, fsSource);
   if (!fsResult.success) {
     gl.deleteShader(vsResult.shader!);
-    return { success: false, error: `Fragment shader error:\n${fsResult.error}` };
+    return { success: false, error: `Fragment shader error:\n${fsResult.error}`, program: null };
   }
   
-  // Link new program
+  // Link program
   const newProgram = gl.createProgram();
   if (!newProgram) {
     gl.deleteShader(vsResult.shader!);
     gl.deleteShader(fsResult.shader!);
-    return { success: false, error: 'Failed to create program' };
+    return { success: false, error: 'Failed to create program', program: null };
   }
   
   gl.attachShader(newProgram, vsResult.shader!);
@@ -156,20 +159,52 @@ export function compileAndUpdate(name: string, newFsSource: string): CompileResu
     gl.deleteProgram(newProgram);
     gl.deleteShader(vsResult.shader!);
     gl.deleteShader(fsResult.shader!);
-    return { success: false, error: `Link error:\n${error}` };
-  }
-  
-  // Success - update registry and notify renderer
-  entry.currentFsSource = newFsSource;
-  entry.program = newProgram;
-  
-  if (onRecompile) {
-    onRecompile(newProgram);
+    return { success: false, error: `Link error:\n${error}`, program: null };
   }
   
   // Clean up compiled shaders (program retains references)
   gl.deleteShader(vsResult.shader!);
   gl.deleteShader(fsResult.shader!);
+  
+  return { success: true, error: null, program: newProgram };
+}
+
+/**
+ * Attempt to compile and update a shader with new source
+ */
+export function compileAndUpdate(
+  name: string,
+  newSource: string,
+  type: ShaderType = 'fragment'
+): CompileResult {
+  const entry = shaderRegistry.get(name);
+  if (!entry) {
+    return { success: false, error: `Shader "${name}" not found` };
+  }
+  
+  const { gl, onRecompile, currentVsSource, currentFsSource } = entry;
+  
+  // Determine which sources to use
+  const vsSource = type === 'vertex' ? newSource : currentVsSource;
+  const fsSource = type === 'fragment' ? newSource : currentFsSource;
+  
+  const result = compileAndLinkProgram(gl, vsSource, fsSource);
+  
+  if (!result.success) {
+    return { success: false, error: result.error };
+  }
+  
+  // Success - update registry and notify renderer
+  if (type === 'vertex') {
+    entry.currentVsSource = newSource;
+  } else {
+    entry.currentFsSource = newSource;
+  }
+  entry.program = result.program!;
+  
+  if (onRecompile) {
+    onRecompile(result.program!);
+  }
   
   return { success: true, error: null };
 }
@@ -177,22 +212,59 @@ export function compileAndUpdate(name: string, newFsSource: string): CompileResu
 /**
  * Reset shader to original source
  */
-export function resetShader(name: string): CompileResult {
+export function resetShader(name: string, type: ShaderType = 'fragment'): CompileResult {
   const entry = shaderRegistry.get(name);
   if (!entry) {
     return { success: false, error: `Shader "${name}" not found` };
   }
   
-  return compileAndUpdate(name, entry.originalFsSource);
+  const originalSource = type === 'vertex' ? entry.originalVsSource : entry.originalFsSource;
+  return compileAndUpdate(name, originalSource, type);
+}
+
+/**
+ * Reset both vertex and fragment shaders to original source
+ */
+export function resetShaderFull(name: string): CompileResult {
+  const entry = shaderRegistry.get(name);
+  if (!entry) {
+    return { success: false, error: `Shader "${name}" not found` };
+  }
+  
+  const { gl, onRecompile, originalVsSource, originalFsSource } = entry;
+  
+  const result = compileAndLinkProgram(gl, originalVsSource, originalFsSource);
+  
+  if (!result.success) {
+    return { success: false, error: result.error };
+  }
+  
+  entry.currentVsSource = originalVsSource;
+  entry.currentFsSource = originalFsSource;
+  entry.program = result.program!;
+  
+  if (onRecompile) {
+    onRecompile(result.program!);
+  }
+  
+  return { success: true, error: null };
 }
 
 /**
  * Check if a shader is modified from original
  */
-export function isModified(name: string): boolean {
+export function isModified(name: string, type?: ShaderType): boolean {
   const entry = shaderRegistry.get(name);
   if (!entry) return false;
-  return entry.currentFsSource !== entry.originalFsSource;
+  
+  if (type === 'vertex') {
+    return entry.currentVsSource !== entry.originalVsSource;
+  } else if (type === 'fragment') {
+    return entry.currentFsSource !== entry.originalFsSource;
+  }
+  // Check both if no type specified
+  return entry.currentVsSource !== entry.originalVsSource || 
+         entry.currentFsSource !== entry.originalFsSource;
 }
 
 /**

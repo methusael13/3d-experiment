@@ -58,6 +58,7 @@ export interface PanelContext {
   setHDRTexture(texture: WebGLTexture | null): void;
   onWindChanged(): void;
   onLightingChanged(): void;
+  onTerrainBoundsChanged(worldSize: number, heightScale: number): void;
 }
 
 /**
@@ -91,6 +92,7 @@ export interface PanelContextConfig {
   setHDRTexture?: (texture: WebGLTexture | null) => void;
   onWindChanged?: () => void;
   onLightingChanged?: () => void;
+  onTerrainBoundsChanged?: (worldSize: number, heightScale: number) => void;
 }
 
 /**
@@ -182,5 +184,6 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     setHDRTexture: setHDRTexture || (() => {}),
     onWindChanged: onWindChanged || (() => {}),
     onLightingChanged: onLightingChanged || (() => {}),
+    onTerrainBoundsChanged: config.onTerrainBoundsChanged || (() => {}),
   };
 }

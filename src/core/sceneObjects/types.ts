@@ -255,6 +255,178 @@ export interface IShadowRenderer {
 /**
  * Depth pre-pass renderer interface for terrain blend
  */
+// ============================================
+// TERRAIN TYPES
+// ============================================
+
+/**
+ * Terrain noise generation parameters
+ */
+export interface TerrainNoiseParams {
+  /** Random seed for reproducibility */
+  seed: number;
+  /** Noise scale - larger = wider features */
+  scale: number;
+  /** Number of noise layers (4-8 typical) */
+  octaves: number;
+  /** Frequency multiplier per octave (2.0 typical) */
+  lacunarity: number;
+  /** Amplitude multiplier per octave (0.5 typical) */
+  persistence: number;
+  /** Maximum terrain height in world units */
+  heightScale: number;
+  /** 0 = smooth fBm, 1 = sharp ridged noise */
+  ridgeWeight: number;
+  /** Noise offset for panning */
+  offset: [number, number];
+}
+
+/**
+ * Terrain erosion simulation parameters
+ */
+export interface TerrainErosionParams {
+  // Hydraulic erosion
+  /** Enable hydraulic erosion simulation */
+  enabled: boolean;
+  /** Number of water droplets to simulate (50k-500k) */
+  iterations: number;
+  /** Max steps per droplet (64 typical) */
+  maxDropletLifetime: number;
+  /** Direction persistence (0.05-0.1) */
+  inertia: number;
+  /** Carrying capacity factor (4-8) */
+  sedimentCapacity: number;
+  /** Deposition rate (0.3) */
+  depositSpeed: number;
+  /** Erosion rate (0.3) */
+  erodeSpeed: number;
+  /** Water loss per step (0.01-0.02) */
+  evaporation: number;
+  /** Acceleration on slopes (4.0) */
+  gravity: number;
+  /** Brush radius for erosion (3) */
+  erosionRadius: number;
+  /** Minimum slope for capacity calc (0.01) */
+  minSlope: number;
+  
+  // Thermal erosion
+  /** Enable thermal erosion simulation */
+  thermalEnabled: boolean;
+  /** Thermal erosion iterations (50-200) */
+  thermalIterations: number;
+  /** Max stable slope angle (0.5 ≈ 30°) */
+  talusAngle: number;
+}
+
+/**
+ * Terrain material/texturing parameters
+ */
+export interface TerrainMaterialParams {
+  // Height-based zones (0-1 normalized)
+  /** Below this = water (reference only) */
+  waterLevel: number;
+  /** Height where grass starts */
+  grassLine: number;
+  /** Height where rock dominates */
+  rockLine: number;
+  /** Height where snow starts */
+  snowLine: number;
+  
+  // Slope thresholds (0-1)
+  /** Above this slope = no grass */
+  maxGrassSlope: number;
+  /** Above this slope = no snow */
+  maxSnowSlope: number;
+  
+  // Colors (RGB normalized 0-1)
+  waterColor: [number, number, number];
+  grassColor: [number, number, number];
+  rockColor: [number, number, number];
+  snowColor: [number, number, number];
+  /** Color for erosion channels */
+  dirtColor: [number, number, number];
+}
+
+/**
+ * Complete terrain configuration
+ */
+export interface TerrainParams {
+  /** Heightmap resolution (128, 256, 512, 1024) */
+  resolution: number;
+  /** Terrain size in world units */
+  worldSize: number;
+  /** Noise generation parameters */
+  noise: TerrainNoiseParams;
+  /** Erosion simulation parameters */
+  erosion: TerrainErosionParams;
+  /** Material/texturing parameters */
+  material: TerrainMaterialParams;
+}
+
+/**
+ * Create default terrain parameters
+ */
+export function createDefaultTerrainParams(): TerrainParams {
+  return {
+    resolution: 256,
+    worldSize: 10,
+    noise: {
+      seed: 12345,
+      scale: 3.0,
+      octaves: 6,
+      lacunarity: 2.0,
+      persistence: 0.5,
+      heightScale: 2.0,
+      ridgeWeight: 0.5,
+      offset: [0, 0],
+    },
+    erosion: {
+      enabled: true,
+      iterations: 100000,
+      maxDropletLifetime: 64,
+      inertia: 0.05,
+      sedimentCapacity: 4.0,
+      depositSpeed: 0.3,
+      erodeSpeed: 0.3,
+      evaporation: 0.01,
+      gravity: 4.0,
+      erosionRadius: 3,
+      minSlope: 0.01,
+      thermalEnabled: true,
+      thermalIterations: 100,
+      talusAngle: 0.5,
+    },
+    material: {
+      waterLevel: 0.0,
+      grassLine: 0.0,
+      rockLine: 0.6,
+      snowLine: 0.8,
+      maxGrassSlope: 0.6,
+      maxSnowSlope: 0.4,
+      waterColor: [0.2, 0.4, 0.6],
+      grassColor: [0.3, 0.5, 0.2],
+      rockColor: [0.4, 0.35, 0.3],
+      snowColor: [0.95, 0.95, 0.97],
+      dirtColor: [0.35, 0.25, 0.2],
+    },
+  };
+}
+
+/**
+ * Serialized terrain object data
+ */
+export interface SerializedTerrainObject extends SerializedSceneObject {
+  type: 'terrain';
+  terrainParams: TerrainParams;
+}
+
+// ============================================
+// RENDERER INTERFACES
+// ============================================
+
+/**
+ * Depth pre-pass renderer interface for terrain blend
+ */
 export interface IDepthPrePassRenderer {
   /** Get depth texture for sampling in main pass */
   getDepthTexture(): WebGLTexture | null;

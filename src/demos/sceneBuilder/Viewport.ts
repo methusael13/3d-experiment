@@ -29,6 +29,7 @@ import type {
   TerrainBlendParams,
   IRenderer,
 } from '../../core/sceneObjects/types';
+import { isTerrainObject, type TerrainObject } from '../../core/sceneObjects';
 
 // ==================== Type Definitions ====================
 
@@ -63,6 +64,8 @@ export interface RenderableSceneObject {
   id: string;
   renderer: IRenderer | null;
   showNormals?: boolean;
+  /** Object type for special handling (e.g., terrain) */
+  objectType?: string;
 }
 
 /**
@@ -472,7 +475,25 @@ export class Viewport {
     return this.renderData.objects
       .map(obj => {
         const modelMatrix = this.renderData.getModelMatrix(obj);
-        if (!modelMatrix || !obj.renderer) return null;
+        if (!modelMatrix) return null;
+        
+        // Check if this is a terrain object
+        if (obj.objectType === 'terrain' || isTerrainObject(obj as any)) {
+          return {
+            id: obj.id,
+            modelMatrix,
+            renderer: null,
+            gpuMeshes: [],
+            isSelected: this.renderData.selectedIds.has(obj.id),
+            windSettings: null,
+            terrainBlendSettings: null,
+            showNormals: false,
+            terrain: obj as unknown as TerrainObject,
+          } as RenderObject;
+        }
+        
+        // Regular objects need a renderer
+        if (!obj.renderer) return null;
         
         return {
           id: obj.id,
@@ -734,6 +755,29 @@ export class Viewport {
   }
 
   // ==================== Camera ====================
+
+  /**
+   * Update camera zoom limits and far plane based on scene bounds.
+   * Call this when terrain size changes or scene content changes significantly.
+   * @param sceneRadius - Approximate radius of the scene bounding sphere
+   */
+  updateCameraForSceneBounds(sceneRadius: number): void {
+    if (!this.cameraController) return;
+    
+    const camera = this.cameraController.getCamera();
+    
+    // Set zoom limits: min is small for close-up, max is enough to see whole scene
+    const minDist = 0.5;
+    const maxDist = sceneRadius * 3; // 3x radius allows viewing from outside
+    camera.setZoomLimits(minDist, maxDist);
+    
+    // Update far plane to accommodate the scene
+    // Far plane should be at least maxDist + sceneRadius (camera at max dist looking at scene edge)
+    const farPlane = Math.max(maxDist + sceneRadius, 100);
+    camera.setClipPlanes(camera.near, farPlane);
+    
+    console.log(`[Viewport] Updated camera for scene bounds: radius=${sceneRadius}, maxDist=${maxDist.toFixed(1)}, far=${farPlane.toFixed(1)}`);
+  }
 
   getCameraState(): CameraState | null {
     return this.cameraController?.serialize() ?? null;

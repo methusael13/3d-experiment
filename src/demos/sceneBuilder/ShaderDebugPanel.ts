@@ -14,8 +14,10 @@ import {
   getShaderSource,
   compileAndUpdate,
   resetShader,
+  resetShaderFull,
   isModified,
   applyToAllMatching,
+  ShaderType,
 } from './shaderManager';
 
 // ==================== Types ====================
@@ -38,6 +40,7 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   // Panel state
   private isVisible = false;
   private selectedShader: string | null = null;
+  private selectedShaderType: ShaderType = 'fragment';
   private isDragging = false;
   private isResizing = false;
   private dragOffset = { x: 0, y: 0 };
@@ -46,6 +49,9 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   
   // DOM elements
   private selectEl!: HTMLSelectElement;
+  private shaderTypeToggle!: HTMLDivElement;
+  private vsBtn!: HTMLButtonElement;
+  private fsBtn!: HTMLButtonElement;
   private editorContainer!: HTMLDivElement;
   private errorDisplay!: HTMLDivElement;
   private statusText!: HTMLSpanElement;
@@ -70,6 +76,10 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
           <select class="shader-select">
             <option value="">-- Select Shader --</option>
           </select>
+          <div class="shader-type-toggle">
+            <button class="shader-type-btn vs-btn" title="Edit Vertex Shader">VS</button>
+            <button class="shader-type-btn fs-btn active" title="Edit Fragment Shader">FS</button>
+          </div>
           <button class="shader-apply-btn" title="Apply (Ctrl+Enter)">Apply</button>
           <button class="shader-apply-all-btn" title="Apply to all objects">Apply All</button>
           <button class="shader-reset-btn" title="Reset to Original">Reset</button>
@@ -92,6 +102,9 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
     
     // Get DOM references
     this.selectEl = this.panel.querySelector('.shader-select') as HTMLSelectElement;
+    this.shaderTypeToggle = this.panel.querySelector('.shader-type-toggle') as HTMLDivElement;
+    this.vsBtn = this.panel.querySelector('.vs-btn') as HTMLButtonElement;
+    this.fsBtn = this.panel.querySelector('.fs-btn') as HTMLButtonElement;
     this.editorContainer = this.panel.querySelector('.shader-editor-container') as HTMLDivElement;
     this.errorDisplay = this.panel.querySelector('.shader-error-display') as HTMLDivElement;
     this.statusText = this.panel.querySelector('.shader-status-text') as HTMLSpanElement;
@@ -198,6 +211,34 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
         border-radius: 4px;
         color: #cdd6f4;
         font-size: 12px;
+      }
+      
+      .shader-type-toggle {
+        display: flex;
+        border: 1px solid #45475a;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      
+      .shader-type-btn {
+        padding: 6px 10px;
+        border: none;
+        background: #313244;
+        color: #6c7086;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      
+      .shader-type-btn:hover {
+        background: #45475a;
+        color: #a6adc8;
+      }
+      
+      .shader-type-btn.active {
+        background: #89b4fa;
+        color: #1e1e2e;
       }
       
       .shader-apply-btn, .shader-apply-all-btn, .shader-reset-btn {
@@ -319,6 +360,10 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
       this.loadShader(this.selectEl.value);
     });
     
+    // Shader type toggle
+    this.vsBtn.addEventListener('click', () => this.setShaderType('vertex'));
+    this.fsBtn.addEventListener('click', () => this.setShaderType('fragment'));
+    
     // Buttons
     applyBtn.addEventListener('click', () => this.applyShader());
     applyAllBtn.addEventListener('click', () => this.applyToAllShaders());
@@ -410,16 +455,36 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
     });
   }
 
+  private setShaderType(type: ShaderType): void {
+    if (this.selectedShaderType === type) return;
+    
+    this.selectedShaderType = type;
+    this.vsBtn.classList.toggle('active', type === 'vertex');
+    this.fsBtn.classList.toggle('active', type === 'fragment');
+    
+    // Reload current shader with new type
+    if (this.selectedShader) {
+      this.loadShaderSource();
+    }
+  }
+
   private loadShader(name: string): void {
     this.selectedShader = name || null;
-    const source = name ? getShaderSource(name) : null;
+    this.loadShaderSource();
+  }
+  
+  private loadShaderSource(): void {
+    const source = this.selectedShader 
+      ? getShaderSource(this.selectedShader, this.selectedShaderType) 
+      : null;
     
     if (source && this.editorView) {
       this.editorView.dispatch({
         changes: { from: 0, to: this.editorView.state.doc.length, insert: source },
       });
       this.updateModifiedIndicator();
-      this.statusText.textContent = `Loaded: ${name}`;
+      const typeLabel = this.selectedShaderType === 'vertex' ? 'VS' : 'FS';
+      this.statusText.textContent = `Loaded: ${this.selectedShader} (${typeLabel})`;
     } else if (this.editorView) {
       this.editorView.dispatch({
         changes: { from: 0, to: this.editorView.state.doc.length, insert: '// Select a shader to edit...' },
@@ -440,11 +505,16 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
       return;
     }
     
-    const result = compileAndUpdate(this.selectedShader, this.getEditorContent());
+    const result = compileAndUpdate(
+      this.selectedShader, 
+      this.getEditorContent(),
+      this.selectedShaderType
+    );
     
     if (result.success) {
       this.hideError();
-      this.statusText.textContent = `✓ Applied: ${this.selectedShader}`;
+      const typeLabel = this.selectedShaderType === 'vertex' ? 'VS' : 'FS';
+      this.statusText.textContent = `✓ Applied ${typeLabel}: ${this.selectedShader}`;
       this.updateModifiedIndicator();
     } else {
       this.showError(result.error || 'Unknown error');
@@ -476,11 +546,12 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   private resetCurrentShader(): void {
     if (!this.selectedShader) return;
     
-    const result = resetShader(this.selectedShader);
+    const result = resetShader(this.selectedShader, this.selectedShaderType);
     
     if (result.success) {
-      this.loadShader(this.selectedShader);
-      this.statusText.textContent = `Reset: ${this.selectedShader}`;
+      this.loadShaderSource();
+      const typeLabel = this.selectedShaderType === 'vertex' ? 'VS' : 'FS';
+      this.statusText.textContent = `Reset ${typeLabel}: ${this.selectedShader}`;
     } else {
       this.showError(result.error || 'Unknown error');
     }
@@ -496,7 +567,7 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   }
 
   private updateModifiedIndicator(): void {
-    if (this.selectedShader && isModified(this.selectedShader)) {
+    if (this.selectedShader && isModified(this.selectedShader, this.selectedShaderType)) {
       this.modifiedIndicator.classList.add('visible');
     } else {
       this.modifiedIndicator.classList.remove('visible');

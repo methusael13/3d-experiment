@@ -7,7 +7,9 @@ import type { PanelContext, Panel } from './panelContext';
 import type { GizmoMode } from '../gizmos';
 import type { GizmoOrientation } from '../gizmos/BaseGizmo';
 import type { ObjectWindSettings } from '../wind';
-import type { AnySceneObject } from '../../../core/sceneObjects';
+import type { AnySceneObject, TerrainObject } from '../../../core/sceneObjects';
+import { isTerrainObject } from '../../../core/sceneObjects';
+import { TerrainPanel, terrainPanelStyles } from './TerrainPanel';
 
 // ==================== Constants ====================
 
@@ -16,6 +18,9 @@ const objectPanelStyles = `
     opacity: 0.4;
     pointer-events: none;
   }
+  
+  /* Include TerrainPanel styles */
+  ${terrainPanelStyles}
 `;
 
 const objectPanelTemplate = `
@@ -24,6 +29,7 @@ const objectPanelTemplate = `
     <div class="env-tabs">
       <button class="env-tab active" data-tab="transform">Transform</button>
       <button class="env-tab" data-tab="edit" id="edit-tab-btn" style="display: none;">Edit</button>
+      <button class="env-tab" data-tab="terrain" id="terrain-tab-btn" style="display: none;">Terrain</button>
       <button class="env-tab" data-tab="modifiers">Modifiers</button>
     </div>
     
@@ -96,6 +102,11 @@ const objectPanelTemplate = `
           <span>Show Normals</span>
         </label>
       </div>
+    </div>
+    
+    <!-- Terrain Tab Content - Delegates to TerrainPanel -->
+    <div id="obj-terrain-tab" class="env-tab-content">
+      <div id="terrain-panel-container"></div>
     </div>
     
     <!-- Modifiers Tab Content -->
@@ -200,6 +211,11 @@ export class ObjectPanel implements ObjectPanelAPI {
   private primitiveSubdivisionGroup!: HTMLDivElement;
   private showNormalsCheckbox!: HTMLInputElement;
   
+  // DOM references - Terrain tab (now delegates to TerrainPanel)
+  private terrainTabBtn!: HTMLButtonElement;
+  private terrainPanelContainer!: HTMLDivElement;
+  private terrainPanel: TerrainPanel | null = null;
+  
   // DOM references - Modifiers tab
   private windEnabled!: HTMLInputElement;
   private windModifierSettings!: HTMLDivElement;
@@ -252,6 +268,10 @@ export class ObjectPanel implements ObjectPanelAPI {
     
     // Edit tab
     this.editTabBtn = p.querySelector('#edit-tab-btn') as HTMLButtonElement;
+    
+    // Terrain tab (delegates to TerrainPanel)
+    this.terrainTabBtn = p.querySelector('#terrain-tab-btn') as HTMLButtonElement;
+    this.terrainPanelContainer = p.querySelector('#terrain-panel-container') as HTMLDivElement;
     this.primitiveTypeDisplay = p.querySelector('#primitive-type-display') as HTMLDivElement;
     this.primitiveSize = p.querySelector('#primitive-size') as HTMLInputElement;
     this.primitiveSizeValue = p.querySelector('#primitive-size-value') as HTMLSpanElement;
@@ -457,6 +477,8 @@ export class ObjectPanel implements ObjectPanelAPI {
         obj.showNormals = this.showNormalsCheckbox.checked;
       }
     });
+    
+    // TerrainPanel will be created lazily when needed
   }
   
   private handleGizmoModeClick(mode: GizmoMode): void {
@@ -500,6 +522,44 @@ export class ObjectPanel implements ObjectPanelAPI {
       this.scaleY.value = '-';
       this.scaleZ.value = '-';
     }
+  }
+  
+  private updateTerrainTab(): void {
+    const { scene } = this.context;
+    const selectionCount = scene.getSelectionCount();
+    
+    if (selectionCount !== 1) {
+      this.terrainTabBtn.style.display = 'none';
+      if (this.terrainPanel) {
+        this.terrainPanel.setTerrain(null);
+      }
+      return;
+    }
+    
+    const obj = scene.getFirstSelected();
+    if (!obj || !isTerrainObject(obj)) {
+      this.terrainTabBtn.style.display = 'none';
+      if (this.terrainPanel) {
+        this.terrainPanel.setTerrain(null);
+      }
+      return;
+    }
+    
+    // Show terrain tab
+    this.terrainTabBtn.style.display = '';
+    
+    // Create TerrainPanel lazily if needed
+    if (!this.terrainPanel) {
+      this.terrainPanel = new TerrainPanel(this.terrainPanelContainer);
+      // Wire up the bounds changed callback to PanelContext
+      this.terrainPanel.setOnBoundsChanged((worldSize, heightScale) => {
+        this.context.onTerrainBoundsChanged(worldSize, heightScale);
+      });
+    }
+    
+    // Delegate to TerrainPanel
+    const terrain = obj as TerrainObject;
+    this.terrainPanel.setTerrain(terrain);
   }
   
   private updateEditTab(): void {
@@ -694,10 +754,15 @@ export class ObjectPanel implements ObjectPanelAPI {
     this.panelElement.style.display = 'block';
     this.updateTransformTab();
     this.updateEditTab();
+    this.updateTerrainTab();
     this.updateModifiersTab();
   }
   
   destroy(): void {
+    if (this.terrainPanel) {
+      this.terrainPanel.destroy();
+      this.terrainPanel = null;
+    }
     this.panelElement.innerHTML = '';
   }
 }

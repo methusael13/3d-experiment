@@ -12,15 +12,19 @@ import {
   Cube,
   Plane,
   UVSphere,
+  TerrainObject,
   createPrimitive,
   createPrimitiveFromSerialized,
   isPrimitiveObject,
   isModelObject,
+  isTerrainObject,
   type PrimitiveType,
   type PrimitiveConfig,
   type PBRMaterial,
   type SerializedPrimitiveObject,
-  type SerializedModelObject
+  type SerializedModelObject,
+  type SerializedTerrainObject,
+  type TerrainParams
 } from './sceneObjects';
 import { getModelUrl } from '../loaders';
 import { PrimitiveObject } from './sceneObjects/primitives';
@@ -52,7 +56,7 @@ export interface SerializedGroup {
  * Serialized scene data
  */
 export interface SerializedScene {
-  objects: Array<SerializedPrimitiveObject | SerializedModelObject>;
+  objects: Array<SerializedPrimitiveObject | SerializedModelObject | SerializedTerrainObject>;
   groups: SerializedGroup[];
 }
 
@@ -254,6 +258,47 @@ export class Scene {
       return model;
     } catch (error) {
       console.error('Failed to load model:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * Add a terrain object to the scene (async - generates terrain)
+   */
+  async addTerrain(name?: string | null, params?: Partial<TerrainParams>): Promise<TerrainObject | null> {
+    try {
+      const id = `object-${this.nextObjectId++}`;
+      const displayName = name ?? 'Terrain';
+      
+      // Create TerrainObject
+      const terrain = new TerrainObject(displayName, params, this.gl);
+      
+      // Override the auto-generated ID
+      (terrain as any).id = id;
+      
+      // Generate terrain with default params
+      await terrain.regenerate((progress) => {
+        console.log(`[Terrain] ${progress.message} (${Math.round(progress.progress * 100)}%)`);
+      });
+      
+      // Add to internal map
+      this.objects.set(id, terrain);
+      
+      // Add to scene graph
+      const bounds = terrain.getBounds();
+      this.sceneGraph.add(id, {
+        position: [terrain.position[0], terrain.position[1], terrain.position[2]],
+        rotation: [terrain.rotation[0], terrain.rotation[1], terrain.rotation[2]],
+        scale: [terrain.scale[0], terrain.scale[1], terrain.scale[2]],
+        localBounds: bounds ?? undefined,
+        userData: { name: displayName, objectType: 'terrain' },
+      });
+      
+      this.callbacks.onObjectAdded?.(terrain);
+      
+      return terrain;
+    } catch (error) {
+      console.error('Failed to create terrain:', error);
       return null;
     }
   }
@@ -847,7 +892,7 @@ export class Scene {
    * Serialize scene data for saving
    */
   serialize(): SerializedScene {
-    const serializedObjects: Array<SerializedPrimitiveObject | SerializedModelObject> = [];
+    const serializedObjects: Array<SerializedPrimitiveObject | SerializedModelObject | SerializedTerrainObject> = [];
     
     for (const obj of this.objects.values()) {
       const base = {
@@ -870,6 +915,13 @@ export class Scene {
             metallic: material.metallic,
             roughness: material.roughness,
           },
+        });
+      } else if (isTerrainObject(obj)) {
+        // Use terrain's built-in serialize method
+        const terrainData = obj.serialize();
+        serializedObjects.push({
+          ...base,
+          ...terrainData,
         });
       } else if (isModelObject(obj)) {
         serializedObjects.push({
@@ -920,6 +972,10 @@ export class Scene {
         if (obj && isPrimitiveObject(obj) && primData.material) {
           obj.setMaterial(primData.material);
         }
+      } else if (objData.type === 'terrain') {
+        // Load terrain object
+        const terrainData = objData as SerializedTerrainObject;
+        obj = await this.addTerrain(terrainData.name, terrainData.terrainParams);
       } else {
         const modelData = objData as SerializedModelObject;
         obj = await this.addObject(modelData.modelPath, modelData.name);

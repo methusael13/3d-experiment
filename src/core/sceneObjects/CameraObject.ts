@@ -88,6 +88,12 @@ export class CameraObject extends SceneObject {
   /** Pan offset from origin */
   private _offset: vec3 = vec3.create();
   
+  /** Minimum zoom distance */
+  private _minDistance: number = 0.5;
+  
+  /** Maximum zoom distance */
+  private _maxDistance: number = 100;
+  
   // ==================== Internal State ====================
   
   /** Cached view matrix */
@@ -201,11 +207,30 @@ export class CameraObject extends SceneObject {
   }
   
   /**
-   * Zoom by delta (positive = zoom out, negative = zoom in)
+   * Set zoom distance limits
    */
-  zoomBy(delta: number, minDistance = 1, maxDistance = 20): void {
+  setZoomLimits(min: number, max: number): void {
+    this._minDistance = Math.max(0.1, min);
+    this._maxDistance = Math.max(this._minDistance, max);
+    // Clamp current distance to new limits
+    this._distance = Math.max(this._minDistance, Math.min(this._maxDistance, this._distance));
+    this.updatePositionFromOrbit();
+  }
+  
+  /**
+   * Get current zoom limits
+   */
+  getZoomLimits(): { min: number; max: number } {
+    return { min: this._minDistance, max: this._maxDistance };
+  }
+  
+  /**
+   * Zoom by delta (positive = zoom out, negative = zoom in)
+   * Uses stored min/max distance limits
+   */
+  zoomBy(delta: number): void {
     this._distance += delta * 0.01;
-    this._distance = Math.max(minDistance, Math.min(maxDistance, this._distance));
+    this._distance = Math.max(this._minDistance, Math.min(this._maxDistance, this._distance));
     this.updatePositionFromOrbit();
   }
   

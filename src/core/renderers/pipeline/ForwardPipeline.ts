@@ -14,6 +14,8 @@ import type {
   OriginMarkerRenderer 
 } from '../index';
 import { ContactShadowRenderer } from '../ContactShadowRenderer';
+import { TerrainRenderer, TerrainShadowRenderer } from '../TerrainRenderer';
+import type { TerrainObject } from '../../sceneObjects';
 import type { DirectionalLightParams } from '../../sceneObjects/lights';
 import type { Vec3 } from '../../types';
 
@@ -34,10 +36,12 @@ export interface ForwardPipelineConfig extends PipelineConfig {
  */
 class ShadowPass extends RenderPass {
   private shadowRenderer: ShadowRenderer;
+  private terrainShadowRenderer: TerrainShadowRenderer;
   
   constructor(gl: WebGL2RenderingContext, shadowRenderer: ShadowRenderer) {
     super(gl, 'shadow', PassPriority.SHADOW);
     this.shadowRenderer = shadowRenderer;
+    this.terrainShadowRenderer = new TerrainShadowRenderer(gl);
   }
   
   execute(context: RenderContext, objects: RenderObject[]): void {
@@ -60,6 +64,15 @@ class ShadowPass extends RenderPass {
     this.shadowRenderer.beginShadowPass(sunDir, shadowCoverage);
     
     for (const obj of objects) {
+      // Render terrain shadows
+      if (obj.terrain) {
+        const lightSpaceMatrix = this.shadowRenderer.getLightSpaceMatrix();
+        if (lightSpaceMatrix) {
+          this.terrainShadowRenderer.render(obj.terrain, lightSpaceMatrix, obj.modelMatrix);
+        }
+        continue;
+      }
+      
       if (obj.gpuMeshes && obj.gpuMeshes.length > 0) {
         this.shadowRenderer.renderObject(
           obj.gpuMeshes,
@@ -87,6 +100,7 @@ class ShadowPass extends RenderPass {
   
   destroy(): void {
     this.shadowRenderer.destroy();
+    this.terrainShadowRenderer.destroy();
   }
 }
 
@@ -185,8 +199,11 @@ class SkyPass extends RenderPass {
  * Opaque Pass - Renders opaque objects with full lighting
  */
 class OpaquePass extends RenderPass {
+  private terrainRenderer: TerrainRenderer;
+  
   constructor(gl: WebGL2RenderingContext) {
     super(gl, 'opaque', PassPriority.OPAQUE);
+    this.terrainRenderer = new TerrainRenderer(gl);
   }
   
   execute(context: RenderContext, objects: RenderObject[]): void {
@@ -201,6 +218,35 @@ class OpaquePass extends RenderPass {
     } as any;
     
     for (const obj of objects) {
+      // Handle terrain objects specially
+      if (obj.terrain) {
+        const terrain = obj.terrain;
+        
+        // Choose between clipmap (camera-centered LOD) or static mesh rendering
+        if (terrain.clipmapEnabled) {
+          // Use clipmap rendering with camera-centered LOD rings
+          this.terrainRenderer.renderClipmap(
+            terrain,
+            context.vpMatrix,
+            obj.modelMatrix,
+            context.cameraPos,
+            obj.isSelected,
+            completeLightParams
+          );
+        } else {
+          // Use pre-baked static mesh
+          this.terrainRenderer.render(
+            terrain,
+            context.vpMatrix,
+            obj.modelMatrix,
+            obj.isSelected,
+            context.settings.wireframeMode,
+            completeLightParams
+          );
+        }
+        continue;
+      }
+      
       if (!obj.renderer) continue;
       
       // Build terrain blend params if needed
@@ -232,6 +278,10 @@ class OpaquePass extends RenderPass {
         (obj.renderer as any).renderNormals(context.vpMatrix, obj.modelMatrix);
       }
     }
+  }
+  
+  destroy(): void {
+    this.terrainRenderer.destroy();
   }
 }
 

@@ -44,3 +44,9 @@ export {
   RenderingPanel,
   type RenderingPanelAPI,
 } from './RenderingPanel';
+
+// TerrainPanel
+export {
+  TerrainPanel,
+  terrainPanelStyles,
+} from './TerrainPanel';

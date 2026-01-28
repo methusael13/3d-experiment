@@ -6,11 +6,13 @@ import type {
   SerializedSceneObject, 
   SerializedPrimitiveObject, 
   SerializedModelObject,
+  SerializedTerrainObject,
   PBRMaterial,
   PrimitiveConfig,
   PrimitiveType,
   ObjectWindSettings,
   TerrainBlendParams,
+  TerrainParams,
 } from '../core/sceneObjects/types';
 
 // ============ Types ============
@@ -112,7 +114,7 @@ export interface SerializedTerrainBlendSettings {
  */
 export interface SerializedScene {
   name: string;
-  objects: (SerializedSceneObject | SerializedPrimitiveObject | SerializedModelObject)[];
+  objects: (SerializedSceneObject | SerializedPrimitiveObject | SerializedModelObject | SerializedTerrainObject)[];
   camera?: Partial<CameraState>;
   lighting?: SerializedLightingState;
   groups?: GroupState[];
@@ -126,14 +128,16 @@ export interface SerializedScene {
  */
 export interface SaveableSceneObject {
   name: string;
-  /** 'primitive' or 'model' */
-  type?: 'primitive' | 'model';
+  /** 'primitive', 'model', or 'terrain' */
+  type?: 'primitive' | 'model' | 'terrain';
   /** For primitives */
   primitiveType?: string;
   primitiveConfig?: PrimitiveConfig;
   material?: PBRMaterial;
   /** For models */
   modelPath?: string;
+  /** For terrain */
+  terrainParams?: TerrainParams;
   position: [number, number, number] | Float32Array;
   rotation: [number, number, number] | Float32Array;
   scale: [number, number, number] | Float32Array;
@@ -446,6 +450,12 @@ export class SceneSerializer {
             primitiveConfig: obj.primitiveConfig!,
             material: obj.material!,
           } satisfies SerializedPrimitiveObject;
+        } else if (obj.type === 'terrain') {
+          return {
+            ...baseData,
+            type: 'terrain' as const,
+            terrainParams: obj.terrainParams!,
+          } satisfies SerializedTerrainObject;
         } else if (obj.modelPath) {
           return {
             ...baseData,
