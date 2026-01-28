@@ -20,7 +20,8 @@ import {
 } from '../../core/renderers';
 import { TransformGizmoManager, GizmoMode } from './gizmos';
 import type { GizmoOrientation } from './gizmos/BaseGizmo';
-import { createCameraController, CameraController, type CameraState } from './CameraController';
+import { CameraController, type CameraState } from './CameraController';
+import { InputManager } from './InputManager';
 import { screenToRay, projectToScreen } from '../../core/utils/raycastUtils';
 import type { SceneLightingParams } from '../../core/sceneObjects/lights';
 import type {
@@ -30,6 +31,7 @@ import type {
   IRenderer,
 } from '../../core/sceneObjects/types';
 import { isTerrainObject, type TerrainObject } from '../../core/sceneObjects';
+import type { FPSCameraController } from './FPSCameraController';
 
 // ==================== Type Definitions ====================
 
@@ -139,6 +141,9 @@ export class Viewport {
   // Transform gizmo
   private transformGizmo: TransformGizmoManager | null = null;
 
+  // Input management
+  private inputManager: InputManager | null = null;
+  
   // Camera
   private cameraController: CameraController | null = null;
 
@@ -194,6 +199,10 @@ export class Viewport {
 
   // Mouse tracking
   private lastMousePos: Vec2 = [0, 0];
+  
+  // FPS Camera mode
+  private fpsMode = false;
+  private fpsController: FPSCameraController | null = null;
 
   // Callbacks (all optional)
   private readonly onFps: (fps: number) => void;
@@ -315,23 +324,27 @@ export class Viewport {
   // ==================== Camera ====================
 
   private initCamera(): void {
-    this.cameraController = createCameraController({
-      canvas: this.canvas,
+    // Create InputManager for event routing
+    this.inputManager = new InputManager(this.canvas);
+    
+    // Create CameraController with InputManager
+    this.cameraController = new CameraController({
       width: this.logicalWidth,
       height: this.logicalHeight,
+      inputManager: this.inputManager,
     });
 
-    // Set up input handling with gizmo integration
-    this.cameraController.setupEventListeners({
+    // Set up gizmo and click callbacks
+    this.cameraController.setCallbacks({
       onGizmoCheck: () => this.transformGizmo?.isDragging || this.transformGizmo?.isUniformScaleActive || false,
-      onGizmoMouseDown: (x, y) => {
+      onGizmoMouseDown: (x: number, y: number) => {
         if (this.transformGizmo?.isUniformScaleActive) {
           this.commitUniformScale();
           return true;
         }
         return this.transformGizmo?.handleMouseDown(x, y, this.logicalWidth, this.logicalHeight) || false;
       },
-      onGizmoMouseMove: (x, y) => {
+      onGizmoMouseMove: (x: number, y: number) => {
         this.lastMousePos = [x, y];
         if (this.transformGizmo?.isUniformScaleActive) {
           this.handleUniformScaleMove(x, y);
@@ -343,16 +356,14 @@ export class Viewport {
         this.transformGizmo?.handleMouseUp();
         this.onGizmoDragEnd();
       },
-      onClick: (x, y, shiftKey) => this.handleCanvasClick(x, y, shiftKey),
+      onClick: (x: number, y: number, shiftKey: boolean) => this.handleCanvasClick(x, y, shiftKey),
     });
 
-    // Track mouse position for uniform scale
-    this.canvas.addEventListener('mousemove', (e: MouseEvent) => {
-      const rect = this.canvas.getBoundingClientRect();
-      this.lastMousePos = [e.clientX - rect.left, e.clientY - rect.top];
-
+    // Subscribe to InputManager for mouse position tracking (global channel)
+    this.inputManager.on('global', 'mousemove', (e) => {
+      this.lastMousePos = [e.x, e.y];
       if (this.transformGizmo?.isUniformScaleActive) {
-        this.handleUniformScaleMove(this.lastMousePos[0], this.lastMousePos[1]);
+        this.handleUniformScaleMove(e.x, e.y);
       }
     });
   }
@@ -510,9 +521,22 @@ export class Viewport {
   }
   
   /**
-   * Create a PipelineCamera adapter from CameraController
+   * Create a PipelineCamera adapter from CameraController or FPSController
    */
   private getPipelineCamera(): PipelineCamera {
+    // Use FPS camera when in FPS mode
+    if (this.fpsMode && this.fpsController) {
+      return {
+        getViewProjectionMatrix: () => this.fpsController!.getViewProjectionMatrix(),
+        getViewMatrix: () => this.fpsController!.getViewMatrix(),
+        getProjectionMatrix: () => this.fpsController!.getProjectionMatrix(),
+        getPosition: () => this.fpsController!.getPosition(),
+        near: this.fpsController!.near,
+        far: this.fpsController!.far,
+      };
+    }
+    
+    // Default to orbit camera
     const camera = this.cameraController!.getCamera();
     return {
       getViewProjectionMatrix: () => camera.getViewProjectionMatrix(),
@@ -594,6 +618,11 @@ export class Viewport {
 
     const dt = deltaTime / 1000;
     
+    // Update FPS camera if active
+    if (this.fpsMode && this.fpsController) {
+      this.fpsController.update(dt);
+    }
+    
     // Let controller update wind physics
     this.onUpdate(dt);
 
@@ -670,12 +699,15 @@ export class Viewport {
 
   // ==================== Viewport Settings ====================
 
-  setFPSMode(enabled: boolean, controller: any): void {
-    // FPS mode stub - full implementation requires camera integration
-    // When enabled: switch to FPS camera, disable orbit controls
-    // When disabled: restore orbit camera
-    // Note: CameraController doesn't have an 'enabled' property yet
-    // This is a placeholder for future FPS camera integration
+  setFPSMode(enabled: boolean, controller: FPSCameraController | null): void {
+    this.fpsMode = enabled;
+    this.fpsController = controller;
+    
+    // Switch InputManager channel
+    if (this.inputManager) {
+      this.inputManager.setActiveChannel(enabled ? 'fps' : 'editor');
+    }
+    
     console.log(`[Viewport] FPS mode ${enabled ? 'enabled' : 'disabled'}`);
   }
   

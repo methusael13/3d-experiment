@@ -1,12 +1,14 @@
 /**
  * Camera Controller - manages camera state, orbit controls, and input handling
  * Uses CameraObject from core for camera state and matrix computation
+ * Subscribes to InputManager for event routing
  */
 
 import { mat4, vec3 } from 'gl-matrix';
 import type { Vec3 } from '../../core/types';
 import { CameraObject, CameraState } from '../../core/sceneObjects/CameraObject';
 import { raycastToGround } from '../../core/utils/raycastUtils';
+import type { InputManager, InputEvent } from './InputManager';
 
 // Re-export CameraState for external use
 export type { CameraState } from '../../core/sceneObjects/CameraObject';
@@ -14,9 +16,9 @@ export type { CameraState } from '../../core/sceneObjects/CameraObject';
 // ==================== Types ====================
 
 export interface CameraControllerOptions {
-  canvas: HTMLCanvasElement;
   width: number;
   height: number;
+  inputManager: InputManager;
 }
 
 export interface CameraControllerCallbacks {
@@ -42,9 +44,9 @@ interface HomeState {
 // ==================== CameraController Class ====================
 
 export class CameraController {
-  private readonly canvas: HTMLCanvasElement;
   private readonly width: number;
   private readonly height: number;
+  private readonly inputManager: InputManager;
   
   /** The camera object (from core) */
   private readonly camera: CameraObject;
@@ -68,15 +70,24 @@ export class CameraController {
   // Callbacks
   private onClickCallback: ((x: number, y: number, shiftKey: boolean) => void) | null = null;
   private onViewModeChangeCallback: ((mode: string) => void) | null = null;
+  
+  // Gizmo callbacks
+  private onGizmoCheck: () => boolean = () => false;
+  private onGizmoMouseDown: ((x: number, y: number) => boolean) | null = null;
+  private onGizmoMouseMove: ((x: number, y: number) => void) | null = null;
+  private onGizmoMouseUp: (() => void) | null = null;
 
   constructor(options: CameraControllerOptions) {
-    this.canvas = options.canvas;
     this.width = options.width;
     this.height = options.height;
+    this.inputManager = options.inputManager;
     
     // Create CameraObject
     this.camera = new CameraObject('ViewportCamera');
     this.camera.setAspectRatio(options.width, options.height);
+    
+    // Subscribe to InputManager 'editor' channel
+    this.setupInputSubscriptions();
   }
 
   // ==================== Orbit Controls ====================
@@ -203,71 +214,70 @@ export class CameraController {
     this.camera.setOrbitState(state as Partial<CameraState>);
   }
 
-  // ==================== Event Listeners ====================
+  // ==================== Input Subscriptions ====================
 
-  setupEventListeners(callbacks: CameraControllerCallbacks = {}): void {
-    const { onGizmoCheck = () => false, onGizmoMouseDown, onGizmoMouseMove, onGizmoMouseUp } = callbacks;
-    this.onClickCallback = callbacks.onClick || null;
-    this.onViewModeChangeCallback = callbacks.onViewModeChange || null;
+  /**
+   * Set up event subscriptions via InputManager
+   */
+  private setupInputSubscriptions(): void {
+    const im = this.inputManager;
     
-    this.canvas.addEventListener('mousedown', (e) => {
-      const rect = this.canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      
-      if (e.button === 0 && onGizmoMouseDown?.(x, y)) {
-        return;
-      }
-      
-      this.handleMouseDownInternal(e);
-    });
-    
-    this.canvas.addEventListener('mousemove', (e) => {
-      const rect = this.canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      
-      if (onGizmoCheck()) {
-        onGizmoMouseMove?.(x, y);
-        return;
-      }
-      
-      this.handleMouseMoveInternal(e);
-    });
-    
-    this.canvas.addEventListener('mouseup', (e) => {
-      if (onGizmoCheck()) {
-        onGizmoMouseUp?.();
-        return;
-      }
-      
-      this.handleMouseUpInternal(e);
-    });
-    
-    this.canvas.addEventListener('mouseleave', () => this.handleMouseLeave());
-    this.canvas.addEventListener('wheel', (e) => this.handleWheel(e), { passive: false });
-    this.canvas.addEventListener('dblclick', (e) => this.handleDoubleClick(e));
-    this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Mouse events on 'editor' channel
+    im.on('editor', 'mousedown', (e: InputEvent<MouseEvent>) => this.handleMouseDown(e));
+    im.on('editor', 'mousemove', (e: InputEvent<MouseEvent>) => this.handleMouseMove(e));
+    im.on('editor', 'mouseup', (e: InputEvent<MouseEvent>) => this.handleMouseUp(e));
+    im.on('editor', 'mouseleave', () => this.handleMouseLeave());
+    im.on('editor', 'wheel', (e: InputEvent<WheelEvent>) => this.handleWheel(e));
+    im.on('editor', 'dblclick', (e: InputEvent<MouseEvent>) => this.handleDoubleClick(e));
   }
 
-  private handleMouseDownInternal(e: MouseEvent): void {
+  /**
+   * Set callbacks for gizmo integration and click handling.
+   * Called by Viewport after construction.
+   */
+  setCallbacks(callbacks: CameraControllerCallbacks): void {
+    this.onGizmoCheck = callbacks.onGizmoCheck ?? (() => false);
+    this.onGizmoMouseDown = callbacks.onGizmoMouseDown ?? null;
+    this.onGizmoMouseMove = callbacks.onGizmoMouseMove ?? null;
+    this.onGizmoMouseUp = callbacks.onGizmoMouseUp ?? null;
+    this.onClickCallback = callbacks.onClick ?? null;
+    this.onViewModeChangeCallback = callbacks.onViewModeChange ?? null;
+  }
+
+  // ==================== Event Handlers ====================
+
+  private handleMouseDown(e: InputEvent<MouseEvent>): void {
+    // Check gizmo first
+    if (e.button === 0 && this.onGizmoMouseDown?.(e.x, e.y)) {
+      return;
+    }
+    
     if (e.button === 0) this.isDragging = true;
     else if (e.button === 2) this.isPanning = true;
     
-    this.lastX = e.clientX;
-    this.lastY = e.clientY;
-    this.mouseDownX = e.clientX;
-    this.mouseDownY = e.clientY;
+    this.lastX = e.originalEvent.clientX;
+    this.lastY = e.originalEvent.clientY;
+    this.mouseDownX = e.originalEvent.clientX;
+    this.mouseDownY = e.originalEvent.clientY;
     this.hasMoved = false;
   }
 
-  private handleMouseMoveInternal(e: MouseEvent): void {
-    const dx = e.clientX - this.lastX;
-    const dy = e.clientY - this.lastY;
-    this.lastX = e.clientX;
-    this.lastY = e.clientY;
+  private handleMouseMove(e: InputEvent<MouseEvent>): void {
+    // Check gizmo dragging
+    if (this.onGizmoCheck()) {
+      this.onGizmoMouseMove?.(e.x, e.y);
+      return;
+    }
     
-    if (Math.abs(e.clientX - this.mouseDownX) > 3 || Math.abs(e.clientY - this.mouseDownY) > 3) {
+    const clientX = e.originalEvent.clientX;
+    const clientY = e.originalEvent.clientY;
+    
+    const dx = clientX - this.lastX;
+    const dy = clientY - this.lastY;
+    this.lastX = clientX;
+    this.lastY = clientY;
+    
+    if (Math.abs(clientX - this.mouseDownX) > 3 || Math.abs(clientY - this.mouseDownY) > 3) {
       this.hasMoved = true;
     }
     
@@ -278,10 +288,12 @@ export class CameraController {
     }
   }
 
-  private handleMouseUpInternal(e: MouseEvent): void {
-    const rect = this.canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+  private handleMouseUp(e: InputEvent<MouseEvent>): void {
+    // Check gizmo
+    if (this.onGizmoCheck()) {
+      this.onGizmoMouseUp?.();
+      return;
+    }
     
     const clicked = e.button === 0 && !this.hasMoved;
     
@@ -289,7 +301,7 @@ export class CameraController {
     this.isPanning = false;
     
     if (clicked) {
-      this.onClickCallback?.(x, y, e.shiftKey);
+      this.onClickCallback?.(e.x, e.y, e.shiftKey || false);
     }
   }
 
@@ -298,14 +310,12 @@ export class CameraController {
     this.isPanning = false;
   }
 
-  handleWheel(e: WheelEvent): void {
-    e.preventDefault();
-    this.zoom(e.deltaY);
+  private handleWheel(e: InputEvent<WheelEvent>): void {
+    this.zoom(e.deltaY || 0);
   }
 
-  handleDoubleClick(e: MouseEvent): void {
-    const rect = this.canvas.getBoundingClientRect();
-    this.setOriginFromScreenPos(e.clientX - rect.left, e.clientY - rect.top);
+  private handleDoubleClick(e: InputEvent<MouseEvent>): void {
+    this.setOriginFromScreenPos(e.x, e.y);
   }
 
   // ==================== Public Accessors ====================
