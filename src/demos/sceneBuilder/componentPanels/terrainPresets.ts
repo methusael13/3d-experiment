@@ -15,6 +15,12 @@ export interface TerrainPreset {
   name: string;
   /** Description of the terrain style */
   description: string;
+  /** 
+   * Reference world size for scaling height proportionally.
+   * When applying a preset, heightScale is scaled by (currentWorldSize / referenceWorldSize).
+   * This ensures presets look proportionally similar regardless of world size.
+   */
+  referenceWorldSize: number;
   /** Noise generation parameters */
   noise: Omit<TerrainNoiseParams, 'offset'>;
   /** Erosion simulation parameters */
@@ -29,6 +35,7 @@ export interface TerrainPreset {
 export const DEFAULT_PRESET: TerrainPreset = {
   name: 'Default',
   description: 'Balanced terrain with moderate features',
+  referenceWorldSize: 10,
   noise: {
     seed: 12345,
     scale: 3.0,
@@ -80,6 +87,7 @@ export const DEFAULT_PRESET: TerrainPreset = {
 export const ROLLING_HILLS_PRESET: TerrainPreset = {
   name: 'Rolling Hills',
   description: 'Gentle rolling hills with smooth slopes',
+  referenceWorldSize: 10,
   noise: {
     seed: 42,
     scale: 2.5,
@@ -131,6 +139,7 @@ export const ROLLING_HILLS_PRESET: TerrainPreset = {
 export const ALPINE_MOUNTAINS_PRESET: TerrainPreset = {
   name: 'Alpine Mountains',
   description: 'Sharp mountain ridges with snowy peaks',
+  referenceWorldSize: 10,
   noise: {
     seed: 8675309,
     scale: 4.0,
@@ -182,6 +191,7 @@ export const ALPINE_MOUNTAINS_PRESET: TerrainPreset = {
 export const DESERT_DUNES_PRESET: TerrainPreset = {
   name: 'Desert Dunes',
   description: 'Smooth sand dunes with warm colors',
+  referenceWorldSize: 10,
   noise: {
     seed: 1001,
     scale: 5.0,
@@ -233,6 +243,7 @@ export const DESERT_DUNES_PRESET: TerrainPreset = {
 export const ROCKY_BADLANDS_PRESET: TerrainPreset = {
   name: 'Rocky Badlands',
   description: 'Heavily eroded rocky terrain',
+  referenceWorldSize: 10,
   noise: {
     seed: 666,
     scale: 3.5,
@@ -284,6 +295,7 @@ export const ROCKY_BADLANDS_PRESET: TerrainPreset = {
 export const VOLCANIC_ISLAND_PRESET: TerrainPreset = {
   name: 'Volcanic Island',
   description: 'Dramatic volcanic terrain with dark rock',
+  referenceWorldSize: 10,
   noise: {
     seed: 2012,
     scale: 2.0,

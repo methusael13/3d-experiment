@@ -674,12 +674,18 @@ export class TerrainPanel {
   
   /**
    * Apply a preset to the terrain (excludes resolution and worldSize)
+   * HeightScale is scaled proportionally: preset.heightScale * (currentWorldSize / referenceWorldSize)
    */
   private applyPreset(presetKey: string): void {
     const preset = getTerrainPreset(presetKey);
     if (!preset || !this.terrain) return;
     
     const params = this.terrain.params;
+    const currentWorldSize = params.worldSize;
+    
+    // Scale heightScale proportionally to maintain visual proportions
+    const scaleFactor = currentWorldSize / preset.referenceWorldSize;
+    const scaledHeightScale = preset.noise.heightScale * scaleFactor;
     
     // Apply noise params (excluding offset which is derived)
     params.noise.seed = preset.noise.seed;
@@ -687,7 +693,7 @@ export class TerrainPanel {
     params.noise.octaves = preset.noise.octaves;
     params.noise.lacunarity = preset.noise.lacunarity;
     params.noise.persistence = preset.noise.persistence;
-    params.noise.heightScale = preset.noise.heightScale;
+    params.noise.heightScale = scaledHeightScale;
     params.noise.ridgeWeight = preset.noise.ridgeWeight;
     params.noise.warpStrength = preset.noise.warpStrength;
     params.noise.warpScale = preset.noise.warpScale;
