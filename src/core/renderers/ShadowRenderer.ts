@@ -318,17 +318,22 @@ export class ShadowRenderer implements IShadowRenderer {
   
   // ============ Light Matrix Calculation ============
   
-  private calculateLightMatrix(sunDir: vec3 | number[], sceneSize: number): mat4 {
-    // Light position: far away in the direction of the sun
+  private calculateLightMatrix(sunDir: vec3 | number[], sceneSize: number, cameraPos?: vec3 | number[]): mat4 {
+    // Center shadow frustum around camera position (or origin if not provided)
+    const center: vec3 = cameraPos 
+      ? [cameraPos[0] as number, 0, cameraPos[2] as number]  // Use camera XZ, but keep Y at ground level
+      : [0, 0, 0];
+    
+    // Light position: far away in the direction of the sun, offset from center
     const lightDistance = sceneSize * 2;
     const lightPos: vec3 = [
-      (sunDir[0] as number) * lightDistance,
-      (sunDir[1] as number) * lightDistance,
-      (sunDir[2] as number) * lightDistance,
+      center[0] + (sunDir[0] as number) * lightDistance,
+      center[1] + (sunDir[1] as number) * lightDistance,
+      center[2] + (sunDir[2] as number) * lightDistance,
     ];
     
-    // Light looks at origin
-    const target: vec3 = [0, 0, 0];
+    // Light looks at the center point (camera position projected to ground)
+    const target: vec3 = [...center];
     
     // Up vector (handle case when sun is directly above/below)
     let up: vec3 = [0, 1, 0];
@@ -372,10 +377,10 @@ export class ShadowRenderer implements IShadowRenderer {
     }
   }
   
-  beginShadowPass(sunDir: vec3 | number[], sceneSize = 20): void {
+  beginShadowPass(sunDir: vec3 | number[], sceneSize = 20, cameraPos?: vec3 | number[]): void {
     const gl = this.gl;
     
-    this.calculateLightMatrix(sunDir, sceneSize);
+    this.calculateLightMatrix(sunDir, sceneSize, cameraPos);
     
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
     gl.viewport(0, 0, this.resolution, this.resolution);

@@ -59,9 +59,12 @@ class ShadowPass extends RenderPass {
     
     const dirLight = context.lightParams as DirectionalLightParams;
     const sunDir: Vec3 = [...dirLight.direction] as Vec3;
-    const shadowCoverage = 5;
+    // Shadow coverage: area around camera that receives shadows
+    // Higher = more coverage but lower shadow resolution per texel
+    const shadowCoverage = 30;
     
-    this.shadowRenderer.beginShadowPass(sunDir, shadowCoverage);
+    // Center shadows around camera position for consistent quality regardless of terrain size
+    this.shadowRenderer.beginShadowPass(sunDir, shadowCoverage, context.cameraPos);
     
     for (const obj of objects) {
       // Render terrain shadows
