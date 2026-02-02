@@ -1,6 +1,9 @@
 import { mat4, quat } from 'gl-matrix';
 import type { Vec2, Vec3, RGB } from '../../core/types';
 import { createAnimationLoop, AnimationLoop } from '../../core/animationLoop';
+import { GPUContext } from '../../core/gpu/GPUContext';
+import { GPUForwardPipeline, type RenderOptions as GPURenderOptions } from '../../core/gpu/pipeline/GPUForwardPipeline';
+import { TerrainManager, type TerrainManagerConfig } from '../../core/terrain/TerrainManager';
 import {
   createGridRenderer,
   createOriginMarkerRenderer,
@@ -32,6 +35,7 @@ import type {
 } from '../../core/sceneObjects/types';
 import { isTerrainObject, type TerrainObject } from '../../core/sceneObjects';
 import type { FPSCameraController } from './FPSCameraController';
+import { WebGPUShadowSettings } from './componentPanels/RenderingPanel';
 
 // ==================== Type Definitions ====================
 
@@ -203,6 +207,13 @@ export class Viewport {
   // FPS Camera mode
   private fpsMode = false;
   private fpsController: FPSCameraController | null = null;
+  
+  // WebGPU Test Mode
+  private webgpuTestMode = false;
+  private gpuContext: GPUContext | null = null;
+  private gpuPipeline: GPUForwardPipeline | null = null;
+  private gpuTerrainManager: TerrainManager | null = null;
+  private webgpuCanvas: HTMLCanvasElement | null = null;
 
   // Callbacks (all optional)
   private readonly onFps: (fps: number) => void;
@@ -548,6 +559,216 @@ export class Viewport {
     };
   }
 
+  // ==================== WebGPU Test Mode ====================
+  
+  /**
+   * Create a WebGPU canvas overlaid on the WebGL2 canvas
+   */
+  private createWebGPUCanvas(): HTMLCanvasElement {
+    // Create a new canvas for WebGPU
+    const canvas = document.createElement('canvas');
+    canvas.id = 'webgpu-canvas';
+    canvas.width = this.renderWidth;
+    canvas.height = this.renderHeight;
+    canvas.style.width = this.logicalWidth + 'px';
+    canvas.style.height = this.logicalHeight + 'px';
+    canvas.style.position = 'absolute';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.pointerEvents = 'auto'; // Enable mouse events for camera control
+    canvas.style.display = 'none'; // Hidden initially
+    
+    // Insert after the WebGL canvas
+    this.canvas.parentElement?.appendChild(canvas);
+    
+    return canvas;
+  }
+  
+  /**
+   * Enable WebGPU test mode - renders a simple triangle using WebGPU
+   * This is for testing the WebGPU pipeline before full migration
+   */
+  async enableWebGPUTest(): Promise<boolean> {
+    try {
+      console.log('[Viewport] Enabling WebGPU test mode...');
+      
+      // Create separate WebGPU canvas if not already created
+      if (!this.webgpuCanvas) {
+        this.webgpuCanvas = this.createWebGPUCanvas();
+        console.log('[Viewport] Created WebGPU canvas');
+      }
+      
+      // Initialize WebGPU context on the separate canvas
+      this.gpuContext = await GPUContext.getInstance(this.webgpuCanvas);
+      console.log('[Viewport] WebGPU context initialized');
+      
+      // Create full WebGPU forward pipeline with grid and sky
+      this.gpuPipeline = new GPUForwardPipeline(this.gpuContext, {
+        width: this.renderWidth,
+        height: this.renderHeight,
+      });
+      console.log('[Viewport] WebGPU Forward Pipeline created');
+      
+      // Create terrain manager for WebGPU rendering
+      const terrainConfig: TerrainManagerConfig = {
+        worldSize: 1024,
+        heightScale: 100,
+      };
+      this.gpuTerrainManager = new TerrainManager(this.gpuContext, terrainConfig);
+      this.gpuPipeline.setTerrainManager(this.gpuTerrainManager);
+      console.log('[Viewport] WebGPU Terrain Manager created');
+      
+      // Initialize and generate terrain
+      console.log('[Viewport] Initializing terrain...');
+      this.gpuTerrainManager.initialize();
+      await this.gpuTerrainManager.generate((stage, progress) => {
+        console.log(`[Viewport] Terrain ${stage}: ${progress.toFixed(0)}%`);
+      });
+      console.log('[Viewport] Terrain generation complete');
+      
+      // Show WebGPU canvas, hide WebGL canvas
+      this.webgpuCanvas.style.display = 'block';
+      this.canvas.style.visibility = 'hidden';
+      
+      // Attach InputManager to WebGPU canvas for camera control
+      if (this.inputManager) {
+        this.inputManager.attachToCanvas(this.webgpuCanvas);
+      }
+      
+      this.webgpuTestMode = true;
+      console.log('[Viewport] ✅ WebGPU test mode enabled');
+      return true;
+    } catch (error) {
+      console.error('[Viewport] ❌ Failed to enable WebGPU test mode:', error);
+      this.webgpuTestMode = false;
+      
+      // Restore WebGL canvas on failure
+      if (this.webgpuCanvas) {
+        this.webgpuCanvas.style.display = 'none';
+      }
+      this.canvas.style.visibility = 'visible';
+      
+      return false;
+    }
+  }
+  
+  /**
+   * Disable WebGPU test mode and return to WebGL2 rendering
+   */
+  disableWebGPUTest(): void {
+    this.webgpuTestMode = false;
+    this.gpuTerrainManager?.destroy();
+    this.gpuTerrainManager = null;
+    this.gpuPipeline?.destroy();
+    this.gpuPipeline = null;
+    
+    // Hide WebGPU canvas, show WebGL canvas
+    if (this.webgpuCanvas) {
+      this.webgpuCanvas.style.display = 'none';
+    }
+    this.canvas.style.visibility = 'visible';
+    
+    // Re-attach InputManager to WebGL canvas
+    if (this.inputManager) {
+      this.inputManager.attachToCanvas(this.canvas);
+    }
+    
+    console.log('[Viewport] WebGPU test mode disabled');
+  }
+  
+  /**
+   * Check if WebGPU test mode is active
+   */
+  isWebGPUTestMode(): boolean {
+    return this.webgpuTestMode;
+  }
+  
+  /**
+   * Get the WebGPU terrain manager (for panel integration)
+   */
+  getWebGPUTerrainManager(): TerrainManager | null {
+    return this.gpuTerrainManager;
+  }
+  
+  /**
+   * Set WebGPU shadow settings (for RenderingPanel integration)
+   */
+  setWebGPUShadowSettings(settings: WebGPUShadowSettings): void {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setShadowSettings(settings);
+    }
+  }
+  
+  /**
+   * Set WebGPU water config (for TerrainPanel integration)
+   * Maps UI config names to WaterConfig interface
+   */
+  setWebGPUWaterConfig(config: {
+    enabled: boolean;
+    waterLevel?: number;
+    waveScale?: number;
+    waterColor?: [number, number, number];
+    deepColor?: [number, number, number];
+    depthFalloff?: number;
+    opacity?: number;
+  }): void {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setWaterEnabled(config.enabled);
+      if (config.enabled) {
+        this.gpuPipeline.setWaterConfig({
+          waterLevel: config.waterLevel,
+          waveScale: config.waveScale,
+          waterColor: config.waterColor,
+          deepColor: config.deepColor,
+          depthFalloff: config.depthFalloff,
+          opacity: config.opacity,
+        });
+      }
+    }
+  }
+  
+  /**
+   * Render using WebGPU (full pipeline with grid/sky)
+   */
+  private renderWebGPUTest(): void {
+    if (!this.gpuContext || !this.gpuPipeline || !this.cameraController) return;
+    
+    // Create camera adapter for WebGPU pipeline
+    const camera = this.cameraController.getCamera();
+    const cameraAdapter = {
+      getViewMatrix: () => camera.getViewMatrix(),
+      getProjectionMatrix: () => camera.getProjectionMatrix(),
+      getPosition: () => camera.getPosition(),
+    };
+    
+    // Get lighting settings
+    // Note: lightParams.direction is pre-computed from DirectionalLight
+    // sunElevation/sunAzimuth are still needed for sky rendering
+    const isHDR = this.lightParams?.type === 'hdr';
+    const sunIntensity = (this.lightParams as any)?.sunIntensity ?? 20;
+    const hdrExposure = (this.lightParams as any)?.hdrExposure ?? 1.0;
+    const ambientIntensity = (this.lightParams as any)?.ambient ?? 0.3;
+    
+    // Get pre-computed light direction from DirectionalLight (avoids redundant calculation)
+    // Only available on directional light type, not HDR
+    const lightDirection = (this.lightParams as any)?.direction as [number, number, number] | undefined;
+    
+    // Render options
+    const options: GPURenderOptions = {
+      showGrid: this.showGrid,
+      showAxes: this.showAxes,
+      skyMode: isHDR ? 'hdr' : 'sun',
+      sunIntensity,
+      hdrExposure,
+      wireframe: this.viewportMode == 'wireframe',
+      ambientIntensity,
+      lightDirection,  // Pass pre-computed direction
+    };
+    
+    // Use render with simple camera adapter
+    this.gpuPipeline.render(null as any, cameraAdapter as any, options);
+  }
+
   // ==================== Render Loop ====================
 
   private startRendering(): void {
@@ -586,6 +807,7 @@ export class Viewport {
       wireframeMode: this.viewportMode === 'wireframe',
       showGrid: this.showGrid,
       showAxes: this.showAxes,
+      fpsMode: this.fpsMode
     });
     
     // Set HDR texture if in HDR mode
@@ -616,6 +838,12 @@ export class Viewport {
   }
 
   private render(deltaTime: number): void {
+    // WebGPU test mode - bypass WebGL2 entirely
+    if (this.webgpuTestMode) {
+      this.renderWebGPUTest();
+      return;
+    }
+    
     if (!this.gl || !this.cameraController) return;
 
     const dt = deltaTime / 1000;
@@ -740,6 +968,10 @@ export class Viewport {
 
   setShowShadowThumbnail(show: boolean): void {
     this.showShadowThumbnail = show;
+    // Also update WebGPU pipeline if active
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setShowShadowThumbnail(show);
+    }
   }
 
   setShowGrid(show: boolean): void {

@@ -95,6 +95,9 @@ export class TerrainObject extends RenderableObject {
   /** Whether clipmap rendering is enabled (camera-centered LOD rings) */
   public clipmapEnabled = false;
   
+  /** Whether CDLOD (quadtree-based) rendering is enabled */
+  public cdlodEnabled = false;
+  
   /** @deprecated Use clipmapEnabled instead */
   public get lodEnabled(): boolean {
     return this.clipmapEnabled;

@@ -90,6 +90,7 @@ export interface RenderContext {
     wireframeMode: boolean;
     showGrid: boolean;
     showAxes: boolean;
+    fpsMode: boolean;
   };
   
   // Frame info

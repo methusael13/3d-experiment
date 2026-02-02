@@ -11,6 +11,7 @@ import type { CameraController } from '../CameraController';
 import type { GizmoMode } from '../gizmos';
 import type { GizmoOrientation } from '../gizmos/BaseGizmo';
 import type { ShadowRenderer, ContactShadowSettings } from '../../../core/renderers';
+import type { WebGPUShadowSettings } from './RenderingPanel';
 
 // ==================== Types ====================
 
@@ -59,6 +60,25 @@ export interface PanelContext {
   onWindChanged(): void;
   onLightingChanged(): void;
   onTerrainBoundsChanged(worldSize: number, heightScale: number): void;
+  
+  // WebGPU test mode
+  enableWebGPUTest?(): Promise<boolean>;
+  disableWebGPUTest?(): void;
+  
+  // WebGPU shadow settings
+  setWebGPUShadowSettings?(settings: WebGPUShadowSettings): void;
+  
+  // WebGPU water config
+  setWebGPUWaterConfig?(config: {
+    enabled: boolean;
+    waterLevel?: number;
+    waveHeight?: number;
+    waveSpeed?: number;
+    shallowColor?: [number, number, number];
+    deepColor?: [number, number, number];
+    depthFalloff?: number;
+    opacity?: number;
+  }): void;
 }
 
 /**
@@ -93,6 +113,25 @@ export interface PanelContextConfig {
   onWindChanged?: () => void;
   onLightingChanged?: () => void;
   onTerrainBoundsChanged?: (worldSize: number, heightScale: number) => void;
+  
+  // WebGPU test mode
+  enableWebGPUTest?: () => Promise<boolean>;
+  disableWebGPUTest?: () => void;
+  
+  // WebGPU shadow settings
+  setWebGPUShadowSettings?: (settings: WebGPUShadowSettings) => void;
+  
+  // WebGPU water config
+  setWebGPUWaterConfig?: (config: {
+    enabled: boolean;
+    waterLevel?: number;
+    waveHeight?: number;
+    waveSpeed?: number;
+    shallowColor?: [number, number, number];
+    deepColor?: [number, number, number];
+    depthFalloff?: number;
+    opacity?: number;
+  }) => void;
 }
 
 /**
@@ -185,5 +224,15 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     onWindChanged: onWindChanged || (() => {}),
     onLightingChanged: onLightingChanged || (() => {}),
     onTerrainBoundsChanged: config.onTerrainBoundsChanged || (() => {}),
+    
+    // WebGPU test mode
+    enableWebGPUTest: config.enableWebGPUTest,
+    disableWebGPUTest: config.disableWebGPUTest,
+    
+    // WebGPU shadow settings
+    setWebGPUShadowSettings: config.setWebGPUShadowSettings,
+    
+    // WebGPU water config
+    setWebGPUWaterConfig: config.setWebGPUWaterConfig,
   };
 }

@@ -1,11 +1,13 @@
 /**
  * Shader Manager
  * Central registry for live shader editing and hot-reloading
+ * Supports both WebGL (GLSL) and WebGPU (WGSL) shaders
  */
 
 // ==================== Types ====================
 
 export type ShaderType = 'vertex' | 'fragment';
+export type ShaderBackend = 'webgl' | 'webgpu';
 
 export interface ShaderConfig {
   gl: WebGL2RenderingContext;
@@ -25,6 +27,24 @@ interface ShaderEntry {
   onRecompile?: (program: WebGLProgram) => void;
 }
 
+// ==================== WebGPU (WGSL) Types ====================
+
+export interface WGSLShaderConfig {
+  device: GPUDevice;
+  source: string;
+  label?: string;
+  onRecompile?: (module: GPUShaderModule) => void;
+}
+
+interface WGSLShaderEntry {
+  device: GPUDevice;
+  originalSource: string;
+  currentSource: string;
+  label: string;
+  module: GPUShaderModule | null;
+  onRecompile?: (module: GPUShaderModule) => void;
+}
+
 export interface CompileResult {
   success: boolean;
   error: string | null;
@@ -38,6 +58,7 @@ export interface ApplyAllResult {
 // ==================== Global Registry ====================
 
 const shaderRegistry = new Map<string, ShaderEntry>();
+const wgslRegistry = new Map<string, WGSLShaderEntry>();
 
 // ==================== Registry Functions ====================
 
@@ -298,4 +319,151 @@ export function applyToAllMatching(prefix: string, newFsSource: string): ApplyAl
  */
 export function getRegistry(): Map<string, ShaderEntry> {
   return shaderRegistry;
+}
+
+// ==================== WebGPU (WGSL) Registry Functions ====================
+
+/**
+ * Register a WGSL shader with the manager
+ */
+export function registerWGSLShader(name: string, config: WGSLShaderConfig): void {
+  // Compile initial module
+  let module: GPUShaderModule | null = null;
+  try {
+    module = config.device.createShaderModule({
+      code: config.source,
+      label: config.label || name,
+    });
+  } catch (e) {
+    console.warn(`[ShaderManager] Failed to compile WGSL shader "${name}":`, e);
+  }
+  
+  wgslRegistry.set(name, {
+    device: config.device,
+    originalSource: config.source,
+    currentSource: config.source,
+    label: config.label || name,
+    module,
+    onRecompile: config.onRecompile,
+  });
+}
+
+/**
+ * Unregister a WGSL shader
+ */
+export function unregisterWGSLShader(name: string): void {
+  wgslRegistry.delete(name);
+}
+
+/**
+ * Get list of all registered WGSL shader names
+ */
+export function getWGSLShaderList(): string[] {
+  return Array.from(wgslRegistry.keys());
+}
+
+/**
+ * Get current WGSL shader source
+ */
+export function getWGSLShaderSource(name: string): string | null {
+  const entry = wgslRegistry.get(name);
+  return entry ? entry.currentSource : null;
+}
+
+/**
+ * Get original WGSL shader source (for reset)
+ */
+export function getOriginalWGSLSource(name: string): string | null {
+  const entry = wgslRegistry.get(name);
+  return entry ? entry.originalSource : null;
+}
+
+/**
+ * Check if a WGSL shader is modified from original
+ */
+export function isWGSLModified(name: string): boolean {
+  const entry = wgslRegistry.get(name);
+  if (!entry) return false;
+  return entry.currentSource !== entry.originalSource;
+}
+
+/**
+ * Compile and update a WGSL shader with new source
+ * Returns success/error info; doesn't throw
+ */
+export function compileAndUpdateWGSL(name: string, newSource: string): CompileResult {
+  const entry = wgslRegistry.get(name);
+  if (!entry) {
+    return { success: false, error: `WGSL shader "${name}" not found` };
+  }
+  
+  try {
+    // Create new shader module
+    const newModule = entry.device.createShaderModule({
+      code: newSource,
+      label: entry.label,
+    });
+    
+    // WebGPU shader compilation is async for error checking
+    // For synchronous validation, we check compilation info if available
+    // Note: getCompilationInfo() is not available in all browsers yet
+    
+    // Update registry
+    entry.currentSource = newSource;
+    entry.module = newModule;
+    
+    // Notify renderer to rebuild pipeline
+    if (entry.onRecompile) {
+      entry.onRecompile(newModule);
+    }
+    
+    return { success: true, error: null };
+  } catch (e) {
+    const errorMsg = e instanceof Error ? e.message : String(e);
+    return { success: false, error: `WGSL compilation error:\n${errorMsg}` };
+  }
+}
+
+/**
+ * Reset WGSL shader to original source
+ */
+export function resetWGSLShader(name: string): CompileResult {
+  const entry = wgslRegistry.get(name);
+  if (!entry) {
+    return { success: false, error: `WGSL shader "${name}" not found` };
+  }
+  
+  return compileAndUpdateWGSL(name, entry.originalSource);
+}
+
+/**
+ * Check if a shader name is a WGSL (WebGPU) shader
+ */
+export function isWGSLShader(name: string): boolean {
+  return wgslRegistry.has(name);
+}
+
+/**
+ * Get combined shader list (WebGL + WebGPU)
+ * Returns objects with name and backend type
+ */
+export function getAllShaderList(): Array<{ name: string; backend: ShaderBackend }> {
+  const result: Array<{ name: string; backend: ShaderBackend }> = [];
+  
+  for (const name of shaderRegistry.keys()) {
+    result.push({ name, backend: 'webgl' });
+  }
+  
+  for (const name of wgslRegistry.keys()) {
+    result.push({ name, backend: 'webgpu' });
+  }
+  
+  return result;
+}
+
+/**
+ * Get the WGSL registry for debugging
+ */
+export function getWGSLRegistry(): Map<string, WGSLShaderEntry> {
+  return wgslRegistry;
 }

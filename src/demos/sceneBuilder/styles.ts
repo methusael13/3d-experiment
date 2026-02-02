@@ -758,6 +758,9 @@ export const sceneBuilderStyles = `
     overflow-y: auto;
     padding-right: 4px;
   }
+  .env-tab-content#obj-terrain-tab {
+    max-height: 530px;
+  }
   
   .env-tab-content.active {
     display: block;

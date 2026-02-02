@@ -106,6 +106,7 @@ export abstract class RenderPipeline {
         wireframeMode: false,
         showGrid: true,
         showAxes: true,
+        fpsMode: false
       },
       deltaTime: 0,
       time: 0,

@@ -60,6 +60,9 @@ export {
   type TerrainMeshData,
 } from './TerrainObject';
 
+// GPU Terrain (WebGPU mode)
+export { GPUTerrainSceneObject, isGPUTerrainObject } from './GPUTerrainSceneObject';
+
 // Type-only imports for union definitions (avoids circular dependency at runtime)
 // Using 'import type' ensures these are erased at runtime and only used for TypeScript types
 import type { Cube } from './primitives/Cube';
@@ -69,6 +72,7 @@ import type { ModelObject } from './ModelObject';
 import type { PrimitiveObject } from './PrimitiveObject';
 import type { SceneObject } from './SceneObject';
 import type { TerrainObject } from './TerrainObject';
+import type { GPUTerrainSceneObject } from './GPUTerrainSceneObject';
 
 // RenderableObject needs a runtime import for instanceof check in type guard
 // This is safe because RenderableObject only imports from SceneObject (no circular deps)
@@ -85,10 +89,15 @@ export type AnyPrimitive = Cube | Plane | UVSphere;
 export type RenderableSceneObject = AnyPrimitive | ModelObject | TerrainObject;
 
 /**
+ * Union of all terrain object types
+ */
+export type AnyTerrainObject = TerrainObject | GPUTerrainSceneObject;
+
+/**
  * Union of ALL scene object types that can be stored in a Scene
  * Extensible - add more types as needed (e.g., lights when they become selectable)
  */
-export type AnySceneObject = RenderableSceneObject;
+export type AnySceneObject = RenderableSceneObject | GPUTerrainSceneObject;
 
 // ============================================================================
 // Type Guards - Runtime type discrimination using objectType/primitiveType
@@ -137,8 +146,15 @@ export function isUVSphere(obj: SceneObject): obj is UVSphere {
 }
 
 /**
- * Check if object is a TerrainObject
+ * Check if object is a TerrainObject (WebGL)
  */
 export function isTerrainObject(obj: SceneObject): obj is TerrainObject {
   return obj.objectType === 'terrain';
+}
+
+/**
+ * Check if object is any terrain type (WebGL or WebGPU)
+ */
+export function isAnyTerrainObject(obj: SceneObject): obj is AnyTerrainObject {
+  return obj.objectType === 'terrain' || obj.objectType === 'terrain-gpu';
 }

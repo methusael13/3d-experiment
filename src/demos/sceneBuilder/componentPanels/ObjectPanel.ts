@@ -7,8 +7,8 @@ import type { PanelContext, Panel } from './panelContext';
 import type { GizmoMode } from '../gizmos';
 import type { GizmoOrientation } from '../gizmos/BaseGizmo';
 import type { ObjectWindSettings } from '../wind';
-import type { AnySceneObject, TerrainObject } from '../../../core/sceneObjects';
-import { isTerrainObject } from '../../../core/sceneObjects';
+import type { AnySceneObject, TerrainObject, GPUTerrainSceneObject } from '../../../core/sceneObjects';
+import { isTerrainObject, isGPUTerrainObject, isAnyTerrainObject } from '../../../core/sceneObjects';
 import { TerrainPanel, terrainPanelStyles } from './TerrainPanel';
 
 // ==================== Constants ====================
@@ -532,15 +532,17 @@ export class ObjectPanel implements ObjectPanelAPI {
       this.terrainTabBtn.style.display = 'none';
       if (this.terrainPanel) {
         this.terrainPanel.setTerrain(null);
+        this.terrainPanel.setTerrainManager(null);
       }
       return;
     }
     
     const obj = scene.getFirstSelected();
-    if (!obj || !isTerrainObject(obj)) {
+    if (!obj || !isAnyTerrainObject(obj)) {
       this.terrainTabBtn.style.display = 'none';
       if (this.terrainPanel) {
         this.terrainPanel.setTerrain(null);
+        this.terrainPanel.setTerrainManager(null);
       }
       return;
     }
@@ -555,11 +557,22 @@ export class ObjectPanel implements ObjectPanelAPI {
       this.terrainPanel.setOnBoundsChanged((worldSize, heightScale) => {
         this.context.onTerrainBoundsChanged(worldSize, heightScale);
       });
+      // Wire up water config callback to PanelContext (for WebGPU water rendering)
+      this.terrainPanel.setOnWaterConfigChange((config) => {
+        this.context.setWebGPUWaterConfig?.(config);
+      });
     }
     
-    // Delegate to TerrainPanel
-    const terrain = obj as TerrainObject;
-    this.terrainPanel.setTerrain(terrain);
+    // Delegate to TerrainPanel - check which terrain type
+    if (isGPUTerrainObject(obj)) {
+      // WebGPU terrain - use TerrainManager
+      const gpuTerrain = obj as GPUTerrainSceneObject;
+      const manager = gpuTerrain.getTerrainManager();
+      this.terrainPanel.setTerrainManager(manager);
+    } else if (isTerrainObject(obj)) {
+      // WebGL terrain - use TerrainObject directly
+      this.terrainPanel.setTerrain(obj as TerrainObject);
+    }
   }
   
   private updateEditTab(): void {

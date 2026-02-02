@@ -54,7 +54,7 @@ interface ChannelHandlers {
  * Only the active channel + global channel receive events.
  */
 export class InputManager {
-  private readonly canvas: HTMLCanvasElement;
+  private canvas: HTMLCanvasElement;
   private activeChannel: InputChannel = 'editor';
   
   // Handlers per channel per event type
@@ -238,6 +238,77 @@ export class InputManager {
   // ==================== DOM Event Setup ====================
   
   private setupEventListeners(): void {
+    // Add canvas event listeners
+    this.addCanvasListeners();
+    
+    // Keyboard events on document (for global shortcuts)
+    this.addListener(document, 'keydown', (e: KeyboardEvent) => {
+      this.dispatch('keydown', {
+        originalEvent: e,
+        x: 0,
+        y: 0,
+        key: e.key,
+        shiftKey: e.shiftKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+      });
+    });
+    
+    this.addListener(document, 'keyup', (e: KeyboardEvent) => {
+      this.dispatch('keyup', {
+        originalEvent: e,
+        x: 0,
+        y: 0,
+        key: e.key,
+        shiftKey: e.shiftKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+      });
+    });
+  }
+  
+  private addListener<K extends keyof HTMLElementEventMap>(
+    element: HTMLElement | Document,
+    type: K,
+    handler: (e: HTMLElementEventMap[K]) => void,
+    options?: AddEventListenerOptions
+  ): void {
+    const boundHandler = handler as EventListener;
+    this.boundHandlers.set(`${element === document ? 'doc' : 'canvas'}-${type}`, boundHandler);
+    element.addEventListener(type, boundHandler, options);
+  }
+  
+  // ==================== Canvas Switching ====================
+  
+  /**
+   * Attach InputManager to a different canvas.
+   * Removes listeners from old canvas and attaches to new one.
+   */
+  attachToCanvas(newCanvas: HTMLCanvasElement): void {
+    if (newCanvas === this.canvas) return;
+    
+    // Remove old canvas listeners (keep document listeners)
+    for (const [key, handler] of this.boundHandlers) {
+      if (key.startsWith('canvas-')) {
+        const type = key.replace('canvas-', '');
+        this.canvas.removeEventListener(type, handler);
+      }
+    }
+    
+    // Update canvas reference
+    const oldCanvas = this.canvas;
+    this.canvas = newCanvas;
+    
+    // Re-add canvas listeners to new canvas
+    this.addCanvasListeners();
+    
+    console.log(`[InputManager] Attached to new canvas`);
+  }
+  
+  /**
+   * Add event listeners to the current canvas
+   */
+  private addCanvasListeners(): void {
     const canvas = this.canvas;
     
     // Mouse events
@@ -316,42 +387,6 @@ export class InputManager {
         y: 0,
       });
     });
-    
-    // Keyboard events on document (for global shortcuts)
-    this.addListener(document, 'keydown', (e: KeyboardEvent) => {
-      this.dispatch('keydown', {
-        originalEvent: e,
-        x: 0,
-        y: 0,
-        key: e.key,
-        shiftKey: e.shiftKey,
-        ctrlKey: e.ctrlKey,
-        altKey: e.altKey,
-      });
-    });
-    
-    this.addListener(document, 'keyup', (e: KeyboardEvent) => {
-      this.dispatch('keyup', {
-        originalEvent: e,
-        x: 0,
-        y: 0,
-        key: e.key,
-        shiftKey: e.shiftKey,
-        ctrlKey: e.ctrlKey,
-        altKey: e.altKey,
-      });
-    });
-  }
-  
-  private addListener<K extends keyof HTMLElementEventMap>(
-    element: HTMLElement | Document,
-    type: K,
-    handler: (e: HTMLElementEventMap[K]) => void,
-    options?: AddEventListenerOptions
-  ): void {
-    const boundHandler = handler as EventListener;
-    this.boundHandlers.set(`${element === document ? 'doc' : 'canvas'}-${type}`, boundHandler);
-    element.addEventListener(type, boundHandler, options);
   }
   
   // ==================== Cleanup ====================

@@ -18,6 +18,15 @@ import {
   isModified,
   applyToAllMatching,
   ShaderType,
+  // WebGPU (WGSL) functions
+  getWGSLShaderList,
+  getWGSLShaderSource,
+  compileAndUpdateWGSL,
+  resetWGSLShader,
+  isWGSLModified,
+  isWGSLShader,
+  getAllShaderList,
+  ShaderBackend,
 } from './shaderManager';
 
 // ==================== Types ====================
@@ -41,6 +50,7 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   private isVisible = false;
   private selectedShader: string | null = null;
   private selectedShaderType: ShaderType = 'fragment';
+  private selectedBackend: ShaderBackend = 'webgl';
   private isDragging = false;
   private isResizing = false;
   private dragOffset = { x: 0, y: 0 };
@@ -241,6 +251,30 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
         color: #1e1e2e;
       }
       
+      .shader-backend-badge {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 9px;
+        font-weight: 600;
+        margin-left: 4px;
+        vertical-align: middle;
+      }
+      
+      .shader-backend-badge.webgl {
+        background: #fab387;
+        color: #1e1e2e;
+      }
+      
+      .shader-backend-badge.webgpu {
+        background: #a6e3a1;
+        color: #1e1e2e;
+      }
+      
+      .shader-type-toggle.hidden {
+        display: none;
+      }
+      
       .shader-apply-btn, .shader-apply-all-btn, .shader-reset-btn {
         padding: 6px 12px;
         border: none;
@@ -357,7 +391,9 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
     
     // Shader selection
     this.selectEl.addEventListener('change', () => {
-      this.loadShader(this.selectEl.value);
+      const selectedOption = this.selectEl.selectedOptions[0];
+      const backend = (selectedOption?.dataset.backend || 'webgl') as ShaderBackend;
+      this.loadShader(this.selectEl.value, backend);
     });
     
     // Shader type toggle
@@ -468,23 +504,39 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
     }
   }
 
-  private loadShader(name: string): void {
+  private loadShader(name: string, backend: ShaderBackend): void {
     this.selectedShader = name || null;
+    this.selectedBackend = backend;
+    
+    // Hide VS/FS toggle for WGSL shaders (they have a single source)
+    this.shaderTypeToggle.classList.toggle('hidden', backend === 'webgpu');
+    
     this.loadShaderSource();
   }
   
   private loadShaderSource(): void {
-    const source = this.selectedShader 
-      ? getShaderSource(this.selectedShader, this.selectedShaderType) 
-      : null;
+    let source: string | null = null;
+    
+    if (this.selectedShader) {
+      if (this.selectedBackend === 'webgpu') {
+        source = getWGSLShaderSource(this.selectedShader);
+      } else {
+        source = getShaderSource(this.selectedShader, this.selectedShaderType);
+      }
+    }
     
     if (source && this.editorView) {
       this.editorView.dispatch({
         changes: { from: 0, to: this.editorView.state.doc.length, insert: source },
       });
       this.updateModifiedIndicator();
-      const typeLabel = this.selectedShaderType === 'vertex' ? 'VS' : 'FS';
-      this.statusText.textContent = `Loaded: ${this.selectedShader} (${typeLabel})`;
+      
+      if (this.selectedBackend === 'webgpu') {
+        this.statusText.textContent = `Loaded: ${this.selectedShader} (WGSL)`;
+      } else {
+        const typeLabel = this.selectedShaderType === 'vertex' ? 'VS' : 'FS';
+        this.statusText.textContent = `Loaded: ${this.selectedShader} (${typeLabel})`;
+      }
     } else if (this.editorView) {
       this.editorView.dispatch({
         changes: { from: 0, to: this.editorView.state.doc.length, insert: '// Select a shader to edit...' },
@@ -505,16 +557,25 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
       return;
     }
     
-    const result = compileAndUpdate(
-      this.selectedShader, 
-      this.getEditorContent(),
-      this.selectedShaderType
-    );
+    let result;
+    if (this.selectedBackend === 'webgpu') {
+      result = compileAndUpdateWGSL(this.selectedShader, this.getEditorContent());
+    } else {
+      result = compileAndUpdate(
+        this.selectedShader, 
+        this.getEditorContent(),
+        this.selectedShaderType
+      );
+    }
     
     if (result.success) {
       this.hideError();
-      const typeLabel = this.selectedShaderType === 'vertex' ? 'VS' : 'FS';
-      this.statusText.textContent = `✓ Applied ${typeLabel}: ${this.selectedShader}`;
+      if (this.selectedBackend === 'webgpu') {
+        this.statusText.textContent = `✓ Applied WGSL: ${this.selectedShader}`;
+      } else {
+        const typeLabel = this.selectedShaderType === 'vertex' ? 'VS' : 'FS';
+        this.statusText.textContent = `✓ Applied ${typeLabel}: ${this.selectedShader}`;
+      }
       this.updateModifiedIndicator();
     } else {
       this.showError(result.error || 'Unknown error');
@@ -546,12 +607,21 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   private resetCurrentShader(): void {
     if (!this.selectedShader) return;
     
-    const result = resetShader(this.selectedShader, this.selectedShaderType);
+    let result;
+    if (this.selectedBackend === 'webgpu') {
+      result = resetWGSLShader(this.selectedShader);
+    } else {
+      result = resetShader(this.selectedShader, this.selectedShaderType);
+    }
     
     if (result.success) {
       this.loadShaderSource();
-      const typeLabel = this.selectedShaderType === 'vertex' ? 'VS' : 'FS';
-      this.statusText.textContent = `Reset ${typeLabel}: ${this.selectedShader}`;
+      if (this.selectedBackend === 'webgpu') {
+        this.statusText.textContent = `Reset WGSL: ${this.selectedShader}`;
+      } else {
+        const typeLabel = this.selectedShaderType === 'vertex' ? 'VS' : 'FS';
+        this.statusText.textContent = `Reset ${typeLabel}: ${this.selectedShader}`;
+      }
     } else {
       this.showError(result.error || 'Unknown error');
     }
@@ -567,7 +637,16 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   }
 
   private updateModifiedIndicator(): void {
-    if (this.selectedShader && isModified(this.selectedShader, this.selectedShaderType)) {
+    let modified = false;
+    if (this.selectedShader) {
+      if (this.selectedBackend === 'webgpu') {
+        modified = isWGSLModified(this.selectedShader);
+      } else {
+        modified = isModified(this.selectedShader, this.selectedShaderType);
+      }
+    }
+    
+    if (modified) {
       this.modifiedIndicator.classList.add('visible');
     } else {
       this.modifiedIndicator.classList.remove('visible');
@@ -599,14 +678,40 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   }
 
   refresh(): void {
-    const shaders = getShaderList();
+    const allShaders = getAllShaderList();
     const currentValue = this.selectEl.value;
     
-    this.selectEl.innerHTML = '<option value="">-- Select Shader --</option>' +
-      shaders.map((name: string) => `<option value="${name}">${name}</option>`).join('');
+    // Build options with backend badges
+    let optionsHtml = '<option value="">-- Select Shader --</option>';
     
-    if (currentValue && shaders.includes(currentValue)) {
-      this.selectEl.value = currentValue;
+    // Group by backend
+    const webglShaders = allShaders.filter(s => s.backend === 'webgl');
+    const webgpuShaders = allShaders.filter(s => s.backend === 'webgpu');
+    
+    if (webglShaders.length > 0) {
+      optionsHtml += '<optgroup label="WebGL (GLSL)">';
+      optionsHtml += webglShaders.map(s => 
+        `<option value="${s.name}" data-backend="webgl">${s.name}</option>`
+      ).join('');
+      optionsHtml += '</optgroup>';
+    }
+    
+    if (webgpuShaders.length > 0) {
+      optionsHtml += '<optgroup label="WebGPU (WGSL)">';
+      optionsHtml += webgpuShaders.map(s => 
+        `<option value="${s.name}" data-backend="webgpu">${s.name}</option>`
+      ).join('');
+      optionsHtml += '</optgroup>';
+    }
+    
+    this.selectEl.innerHTML = optionsHtml;
+    
+    // Restore selection if possible
+    if (currentValue) {
+      const matchingShader = allShaders.find(s => s.name === currentValue);
+      if (matchingShader) {
+        this.selectEl.value = currentValue;
+      }
     }
   }
 

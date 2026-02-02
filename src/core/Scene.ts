@@ -263,6 +263,36 @@ export class Scene {
   }
   
   /**
+   * Add a pre-created SceneObject to the scene (for objects like GPUTerrainSceneObject)
+   * Unlike addPrimitive/addObject/addTerrain, this doesn't create the object - it just registers it
+   */
+  addSceneObject(obj: AnySceneObject): void {
+    // Use the object's existing ID
+    const id = obj.id;
+    
+    // Add to internal map
+    this.objects.set(id, obj);
+    
+    // Add to scene graph for spatial queries
+    // GPUTerrainSceneObject has getBoundingBox, others have getBounds
+    const bounds = (obj as any).getBoundingBox?.() ?? (obj as any).getBounds?.() ?? null;
+    const localBounds = bounds ? {
+      min: [bounds.min[0], bounds.min[1], bounds.min[2]] as [number, number, number],
+      max: [bounds.max[0], bounds.max[1], bounds.max[2]] as [number, number, number],
+    } : undefined;
+    
+    this.sceneGraph.add(id, {
+      position: [obj.position[0], obj.position[1], obj.position[2]],
+      rotation: [obj.rotation[0], obj.rotation[1], obj.rotation[2]],
+      scale: [obj.scale[0], obj.scale[1], obj.scale[2]],
+      localBounds,
+      userData: { name: obj.name, objectType: obj.objectType },
+    });
+    
+    this.callbacks.onObjectAdded?.(obj);
+  }
+  
+  /**
    * Add a terrain object to the scene (async - generates terrain)
    */
   async addTerrain(name?: string | null, params?: Partial<TerrainParams>): Promise<TerrainObject | null> {

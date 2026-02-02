@@ -15,9 +15,11 @@ import type {
 } from '../index';
 import { ContactShadowRenderer } from '../ContactShadowRenderer';
 import { TerrainRenderer, TerrainShadowRenderer } from '../TerrainRenderer';
+import { CDLODRenderer } from '../../terrain';
 import type { TerrainObject } from '../../sceneObjects';
 import type { DirectionalLightParams } from '../../sceneObjects/lights';
 import type { Vec3 } from '../../types';
+import { vec3 } from 'gl-matrix';
 
 /**
  * Forward rendering pipeline configuration
@@ -203,10 +205,25 @@ class SkyPass extends RenderPass {
  */
 class OpaquePass extends RenderPass {
   private terrainRenderer: TerrainRenderer;
+  private cdlodRenderer: CDLODRenderer | null = null;
   
   constructor(gl: WebGL2RenderingContext) {
     super(gl, 'opaque', PassPriority.OPAQUE);
     this.terrainRenderer = new TerrainRenderer(gl);
+  }
+  
+  /**
+   * Get or create CDLODRenderer (lazy initialization)
+   */
+  private getCDLODRenderer(): CDLODRenderer {
+    if (!this.cdlodRenderer) {
+      this.cdlodRenderer = new CDLODRenderer(this.gl, {
+        worldSize: 200,
+        maxLodLevels: 6,
+        minNodeSize: 8,
+      });
+    }
+    return this.cdlodRenderer;
   }
   
   execute(context: RenderContext, objects: RenderObject[]): void {
@@ -223,19 +240,42 @@ class OpaquePass extends RenderPass {
     } as any;
     
     for (const obj of objects) {
+      // Selection is inactive by default in fpsMode
+      const isSelected = obj.isSelected && !context.settings.fpsMode;
+
       // Handle terrain objects specially
       if (obj.terrain) {
         const terrain = obj.terrain;
         
-        // Choose between clipmap (camera-centered LOD) or static mesh rendering
-        if (terrain.clipmapEnabled) {
+        // Choose rendering mode: CDLOD → Clipmap → Static mesh
+        if (terrain.cdlodEnabled) {
+          // Use CDLOD quadtree-based rendering
+          const cdlod = this.getCDLODRenderer();
+          const cameraVec3 = vec3.fromValues(context.cameraPos[0], context.cameraPos[1], context.cameraPos[2]);
+          
+          cdlod.render(
+            context.vpMatrix,
+            obj.modelMatrix,
+            cameraVec3,
+            {
+              worldSize: terrain.params.worldSize,
+              heightScale: terrain.params.noise.heightScale,
+              resolution: terrain.params.resolution,
+              heightmapTexture: terrain.getHeightmapTexture(),
+              erosionTexture: terrain.getErosionTexture(),
+              material: terrain.params.material,
+            },
+            isSelected,
+            completeLightParams
+          );
+        } else if (terrain.clipmapEnabled) {
           // Use clipmap rendering with camera-centered LOD rings
           this.terrainRenderer.renderClipmap(
             terrain,
             context.vpMatrix,
             obj.modelMatrix,
             context.cameraPos,
-            obj.isSelected,
+            isSelected,
             completeLightParams
           );
         } else {
@@ -244,7 +284,7 @@ class OpaquePass extends RenderPass {
             terrain,
             context.vpMatrix,
             obj.modelMatrix,
-            obj.isSelected,
+            isSelected,
             context.settings.wireframeMode,
             completeLightParams
           );
@@ -270,7 +310,7 @@ class OpaquePass extends RenderPass {
       obj.renderer.render(
         context.vpMatrix,
         obj.modelMatrix,
-        obj.isSelected,
+        isSelected,
         context.settings.wireframeMode,
         completeLightParams,
         context.windParams,

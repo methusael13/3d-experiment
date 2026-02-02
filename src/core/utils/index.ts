@@ -17,3 +17,6 @@ export {
   type GeometryData,
   type PrimitiveConfig,
 } from './primitiveGeometry';
+
+// Debounce utility
+export { debounce } from './debounce';

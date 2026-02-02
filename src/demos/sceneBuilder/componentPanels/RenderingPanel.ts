@@ -1,13 +1,26 @@
 /**
- * RenderingPanel - Controls rendering settings like shadows, contact shadows, etc.
+ * RenderingPanel - Controls rendering settings like shadows, WebGPU mode, etc.
+ * 
+ * WebGPU Shadow System Parameters:
+ * - resolution: Shadow map resolution (512-4096)
+ * - shadowRadius: Coverage radius around camera (50-500m)
+ * - shadowEnabled: Enable/disable shadows
+ * - softShadows: Use PCF filtering for soft edges
  */
 
 import type { PanelContext } from './panelContext';
-import type { ContactShadowSettings } from '../../../core/renderers';
 
 export interface RenderingPanelAPI {
   update(): void;
   destroy(): void;
+}
+
+/** WebGPU shadow configuration (matches ShadowConfig) */
+export interface WebGPUShadowSettings {
+  enabled: boolean;
+  resolution: number;
+  shadowRadius: number;
+  softShadows: boolean;
 }
 
 /**
@@ -30,9 +43,14 @@ export class RenderingPanel implements RenderingPanelAPI {
     this.panelEl.innerHTML = `
       <h3>Rendering</h3>
       <div class="section-content">
-        <!-- Shadow Map Section -->
-        <div class="panel-group">
-          <div class="panel-group-title">Shadow Map</div>
+        <!-- WebGPU Shadows Section -->
+        <div class="panel-group" id="webgpu-shadow-group">
+          <div class="panel-group-title">Shadows (WebGPU)</div>
+          
+          <label class="checkbox-label">
+            <input type="checkbox" id="shadow-enabled" checked>
+            Shadows Enabled
+          </label>
           
           <div class="transform-group compact-slider">
             <div class="slider-header">
@@ -46,9 +64,17 @@ export class RenderingPanel implements RenderingPanelAPI {
             </select>
           </div>
           
+          <div class="transform-group compact-slider">
+            <div class="slider-header">
+              <label>Shadow Radius</label>
+              <span class="slider-value" id="shadow-radius-val">200</span>
+            </div>
+            <input type="range" class="slider-input" id="shadow-radius" min="50" max="500" step="10" value="200">
+          </div>
+          
           <label class="checkbox-label">
-            <input type="checkbox" id="shadow-enabled" checked>
-            Shadows Enabled
+            <input type="checkbox" id="shadow-soft" checked>
+            Soft Shadows (PCF)
           </label>
           
           <label class="checkbox-label">
@@ -57,49 +83,14 @@ export class RenderingPanel implements RenderingPanelAPI {
           </label>
         </div>
         
-        <!-- Contact Shadows Section -->
+        <!-- WebGPU Mode -->
         <div class="panel-group">
-          <div class="panel-group-title">Contact Shadows (SSCS)</div>
-          
+          <div class="panel-group-title">🧪 WebGPU Mode</div>
           <label class="checkbox-label">
-            <input type="checkbox" id="contact-shadow-enabled" checked>
-            Enabled
+            <input type="checkbox" id="webgpu-test-mode">
+            Enable WebGPU Terrain
           </label>
-          
-          <div class="transform-group compact-slider" id="contact-shadow-settings">
-            <div class="slider-header">
-              <label>Quality</label>
-            </div>
-            <select id="contact-shadow-steps" style="width: 100%; background: #333; color: #f0f0f0; border: 1px solid #555; border-radius: 3px; padding: 4px; font-size: 11px;">
-              <option value="8">Low (8 steps)</option>
-              <option value="16" selected>Medium (16 steps)</option>
-              <option value="32">High (32 steps)</option>
-            </select>
-          </div>
-          
-          <div class="transform-group compact-slider">
-            <div class="slider-header">
-              <label>Max Distance</label>
-              <span class="slider-value" id="contact-shadow-distance-val">1.0</span>
-            </div>
-            <input type="range" class="slider-input" id="contact-shadow-distance" min="0.1" max="3" step="0.1" value="1">
-          </div>
-          
-          <div class="transform-group compact-slider">
-            <div class="slider-header">
-              <label>Intensity</label>
-              <span class="slider-value" id="contact-shadow-intensity-val">0.8</span>
-            </div>
-            <input type="range" class="slider-input" id="contact-shadow-intensity" min="0" max="1" step="0.05" value="0.8">
-          </div>
-          
-          <div class="transform-group compact-slider">
-            <div class="slider-header">
-              <label>Thickness</label>
-              <span class="slider-value" id="contact-shadow-thickness-val">0.10</span>
-            </div>
-            <input type="range" class="slider-input" id="contact-shadow-thickness" min="0.01" max="0.5" step="0.01" value="0.1">
-          </div>
+          <div id="webgpu-status" style="font-size: 10px; color: #888; margin-top: 4px;"></div>
         </div>
         
         <!-- Future: Anti-aliasing, AO, Bloom -->
@@ -128,17 +119,31 @@ export class RenderingPanel implements RenderingPanelAPI {
   private setupEventListeners(): void {
     if (!this.panelEl) return;
 
-    // Shadow resolution
-    const resolutionSelect = this.panelEl.querySelector('#shadow-resolution') as HTMLSelectElement;
-    resolutionSelect?.addEventListener('change', () => {
-      const res = parseInt(resolutionSelect.value, 10);
-      this.ctx.setShadowResolution?.(res);
-    });
-
     // Shadow enabled
     const shadowEnabled = this.panelEl.querySelector('#shadow-enabled') as HTMLInputElement;
     shadowEnabled?.addEventListener('change', () => {
-      this.ctx.setShadowEnabled?.(shadowEnabled.checked);
+      this.updateShadowSettings();
+      this.toggleShadowUI(shadowEnabled.checked);
+    });
+
+    // Shadow resolution
+    const resolutionSelect = this.panelEl.querySelector('#shadow-resolution') as HTMLSelectElement;
+    resolutionSelect?.addEventListener('change', () => {
+      this.updateShadowSettings();
+    });
+
+    // Shadow radius
+    const radiusSlider = this.panelEl.querySelector('#shadow-radius') as HTMLInputElement;
+    const radiusVal = this.panelEl.querySelector('#shadow-radius-val') as HTMLElement;
+    radiusSlider?.addEventListener('input', () => {
+      radiusVal.textContent = radiusSlider.value;
+      this.updateShadowSettings();
+    });
+
+    // Soft shadows
+    const softShadows = this.panelEl.querySelector('#shadow-soft') as HTMLInputElement;
+    softShadows?.addEventListener('change', () => {
+      this.updateShadowSettings();
     });
 
     // Shadow debug thumbnail
@@ -147,76 +152,82 @@ export class RenderingPanel implements RenderingPanelAPI {
       this.ctx.setShowShadowThumbnail?.(shadowDebug.checked);
     });
 
-    // Contact shadow enabled
-    const contactEnabled = this.panelEl.querySelector('#contact-shadow-enabled') as HTMLInputElement;
-    contactEnabled?.addEventListener('change', () => {
-      this.updateContactShadowSettings();
-      this.toggleContactShadowUI(contactEnabled.checked);
-    });
-
-    // Contact shadow steps
-    const contactSteps = this.panelEl.querySelector('#contact-shadow-steps') as HTMLSelectElement;
-    contactSteps?.addEventListener('change', () => this.updateContactShadowSettings());
-
-    // Contact shadow distance
-    const distanceSlider = this.panelEl.querySelector('#contact-shadow-distance') as HTMLInputElement;
-    const distanceVal = this.panelEl.querySelector('#contact-shadow-distance-val') as HTMLElement;
-    distanceSlider?.addEventListener('input', () => {
-      distanceVal.textContent = parseFloat(distanceSlider.value).toFixed(1);
-      this.updateContactShadowSettings();
-    });
-
-    // Contact shadow intensity
-    const intensitySlider = this.panelEl.querySelector('#contact-shadow-intensity') as HTMLInputElement;
-    const intensityVal = this.panelEl.querySelector('#contact-shadow-intensity-val') as HTMLElement;
-    intensitySlider?.addEventListener('input', () => {
-      intensityVal.textContent = parseFloat(intensitySlider.value).toFixed(1);
-      this.updateContactShadowSettings();
-    });
-
-    // Contact shadow thickness
-    const thicknessSlider = this.panelEl.querySelector('#contact-shadow-thickness') as HTMLInputElement;
-    const thicknessVal = this.panelEl.querySelector('#contact-shadow-thickness-val') as HTMLElement;
-    thicknessSlider?.addEventListener('input', () => {
-      thicknessVal.textContent = parseFloat(thicknessSlider.value).toFixed(2);
-      this.updateContactShadowSettings();
+    // WebGPU test mode
+    const webgpuTestCheckbox = this.panelEl.querySelector('#webgpu-test-mode') as HTMLInputElement;
+    const webgpuStatus = this.panelEl.querySelector('#webgpu-status') as HTMLElement;
+    webgpuTestCheckbox?.addEventListener('change', async () => {
+      if (webgpuTestCheckbox.checked) {
+        webgpuStatus.textContent = 'Initializing WebGPU...';
+        webgpuStatus.style.color = '#ff9';
+        
+        const success = await this.ctx.enableWebGPUTest?.();
+        if (success) {
+          webgpuStatus.textContent = '✅ WebGPU active - rendering terrain';
+          webgpuStatus.style.color = '#9f9';
+          // Show shadow controls
+          this.showWebGPUShadowControls(true);
+        } else {
+          webgpuStatus.textContent = '❌ WebGPU initialization failed';
+          webgpuStatus.style.color = '#f99';
+          webgpuTestCheckbox.checked = false;
+        }
+      } else {
+        this.ctx.disableWebGPUTest?.();
+        webgpuStatus.textContent = 'WebGPU disabled';
+        webgpuStatus.style.color = '#888';
+        // Shadow controls still visible but may be for legacy WebGL
+      }
     });
   }
 
-  private updateContactShadowSettings(): void {
+  /** Update shadow settings and notify context */
+  private updateShadowSettings(): void {
     if (!this.panelEl) return;
 
-    const enabled = (this.panelEl.querySelector('#contact-shadow-enabled') as HTMLInputElement)?.checked ?? true;
-    const steps = parseInt((this.panelEl.querySelector('#contact-shadow-steps') as HTMLSelectElement)?.value ?? '16', 10);
-    const maxDistance = parseFloat((this.panelEl.querySelector('#contact-shadow-distance') as HTMLInputElement)?.value ?? '1');
-    const intensity = parseFloat((this.panelEl.querySelector('#contact-shadow-intensity') as HTMLInputElement)?.value ?? '0.8');
-    const thickness = parseFloat((this.panelEl.querySelector('#contact-shadow-thickness') as HTMLInputElement)?.value ?? '0.1');
+    const enabled = (this.panelEl.querySelector('#shadow-enabled') as HTMLInputElement)?.checked ?? true;
+    const resolution = parseInt((this.panelEl.querySelector('#shadow-resolution') as HTMLSelectElement)?.value ?? '2048', 10);
+    const shadowRadius = parseFloat((this.panelEl.querySelector('#shadow-radius') as HTMLInputElement)?.value ?? '200');
+    const softShadows = (this.panelEl.querySelector('#shadow-soft') as HTMLInputElement)?.checked ?? true;
 
-    const settings: ContactShadowSettings = {
+    const settings: WebGPUShadowSettings = {
       enabled,
-      steps,
-      maxDistance,
-      intensity,
-      thickness,
+      resolution,
+      shadowRadius,
+      softShadows,
     };
 
-    this.ctx.setContactShadowSettings?.(settings);
+    // Call context methods
+    this.ctx.setShadowEnabled?.(enabled);
+    this.ctx.setShadowResolution?.(resolution);
+    this.ctx.setWebGPUShadowSettings?.(settings);
   }
 
-  private toggleContactShadowUI(enabled: boolean): void {
+  /** Toggle shadow UI enabled state */
+  private toggleShadowUI(enabled: boolean): void {
     if (!this.panelEl) return;
     
-    const settingsContainer = this.panelEl.querySelector('#contact-shadow-settings')?.parentElement;
-    const rows = this.panelEl.querySelectorAll('.panel-group:nth-child(2) .panel-row:not(:first-child)');
-    rows.forEach((row) => {
-      (row as HTMLElement).style.opacity = enabled ? '1' : '0.5';
-      const inputs = row.querySelectorAll('input, select');
-      inputs.forEach((input) => {
-        if (input.id !== 'contact-shadow-enabled') {
-          (input as HTMLInputElement | HTMLSelectElement).disabled = !enabled;
-        }
-      });
+    const shadowGroup = this.panelEl.querySelector('#webgpu-shadow-group');
+    if (!shadowGroup) return;
+    
+    const controls = shadowGroup.querySelectorAll('input:not(#shadow-enabled), select');
+    controls.forEach((control) => {
+      (control as HTMLInputElement | HTMLSelectElement).disabled = !enabled;
     });
+    
+    const sliders = shadowGroup.querySelectorAll('.transform-group');
+    sliders.forEach((slider) => {
+      (slider as HTMLElement).style.opacity = enabled ? '1' : '0.5';
+    });
+  }
+
+  /** Show/hide WebGPU-specific shadow controls */
+  private showWebGPUShadowControls(show: boolean): void {
+    if (!this.panelEl) return;
+    
+    const shadowGroup = this.panelEl.querySelector('#webgpu-shadow-group');
+    if (shadowGroup) {
+      (shadowGroup as HTMLElement).style.display = show ? 'block' : 'block'; // Always show for now
+    }
   }
 
   update(): void {

@@ -35,6 +35,7 @@ import { FPSCameraController } from './FPSCameraController';
 import type { GizmoMode, GizmoOrientation } from './gizmos';
 import type { Vec3 } from '../../core/types';
 import type { TerrainObject } from '../../core/sceneObjects';
+import { GPUTerrainSceneObject } from '../../core/sceneObjects';
 
 // ==================== Types ====================
 
@@ -92,6 +93,9 @@ export class SceneBuilder implements SceneBuilderDemo {
   private fpsController: FPSCameraController | null = null;
   private fpsMode = false;
   private lastFrameTime = 0;
+  
+  // WebGPU terrain object (added to scene when WebGPU mode enabled)
+  private gpuTerrainObject: GPUTerrainSceneObject | null = null;
   
   constructor(container: HTMLElement, options: SceneBuilderOptions = {}) {
     this.container = container;
@@ -179,10 +183,6 @@ export class SceneBuilder implements SceneBuilderDemo {
     if (!this.viewport) return;
     
     const lightParams = this.lightingManager.getLightParams(null) as any;
-    if (lightParams.type === 'directional') {
-      lightParams.elevation = this.lightingManager.sunLight.elevation;
-    }
-    
     this.viewport.setLightParams(lightParams);
     this.viewport.setLightingState({
       shadowResolution: this.lightingManager.sunLight.shadowResolution,
@@ -884,12 +884,54 @@ export class SceneBuilder implements SceneBuilderDemo {
       onLightingChanged: () => {
         this.updateLightingState();
       },
+      enableWebGPUTest: async () => {
+        const success = await this.viewport?.enableWebGPUTest() ?? false;
+        if (success && this.scene) {
+          // Create GPUTerrainSceneObject and add to scene for selection
+          this.gpuTerrainObject = new GPUTerrainSceneObject();
+          const terrainManager = this.viewport?.getWebGPUTerrainManager() ?? null;
+          this.gpuTerrainObject.setTerrainManager(terrainManager);
+          
+          // Add to scene so it appears in ObjectsPanel
+          this.scene.addSceneObject(this.gpuTerrainObject);
+          
+          // Refresh panels
+          this.objectsPanel?.update();
+          this.updateRenderData();
+          
+          // Update camera bounds for WebGPU terrain
+          if (terrainManager) {
+            const config = terrainManager.getConfig();
+            const diagonal = config.worldSize * Math.SQRT2 * 0.5;
+            const maxHeight = config.heightScale;
+            const sceneRadius = Math.sqrt(diagonal * diagonal + maxHeight * maxHeight);
+            this.viewport?.updateCameraForSceneBounds(sceneRadius);
+          }
+        }
+        return success;
+      },
+      disableWebGPUTest: () => {
+        // Remove GPU terrain from scene
+        if (this.gpuTerrainObject && this.scene) {
+          this.scene.removeObject(this.gpuTerrainObject.id);
+          this.gpuTerrainObject = null;
+          this.objectsPanel?.update();
+          this.updateRenderData();
+        }
+        this.viewport?.disableWebGPUTest();
+      },
       onTerrainBoundsChanged: (worldSize: number, heightScale: number) => {
         // Calculate scene radius from terrain bounds: diagonal of XZ plane + max height
         const diagonal = worldSize * Math.SQRT2 * 0.5; // Half diagonal
         const maxHeight = worldSize * heightScale; // Height is scaled by worldSize
         const sceneRadius = Math.sqrt(diagonal * diagonal + maxHeight * maxHeight);
         this.viewport?.updateCameraForSceneBounds(sceneRadius);
+      },
+      setWebGPUShadowSettings: (settings) => {
+        this.viewport?.setWebGPUShadowSettings(settings);
+      },
+      setWebGPUWaterConfig: (config) => {
+        this.viewport?.setWebGPUWaterConfig(config);
       },
     });
     
