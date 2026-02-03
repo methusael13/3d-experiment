@@ -1,0 +1,79 @@
+/* Material Panel Styles */
+
+.panel {
+  background: var(--sb-bg-panel);
+  border-radius: var(--sb-radius-lg);
+  padding: 10px 12px;
+}
+
+.title {
+  font-size: var(--sb-font-sm);
+  font-weight: bold;
+  color: var(--sb-text-muted);
+  margin: 0 0 12px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.noSelection {
+  font-size: var(--sb-font-sm);
+  color: var(--sb-text-muted);
+  text-align: center;
+  padding: 20px;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.presets {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sb-border);
+}
+
+.presetBtn {
+  padding: 6px 10px;
+  background: var(--sb-bg-hover);
+  color: var(--sb-text-secondary);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  font-size: var(--sb-font-xs);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.presetBtn:hover {
+  background: var(--sb-bg-panel);
+  color: var(--sb-text-primary);
+}
+
+/* GLB model read-only info */
+.glbInfo {
+  padding: 8px;
+  background: var(--sb-bg-input);
+  border-radius: var(--sb-radius-sm);
+}
+
+.glbNotice {
+  font-size: var(--sb-font-xs);
+  color: var(--sb-accent);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.glbProps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.glbProp {
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+}

@@ -1,6 +1,7 @@
 import './style.css';
 import { createModelViewerDemo } from './demos/modelViewer/index';
 import { createSceneBuilderDemo } from './demos/sceneBuilder/SceneBuilder';
+import { createPreactSceneBuilderDemo } from './demos/sceneBuilder/PreactSceneBuilderDemo';
 
 // Canvas dimensions
 const CANVAS_WIDTH = 1200;
@@ -19,6 +20,12 @@ const DEMOS = [
     name: 'Scene Builder',
     description: 'Import and position 3D models to create composite scenes',
     create: createSceneBuilderDemo,
+  },
+  {
+    id: 'scene-builder-preact',
+    name: 'Scene Builder (Preact)',
+    description: 'Import and position 3D models - Preact UI (experimental)',
+    create: createPreactSceneBuilderDemo,
   },
 ];
 

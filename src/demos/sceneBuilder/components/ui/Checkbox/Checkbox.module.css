@@ -1,0 +1,30 @@
+.container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  margin-bottom: 8px;
+  font-size: var(--sb-font-sm);
+}
+
+.container:hover .label {
+  color: var(--sb-text-primary);
+}
+
+.checkbox {
+  width: 12px;
+  height: 12px;
+  accent-color: var(--sb-accent);
+  cursor: pointer;
+}
+
+.checkbox:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.label {
+  color: var(--sb-text-secondary);
+  transition: color 0.15s;
+  user-select: none;
+}

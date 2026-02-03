@@ -9,6 +9,10 @@
     "isolatedModules": true,
     "noEmit": true,
     
+    /* JSX Support for Preact */
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+    
     /* JavaScript Support */
     "allowJs": true,
     "checkJs": false,

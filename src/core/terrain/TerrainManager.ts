@@ -451,6 +451,16 @@ export class TerrainManager implements ShadowCaster {
   getGeometryBuffers(): ReturnType<CDLODRendererGPU['getGeometryBuffers']> {
     return this.renderer?.getGeometryBuffers() ?? null;
   }
+
+  /**
+   * Calculate scene radius from terrain bounds: diagonal of XZ plane + max height
+   */
+  getApproximateSceneRadius(): number {
+    const { worldSize, heightScale } = this.config;
+    const diagonal = worldSize * Math.SQRT2 * 0.5; // Half diagonal
+    const maxHeight = worldSize * heightScale; // Height is scaled by worldSize
+    return Math.sqrt(diagonal * diagonal + maxHeight * maxHeight);
+  }
   
   // ============ ShadowCaster Implementation ============
   

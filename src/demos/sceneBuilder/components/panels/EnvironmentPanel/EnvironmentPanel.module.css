@@ -1,0 +1,303 @@
+/* Environment Panel Styles */
+
+/* Tab container */
+.envTabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.envTab {
+  flex: 1;
+  padding: 6px 12px;
+  background: var(--sb-bg-hover);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  color: var(--sb-text-muted);
+  font-size: var(--sb-font-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.envTab:hover {
+  background: var(--sb-bg-panel);
+  color: var(--sb-text-secondary);
+}
+
+.envTab.active {
+  background: var(--sb-accent);
+  border-color: var(--sb-accent);
+  color: #fff;
+}
+
+/* Light mode toggle */
+.lightModeToggle {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.lightModeBtn {
+  flex: 1;
+  padding: 6px 12px;
+  background: var(--sb-bg-hover);
+  color: var(--sb-text-muted);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  font-size: var(--sb-font-sm);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.lightModeBtn:hover {
+  background: var(--sb-bg-panel);
+  color: var(--sb-text-primary);
+}
+
+.lightModeBtn.active {
+  background: var(--sb-accent);
+  color: #fff;
+  border-color: var(--sb-accent);
+}
+
+/* Sun and HDR controls */
+.sunControls,
+.hdrControls {
+  margin-bottom: 12px;
+}
+
+.toneMappingSection {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--sb-border);
+}
+
+/* Wind tab styles */
+.windTab {
+  padding-top: 4px;
+}
+
+.windEnableRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.windIndicator {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sb-border);
+}
+
+.windIndicator.active {
+  background: #4f4;
+  box-shadow: 0 0 4px #4f4;
+}
+
+.windDirectionIndicator {
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--sb-border);
+  border-radius: 50%;
+  position: relative;
+  margin: 8px auto;
+  background: var(--sb-bg-input);
+}
+
+.windDirectionArrow {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 16px;
+  height: 2px;
+  background: var(--sb-accent);
+  transform-origin: left center;
+  transform: translateY(-50%);
+  border-radius: 1px;
+}
+
+.windDirectionArrow::after {
+  content: '';
+  position: absolute;
+  right: -2px;
+  top: -3px;
+  border: 4px solid transparent;
+  border-left: 6px solid var(--sb-accent);
+}
+
+/* HDR Gallery styles */
+.hdrGallery {
+  margin-top: 8px;
+}
+
+.hdrFilename {
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+  margin-bottom: 8px;
+  padding: 4px 8px;
+  background: var(--sb-bg-input);
+  border-radius: var(--sb-radius-sm);
+}
+
+.hdrGalleryLabel {
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+  margin-bottom: 6px;
+}
+
+.hdrGalleryGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--sb-bg-input);
+  border-radius: var(--sb-radius-sm);
+}
+
+.hdrGalleryItem {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: var(--sb-radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: border-color 0.15s, transform 0.15s;
+  background: var(--sb-bg-hover);
+}
+
+.hdrGalleryItem:hover {
+  border-color: var(--sb-border-hover);
+  transform: scale(1.02);
+}
+
+.hdrGalleryItem.selected {
+  border-color: var(--sb-accent);
+}
+
+.hdrGalleryItem.loading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.hdrGalleryThumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hdrGalleryName {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 2px 4px;
+  background: rgba(0, 0, 0, 0.7);
+  font-size: 9px;
+  color: var(--sb-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hdrGalleryPlaceholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #2a2a2a 0%, #3a3a3a 100%);
+  color: var(--sb-text-muted);
+  font-size: 16px;
+}
+
+.hdrGalleryUpload {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: var(--sb-bg-input);
+  color: var(--sb-text-muted);
+  font-size: var(--sb-font-xs);
+  gap: 2px;
+}
+
+.hdrGalleryUploadIcon {
+  font-size: 18px;
+}
+
+.hdrLoadBtn {
+  width: 100%;
+  padding: 6px 12px;
+  margin-top: 8px;
+  background: var(--sb-accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--sb-radius-sm);
+  font-size: var(--sb-font-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.hdrLoadBtn:hover {
+  background: var(--sb-accent-hover);
+}
+
+.hdrLoadBtn:disabled {
+  background: var(--sb-border);
+  cursor: not-allowed;
+}
+
+/* HDR Progress */
+.hdrProgress {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--sb-bg-hover);
+  border-radius: var(--sb-radius-sm);
+}
+
+.hdrProgressBar {
+  height: 4px;
+  background: var(--sb-bg-input);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.hdrProgressFill {
+  height: 100%;
+  background: var(--sb-accent);
+  transition: width 0.1s ease-out;
+}
+
+.hdrProgressText {
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+}
+
+/* Lighting tab */
+.lightingTab {
+  padding-top: 4px;
+}
+
+/* Main panel container */
+.environmentPanel {
+  background: var(--sb-bg-panel);
+  border-radius: var(--sb-radius-lg);
+  padding: 10px 12px;
+}
+
+.panelTitle {
+  font-size: var(--sb-font-sm);
+  font-weight: bold;
+  color: var(--sb-text-muted);
+  margin: 0 0 12px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}

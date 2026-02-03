@@ -1,0 +1,58 @@
+/* ViewportToolbar - Floating toolbar for viewport controls */
+
+.toolbar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(26, 26, 26, 0.9);
+  border-radius: var(--sb-radius-md, 4px);
+  border: 1px solid var(--sb-border, #555);
+  backdrop-filter: blur(8px);
+  z-index: 100;
+}
+
+.group {
+  display: flex;
+  gap: 2px;
+}
+
+.button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-muted, #888);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.button:hover {
+  background: var(--sb-bg-hover, #444);
+  color: var(--sb-text-primary, #f0f0f0);
+}
+
+.button.active {
+  background: var(--sb-accent, #ff6666);
+  color: #000;
+  border-color: var(--sb-accent, #ff6666);
+}
+
+.button:active {
+  transform: scale(0.95);
+}
+
+.divider {
+  width: 1px;
+  height: 20px;
+  background: var(--sb-border, #555);
+  margin: 0 4px;
+}

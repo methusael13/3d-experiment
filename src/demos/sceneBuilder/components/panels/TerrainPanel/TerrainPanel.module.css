@@ -1,0 +1,244 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.section {
+  padding: 4px 0;
+}
+
+.sectionTitle {
+  font-size: 10px;
+  color: var(--sb-text-muted, #888);
+  margin: 12px 0 6px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sectionTitle:first-child {
+  margin-top: 0;
+}
+
+.divider {
+  height: 1px;
+  background: var(--sb-border, #444);
+  margin: 12px 0;
+}
+
+/* Seed row */
+.seedRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.seedLabel {
+  font-size: 10px;
+  color: var(--sb-text-muted, #888);
+  min-width: 35px;
+}
+
+.seedInput {
+  flex: 1;
+  padding: 5px 8px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid var(--sb-border, #555);
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-primary, #f0f0f0);
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.seedInput:focus {
+  outline: none;
+  border-color: var(--sb-accent, #4a90d9);
+}
+
+.seedBtn {
+  padding: 5px 10px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid var(--sb-border, #555);
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-secondary, #ccc);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.seedBtn:hover {
+  background: var(--sb-bg-hover, #444);
+  border-color: #666;
+}
+
+/* Preset row */
+.presetRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.presetSelect {
+  flex: 1;
+  padding: 5px 8px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid var(--sb-border, #555);
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-primary, #f0f0f0);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.presetSelect:hover {
+  border-color: #666;
+}
+
+.resetBtn {
+  padding: 5px 10px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid var(--sb-border, #555);
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-secondary, #ccc);
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.resetBtn:hover {
+  background: var(--sb-bg-hover, #444);
+  border-color: #666;
+}
+
+/* Settings group with disabled state */
+.settingsGroup {
+  transition: opacity 0.2s;
+}
+
+.settingsGroup.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Color layouts */
+.colorGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.colorRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* Resolution select */
+.select {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid var(--sb-border, #555);
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-primary, #f0f0f0);
+  font-size: 11px;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.select:hover {
+  border-color: #666;
+}
+
+/* Update button */
+.updateBtn {
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 16px;
+  background: var(--sb-accent, #4a90d9);
+  border: none;
+  border-radius: var(--sb-radius-sm, 3px);
+  color: white;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.updateBtn:hover:not(:disabled) {
+  background: #5a9fe8;
+}
+
+.updateBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Progress bar */
+.progressContainer {
+  margin-top: 8px;
+  display: none;
+}
+
+.progressContainer.active {
+  display: block;
+}
+
+.progressBar {
+  height: 4px;
+  background: var(--sb-bg-input, #333);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: #ff6666;
+  transition: width 0.1s;
+  width: 0%;
+}
+
+.progressText {
+  font-size: 10px;
+  color: var(--sb-text-muted, #888);
+  margin-top: 4px;
+  text-align: center;
+}
+
+/* Rendering mode */
+.renderingMode {
+  margin: 8px 0;
+}
+
+/* No terrain placeholder */
+.noTerrainPlaceholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.placeholderIcon {
+  font-size: 48px;
+  margin-bottom: 12px;
+  opacity: 0.6;
+}
+
+.placeholderText {
+  font-size: 14px;
+  color: var(--sb-text-secondary, #ccc);
+  margin-bottom: 8px;
+}
+
+.placeholderHint {
+  font-size: 11px;
+  color: var(--sb-text-muted, #888);
+  max-width: 200px;
+  line-height: 1.4;
+}

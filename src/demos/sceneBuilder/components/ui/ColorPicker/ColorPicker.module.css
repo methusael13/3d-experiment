@@ -1,0 +1,36 @@
+.container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.label {
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+  min-width: 80px;
+}
+
+.input {
+  width: 36px;
+  height: 24px;
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  background: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.input::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.input::-webkit-color-swatch {
+  border-radius: 2px;
+  border: none;
+}
+
+.input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

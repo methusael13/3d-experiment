@@ -1,0 +1,117 @@
+.menuBar {
+  display: flex;
+  background: #1a1a1a;
+  border-bottom: 1px solid #333;
+  margin-bottom: 16px;
+  gap: 0;
+}
+
+.menuButton {
+  position: relative;
+}
+
+.menuButton > button {
+  padding: 8px 16px;
+  background: transparent;
+  color: #ccc;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.menuButton > button:hover,
+.menuButton.open > button {
+  background: #333;
+  color: #fff;
+}
+
+.dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  min-width: 200px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #ccc;
+  position: relative;
+}
+
+.menuItem:hover {
+  background: var(--sb-accent, #4a90d9);
+  color: #fff;
+}
+
+.menuItem.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.menuItem.disabled:hover {
+  background: transparent;
+  color: #ccc;
+}
+
+.menuItem.hasSubmenu:hover {
+  background: #444;
+  color: #fff;
+}
+
+.itemLabel {
+  flex: 1;
+}
+
+.checkMark {
+  display: inline-block;
+  width: 16px;
+  margin-right: 4px;
+  text-align: center;
+}
+
+.shortcut {
+  margin-left: auto;
+  padding-left: 24px;
+  font-size: 11px;
+  color: #888;
+}
+
+.menuItem:hover .shortcut {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.submenuArrow {
+  margin-left: 12px;
+  font-size: 10px;
+  color: #888;
+}
+
+.menuItem:hover .submenuArrow {
+  color: #fff;
+}
+
+.submenu {
+  position: absolute;
+  left: 100%;
+  top: 0;
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  min-width: 160px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.separator {
+  height: 1px;
+  background: #444;
+  margin: 4px 8px;
+}

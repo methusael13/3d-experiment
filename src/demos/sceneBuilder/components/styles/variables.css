@@ -1,0 +1,39 @@
+:root {
+  /* Background colors */
+  --sb-bg-dark: #1a1a1a;
+  --sb-bg-panel: #2a2a2a;
+  --sb-bg-input: #333;
+  --sb-bg-hover: #444;
+  
+  /* Text colors */
+  --sb-text-primary: #f0f0f0;
+  --sb-text-secondary: #ccc;
+  --sb-text-muted: #888;
+  --sb-text-disabled: #666;
+  
+  /* Accent colors */
+  --sb-accent: #ff6666;
+  --sb-accent-hover: #ff8888;
+  --sb-accent-secondary: #ff9966;
+  
+  /* Border colors */
+  --sb-border: #555;
+  --sb-border-hover: #666;
+  
+  /* Spacing */
+  --sb-spacing-xs: 4px;
+  --sb-spacing-sm: 8px;
+  --sb-spacing-md: 12px;
+  --sb-spacing-lg: 16px;
+  
+  /* Border radius */
+  --sb-radius-sm: 3px;
+  --sb-radius-md: 4px;
+  --sb-radius-lg: 6px;
+  
+  /* Font sizes */
+  --sb-font-xs: 10px;
+  --sb-font-sm: 11px;
+  --sb-font-md: 12px;
+  --sb-font-lg: 13px;
+}

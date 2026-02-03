@@ -1,0 +1,64 @@
+/* SceneBuilderApp layout styles */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  color: var(--text-primary, #e0e0e0);
+  font-family: var(--font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+  font-size: var(--font-size-sm, 13px);
+}
+
+.mainContent {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidebarLeft {
+  width: 240px;
+  min-width: 200px;
+  max-width: 320px;
+  min-height: 0;
+  margin-right: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.sidebarRight {
+  width: 280px;
+  min-width: 240px;
+  max-width: 400px;
+  min-height: 0;
+  margin-left: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+/* Scrollbar styling */
+.sidebarLeft::-webkit-scrollbar,
+.sidebarRight::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sidebarLeft::-webkit-scrollbar-track,
+.sidebarRight::-webkit-scrollbar-track {
+  background: var(--bg-tertiary, #1e1e1e);
+}
+
+.sidebarLeft::-webkit-scrollbar-thumb,
+.sidebarRight::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb, #4a4a4a);
+  border-radius: 4px;
+}
+
+.sidebarLeft::-webkit-scrollbar-thumb:hover,
+.sidebarRight::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover, #5a5a5a);
+}

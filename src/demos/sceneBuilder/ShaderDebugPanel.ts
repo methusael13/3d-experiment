@@ -31,6 +31,10 @@ import {
 
 // ==================== Types ====================
 
+export interface ShaderDebugPanelOptions {
+  onClose?: () => void;
+}
+
 export interface ShaderDebugPanelAPI {
   show(): void;
   hide(): void;
@@ -45,6 +49,7 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   private container: HTMLElement;
   private panel: HTMLDivElement;
   private styleEl: HTMLStyleElement;
+  private onClose?: () => void;
   
   // Panel state
   private isVisible = false;
@@ -67,8 +72,9 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   private statusText!: HTMLSpanElement;
   private modifiedIndicator!: HTMLSpanElement;
 
-  constructor(container: HTMLElement) {
+  constructor(container: HTMLElement, options?: ShaderDebugPanelOptions) {
     this.container = container;
+    this.onClose = options?.onClose;
     
     // Create panel element
     this.panel = document.createElement('div');
@@ -126,7 +132,7 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   private getStyles(): string {
     return `
       .shader-debug-panel {
-        position: absolute;
+        position: fixed;
         right: 10px;
         top: 60px;
         width: 550px;
@@ -423,12 +429,13 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
     
     document.addEventListener('mousemove', (e: MouseEvent) => {
       if (this.isDragging) {
-        const containerRect = this.container.getBoundingClientRect();
-        let x = e.clientX - containerRect.left - this.dragOffset.x;
-        let y = e.clientY - containerRect.top - this.dragOffset.y;
+        // Use viewport coordinates since panel is position: fixed
+        let x = e.clientX - this.dragOffset.x;
+        let y = e.clientY - this.dragOffset.y;
         
-        x = Math.max(-this.panel.offsetWidth + 50, x);
-        y = Math.max(-20, y);
+        // Clamp to keep panel partially visible
+        x = Math.max(-this.panel.offsetWidth + 100, Math.min(window.innerWidth - 100, x));
+        y = Math.max(0, Math.min(window.innerHeight - 50, y));
         
         this.panel.style.left = x + 'px';
         this.panel.style.top = y + 'px';
@@ -441,6 +448,9 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
         const newHeight = Math.max(300, e.clientY - rect.top);
         this.panel.style.width = newWidth + 'px';
         this.panel.style.height = newHeight + 'px';
+
+        this.panel.style.left = rect.left + 'px';
+        this.panel.style.right = 'auto';
       }
     });
     
@@ -670,6 +680,7 @@ export class ShaderDebugPanel implements ShaderDebugPanelAPI {
   hide(): void {
     this.isVisible = false;
     this.panel.classList.remove('visible');
+    this.onClose?.();
   }
 
   toggle(): void {

@@ -1,0 +1,87 @@
+/* ViewportContainer styles */
+
+.container {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--viewport-bg, #1a1a1a);
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.container.dragging {
+  outline: 2px dashed var(--sb-accent, #ff6666);
+  outline-offset: -2px;
+}
+
+.canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* Drop overlay */
+.dropOverlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(26, 26, 26, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  pointer-events: none;
+}
+
+.dropMessage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 40px;
+  background: var(--sb-bg-panel, #2a2a2a);
+  border: 2px dashed var(--sb-accent, #ff6666);
+  border-radius: 12px;
+  color: var(--sb-text-primary, #f0f0f0);
+  font-size: 16px;
+}
+
+.dropIcon {
+  font-size: 32px;
+}
+
+.dropHint {
+  font-size: 12px;
+  color: var(--sb-text-muted, #888);
+}
+
+/* Loading overlay */
+.loadingOverlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(26, 26, 26, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  z-index: 200;
+  color: var(--sb-text-primary, #f0f0f0);
+  font-size: 14px;
+}
+
+.loadingSpinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--sb-border, #555);
+  border-top-color: var(--sb-accent, #ff6666);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

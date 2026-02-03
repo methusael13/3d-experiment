@@ -197,6 +197,7 @@ export class LightingManager {
 
 /**
  * Create a new lighting manager
+ * @deprecated
  */
 export function createLightingManager() {
   return new LightingManager();

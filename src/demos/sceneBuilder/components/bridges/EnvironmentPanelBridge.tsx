@@ -1,0 +1,71 @@
+/**
+ * EnvironmentPanelBridge - Connects EnvironmentPanel Preact component to the store
+ */
+
+import { useMemo } from 'preact/hooks';
+import { getSceneBuilderStore } from '../state';
+import { EnvironmentPanel } from '../panels';
+import { createPanelContext, type PanelContext } from '../../componentPanels/panelContext';
+import { createObjectWindSettings } from '../../wind';
+
+// ==================== Types ====================
+
+export interface ConnectedEnvironmentPanelProps {
+  // Optional external context override
+  externalContext?: PanelContext;
+}
+
+// ==================== Connected Component ====================
+
+export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironmentPanelProps = {}) {
+  const store = getSceneBuilderStore();
+  
+  // Check if managers are available
+  if (!store.lightingManager || !store.windManager || !store.gl || !store.scene) {
+    return <div style={{ padding: '8px', color: 'var(--text-secondary)' }}>Loading...</div>;
+  }
+  
+  // Create panel context if not provided externally
+  const context = useMemo(() => {
+    if (externalContext) return externalContext;
+    
+    // Create a minimal container for the context
+    const container = document.createElement('div');
+    
+    return createPanelContext({
+      container,
+      scene: store.scene!,
+      gl: store.gl!,
+      windManager: store.windManager!,
+      lightingManager: store.lightingManager!,
+      shadowRenderer: null,
+      cameraController: null,
+      objectWindSettings: store.objectWindSettings.value,
+      objectTerrainBlendSettings: store.objectTerrainBlendSettings.value,
+      
+      // Wire up callbacks
+      onLightingChanged: () => {
+        if (store.lightingManager && store.viewport) {
+          const params = store.lightingManager.getLightParams(null);
+          store.viewport.setLightParams(params);
+        }
+      },
+      setHDRTexture: (texture) => {
+        store.viewport?.setHDRTexture?.(texture);
+      },
+      onWindChanged: () => {
+        if (store.windManager && store.viewport) {
+          store.viewport.setWindParams(store.windManager.getShaderUniforms());
+        }
+      },
+    });
+  }, [store.scene, store.gl, store.windManager, store.lightingManager, externalContext]);
+  
+  return (
+    <EnvironmentPanel
+      lightingManager={store.lightingManager}
+      windManager={store.windManager}
+      context={context}
+    />
+  );
+}

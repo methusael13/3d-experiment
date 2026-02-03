@@ -1,0 +1,91 @@
+.panel {
+  background: var(--sb-bg-panel, #2a2a2a);
+  border-radius: 8px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+
+/* Header with collapse toggle */
+.header {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* Collapse arrow */
+.arrow {
+  font-size: 10px;
+  margin-right: 8px;
+  color: var(--sb-text-muted, #888);
+  transition: transform 0.2s ease;
+}
+
+.arrow.collapsed {
+  transform: rotate(-90deg);
+}
+
+/* Title */
+.title {
+  font-size: var(--sb-font-sm, 11px);
+  font-weight: bold;
+  color: var(--sb-text-muted, #888);
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex: 1;
+}
+
+/* Content area */
+.content {
+  padding: 0 12px 12px;
+  overflow-y: auto;
+  transition: max-height 0.2s ease, padding 0.2s ease, opacity 0.2s ease;
+  
+  /* Overlay scrollbar - hidden by default */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+/* Show scrollbar on hover/scroll */
+.content:hover {
+  scrollbar-color: var(--sb-scrollbar, #555) transparent;
+}
+
+/* Webkit scrollbar styling */
+.content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.content::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+
+.content:hover::-webkit-scrollbar-thumb {
+  background: var(--sb-scrollbar, #555);
+}
+
+.content::-webkit-scrollbar-thumb:hover {
+  background: var(--sb-scrollbar-hover, #666);
+}
+
+/* Collapsed state */
+.contentCollapsed {
+  max-height: 0 !important;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  overflow: hidden;
+}

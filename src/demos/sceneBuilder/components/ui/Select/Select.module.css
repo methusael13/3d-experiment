@@ -1,0 +1,40 @@
+.container {
+  margin-bottom: 6px;
+}
+
+.label {
+  display: block;
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+  margin-bottom: 3px;
+}
+
+.select {
+  width: 100%;
+  padding: 5px 8px;
+  background: var(--sb-bg-input);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  color: var(--sb-text-primary);
+  font-size: var(--sb-font-sm);
+  cursor: pointer;
+  outline: none;
+}
+
+.select:hover {
+  border-color: var(--sb-border-hover);
+}
+
+.select:focus {
+  border-color: var(--sb-accent);
+}
+
+.select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.select option {
+  background: var(--sb-bg-panel);
+  color: var(--sb-text-primary);
+}

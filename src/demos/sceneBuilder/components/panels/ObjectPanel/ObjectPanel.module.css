@@ -1,0 +1,264 @@
+/* Object Panel Styles */
+
+.panel {
+  background: var(--sb-bg-panel);
+  border-radius: var(--sb-radius-lg);
+  padding: 10px 12px;
+}
+
+.title {
+  font-size: var(--sb-font-sm);
+  font-weight: bold;
+  color: var(--sb-text-muted);
+  margin: 0 0 12px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Transform Tab */
+.transformTab {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gizmoToggle {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
+.gizmoBtn {
+  padding: 4px 8px;
+  background: var(--sb-bg-hover);
+  color: var(--sb-text-muted);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  font-size: var(--sb-font-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.gizmoBtn:hover {
+  background: var(--sb-bg-panel);
+  color: var(--sb-text-primary);
+}
+
+.gizmoBtn.active {
+  background: var(--sb-accent);
+  color: #fff;
+  border-color: var(--sb-accent);
+}
+
+.gizmoSeparator {
+  color: var(--sb-border);
+  margin: 0 4px;
+}
+
+.orientationBtn {
+  font-size: var(--sb-font-xs);
+  padding: 4px 6px;
+}
+
+.controlGroup {
+  margin-bottom: 6px;
+}
+
+.controlLabel {
+  display: block;
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+  margin-bottom: 4px;
+}
+
+.nameInput {
+  width: 100%;
+  padding: 6px 8px;
+  background: var(--sb-bg-input);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  color: var(--sb-text-primary);
+  font-size: var(--sb-font-sm);
+}
+
+.nameInput:focus {
+  outline: none;
+  border-color: var(--sb-accent);
+}
+
+.nameInput:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.deleteBtn {
+  width: 100%;
+  padding: 8px 12px;
+  margin-top: 8px;
+  background: #c44;
+  color: #fff;
+  border: none;
+  border-radius: var(--sb-radius-sm);
+  font-size: var(--sb-font-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.deleteBtn:hover {
+  background: #d55;
+}
+
+/* Edit Tab */
+.editTab {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.typeDisplay {
+  font-size: var(--sb-font-sm);
+  color: var(--sb-text-secondary);
+  padding: 4px 0;
+}
+
+.divider {
+  height: 1px;
+  background: var(--sb-border);
+  margin: 8px 0;
+}
+
+.debugSection {
+  margin-top: 4px;
+}
+
+.debugLabel {
+  display: block;
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+  margin-bottom: 4px;
+}
+
+/* Modifiers Tab */
+.modifiersTab {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modifierSection {
+  padding: 8px 0;
+}
+
+.modifierSettings {
+  margin-top: 8px;
+  padding-left: 4px;
+  transition: opacity 0.15s;
+}
+
+.modifierSettings.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.modifierDivider {
+  height: 1px;
+  background: var(--sb-border);
+  margin: 4px 0;
+}
+
+.helpText {
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+  margin-top: 4px;
+}
+
+/* Material List */
+.materialSection {
+  margin-top: 8px;
+}
+
+.materialLabel {
+  display: block;
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+  margin-bottom: 4px;
+}
+
+.materialList {
+  max-height: 120px;
+  overflow-y: auto;
+  background: var(--sb-bg-input);
+  border-radius: var(--sb-radius-sm);
+  padding: 4px;
+}
+
+.materialList::-webkit-scrollbar {
+  width: 4px;
+}
+
+.materialList::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.materialList::-webkit-scrollbar-thumb {
+  background: var(--sb-border);
+  border-radius: 2px;
+}
+
+.materialItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: var(--sb-radius-sm);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.materialItem:hover {
+  background: var(--sb-bg-hover);
+}
+
+.materialSwatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.materialName {
+  flex: 1;
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leafBadge,
+.branchBadge {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+
+.leafBadge {
+  background: #4a4;
+  color: #fff;
+}
+
+.branchBadge {
+  background: #964;
+  color: #fff;
+}
+
+.noMaterials {
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+  padding: 8px;
+  text-align: center;
+}

@@ -1,0 +1,37 @@
+.section {
+  margin-bottom: 8px;
+  border-radius: var(--sb-radius-sm);
+}
+
+.section.collapsed {
+  margin-bottom: 4px;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin: 0;
+  font-size: var(--sb-font-sm);
+  font-weight: bold;
+  color: var(--sb-text-secondary);
+  cursor: pointer;
+  user-select: none;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.title:hover {
+  color: var(--sb-text-primary);
+}
+
+.arrow {
+  font-size: 8px;
+  color: var(--sb-text-muted);
+  transition: transform 0.15s;
+}
+
+.content {
+  padding: 4px 8px 8px;
+}

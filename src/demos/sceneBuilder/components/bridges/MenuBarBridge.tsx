@@ -1,0 +1,261 @@
+/**
+ * MenuBarBridge - Connects MenuBar to the store
+ */
+
+import { useComputed } from '@preact/signals';
+import { useCallback, useMemo } from 'preact/hooks';
+import { getSceneBuilderStore } from '../state';
+import { MenuBar, type MenuDefinition, type MenuAction } from '../layout';
+import { shaderPanelVisible, toggleShaderPanel } from './ShaderDebugPanelBridge';
+
+export function ConnectedMenuBar() {
+  const store = getSceneBuilderStore();
+  
+  // Reactive state for menu items
+  const hasSelection = useComputed(() => store.selectionCount.value > 0);
+  const multiSelection = useComputed(() => store.selectionCount.value > 1);
+  const viewportState = useComputed(() => store.viewportState.value);
+  
+  // ==================== File Menu Actions ====================
+  
+  const handleSaveScene = useCallback(() => {
+    const scene = store.scene;
+    if (!scene) return;
+    
+    // Use scene's serialize method which returns the data we need
+    const sceneData = scene.serialize();
+    
+    import('../../../../loaders/SceneSerializer').then(({ SceneSerializer }) => {
+      const serializer = new SceneSerializer();
+      // Get camera state from viewport if available
+      const cameraState = {
+        angleX: 0.5,
+        angleY: 0.3,
+        distance: 5,
+        originX: 0,
+        originY: 0,
+        originZ: 0,
+        offsetX: 0,
+        offsetY: 0,
+        offsetZ: 0,
+      };
+      
+      serializer.saveScene({
+        sceneObjects: sceneData.objects,
+        cameraState: store.viewport?.getCameraState() ?? cameraState,
+        groupsArray: sceneData.groups,
+      });
+    });
+  }, [store]);
+  
+  const handleLoadScene = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file || !store.scene || !store.gl) return;
+      
+      const text = await file.text();
+      const data = JSON.parse(text);
+      
+      // Use scene's deserialize method
+      await store.scene.deserialize(data);
+      store.syncFromScene();
+    };
+    input.click();
+  }, [store]);
+  
+  // ==================== Edit Menu Actions ====================
+  
+  const handleGroupSelection = useCallback(() => {
+    const scene = store.scene;
+    if (!scene || store.selectionCount.value < 2) return;
+    scene.createGroupFromSelection();
+    store.syncFromScene();
+  }, [store]);
+  
+  const handleUngroup = useCallback(() => {
+    const scene = store.scene;
+    if (!scene || store.selectionCount.value === 0) return;
+    scene.ungroupSelection();
+    store.syncFromScene();
+  }, [store]);
+  
+  const handleDeleteSelected = useCallback(() => {
+    const scene = store.scene;
+    if (!scene) return;
+    const selectedIds = store.selectedIds.value;
+    for (const id of selectedIds) {
+      scene.removeObject(id);
+    }
+    store.syncFromScene();
+  }, [store]);
+  
+  const handleDuplicate = useCallback(() => {
+    const scene = store.scene;
+    if (!scene) return;
+    const selectedIds = store.selectedIds.value;
+    for (const id of selectedIds) {
+      scene.duplicateObject(id);
+    }
+    store.syncFromScene();
+  }, [store]);
+  
+  const handleSelectAll = useCallback(() => {
+    const scene = store.scene;
+    if (!scene) return;
+    // Select all objects by iterating through them
+    const allObjects = scene.getAllObjects();
+    for (const obj of allObjects) {
+      scene.select(obj.id, { additive: true });
+    }
+    store.syncFromScene();
+  }, [store]);
+  
+  // ==================== View Menu Actions ====================
+  
+  const handleSetViewportMode = useCallback((mode: 'solid' | 'wireframe') => {
+    store.setViewportMode(mode);
+  }, [store]);
+  
+  const handleToggleGrid = useCallback(() => {
+    store.setShowGrid(!store.viewportState.value.showGrid);
+  }, [store]);
+  
+  const handleToggleAxes = useCallback(() => {
+    store.setShowAxes(!store.viewportState.value.showAxes);
+  }, [store]);
+  
+  const handleExpandView = useCallback(() => {
+    // TODO: Implement fullscreen
+    console.log('[MenuBar] Expand View - TODO');
+  }, []);
+  
+  const handleFPSCamera = useCallback(() => {
+    // Toggle FPS camera mode
+    const viewport = store.viewport;
+    if (viewport) {
+      // TODO: viewport.toggleFPSMode()
+      console.log('[MenuBar] FPS Camera - TODO');
+    }
+  }, [store]);
+  
+  const handleToggleShaderEditor = useCallback(() => {
+    toggleShaderPanel();
+  }, []);
+  
+  const handleCameraPreset = useCallback((preset: number) => {
+    const viewport = store.viewport;
+    if (!viewport) return;
+    
+    // Camera presets: 0=perspective, 1=front, 2=top, 3=side
+    // Access camera controller via viewport's public property
+    const controller = (viewport as any).cameraController;
+    if (!controller || typeof controller.setAngles !== 'function') {
+      console.log('[MenuBar] Camera preset - controller not available');
+      return;
+    }
+    
+    switch (preset) {
+      case 0: // Perspective
+        controller.setAngles(0.5, 0.3);
+        break;
+      case 1: // Front
+        controller.setAngles(0, 0);
+        break;
+      case 2: // Top
+        controller.setAngles(0, Math.PI / 2);
+        break;
+      case 3: // Side
+        controller.setAngles(Math.PI / 2, 0);
+        break;
+    }
+  }, [store]);
+  
+  // ==================== Add Menu Actions ====================
+  
+  const handleAddPrimitive = useCallback((type: 'cube' | 'plane' | 'sphere') => {
+    const scene = store.scene;
+    if (!scene) return;
+    scene.addPrimitive(type);
+    store.syncFromScene();
+  }, [store]);
+  
+  const handleAddTerrain = useCallback(() => {
+    // TODO: Add terrain - complex, needs TerrainManager setup
+    console.log('[MenuBar] Add Terrain - TODO');
+  }, [store]);
+  
+  // ==================== Menu Definitions ====================
+  
+  const menus = useMemo<MenuDefinition[]>(() => [
+    {
+      id: 'file',
+      label: 'File',
+      items: [
+        { id: 'save', label: 'Save Scene', shortcut: 'Ctrl+S', onClick: handleSaveScene },
+        { id: 'load', label: 'Load Scene', shortcut: 'Ctrl+O', onClick: handleLoadScene },
+      ],
+    },
+    {
+      id: 'edit',
+      label: 'Edit',
+      items: [
+        { id: 'selectAll', label: 'Select All', shortcut: 'A', onClick: handleSelectAll },
+        { id: 'duplicate', label: 'Duplicate', shortcut: 'D', onClick: handleDuplicate, disabled: !hasSelection.value },
+        { id: 'delete', label: 'Delete', shortcut: 'Del', onClick: handleDeleteSelected, disabled: !hasSelection.value },
+        { separator: true, id: 'sep1', label: '' },
+        { id: 'group', label: 'Group Selection', shortcut: 'Ctrl+G', onClick: handleGroupSelection, disabled: !multiSelection.value },
+        { id: 'ungroup', label: 'Ungroup', shortcut: 'Ctrl+Shift+G', onClick: handleUngroup, disabled: !hasSelection.value },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        { id: 'solid', label: 'Solid', checked: viewportState.value.mode === 'solid', onClick: () => handleSetViewportMode('solid') },
+        { id: 'wireframe', label: 'Wireframe', checked: viewportState.value.mode === 'wireframe', onClick: () => handleSetViewportMode('wireframe') },
+        { separator: true, id: 'sep1', label: '' },
+        { id: 'grid', label: 'Show Grid', checked: viewportState.value.showGrid, onClick: handleToggleGrid },
+        { id: 'axes', label: 'Show Axes', checked: viewportState.value.showAxes, onClick: handleToggleAxes },
+        { separator: true, id: 'sep2', label: '' },
+        { id: 'expand', label: 'Expand View', onClick: handleExpandView },
+        { id: 'fps', label: 'FPS Camera', onClick: handleFPSCamera },
+        { separator: true, id: 'sep3', label: '' },
+        { id: 'shaderEditor', label: 'Shader Editor', checked: shaderPanelVisible.value, onClick: handleToggleShaderEditor },
+        { separator: true, id: 'sep4', label: '' },
+        {
+          id: 'camera',
+          label: 'Camera Presets',
+          submenu: [
+            { id: 'cam0', label: 'Perspective', shortcut: '0', onClick: () => handleCameraPreset(0) },
+            { id: 'cam1', label: 'Front', shortcut: '1', onClick: () => handleCameraPreset(1) },
+            { id: 'cam2', label: 'Top', shortcut: '2', onClick: () => handleCameraPreset(2) },
+            { id: 'cam3', label: 'Side', shortcut: '3', onClick: () => handleCameraPreset(3) },
+          ],
+        },
+      ],
+    },
+    {
+      id: 'add',
+      label: 'Add',
+      items: [
+        { id: 'cube', label: 'Cube', onClick: () => handleAddPrimitive('cube') },
+        { id: 'plane', label: 'Plane', onClick: () => handleAddPrimitive('plane') },
+        { id: 'sphere', label: 'UV Sphere', onClick: () => handleAddPrimitive('sphere') },
+        { separator: true, id: 'sep1', label: '' },
+        { id: 'terrain', label: 'Terrain', onClick: handleAddTerrain },
+      ],
+    },
+  ], [
+    handleSaveScene, handleLoadScene,
+    handleSelectAll, handleDuplicate, handleDeleteSelected, handleGroupSelection, handleUngroup,
+    handleSetViewportMode, handleToggleGrid, handleToggleAxes, handleExpandView, handleFPSCamera, handleCameraPreset,
+    handleToggleShaderEditor,
+    handleAddPrimitive, handleAddTerrain,
+    hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value,
+  ]);
+  
+  return <MenuBar menus={menus} />;
+}

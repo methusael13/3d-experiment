@@ -1,0 +1,449 @@
+import { useCallback } from 'preact/hooks';
+import { signal, computed, Signal } from '@preact/signals';
+import { MenuBar, type MenuDefinition } from '../layout';
+import {
+  EnvironmentPanel,
+  ObjectsPanel,
+  ObjectPanel,
+  MaterialPanel,
+  RenderingPanel,
+} from '../panels';
+import type { TransformData, PrimitiveConfig, WindSettings, TerrainBlendSettings, MaterialInfo, WebGPUShadowSettings } from '../panels';
+import styles from './SidebarApp.module.css';
+
+// ==================== State Types ====================
+
+export interface SceneObject {
+  id: string;
+  name: string;
+  objectType: string;
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+  groupId?: string;
+}
+
+export interface GroupInfo {
+  id: string;
+  name: string;
+  childIds: string[];
+  isExpanded: boolean;
+}
+
+export interface LightParams {
+  direction: [number, number, number];
+  color: [number, number, number];
+  intensity: number;
+  ambient: number;
+}
+
+export interface FogParams {
+  enabled: boolean;
+  density: number;
+  color: [number, number, number];
+}
+
+export interface GlobalWindSettings {
+  enabled: boolean;
+  speed: number;
+  direction: number;
+  gustFrequency: number;
+  gustStrength: number;
+  turbulence: number;
+}
+
+export interface ShadowSettings {
+  enabled: boolean;
+  resolution: number;
+  contactShadowEnabled: boolean;
+  contactShadowIntensity: number;
+  contactShadowDistance: number;
+  contactShadowThickness: number;
+}
+
+// ==================== Context Interface ====================
+
+export interface SidebarAppContext {
+  // Scene data
+  objects: Signal<SceneObject[]>;
+  groups: Signal<GroupInfo[]>;
+  selectedIds: Signal<string[]>;
+
+  // Environment state
+  lightMode: Signal<'directional' | 'hdr'>;
+  sunDirection: Signal<[number, number, number]>;
+  sunColor: Signal<[number, number, number]>;
+  sunIntensity: Signal<number>;
+  ambientIntensity: Signal<number>;
+  fogEnabled: Signal<boolean>;
+  fogDensity: Signal<number>;
+  fogColor: Signal<[number, number, number]>;
+  globalWind: Signal<GlobalWindSettings>;
+  hdrFilename: Signal<string | null>;
+
+  // Shadow state
+  shadowSettings: Signal<ShadowSettings>;
+  webgpuShadowSettings?: Signal<WebGPUShadowSettings>;
+
+  // WebGPU mode
+  isWebGPUEnabled: Signal<boolean>;
+
+  // Gizmo state
+  gizmoMode: Signal<'translate' | 'rotate' | 'scale'>;
+  gizmoOrientation: Signal<'local' | 'world'>;
+
+  // Object-level state accessors
+  getObjectWindSettings: (id: string) => WindSettings | undefined;
+  setObjectWindSettings: (id: string, settings: Partial<WindSettings>) => void;
+  getObjectTerrainBlendSettings: (id: string) => TerrainBlendSettings | undefined;
+  setObjectTerrainBlendSettings: (id: string, settings: Partial<TerrainBlendSettings>) => void;
+  getObjectMaterial: (id: string) => MaterialInfo | null;
+  setObjectMaterial: (id: string, material: Partial<MaterialInfo>) => void;
+
+  // Actions
+  selectObject: (id: string, additive?: boolean) => void;
+  clearSelection: () => void;
+  deleteSelected: () => void;
+  duplicateSelected: () => void;
+  renameObject: (id: string, name: string) => void;
+  updateObjectTransform: (id: string, transform: Partial<TransformData>) => void;
+  updatePrimitiveConfig: (id: string, config: Partial<PrimitiveConfig>) => void;
+  createGroup: () => void;
+  ungroup: () => void;
+  toggleGroupExpanded: (groupId: string) => void;
+
+  // Add objects
+  addPrimitive: (type: 'cube' | 'plane' | 'sphere') => void;
+  addTerrain: () => void;
+  importModel: () => void;
+
+  // Lighting
+  setLightMode: (mode: 'directional' | 'hdr') => void;
+  loadHDR: () => void;
+
+  // Rendering
+  setShadowEnabled: (enabled: boolean) => void;
+  setShadowResolution: (res: number) => void;
+  setContactShadowSettings: (settings: Partial<ShadowSettings>) => void;
+  enableWebGPU: () => Promise<boolean>;
+  disableWebGPU: () => void;
+  setWebGPUShadowSettings?: (settings: WebGPUShadowSettings) => void;
+
+  // Menu actions
+  saveScene: () => void;
+  loadScene: () => void;
+  resetCameraOrigin: () => void;
+  setViewMode: (mode: 'solid' | 'wireframe') => void;
+  toggleGrid: () => void;
+  toggleAxes: () => void;
+  enterFPSMode: () => void;
+  openShaderEditor: () => void;
+  expandView: () => void;
+}
+
+// ==================== Props ====================
+
+export interface SidebarAppProps {
+  context: SidebarAppContext;
+}
+
+// ==================== Component ====================
+
+export function SidebarApp({ context }: SidebarAppProps) {
+  // ========== Menu Definitions ==========
+  const menus: MenuDefinition[] = [
+    {
+      id: 'file',
+      label: 'File',
+      items: [
+        { id: 'load', label: 'Load Scene', onClick: context.loadScene },
+        { id: 'save', label: 'Save Scene', onClick: context.saveScene },
+      ],
+    },
+    {
+      id: 'scene',
+      label: 'Scene',
+      items: [
+        {
+          id: 'add',
+          label: 'Add',
+          submenu: [
+            {
+              id: 'shapes',
+              label: 'Shapes',
+              submenu: [
+                { id: 'cube', label: 'Cube', onClick: () => context.addPrimitive('cube') },
+                { id: 'plane', label: 'Plane', onClick: () => context.addPrimitive('plane') },
+                { id: 'sphere', label: 'UV Sphere', onClick: () => context.addPrimitive('sphere') },
+              ],
+            },
+            { id: 'sep1', label: '', separator: true },
+            { id: 'terrain', label: 'Terrain', onClick: context.addTerrain },
+          ],
+        },
+        { id: 'sep2', label: '', separator: true },
+        {
+          id: 'group',
+          label: 'Group Selection',
+          shortcut: '⌘G',
+          disabled: context.selectedIds.value.length < 2,
+          onClick: context.createGroup,
+        },
+        {
+          id: 'ungroup',
+          label: 'Ungroup',
+          shortcut: '⌘⇧G',
+          disabled: context.selectedIds.value.length === 0,
+          onClick: context.ungroup,
+        },
+      ],
+    },
+    {
+      id: 'view',
+      label: 'View',
+      items: [
+        {
+          id: 'origin',
+          label: 'Origin',
+          submenu: [
+            { id: 'reset-origin', label: 'Reset Origin', onClick: context.resetCameraOrigin },
+          ],
+        },
+        {
+          id: 'viewport',
+          label: 'Viewport',
+          submenu: [
+            { id: 'wireframe', label: 'Wireframe View', onClick: () => context.setViewMode('wireframe') },
+            { id: 'solid', label: 'Solid View', onClick: () => context.setViewMode('solid') },
+            { id: 'sep-vp', label: '', separator: true },
+            { id: 'toggle-grid', label: 'Show Grid', checked: true, onClick: context.toggleGrid },
+            { id: 'toggle-axes', label: 'Show Axes', checked: true, onClick: context.toggleAxes },
+            { id: 'sep-fps', label: '', separator: true },
+            { id: 'fps-camera', label: 'FPS Camera', onClick: context.enterFPSMode },
+          ],
+        },
+        { id: 'sep-shader', label: '', separator: true },
+        { id: 'shader-editor', label: 'Shader Editor', onClick: context.openShaderEditor },
+        { id: 'sep-expand', label: '', separator: true },
+        { id: 'expand-view', label: 'Expand View', onClick: context.expandView },
+      ],
+    },
+    {
+      id: 'lighting',
+      label: 'Lighting',
+      items: [
+        { id: 'sun-mode', label: 'Sun Mode', onClick: () => context.setLightMode('directional') },
+        { id: 'hdr-mode', label: 'HDR Mode', onClick: () => context.setLightMode('hdr') },
+      ],
+    },
+  ];
+
+  // ========== Computed Values ==========
+  const selectedObjects = computed(() =>
+    context.objects.value.filter((obj) => context.selectedIds.value.includes(obj.id))
+  );
+
+  const firstSelected = computed(() => selectedObjects.value[0] ?? null);
+
+  const transformData = computed<TransformData | null>(() => {
+    const obj = firstSelected.value;
+    if (!obj) return null;
+    return {
+      position: obj.position,
+      rotation: obj.rotation,
+      scale: obj.scale,
+    };
+  });
+
+  // ========== Handlers ==========
+  const handleTransformChange = useCallback(
+    (transform: Partial<TransformData>) => {
+      const obj = firstSelected.value;
+      if (obj) {
+        context.updateObjectTransform(obj.id, transform);
+      }
+    },
+    [context]
+  );
+
+  const handleNameChange = useCallback(
+    (name: string) => {
+      const obj = firstSelected.value;
+      if (obj) {
+        context.renameObject(obj.id, name);
+      }
+    },
+    [context]
+  );
+
+  const handleShadowEnabledChange = useCallback(
+    (enabled: boolean) => {
+      context.setShadowEnabled(enabled);
+    },
+    [context]
+  );
+
+  const handleShadowResolutionChange = useCallback(
+    (res: number) => {
+      context.setShadowResolution(res);
+    },
+    [context]
+  );
+
+  // ========== Render ==========
+  return (
+    <div class={styles.sidebarApp}>
+      <MenuBar menus={menus} />
+
+      <div class={styles.layout}>
+        {/* Left Sidebar */}
+        <div class={styles.sidebarLeft}>
+          <ObjectsPanel
+            objects={context.objects.value.map((obj) => ({
+              id: obj.id,
+              name: obj.name,
+              type: obj.objectType,
+              groupId: obj.groupId,
+            }))}
+            groups={context.groups.value.map((g) => ({
+              id: g.id,
+              name: g.name,
+              childIds: g.childIds,
+              isExpanded: g.isExpanded,
+            }))}
+            selectedIds={context.selectedIds.value}
+            onSelect={(id, additive) => context.selectObject(id, additive)}
+            onGroupToggle={context.toggleGroupExpanded}
+            onAddPrimitive={context.addPrimitive}
+            onAddTerrain={context.addTerrain}
+            onImportModel={context.importModel}
+          />
+
+          <ObjectPanel
+            selectedObject={
+              firstSelected.value
+                ? {
+                    id: firstSelected.value.id,
+                    name: firstSelected.value.name,
+                    objectType: firstSelected.value.objectType,
+                  }
+                : null
+            }
+            selectionCount={context.selectedIds.value.length}
+            transform={transformData.value}
+            onTransformChange={handleTransformChange}
+            onNameChange={handleNameChange}
+            gizmoMode={context.gizmoMode.value}
+            onGizmoModeChange={(mode) => (context.gizmoMode.value = mode)}
+            gizmoOrientation={context.gizmoOrientation.value}
+            onGizmoOrientationChange={(orientation) => (context.gizmoOrientation.value = orientation)}
+            onDelete={context.deleteSelected}
+            onDuplicate={context.duplicateSelected}
+          />
+        </div>
+
+        {/* Center Viewport - placeholder */}
+        <div class={styles.viewportSlot}>
+          {/* Viewport canvas rendered by SceneBuilder */}
+        </div>
+
+        {/* Right Sidebar */}
+        <div class={styles.sidebarRight}>
+          <EnvironmentPanel
+            activeTab="lighting"
+            onTabChange={() => {}}
+            // Lighting
+            lightMode={context.lightMode.value}
+            sunDirection={context.sunDirection.value}
+            onSunDirectionChange={(v) => (context.sunDirection.value = v)}
+            sunColor={context.sunColor.value}
+            onSunColorChange={(v) => (context.sunColor.value = v)}
+            sunIntensity={context.sunIntensity.value}
+            onSunIntensityChange={(v) => (context.sunIntensity.value = v)}
+            ambientIntensity={context.ambientIntensity.value}
+            onAmbientIntensityChange={(v) => (context.ambientIntensity.value = v)}
+            hdrFilename={context.hdrFilename.value}
+            onLoadHDR={context.loadHDR}
+            // Fog
+            fogEnabled={context.fogEnabled.value}
+            onFogEnabledChange={(v) => (context.fogEnabled.value = v)}
+            fogDensity={context.fogDensity.value}
+            onFogDensityChange={(v) => (context.fogDensity.value = v)}
+            fogColor={context.fogColor.value}
+            onFogColorChange={(v) => (context.fogColor.value = v)}
+            // Wind
+            windEnabled={context.globalWind.value.enabled}
+            onWindEnabledChange={(v) =>
+              (context.globalWind.value = { ...context.globalWind.value, enabled: v })
+            }
+            windSpeed={context.globalWind.value.speed}
+            onWindSpeedChange={(v) =>
+              (context.globalWind.value = { ...context.globalWind.value, speed: v })
+            }
+            windDirection={context.globalWind.value.direction}
+            onWindDirectionChange={(v) =>
+              (context.globalWind.value = { ...context.globalWind.value, direction: v })
+            }
+            gustFrequency={context.globalWind.value.gustFrequency}
+            onGustFrequencyChange={(v) =>
+              (context.globalWind.value = { ...context.globalWind.value, gustFrequency: v })
+            }
+            gustStrength={context.globalWind.value.gustStrength}
+            onGustStrengthChange={(v) =>
+              (context.globalWind.value = { ...context.globalWind.value, gustStrength: v })
+            }
+            turbulence={context.globalWind.value.turbulence}
+            onTurbulenceChange={(v) =>
+              (context.globalWind.value = { ...context.globalWind.value, turbulence: v })
+            }
+          />
+
+          <RenderingPanel
+            shadowEnabled={context.shadowSettings.value.enabled}
+            onShadowEnabledChange={handleShadowEnabledChange}
+            shadowResolution={context.shadowSettings.value.resolution}
+            onShadowResolutionChange={handleShadowResolutionChange}
+            showShadowThumbnail={false}
+            onShowShadowThumbnailChange={() => {}}
+            contactShadowEnabled={context.shadowSettings.value.contactShadowEnabled}
+            onContactShadowEnabledChange={(v) =>
+              context.setContactShadowSettings({ contactShadowEnabled: v })
+            }
+            contactShadowIntensity={context.shadowSettings.value.contactShadowIntensity}
+            onContactShadowIntensityChange={(v) =>
+              context.setContactShadowSettings({ contactShadowIntensity: v })
+            }
+            contactShadowDistance={context.shadowSettings.value.contactShadowDistance}
+            onContactShadowDistanceChange={(v) =>
+              context.setContactShadowSettings({ contactShadowDistance: v })
+            }
+            contactShadowThickness={context.shadowSettings.value.contactShadowThickness}
+            onContactShadowThicknessChange={(v) =>
+              context.setContactShadowSettings({ contactShadowThickness: v })
+            }
+            isWebGPUEnabled={context.isWebGPUEnabled.value}
+            onEnableWebGPU={context.enableWebGPU}
+            onDisableWebGPU={context.disableWebGPU}
+          />
+
+          <MaterialPanel
+            selectedObject={
+              firstSelected.value
+                ? {
+                    id: firstSelected.value.id,
+                    name: firstSelected.value.name,
+                    objectType: firstSelected.value.objectType,
+                  }
+                : null
+            }
+            material={firstSelected.value ? context.getObjectMaterial(firstSelected.value.id) : null}
+            onMaterialChange={(mat) => {
+              const obj = firstSelected.value;
+              if (obj) context.setObjectMaterial(obj.id, mat);
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}

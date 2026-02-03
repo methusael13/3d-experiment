@@ -18,7 +18,6 @@ import {
 } from './wind';
 import {
   createPanelContext,
-  ObjectsPanel,
   ObjectPanel,
   EnvironmentPanel,
   MaterialPanel,
@@ -29,6 +28,7 @@ import {
   type EnvironmentPanelAPI,
   type RenderingPanelAPI,
 } from './componentPanels';
+import { createObjectsPanelBridge, type ObjectsPanelBridge } from './components/bridges';
 import type { ContactShadowSettings } from '../../core/renderers';
 import { Viewport, type ViewportOptions } from './Viewport';
 import { FPSCameraController } from './FPSCameraController';
@@ -78,7 +78,7 @@ export class SceneBuilder implements SceneBuilderDemo {
   
   // UI Layer
   private panelContext: PanelContext | null = null;
-  private objectsPanel: ObjectsPanel | null = null;
+  private objectsPanel: ObjectsPanelBridge | null = null;
   private objectPanel: ObjectPanelAPI | null = null;
   private environmentPanel: EnvironmentPanelAPI | null = null;
   private materialPanel: MaterialPanel | null = null;
@@ -935,11 +935,17 @@ export class SceneBuilder implements SceneBuilderDemo {
       },
     });
     
-    // Instantiate panels
-    this.objectsPanel = new ObjectsPanel(
-      this.container.querySelector('#objects-panel-container') as HTMLElement,
-      this.panelContext
-    );
+    // Instantiate panels - ObjectsPanel is now a Preact bridge component
+    this.objectsPanel = createObjectsPanelBridge({
+      container: this.container.querySelector('#objects-panel-container') as HTMLElement,
+      scene: this.scene,
+      onSelectionChanged: () => {
+        this.objectPanel?.update();
+        this.materialPanel?.update();
+        this.updateGizmoTarget();
+        this.updateRenderData();
+      },
+    });
     
     this.objectPanel = new ObjectPanel(
       this.container.querySelector('#object-panel-container') as HTMLElement,
