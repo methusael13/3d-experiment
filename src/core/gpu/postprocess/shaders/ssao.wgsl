@@ -1,5 +1,5 @@
 // Screen-Space Ambient Occlusion (SSAO) Shader
-// Uses depth + normals to compute ambient occlusion
+// Uses depth buffer only - normals reconstructed from depth derivatives
 
 // Uniforms for SSAO parameters
 struct SSAOParams {
@@ -17,18 +17,21 @@ struct SSAOParams {
 }
 
 @group(0) @binding(0) var depthTexture: texture_2d<f32>;
-@group(0) @binding(1) var normalTexture: texture_2d<f32>;
-@group(0) @binding(2) var noiseSampler: sampler;
-@group(0) @binding(3) var<uniform> params: SSAOParams;
-@group(0) @binding(4) var<storage, read> sampleKernel: array<vec4f>;
+@group(0) @binding(1) var noiseSampler: sampler;
+@group(0) @binding(2) var<uniform> params: SSAOParams;
+@group(0) @binding(3) var<storage, read> sampleKernel: array<vec4f>;
+
+// Linearize depth value
+fn linearizeDepth(depth: f32) -> f32 {
+  let near = params.projParams.x;
+  let far = params.projParams.y;
+  // Handle both standard and reverse-Z depth buffers
+  return (near * far) / (far - depth * (far - near));
+}
 
 // Reconstruct view-space position from depth
 fn reconstructViewPos(uv: vec2f, depth: f32) -> vec3f {
-  let near = params.projParams.x;
-  let far = params.projParams.y;
-  
-  // Linearize depth (assuming reverse-Z or standard depth)
-  let linearDepth = (near * far) / (far - depth * (far - near));
+  let linearDepth = linearizeDepth(depth);
   
   // Reconstruct view-space position
   let ndc = vec2f(uv.x * 2.0 - 1.0, (1.0 - uv.y) * 2.0 - 1.0);
@@ -39,6 +42,55 @@ fn reconstructViewPos(uv: vec2f, depth: f32) -> vec3f {
   );
   
   return viewPos;
+}
+
+// Reconstruct normal from depth buffer using cross product of derivatives
+// This is a common technique used when no normal buffer is available
+fn reconstructNormalFromDepth(uv: vec2f, pixelCoord: vec2i) -> vec3f {
+  let texelSize = params.viewportParams.xy;
+  let viewportSize = params.viewportParams.zw;
+  
+  // Sample depths at neighboring pixels
+  let depthC = textureLoad(depthTexture, pixelCoord, 0).r;
+  
+  // Sample at +1 and -1 offsets in both directions
+  let depthR = textureLoad(depthTexture, pixelCoord + vec2i(1, 0), 0).r;
+  let depthL = textureLoad(depthTexture, pixelCoord - vec2i(1, 0), 0).r;
+  let depthU = textureLoad(depthTexture, pixelCoord + vec2i(0, 1), 0).r;
+  let depthD = textureLoad(depthTexture, pixelCoord - vec2i(0, 1), 0).r;
+  
+  // Reconstruct view positions
+  let posC = reconstructViewPos(uv, depthC);
+  let posR = reconstructViewPos(uv + vec2f(texelSize.x, 0.0), depthR);
+  let posL = reconstructViewPos(uv - vec2f(texelSize.x, 0.0), depthL);
+  let posU = reconstructViewPos(uv + vec2f(0.0, texelSize.y), depthU);
+  let posD = reconstructViewPos(uv - vec2f(0.0, texelSize.y), depthD);
+  
+  // Use the smaller derivative to avoid artifacts at depth discontinuities
+  var dPdx: vec3f;
+  var dPdy: vec3f;
+  
+  // Choose derivative with smaller magnitude (better handles edges)
+  let dxR = posR - posC;
+  let dxL = posC - posL;
+  if (abs(dxR.z) < abs(dxL.z)) {
+    dPdx = dxR;
+  } else {
+    dPdx = dxL;
+  }
+  
+  let dyU = posU - posC;
+  let dyD = posC - posD;
+  if (abs(dyU.z) < abs(dyD.z)) {
+    dPdy = dyU;
+  } else {
+    dPdy = dyD;
+  }
+  
+  // Normal is perpendicular to both derivatives
+  let normal = normalize(cross(dPdx, dPdy));
+  
+  return normal;
 }
 
 // Hash function for per-pixel noise
@@ -88,9 +140,8 @@ fn fs_ssao(@location(0) uv: vec2f) -> @location(0) vec4f {
   // Get view-space position
   let viewPos = reconstructViewPos(uv, depth);
   
-  // Sample normal (stored in view-space)
-  let normalSample = textureLoad(normalTexture, pixelCoord, 0).xyz;
-  let normal = normalize(normalSample);
+  // Reconstruct normal from depth buffer (no separate normal texture needed)
+  let normal = reconstructNormalFromDepth(uv, pixelCoord);
   
   // SSAO parameters
   let radius = params.ssaoParams.x;

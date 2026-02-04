@@ -93,22 +93,21 @@ export class SSAOPass extends PostProcessPass {
   
   /**
    * Create SSAO render pipeline
+   * Note: Normals are reconstructed from depth derivatives in the shader
    */
   private createSSAOPipeline(): void {
-    // Create bind group layout
+    // Create bind group layout (matches ssao.wgsl bindings)
     this.ssaoBindGroupLayout = this.ctx.device.createBindGroupLayout({
       label: 'ssao-bind-group-layout',
       entries: [
-        // Depth texture
+        // Depth texture (binding 0)
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
-        // Normal texture
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
-        // Sampler
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'non-filtering' } },
-        // SSAO params uniform
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
-        // Sample kernel storage
-        { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
+        // Sampler (binding 1)
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'non-filtering' } },
+        // SSAO params uniform (binding 2)
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        // Sample kernel storage (binding 3)
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
       ],
     });
     
@@ -274,6 +273,7 @@ export class SSAOPass extends PostProcessPass {
   
   /**
    * Render SSAO effect
+   * Note: Normals are reconstructed from depth derivatives in the shader
    */
   render(
     encoder: GPUCommandEncoder,
@@ -285,8 +285,8 @@ export class SSAOPass extends PostProcessPass {
       return;
     }
     
-    if (!inputs.normals) {
-      console.warn('[SSAOPass] Normal buffer required for SSAO');
+    if (!inputs.depth) {
+      console.warn('[SSAOPass] Depth buffer required for SSAO');
       return;
     }
     
@@ -303,16 +303,15 @@ export class SSAOPass extends PostProcessPass {
     ]);
     this.ctx.queue.writeBuffer(this.ssaoParamsBuffer!, 0, ssaoParams);
     
-    // Create SSAO bind group
+    // Create SSAO bind group (normals reconstructed from depth in shader)
     const ssaoBindGroup = this.ctx.device.createBindGroup({
       label: 'ssao-bind-group',
       layout: this.ssaoBindGroupLayout!,
       entries: [
         { binding: 0, resource: inputs.depth.view },
-        { binding: 1, resource: inputs.normals.view },
-        { binding: 2, resource: this.nearestSampler },
-        { binding: 3, resource: { buffer: this.ssaoParamsBuffer! } },
-        { binding: 4, resource: { buffer: this.sampleKernelBuffer! } },
+        { binding: 1, resource: this.nearestSampler },
+        { binding: 2, resource: { buffer: this.ssaoParamsBuffer! } },
+        { binding: 3, resource: { buffer: this.sampleKernelBuffer! } },
       ],
     });
     
