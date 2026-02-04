@@ -16,6 +16,7 @@ import { ObjectRendererGPU } from '../renderers/ObjectRendererGPU';
 import { ShadowRendererGPU, type ShadowCaster, WaterRendererGPU, type WaterConfig } from '../renderers';
 import { TerrainManager } from '../../terrain/TerrainManager';
 import { WebGPUShadowSettings } from '@/demos/sceneBuilder/componentPanels/RenderingPanel';
+import { PostProcessStack, SSAOPass, type SSAOConfig } from '../postprocess';
 
 /**
  * Simple camera interface for WebGPU pipeline
@@ -62,7 +63,13 @@ export class GPUForwardPipeline {
   
   // Render targets
   private depthTexture: UnifiedGPUTexture;
+  private depthTextureCopy: UnifiedGPUTexture; // Copy for reading in shaders (water transparency)
   private msaaColorTexture: UnifiedGPUTexture | null = null;
+  
+  // Post-processing
+  private postProcessStack: PostProcessStack | null = null;
+  private ssaoPass: SSAOPass | null = null;
+  private ssaoEnabled = false;
   
   // Renderers
   private gridRenderer: GridRendererGPU;
@@ -96,7 +103,7 @@ export class GPUForwardPipeline {
     this.height = options.height;
     this.sampleCount = options.sampleCount || 1;
     
-    // Create depth texture
+    // Create depth texture (for depth testing as render attachment)
     this.depthTexture = UnifiedGPUTexture.createDepth(
       ctx,
       this.width,
@@ -104,6 +111,10 @@ export class GPUForwardPipeline {
       'depth24plus',
       'forward-depth'
     );
+    
+    // Create depth texture copy (for reading in shaders - water transparency)
+    // This texture has TEXTURE_BINDING usage for shader sampling
+    this.depthTextureCopy = this.createDepthTextureCopy();
     
     // Create MSAA color texture if needed
     if (this.sampleCount > 1) {
@@ -165,6 +176,10 @@ export class GPUForwardPipeline {
     // Register as shadow caster
     this.registerShadowCaster(terrainManager);
   }
+
+  resetTerrainManager(): void {
+    this.terrainManager = null;
+  }
   
   /**
    * Register an object as a shadow caster
@@ -183,6 +198,38 @@ export class GPUForwardPipeline {
     if (index !== -1) {
       this.shadowCasters.splice(index, 1);
     }
+  }
+  
+  /**
+   * Create a depth texture copy that can be used for shader sampling
+   * Uses TEXTURE_BINDING usage (not RENDER_ATTACHMENT) to avoid usage conflicts
+   */
+  private createDepthTextureCopy(): UnifiedGPUTexture {
+    // Create a depth texture with COPY_DST and TEXTURE_BINDING usage
+    // This will receive copied depth data and be used for shader sampling
+    const texture = this.ctx.device.createTexture({
+      label: 'forward-depth-copy',
+      size: { width: this.width, height: this.height, depthOrArrayLayers: 1 },
+      format: 'depth24plus',
+      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    
+    const view = texture.createView({
+      label: 'forward-depth-copy-view',
+      format: 'depth24plus',
+      dimension: '2d',
+      aspect: 'depth-only', // Required for depth texture sampling
+    });
+    
+    // Wrap in UnifiedGPUTexture for consistency
+    return {
+      texture,
+      view,
+      format: 'depth24plus',
+      width: this.width,
+      height: this.height,
+      destroy: () => texture.destroy(),
+    } as UnifiedGPUTexture;
   }
   
   /**
@@ -206,6 +253,10 @@ export class GPUForwardPipeline {
       'forward-depth'
     );
     
+    // Recreate depth texture copy
+    this.depthTextureCopy.destroy();
+    this.depthTextureCopy = this.createDepthTextureCopy();
+    
     // Recreate MSAA color texture if needed
     if (this.msaaColorTexture) {
       this.msaaColorTexture.destroy();
@@ -217,6 +268,12 @@ export class GPUForwardPipeline {
         this.sampleCount,
         'forward-msaa-color'
       );
+    }
+    
+    // Resize post-processing stack
+    if (this.postProcessStack) {
+      this.postProcessStack.resize(width, height);
+      this.postProcessStack.setDepthBuffer(this.depthTextureCopy);
     }
   }
   
@@ -398,6 +455,15 @@ export class GPUForwardPipeline {
       // Update animation time
       this.time += 0.016; // Assume ~60fps, could be passed from outside
       
+      // Copy depth texture to separate texture for shader sampling
+      // This avoids the "writable usage and another usage in same synchronization scope" error
+      // because we can't both write to (depthStencilAttachment) and read from (texture binding) the same texture
+      encoder.copyTextureToTexture(
+        { texture: this.depthTexture.texture },
+        { texture: this.depthTextureCopy.texture },
+        { width: this.width, height: this.height, depthOrArrayLayers: 1 }
+      );
+      
       const terrainConfig = this.terrainManager.getConfig();
       
       const transparentPass = encoder.beginRenderPass({
@@ -413,6 +479,7 @@ export class GPUForwardPipeline {
         },
       });
       
+      // Use depthTextureCopy for shader sampling (to avoid usage conflict)
       this.waterRenderer.render(transparentPass, {
         viewProjectionMatrix: this.viewProjectionMatrix,
         modelMatrix: this.identityMatrix,
@@ -420,10 +487,10 @@ export class GPUForwardPipeline {
         terrainSize: terrainConfig?.worldSize ?? 1000,
         heightScale: terrainConfig?.heightScale ?? 50,
         time: this.time,
-        lightDirection,
-        lightColor: [1, 1, 1],
+        sunDirection: lightDirection as vec3,
+        sunIntensity,
         ambientIntensity,
-        depthTexture: this.depthTexture,
+        depthTexture: this.depthTextureCopy,
       });
       
       transparentPass.end();
@@ -532,16 +599,76 @@ export class GPUForwardPipeline {
     this.waterRenderer.setWaterLevel(level);
   }
   
+  // ========== SSAO Methods ==========
+  
+  /**
+   * Enable/disable SSAO effect
+   * Note: SSAO requires view-space normals from terrain/object shaders (MRT)
+   * This is not yet implemented - enabling SSAO will have no effect until
+   * terrain and object shaders output normals to a second render target.
+   */
+  setSSAOEnabled(enabled: boolean): void {
+    this.ssaoEnabled = enabled;
+    
+    // Lazy-create PostProcessStack and SSAOPass when first enabled
+    if (enabled && !this.postProcessStack) {
+      this.postProcessStack = new PostProcessStack(this.ctx, this.width, this.height, {
+        hdr: false, // Use LDR for now since renderers already tonemap
+        generateNormals: true,
+      });
+      
+      this.ssaoPass = new SSAOPass(this.ctx, this.width, this.height, {
+        radius: 1.0,
+        intensity: 1.5,
+        bias: 0.025,
+        samples: 16,
+        blur: true,
+      });
+      
+      this.postProcessStack.addPass(this.ssaoPass);
+      this.postProcessStack.setDepthBuffer(this.depthTextureCopy);
+    }
+    
+    if (this.ssaoPass) {
+      this.ssaoPass.setEnabled(enabled);
+    }
+  }
+  
+  /**
+   * Check if SSAO is enabled
+   */
+  isSSAOEnabled(): boolean {
+    return this.ssaoEnabled;
+  }
+  
+  /**
+   * Configure SSAO parameters
+   */
+  setSSAOConfig(config: Partial<SSAOConfig>): void {
+    if (this.ssaoPass) {
+      this.ssaoPass.setConfig(config);
+    }
+  }
+  
+  /**
+   * Get current SSAO configuration
+   */
+  getSSAOConfig(): SSAOConfig | null {
+    return this.ssaoPass?.getConfig() ?? null;
+  }
+  
   /**
    * Clean up GPU resources
    */
   destroy(): void {
     this.depthTexture.destroy();
+    this.depthTextureCopy.destroy();
     this.msaaColorTexture?.destroy();
     this.gridRenderer.destroy();
     this.skyRenderer.destroy();
     this.objectRenderer.destroy();
     this.shadowRenderer.destroy();
     this.waterRenderer.destroy();
+    this.postProcessStack?.destroy();
   }
 }
