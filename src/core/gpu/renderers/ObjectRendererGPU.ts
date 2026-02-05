@@ -147,7 +147,7 @@ export class ObjectRendererGPU {
       depthFormat: 'depth24plus',
       depthWriteEnabled: true,
       depthCompare: 'less',
-      colorFormats: [ctx.format],
+      colorFormats: ['rgba16float'], // HDR intermediate format
     });
     
     // Create global bind group

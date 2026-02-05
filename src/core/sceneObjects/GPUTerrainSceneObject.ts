@@ -119,6 +119,7 @@ export class GPUTerrainSceneObject extends SceneObject {
   
   destroy(): void {
     // No GPU resources held directly - TerrainManager handles its own cleanup
+    this._terrainManager?.destroy();
     this._terrainManager = null;
   }
 }

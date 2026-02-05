@@ -2,5 +2,9 @@
  * Post-processing effects exports
  */
 
-export { SSAOPass } from './SSAOPass';
-export type { SSAOConfig } from './SSAOPass';
+// Plugin-based effects (use with PostProcessPipeline)
+export { SSAOEffect } from './SSAOEffect';
+export type { SSAOEffectConfig } from './SSAOEffect';
+
+export { CompositeEffect } from './CompositeEffect';
+export type { CompositeEffectConfig } from './CompositeEffect';

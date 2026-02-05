@@ -24,10 +24,13 @@ import {
   type SerializedPrimitiveObject,
   type SerializedModelObject,
   type SerializedTerrainObject,
-  type TerrainParams
+  type TerrainParams,
+  GPUTerrainSceneObject
 } from './sceneObjects';
 import { getModelUrl } from '../loaders';
 import { PrimitiveObject } from './sceneObjects/primitives';
+import { GPUContext } from './gpu';
+import { TerrainManager, TerrainManagerConfig } from './terrain';
 
 // ============================================================================
 // Types
@@ -99,6 +102,7 @@ export class Scene {
   
   /** Map of object ID -> SceneObject */
   private objects = new Map<string, AnySceneObject>();
+  private gpuTerrainObject: GPUTerrainSceneObject | null = null;
   
   /** Set of selected object IDs */
   private selectedIds = new Set<string>();
@@ -291,6 +295,42 @@ export class Scene {
     
     this.callbacks.onObjectAdded?.(obj);
   }
+
+  removeWebGPUTerrain() {
+    if (!this.gpuTerrainObject) {
+      return;
+    }
+
+    this.removeObject(this.gpuTerrainObject.id);
+    this.gpuTerrainObject = null;
+  }
+
+  async addWebGPUTerrain(gpuContext: GPUContext, config: Partial<TerrainManagerConfig>) {
+    if (this.gpuTerrainObject) {
+      // Limit to only GPU terrain per scene for now
+      return;
+    }
+
+    try {
+      this.gpuTerrainObject = new GPUTerrainSceneObject();
+      const manager = new TerrainManager(gpuContext, config);
+      this.gpuTerrainObject.setTerrainManager(manager);
+
+      // Initialize and generate terrain
+      console.log('[Viewport] Initializing terrain...');
+      manager.initialize();
+      await manager.generate((stage, progress) => {
+        console.log(`[Viewport] Terrain ${stage}: ${progress.toFixed(0)}%`);
+      });
+      console.log('[Viewport] Terrain generation complete');
+
+      // Add it to scene store
+      this.addSceneObject(this.gpuTerrainObject);
+    } catch (error) {
+      console.error('[Scene] Error while adding the GPU terrain', error);
+      this.removeWebGPUTerrain();
+    }
+  }
   
   /**
    * Add a terrain object to the scene (async - generates terrain)
@@ -368,6 +408,10 @@ export class Scene {
    */
   getAllObjects(): AnySceneObject[] {
     return Array.from(this.objects.values());
+  }
+
+  getWebGPUTerrain(): GPUTerrainSceneObject | null {
+    return this.gpuTerrainObject;
   }
   
   /**

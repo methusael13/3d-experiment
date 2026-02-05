@@ -1,2 +1,2 @@
 export { RenderingPanel } from './RenderingPanel';
-export type { RenderingPanelProps, WebGPUShadowSettings } from './RenderingPanel';
+export type { RenderingPanelProps, WebGPUShadowSettings, SSAOSettings } from './RenderingPanel';

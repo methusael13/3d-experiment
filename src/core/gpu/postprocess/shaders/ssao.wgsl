@@ -1,6 +1,35 @@
 // Screen-Space Ambient Occlusion (SSAO) Shader
 // Uses depth buffer only - normals reconstructed from depth derivatives
 
+// ============ Fullscreen Quad Vertex Shader ============
+
+struct VertexOutput {
+  @builtin(position) position: vec4f,
+  @location(0) uv: vec2f,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+  // Fullscreen triangle (3 vertices cover entire screen)
+  let positions = array<vec2f, 3>(
+    vec2f(-1.0, -1.0),
+    vec2f(3.0, -1.0),
+    vec2f(-1.0, 3.0)
+  );
+  let uvs = array<vec2f, 3>(
+    vec2f(0.0, 1.0),
+    vec2f(2.0, 1.0),
+    vec2f(0.0, -1.0)
+  );
+  
+  var output: VertexOutput;
+  output.position = vec4f(positions[vertexIndex], 0.0, 1.0);
+  output.uv = uvs[vertexIndex];
+  return output;
+}
+
+// ============ Uniforms ============
+
 // Uniforms for SSAO parameters
 struct SSAOParams {
   // xy: inverse viewport size (1/width, 1/height)
@@ -49,22 +78,33 @@ fn reconstructViewPos(uv: vec2f, depth: f32) -> vec3f {
 fn reconstructNormalFromDepth(uv: vec2f, pixelCoord: vec2i) -> vec3f {
   let texelSize = params.viewportParams.xy;
   let viewportSize = params.viewportParams.zw;
+  let maxCoord = vec2i(viewportSize) - vec2i(1, 1);
   
-  // Sample depths at neighboring pixels
+  // Sample depths at neighboring pixels (clamped to valid bounds)
   let depthC = textureLoad(depthTexture, pixelCoord, 0).r;
   
-  // Sample at +1 and -1 offsets in both directions
-  let depthR = textureLoad(depthTexture, pixelCoord + vec2i(1, 0), 0).r;
-  let depthL = textureLoad(depthTexture, pixelCoord - vec2i(1, 0), 0).r;
-  let depthU = textureLoad(depthTexture, pixelCoord + vec2i(0, 1), 0).r;
-  let depthD = textureLoad(depthTexture, pixelCoord - vec2i(0, 1), 0).r;
+  // Clamp coordinates to prevent out-of-bounds sampling at edges
+  let coordR = clamp(pixelCoord + vec2i(1, 0), vec2i(0, 0), maxCoord);
+  let coordL = clamp(pixelCoord - vec2i(1, 0), vec2i(0, 0), maxCoord);
+  let coordU = clamp(pixelCoord + vec2i(0, 1), vec2i(0, 0), maxCoord);
+  let coordD = clamp(pixelCoord - vec2i(0, 1), vec2i(0, 0), maxCoord);
   
-  // Reconstruct view positions
+  let depthR = textureLoad(depthTexture, coordR, 0).r;
+  let depthL = textureLoad(depthTexture, coordL, 0).r;
+  let depthU = textureLoad(depthTexture, coordU, 0).r;
+  let depthD = textureLoad(depthTexture, coordD, 0).r;
+  
+  // Reconstruct view positions with clamped UVs
+  let uvR = clamp(uv + vec2f(texelSize.x, 0.0), vec2f(0.0), vec2f(1.0));
+  let uvL = clamp(uv - vec2f(texelSize.x, 0.0), vec2f(0.0), vec2f(1.0));
+  let uvU = clamp(uv + vec2f(0.0, texelSize.y), vec2f(0.0), vec2f(1.0));
+  let uvD = clamp(uv - vec2f(0.0, texelSize.y), vec2f(0.0), vec2f(1.0));
+  
   let posC = reconstructViewPos(uv, depthC);
-  let posR = reconstructViewPos(uv + vec2f(texelSize.x, 0.0), depthR);
-  let posL = reconstructViewPos(uv - vec2f(texelSize.x, 0.0), depthL);
-  let posU = reconstructViewPos(uv + vec2f(0.0, texelSize.y), depthU);
-  let posD = reconstructViewPos(uv - vec2f(0.0, texelSize.y), depthD);
+  let posR = reconstructViewPos(uvR, depthR);
+  let posL = reconstructViewPos(uvL, depthL);
+  let posU = reconstructViewPos(uvU, depthU);
+  let posD = reconstructViewPos(uvD, depthD);
   
   // Use the smaller derivative to avoid artifacts at depth discontinuities
   var dPdx: vec3f;
@@ -126,7 +166,7 @@ fn createTBN(normal: vec3f) -> mat3x3f {
 }
 
 @fragment
-fn fs_ssao(@location(0) uv: vec2f) -> @location(0) vec4f {
+fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
   let pixelCoord = vec2i(uv * params.viewportParams.zw);
   
   // Sample depth

@@ -1,13 +1,22 @@
 /**
  * GPUForwardPipeline - WebGPU Forward Rendering Pipeline
  * 
- * Orchestrates all WebGPU renderers in the correct order:
- * 1. Sky pass (background)
- * 2. Opaque pass (terrain, objects)
- * 3. Overlay pass (grid, gizmos)
+ * Uses a pass-based architecture for modularity:
+ * 1. ShadowPass - Renders shadow map from light's perspective
+ * 2. SkyPass - Renders sky background
+ * 3. OpaquePass - Renders terrain and opaque objects
+ * 4. TransparentPass - Renders water
+ * 5. OverlayPass - Renders grid and axes
+ * 6. DebugPass - Debug visualizations (skipped in HDR path)
+ * 7. Post-processing via PostProcessPipeline:
+ *    - SSAOEffect (optional) - Screen-space ambient occlusion
+ *    - CompositeEffect (always) - Tonemapping + gamma correction
+ * 
+ * All scene passes render to an HDR intermediate buffer (rgba16float).
+ * The CompositePass always runs to apply tonemapping and gamma correction.
  */
 
-import { mat4, vec3 } from 'gl-matrix';
+import { mat4 } from 'gl-matrix';
 import { GPUContext } from '../GPUContext';
 import { UnifiedGPUTexture } from '../GPUTexture';
 import { GridRendererGPU } from '../renderers/GridRendererGPU';
@@ -16,11 +25,27 @@ import { ObjectRendererGPU } from '../renderers/ObjectRendererGPU';
 import { ShadowRendererGPU, type ShadowCaster, WaterRendererGPU, type WaterConfig } from '../renderers';
 import { TerrainManager } from '../../terrain/TerrainManager';
 import { WebGPUShadowSettings } from '@/demos/sceneBuilder/componentPanels/RenderingPanel';
-import { PostProcessStack, SSAOPass, type SSAOConfig } from '../postprocess';
+import { 
+  PostProcessPipeline, 
+  SSAOEffect, 
+  CompositeEffect,
+  type SSAOEffectConfig,
+  type CompositeEffectConfig,
+  type EffectUniforms,
+} from '../postprocess';
+import { RenderContextImpl, type RenderContextOptions } from './RenderContext';
+import type { RenderPass } from './RenderPass';
+import { 
+  SkyPass, 
+  ShadowPass, 
+  OpaquePass, 
+  TransparentPass, 
+  OverlayPass, 
+  DebugPass 
+} from './passes';
 
 /**
  * Simple camera interface for WebGPU pipeline
- * Allows using either CameraObject or a simple adapter
  */
 export interface GPUCamera {
   getViewMatrix(): Float32Array | number[];
@@ -42,15 +67,30 @@ export interface RenderOptions {
   hdrExposure?: number;
   wireframe?: boolean;
   ambientIntensity?: number;
-  /** Pre-computed light direction vector (from DirectionalLight) - avoids redundant calculation */
   lightDirection?: [number, number, number];
-  /** Shadow settings */
   shadowEnabled?: boolean;
   shadowSoftShadows?: boolean;
   shadowRadius?: number;
-  /** Show shadow map debug thumbnail */
   showShadowThumbnail?: boolean;
 }
+
+/**
+ * Default render options
+ */
+export const DEFAULT_RENDER_OPTIONS: Required<RenderOptions> = {
+  showGrid: true,
+  showAxes: true,
+  skyMode: 'sun',
+  sunIntensity: 20,
+  hdrExposure: 1.0,
+  wireframe: false,
+  ambientIntensity: 0.3,
+  lightDirection: [1, 0, 1],
+  shadowEnabled: true,
+  shadowSoftShadows: true,
+  shadowRadius: 200,
+  showShadowThumbnail: false,
+};
 
 /**
  * Forward rendering pipeline for WebGPU
@@ -63,13 +103,17 @@ export class GPUForwardPipeline {
   
   // Render targets
   private depthTexture: UnifiedGPUTexture;
-  private depthTextureCopy: UnifiedGPUTexture; // Copy for reading in shaders (water transparency)
+  private depthTextureCopy: UnifiedGPUTexture;
   private msaaColorTexture: UnifiedGPUTexture | null = null;
+  private msaaHdrColorTexture: UnifiedGPUTexture | null = null;
+  private sceneColorTexture: UnifiedGPUTexture | null = null;
   
-  // Post-processing
-  private postProcessStack: PostProcessStack | null = null;
-  private ssaoPass: SSAOPass | null = null;
-  private ssaoEnabled = false;
+  // Post-processing pipeline (plugin-based)
+  private postProcessPipeline: PostProcessPipeline | null = null;
+  
+  // Camera parameters
+  private nearPlane = 0.1;
+  private farPlane = 1000;
   
   // Renderers
   private gridRenderer: GridRendererGPU;
@@ -79,23 +123,24 @@ export class GPUForwardPipeline {
   private waterRenderer: WaterRendererGPU;
   private terrainManager: TerrainManager | null = null;
   
-  // Shadow casters (objects that can cast shadows)
+  // Render passes (ordered by priority)
+  private passes: RenderPass[] = [];
+  private shadowPassRef!: ShadowPass;
+  private opaquePassRef!: OpaquePass;
+  private transparentPassRef!: TransparentPass;
+  
+  // Shadow casters
   private shadowCasters: ShadowCaster[] = [];
   
-  // Shadow settings
+  // Default shadow settings
   private shadowEnabled = true;
   private shadowSoftShadows = true;
   private shadowRadius = 200;
   private showShadowThumbnail = false;
   
-  // Animation time for water
+  // Animation time
   private time = 0;
-  
-  // Matrices
-  private viewMatrix = mat4.create();
-  private projectionMatrix = mat4.create();
-  private viewProjectionMatrix = mat4.create();
-  private identityMatrix = mat4.create(); // For terrain model matrix
+  private lastFrameTime = performance.now();
   
   constructor(ctx: GPUContext, options: GPUForwardPipelineOptions) {
     this.ctx = ctx;
@@ -103,28 +148,16 @@ export class GPUForwardPipeline {
     this.height = options.height;
     this.sampleCount = options.sampleCount || 1;
     
-    // Create depth texture (for depth testing as render attachment)
+    // Create depth textures
     this.depthTexture = UnifiedGPUTexture.createDepth(
-      ctx,
-      this.width,
-      this.height,
-      'depth24plus',
-      'forward-depth'
+      ctx, this.width, this.height, 'depth24plus', 'forward-depth'
     );
-    
-    // Create depth texture copy (for reading in shaders - water transparency)
-    // This texture has TEXTURE_BINDING usage for shader sampling
     this.depthTextureCopy = this.createDepthTextureCopy();
     
     // Create MSAA color texture if needed
     if (this.sampleCount > 1) {
       this.msaaColorTexture = UnifiedGPUTexture.createRenderTarget(
-        ctx,
-        this.width,
-        this.height,
-        ctx.format,
-        this.sampleCount,
-        'forward-msaa-color'
+        ctx, this.width, this.height, ctx.format, this.sampleCount, 'forward-msaa-color'
       );
     }
     
@@ -137,6 +170,52 @@ export class GPUForwardPipeline {
       shadowRadius: this.shadowRadius,
     });
     this.waterRenderer = new WaterRendererGPU(ctx);
+    
+    // Create render passes
+    this.initializePasses();
+    
+    // Initialize post-processing pipeline (always active for tonemapping)
+    this.initializePostProcessing();
+  }
+  
+  /**
+   * Initialize render passes
+   */
+  private initializePasses(): void {
+    // Create passes with renderer references
+    this.shadowPassRef = new ShadowPass({
+      shadowRenderer: this.shadowRenderer,
+      terrainManager: this.terrainManager,
+    });
+    
+    const skyPass = new SkyPass(this.skyRenderer);
+    
+    this.opaquePassRef = new OpaquePass({
+      objectRenderer: this.objectRenderer,
+      shadowRenderer: this.shadowRenderer,
+      terrainManager: this.terrainManager,
+    });
+    
+    this.transparentPassRef = new TransparentPass({
+      waterRenderer: this.waterRenderer,
+      terrainManager: this.terrainManager,
+    });
+    
+    const overlayPass = new OverlayPass(this.gridRenderer);
+    
+    const debugPass = new DebugPass({
+      shadowRenderer: this.shadowRenderer,
+    });
+    
+    // Store passes in priority order
+    this.passes = [
+      this.shadowPassRef,
+      skyPass,
+      this.opaquePassRef,
+      this.transparentPassRef,
+      overlayPass,
+      debugPass,
+    ].sort((a, b) => a.priority - b.priority);
   }
   
   /**
@@ -163,26 +242,30 @@ export class GPUForwardPipeline {
   
   /**
    * Set the terrain manager for terrain rendering
-   * Automatically registers it as a shadow caster
    */
   setTerrainManager(terrainManager: TerrainManager): void {
-    // Unregister old terrain manager if exists
     if (this.terrainManager) {
       this.unregisterShadowCaster(this.terrainManager);
     }
     
     this.terrainManager = terrainManager;
-    
-    // Register as shadow caster
     this.registerShadowCaster(terrainManager);
+    
+    // Update pass references
+    this.shadowPassRef.setTerrainManager(terrainManager);
+    this.opaquePassRef.setTerrainManager(terrainManager);
+    this.transparentPassRef.setTerrainManager(terrainManager);
   }
 
   resetTerrainManager(): void {
     this.terrainManager = null;
+    this.shadowPassRef.setTerrainManager(null);
+    this.opaquePassRef.setTerrainManager(null);
+    this.transparentPassRef.setTerrainManager(null);
   }
   
   /**
-   * Register an object as a shadow caster
+   * Register a shadow caster
    */
   registerShadowCaster(caster: ShadowCaster): void {
     if (!this.shadowCasters.includes(caster)) {
@@ -201,12 +284,9 @@ export class GPUForwardPipeline {
   }
   
   /**
-   * Create a depth texture copy that can be used for shader sampling
-   * Uses TEXTURE_BINDING usage (not RENDER_ATTACHMENT) to avoid usage conflicts
+   * Create depth texture copy for shader sampling
    */
   private createDepthTextureCopy(): UnifiedGPUTexture {
-    // Create a depth texture with COPY_DST and TEXTURE_BINDING usage
-    // This will receive copied depth data and be used for shader sampling
     const texture = this.ctx.device.createTexture({
       label: 'forward-depth-copy',
       size: { width: this.width, height: this.height, depthOrArrayLayers: 1 },
@@ -218,457 +298,378 @@ export class GPUForwardPipeline {
       label: 'forward-depth-copy-view',
       format: 'depth24plus',
       dimension: '2d',
-      aspect: 'depth-only', // Required for depth texture sampling
+      aspect: 'depth-only',
     });
     
-    // Wrap in UnifiedGPUTexture for consistency
     return {
-      texture,
-      view,
-      format: 'depth24plus',
-      width: this.width,
-      height: this.height,
+      texture, view, format: 'depth24plus',
+      width: this.width, height: this.height,
       destroy: () => texture.destroy(),
     } as UnifiedGPUTexture;
+  }
+  
+  /**
+   * Create HDR scene color texture
+   */
+  private createSceneColorTexture(): UnifiedGPUTexture {
+    return UnifiedGPUTexture.create2D(this.ctx, {
+      label: 'scene-color-hdr',
+      width: this.width,
+      height: this.height,
+      format: 'rgba16float',
+      renderTarget: true,
+      sampled: true,
+      copySrc: true,
+    });
+  }
+  
+  /**
+   * Create MSAA HDR texture
+   */
+  private createMsaaHdrColorTexture(): UnifiedGPUTexture {
+    return UnifiedGPUTexture.createRenderTarget(
+      this.ctx, this.width, this.height,
+      'rgba16float', this.sampleCount, 'forward-msaa-hdr-color'
+    );
+  }
+  
+  /**
+   * Initialize post-processing pipeline with effects
+   */
+  private initializePostProcessing(): void {
+    // Create HDR intermediate buffer for scene rendering
+    this.sceneColorTexture = this.createSceneColorTexture();
+    
+    if (this.sampleCount > 1) {
+      this.msaaHdrColorTexture = this.createMsaaHdrColorTexture();
+    }
+    
+    // Create post-processing pipeline
+    this.postProcessPipeline = new PostProcessPipeline(
+      this.ctx,
+      this.width,
+      this.height
+    );
+    
+    // Add SSAO effect (order 100 - runs first, starts DISABLED)
+    const ssaoEffect = new SSAOEffect({
+      radius: 1.0,
+      intensity: 1.5,
+      bias: 0.025,
+      samples: 16,
+      blur: true,
+    });
+    ssaoEffect.enabled = false; // SSAO is optional, disabled by default
+    this.postProcessPipeline.addEffect(ssaoEffect, 100);
+    
+    // Add Composite effect (order 200 - runs after SSAO)
+    // ALWAYS enabled - handles tonemapping + gamma correction
+    const compositeEffect = new CompositeEffect(this.ctx.format, {
+      tonemapping: 3, // ACES
+      gamma: 2.2,
+      exposure: 1.0,
+    });
+    this.postProcessPipeline.addEffect(compositeEffect, 200);
   }
   
   /**
    * Resize render targets
    */
   resize(width: number, height: number): void {
-    if (this.width === width && this.height === height) {
-      return;
-    }
+    if (this.width === width && this.height === height) return;
     
     this.width = width;
     this.height = height;
     
-    // Recreate depth texture
+    // Recreate textures
     this.depthTexture.destroy();
     this.depthTexture = UnifiedGPUTexture.createDepth(
-      this.ctx,
-      this.width,
-      this.height,
-      'depth24plus',
-      'forward-depth'
+      this.ctx, this.width, this.height, 'depth24plus', 'forward-depth'
     );
     
-    // Recreate depth texture copy
     this.depthTextureCopy.destroy();
     this.depthTextureCopy = this.createDepthTextureCopy();
     
-    // Recreate MSAA color texture if needed
     if (this.msaaColorTexture) {
       this.msaaColorTexture.destroy();
       this.msaaColorTexture = UnifiedGPUTexture.createRenderTarget(
-        this.ctx,
-        this.width,
-        this.height,
-        this.ctx.format,
-        this.sampleCount,
-        'forward-msaa-color'
+        this.ctx, this.width, this.height, this.ctx.format, this.sampleCount, 'forward-msaa-color'
       );
     }
     
-    // Resize post-processing stack
-    if (this.postProcessStack) {
-      this.postProcessStack.resize(width, height);
-      this.postProcessStack.setDepthBuffer(this.depthTextureCopy);
+    if (this.sceneColorTexture) {
+      this.sceneColorTexture.destroy();
+      this.sceneColorTexture = this.createSceneColorTexture();
+    }
+    
+    if (this.msaaHdrColorTexture) {
+      this.msaaHdrColorTexture.destroy();
+      this.msaaHdrColorTexture = this.createMsaaHdrColorTexture();
+    }
+    
+    // Resize post-processing pipeline
+    if (this.postProcessPipeline) {
+      this.postProcessPipeline.resize(width, height);
     }
   }
   
   /**
-   * Render a frame
-   * @param scene - Scene object (can be null for basic rendering)
-   * @param camera - Camera providing view/projection matrices
-   * @param options - Render options
+   * Render a frame using pass-based architecture
    */
   render(
     scene: unknown | null,
     camera: GPUCamera,
     options: RenderOptions = {}
   ): void {
-    const {
-      showGrid = true,
-      showAxes = true,
-      skyMode = 'sun',
-      sunIntensity = 20,
-      hdrExposure = 1.0,
-      wireframe = false,
-      ambientIntensity = 0.3,
-      lightDirection = [1, 0, 1],
-      shadowEnabled = this.shadowEnabled,
-      shadowSoftShadows = this.shadowSoftShadows,
-      shadowRadius = this.shadowRadius,
-    } = options;
+    // Calculate delta time
+    const now = performance.now();
+    const deltaTime = (now - this.lastFrameTime) / 1000;
+    this.lastFrameTime = now;
+    this.time += deltaTime;
     
-    // Update matrices from camera
-    const viewMat = camera.getViewMatrix();
-    const projMat = camera.getProjectionMatrix();
-    mat4.copy(this.viewMatrix, viewMat as mat4);
-    mat4.copy(this.projectionMatrix, projMat as mat4);
-    mat4.multiply(this.viewProjectionMatrix, this.projectionMatrix, this.viewMatrix);
-    
-    // Get the current swap chain texture
+    // Get swap chain texture
     if (!this.ctx.context) {
       console.warn('[GPUForwardPipeline] Canvas not configured');
       return;
     }
     
-    const colorTexture = this.ctx.context.getCurrentTexture();
-    const colorView = colorTexture.createView();
+    const outputTexture = this.ctx.context.getCurrentTexture();
+    const outputView = outputTexture.createView();
     
     // Create command encoder
     const encoder = this.ctx.device.createCommandEncoder({
       label: 'forward-pipeline-encoder',
     });
     
-    // Determine color attachment based on MSAA
-    const colorAttachment: GPURenderPassColorAttachment = this.msaaColorTexture
-      ? {
-          view: this.msaaColorTexture.view,
-          resolveTarget: colorView,
-          clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },
-          loadOp: 'clear' as const,
-          storeOp: 'store' as const,
-        }
-      : {
-          view: colorView,
-          clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },
-          loadOp: 'clear' as const,
-          storeOp: 'store' as const,
-        };
+    // Always use HDR path since composite is always enabled
+    const useHDR = this.postProcessPipeline && this.sceneColorTexture;
     
-    // ========== SKY PASS ==========
-    // Render sky first (no depth, background)
-    if (skyMode !== 'none') {
-      const skyPass = encoder.beginRenderPass({
-        label: 'sky-pass',
-        colorAttachments: [colorAttachment],
-        // No depth attachment for sky - it's at infinite depth
-      });
-      
-      if (skyMode === 'sun') {
-        this.skyRenderer.renderSunSky(skyPass, this.viewProjectionMatrix, lightDirection, sunIntensity);
-      } else if (skyMode === 'hdr') {
-        this.skyRenderer.renderHDRSky(skyPass, this.viewProjectionMatrix, hdrExposure);
+    // Merge options with instance defaults
+    const mergedOptions: RenderOptions = {
+      ...DEFAULT_RENDER_OPTIONS,
+      shadowEnabled: this.shadowEnabled,
+      shadowSoftShadows: this.shadowSoftShadows,
+      shadowRadius: this.shadowRadius,
+      showShadowThumbnail: this.showShadowThumbnail,
+      ...options,
+    };
+    
+    // Create render context
+    const contextOptions: RenderContextOptions = {
+      ctx: this.ctx,
+      encoder,
+      camera,
+      options: mergedOptions,
+      width: this.width,
+      height: this.height,
+      near: this.nearPlane,
+      far: this.farPlane,
+      time: this.time,
+      deltaTime,
+      sampleCount: this.sampleCount,
+      depthTexture: this.depthTexture,
+      depthTextureCopy: this.depthTextureCopy,
+      outputTexture,
+      outputView,
+      useHDR: !!useHDR,
+      sceneColorTexture: this.sceneColorTexture ?? undefined,
+      msaaHdrColorTexture: this.msaaHdrColorTexture ?? undefined,
+      msaaColorTexture: this.msaaColorTexture ?? undefined,
+    };
+    
+    const renderCtx = new RenderContextImpl(contextOptions);
+    
+    // Execute all enabled render passes in order
+    for (const pass of this.passes) {
+      if (pass.enabled) {
+        pass.execute(renderCtx);
       }
-      
-      skyPass.end();
-      
-      // Update color attachment to load (not clear) for subsequent passes
-      colorAttachment.loadOp = 'load';
     }
     
-    // ========== SHADOW PASS ==========
-    // Render terrain depth from light's perspective using unified grid (no CDLOD LOD artifacts)
-    if (shadowEnabled && this.terrainManager) {
-      const cameraPosition = camera.getPosition() as [number, number, number];
+    // ========== POST-PROCESSING ==========
+    if (useHDR && this.postProcessPipeline && this.sceneColorTexture) {
+      // Ensure depth is copied for post-processing effects
+      renderCtx.copyDepthForReading();
       
-      // Extract camera forward direction from view matrix for frustum optimization
-      // View matrix row 2 (index 8-10) contains -forward in world space
-      const cameraForward: vec3 = [
-        -this.viewMatrix[8],
-        0, // We only care about XZ plane for shadow offset
-        -this.viewMatrix[10],
-      ];
-      // Normalize on XZ plane
-      const fwdLen = Math.sqrt(cameraForward[0] * cameraForward[0] + cameraForward[2] * cameraForward[2]);
-      if (fwdLen > 0.001) {
-        cameraForward[0] /= fwdLen;
-        cameraForward[2] /= fwdLen;
-      }
+      // Compute inverse matrices for SSAO
+      const inverseProjectionMatrix = mat4.create();
+      mat4.invert(inverseProjectionMatrix, renderCtx.projectionMatrix as unknown as mat4);
       
-      // Update bind group with terrain heightmap
-      const heightmap = this.terrainManager.getHeightmapTexture();
-      if (heightmap) {
-        this.shadowRenderer.updateBindGroup(heightmap);
-      }
+      const inverseViewMatrix = mat4.create();
+      mat4.invert(inverseViewMatrix, renderCtx.viewMatrix as unknown as mat4);
       
-      // Get terrain config for shadow params
-      const terrainConfig = this.terrainManager.getConfig();
-      
-      // Render shadow map using unified grid (self-contained, no external casters needed)
-      this.shadowRenderer.renderShadowMap(encoder, {
-        lightDirection: lightDirection as [number, number, number],
-        cameraPosition,
-        cameraForward,
-        heightScale: terrainConfig?.heightScale ?? 50,
-        terrainSize: terrainConfig?.worldSize ?? 1000,
-        gridSize: 129,
-      });
-    }
-    
-    // ========== OPAQUE PASS ==========
-    // Render terrain and opaque objects with depth testing
-    const opaquePass = encoder.beginRenderPass({
-      label: 'opaque-pass',
-      colorAttachments: [colorAttachment],
-      depthStencilAttachment: {
-        view: this.depthTexture.view,
-        depthClearValue: 1.0,
-        depthLoadOp: 'clear',
-        depthStoreOp: 'store',
-      },
-    });
-    
-    // Render terrain if available
-    if (this.terrainManager && this.terrainManager.isReady) {
-      const cameraPosition = camera.getPosition() as [number, number, number];
-      
-      // Prepare shadow params for terrain rendering
-      const shadowParams = shadowEnabled ? {
-        enabled: true,
-        softShadows: shadowSoftShadows,
-        shadowRadius: shadowRadius,
-        lightSpaceMatrix: this.shadowRenderer.getLightSpaceMatrix(),
-        shadowMap: this.shadowRenderer.getShadowMap(),
-      } : undefined;
-      
-      this.terrainManager.render(opaquePass, {
-        viewProjectionMatrix: this.viewProjectionMatrix,
-        modelMatrix: this.identityMatrix,
-        cameraPosition,
-        lightDirection,
-        lightColor: [1, 1, 1],
-        ambientIntensity,
-        wireframe,
-        shadow: shadowParams,
-      });
-    }
-    
-    // Render objects
-    const cameraPos = camera.getPosition() as [number, number, number];
-    this.objectRenderer.render(opaquePass, {
-      viewProjectionMatrix: this.viewProjectionMatrix,
-      cameraPosition: cameraPos,
-      lightDirection,
-      lightColor: [1, 1, 1],
-      ambientIntensity,
-    });
-    
-    opaquePass.end();
-    
-    // ========== TRANSPARENT PASS (WATER) ==========
-    // Render water after terrain (reads depth for transparency effects)
-    if (this.waterRenderer.isEnabled() && this.terrainManager) {
-      // Update animation time
-      this.time += 0.016; // Assume ~60fps, could be passed from outside
-      
-      // Copy depth texture to separate texture for shader sampling
-      // This avoids the "writable usage and another usage in same synchronization scope" error
-      // because we can't both write to (depthStencilAttachment) and read from (texture binding) the same texture
-      encoder.copyTextureToTexture(
-        { texture: this.depthTexture.texture },
-        { texture: this.depthTextureCopy.texture },
-        { width: this.width, height: this.height, depthOrArrayLayers: 1 }
-      );
-      
-      const terrainConfig = this.terrainManager.getConfig();
-      
-      const transparentPass = encoder.beginRenderPass({
-        label: 'transparent-pass',
-        colorAttachments: [{
-          ...colorAttachment,
-          loadOp: 'load',
-        }],
-        depthStencilAttachment: {
-          view: this.depthTexture.view,
-          depthLoadOp: 'load',
-          depthStoreOp: 'store', // Water doesn't write depth
-        },
-      });
-      
-      // Use depthTextureCopy for shader sampling (to avoid usage conflict)
-      this.waterRenderer.render(transparentPass, {
-        viewProjectionMatrix: this.viewProjectionMatrix,
-        modelMatrix: this.identityMatrix,
-        cameraPosition: cameraPos,
-        terrainSize: terrainConfig?.worldSize ?? 1000,
-        heightScale: terrainConfig?.heightScale ?? 50,
+      // Build effect uniforms
+      const effectUniforms: EffectUniforms = {
+        near: this.nearPlane,
+        far: this.farPlane,
+        width: this.width,
+        height: this.height,
         time: this.time,
-        sunDirection: lightDirection as vec3,
-        sunIntensity,
-        ambientIntensity,
-        depthTexture: this.depthTextureCopy,
-      });
+        deltaTime,
+        projectionMatrix: renderCtx.projectionMatrix,
+        inverseProjectionMatrix: new Float32Array(inverseProjectionMatrix),
+        viewMatrix: renderCtx.viewMatrix,
+        inverseViewMatrix: new Float32Array(inverseViewMatrix),
+      };
       
-      transparentPass.end();
-    }
-    
-    // ========== OVERLAY PASS ==========
-    // Render grid and other overlays (with depth test but no depth write)
-    if (showGrid || showAxes) {
-      const overlayPass = encoder.beginRenderPass({
-        label: 'overlay-pass',
-        colorAttachments: [{
-          ...colorAttachment,
-          loadOp: 'load',
-        }],
-        depthStencilAttachment: {
-          view: this.depthTexture.view,
-          depthLoadOp: 'load',
-          depthStoreOp: 'store',
-        },
-      });
-      
-      this.gridRenderer.render(overlayPass, this.viewProjectionMatrix, {
-        showGrid,
-        showAxes,
-      });
-      
-      overlayPass.end();
-    }
-    
-    // ========== DEBUG THUMBNAIL PASS ==========
-    // Render shadow map thumbnail if enabled
-    const shouldShowThumbnail = options.showShadowThumbnail ?? this.showShadowThumbnail;
-    if (shouldShowThumbnail && shadowEnabled) {
-      const thumbnailSize = 200;
-      const thumbnailX = 10;
-      const thumbnailY = 10;
-      
-      this.shadowRenderer.renderDebugThumbnail(
+      // Execute post-processing pipeline
+      this.postProcessPipeline.execute(
         encoder,
-        colorView,
-        thumbnailX,
-        thumbnailY,
-        thumbnailSize,
-        this.width,
-        this.height
+        this.sceneColorTexture,
+        this.depthTextureCopy,
+        outputView,
+        effectUniforms
       );
+      
+      // Render debug thumbnail after composite (if enabled)
+      if (mergedOptions.showShadowThumbnail && mergedOptions.shadowEnabled) {
+        this.shadowRenderer.renderDebugThumbnail(
+          encoder, outputView, 10, 10, 200, this.width, this.height
+        );
+      }
     }
     
     // Submit commands
     this.ctx.queue.submit([encoder.finish()]);
   }
   
-  /**
-   * Set HDR texture for sky
-   */
+  // ========== Public API ==========
+  
   setHDRTexture(texture: UnifiedGPUTexture): void {
     this.skyRenderer.setHDRTexture(texture);
   }
   
-  /**
-   * Get the object renderer for adding/removing meshes
-   */
   getObjectRenderer(): ObjectRendererGPU {
     return this.objectRenderer;
   }
   
-  /**
-   * Get the shadow renderer for debug purposes
-   */
   getShadowRenderer(): ShadowRendererGPU {
     return this.shadowRenderer;
   }
   
-  /**
-   * Get the water renderer for configuration
-   */
   getWaterRenderer(): WaterRendererGPU {
     return this.waterRenderer;
   }
   
-  /**
-   * Configure water settings
-   */
   setWaterConfig(config: Partial<WaterConfig>): void {
     this.waterRenderer.setConfig(config);
   }
   
-  /**
-   * Get current water configuration
-   */
   getWaterConfig(): WaterConfig {
     return this.waterRenderer.getConfig();
   }
   
-  /**
-   * Enable/disable water rendering
-   */
   setWaterEnabled(enabled: boolean): void {
     this.waterRenderer.setEnabled(enabled);
   }
   
-  /**
-   * Set water level (normalized -0.5 to 0.5)
-   */
   setWaterLevel(level: number): void {
     this.waterRenderer.setWaterLevel(level);
   }
   
-  // ========== SSAO Methods ==========
-  
+  // ========== Post-Processing Methods ==========
+
   /**
-   * Enable/disable SSAO effect
-   * Note: SSAO requires view-space normals from terrain/object shaders (MRT)
-   * This is not yet implemented - enabling SSAO will have no effect until
-   * terrain and object shaders output normals to a second render target.
+   * Enable/disable SSAO post-processing
    */
   setSSAOEnabled(enabled: boolean): void {
-    this.ssaoEnabled = enabled;
-    
-    // Lazy-create PostProcessStack and SSAOPass when first enabled
-    if (enabled && !this.postProcessStack) {
-      this.postProcessStack = new PostProcessStack(this.ctx, this.width, this.height, {
-        hdr: false, // Use LDR for now since renderers already tonemap
-        generateNormals: true,
-      });
-      
-      this.ssaoPass = new SSAOPass(this.ctx, this.width, this.height, {
-        radius: 1.0,
-        intensity: 1.5,
-        bias: 0.025,
-        samples: 16,
-        blur: true,
-      });
-      
-      this.postProcessStack.addPass(this.ssaoPass);
-      this.postProcessStack.setDepthBuffer(this.depthTextureCopy);
-    }
-    
-    if (this.ssaoPass) {
-      this.ssaoPass.setEnabled(enabled);
-    }
+    // Enable/disable SSAO effect in pipeline (composite always stays enabled)
+    this.postProcessPipeline?.setEnabled('ssao', enabled);
   }
   
   /**
    * Check if SSAO is enabled
    */
   isSSAOEnabled(): boolean {
-    return this.ssaoEnabled;
+    return this.postProcessPipeline?.isEnabled('ssao') ?? false;
   }
   
   /**
-   * Configure SSAO parameters
+   * Configure SSAO effect parameters
    */
-  setSSAOConfig(config: Partial<SSAOConfig>): void {
-    if (this.ssaoPass) {
-      this.ssaoPass.setConfig(config);
+  setSSAOConfig(config: Partial<SSAOEffectConfig>): void {
+    if (this.postProcessPipeline) {
+      const ssaoEffect = this.postProcessPipeline.getEffect<SSAOEffect>('ssao');
+      if (ssaoEffect) {
+        ssaoEffect.setConfig(config);
+      }
     }
   }
   
   /**
-   * Get current SSAO configuration
+   * Get SSAO configuration
    */
-  getSSAOConfig(): SSAOConfig | null {
-    return this.ssaoPass?.getConfig() ?? null;
+  getSSAOConfig(): SSAOEffectConfig | null {
+    if (this.postProcessPipeline) {
+      const ssaoEffect = this.postProcessPipeline.getEffect<SSAOEffect>('ssao');
+      return ssaoEffect?.getConfig() ?? null;
+    }
+    return null;
   }
   
   /**
-   * Clean up GPU resources
+   * Configure composite effect parameters (tonemapping, gamma, exposure)
    */
+  setCompositeConfig(config: Partial<CompositeEffectConfig>): void {
+    if (this.postProcessPipeline) {
+      const compositeEffect = this.postProcessPipeline.getEffect<CompositeEffect>('composite');
+      if (compositeEffect) {
+        compositeEffect.setConfig(config);
+      }
+    }
+  }
+  
+  /**
+   * Get composite effect configuration
+   */
+  getCompositeConfig(): CompositeEffectConfig | null {
+    if (this.postProcessPipeline) {
+      const compositeEffect = this.postProcessPipeline.getEffect<CompositeEffect>('composite');
+      return compositeEffect?.getConfig() ?? null;
+    }
+    return null;
+  }
+  
+  /**
+   * Get the post-processing pipeline (for advanced configuration)
+   */
+  getPostProcessPipeline(): PostProcessPipeline | null {
+    return this.postProcessPipeline;
+  }
+  
+  /**
+   * Get a render pass by name (for external configuration)
+   */
+  getPass(name: string): RenderPass | undefined {
+    return this.passes.find(p => p.name === name);
+  }
+  
+  /**
+   * Enable/disable a render pass by name
+   */
+  setPassEnabled(name: string, enabled: boolean): void {
+    const pass = this.getPass(name);
+    if (pass) {
+      pass.enabled = enabled;
+    }
+  }
+  
   destroy(): void {
     this.depthTexture.destroy();
     this.depthTextureCopy.destroy();
     this.msaaColorTexture?.destroy();
+    this.msaaHdrColorTexture?.destroy();
+    this.sceneColorTexture?.destroy();
     this.gridRenderer.destroy();
     this.skyRenderer.destroy();
     this.objectRenderer.destroy();
     this.shadowRenderer.destroy();
     this.waterRenderer.destroy();
-    this.postProcessStack?.destroy();
+    this.postProcessPipeline?.destroy();
+    
+    // Destroy render passes
+    for (const pass of this.passes) {
+      pass.destroy?.();
+    }
   }
 }

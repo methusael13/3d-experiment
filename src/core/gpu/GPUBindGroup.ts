@@ -333,9 +333,13 @@ export class BindGroupBuilder {
 
   /**
    * Add a texture view binding
+   * Uses duck typing to check for UnifiedGPUTexture-like objects
    */
   texture(binding: number, textureOrView: GPUTextureView | UnifiedGPUTexture): this {
-    const view = textureOrView instanceof UnifiedGPUTexture ? textureOrView.view : textureOrView;
+    // Use duck typing instead of instanceof - works with type assertions and plain objects
+    const view = textureOrView && 'view' in textureOrView && 'texture' in textureOrView
+      ? (textureOrView as UnifiedGPUTexture).view
+      : textureOrView as GPUTextureView;
     this.entries.push({
       binding,
       resource: view,

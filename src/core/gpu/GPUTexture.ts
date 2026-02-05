@@ -166,7 +166,7 @@ export class UnifiedGPUTexture {
       label,
       size: { width, height, depthOrArrayLayers: 1 },
       format,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
     });
 
     const view = texture.createView({

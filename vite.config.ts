@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { resolve } from 'path';
 import checker from 'vite-plugin-checker';
 import preact from '@preact/preset-vite';
 
@@ -18,6 +19,7 @@ export default defineConfig({
     alias: {
       react: 'preact/compat',
       'react-dom': 'preact/compat',
+      '@': resolve(__dirname, 'src'),
     },
   },
   build: {

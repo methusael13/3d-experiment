@@ -66,7 +66,6 @@ export interface SceneBuilderStore {
   
   // Terrain references (WebGL vs WebGPU mode)
   terrainObject: TerrainObject | null;
-  gpuTerrainObject: GPUTerrainSceneObject | null;
   isWebGPU: Signal<boolean>;
   
   // Actions
@@ -255,8 +254,6 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     set gl(g) { gl = g; },
     get terrainObject() { return terrainObject; },
     set terrainObject(t) { terrainObject = t; },
-    get gpuTerrainObject() { return gpuTerrainObject; },
-    set gpuTerrainObject(t) { gpuTerrainObject = t; },
     
     // Actions
     syncFromScene,

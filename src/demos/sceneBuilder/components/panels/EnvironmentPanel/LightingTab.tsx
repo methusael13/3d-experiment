@@ -1,4 +1,4 @@
-import { Slider, Select } from '../../ui';
+import { Slider } from '../../ui';
 import styles from './EnvironmentPanel.module.css';
 
 interface LightingTabProps {
@@ -7,23 +7,13 @@ interface LightingTabProps {
   sunElevation: number;
   sunAmbient: number;
   hdrExposure: number;
-  toneMapping: string;
   onLightModeChange: (mode: 'directional' | 'hdr') => void;
   onSunAzimuthChange: (value: number) => void;
   onSunElevationChange: (value: number) => void;
   onSunAmbientChange: (value: number) => void;
   onHdrExposureChange: (value: number) => void;
-  onToneMappingChange: (value: string) => void;
   hdrControls: preact.ComponentChildren;
 }
-
-const toneMappingOptions = [
-  { value: 'none', label: 'None (Linear)' },
-  { value: 'reinhard', label: 'Reinhard' },
-  { value: 'reinhardLum', label: 'Reinhard (Luminance)' },
-  { value: 'aces', label: 'ACES Filmic' },
-  { value: 'uncharted', label: 'Uncharted 2' },
-];
 
 export function LightingTab({
   lightMode,
@@ -31,13 +21,11 @@ export function LightingTab({
   sunElevation,
   sunAmbient,
   hdrExposure,
-  toneMapping,
   onLightModeChange,
   onSunAzimuthChange,
   onSunElevationChange,
   onSunAmbientChange,
   onHdrExposureChange,
-  onToneMappingChange,
   hdrControls,
 }: LightingTabProps) {
   return (
@@ -108,16 +96,6 @@ export function LightingTab({
           {hdrControls}
         </div>
       )}
-
-      {/* Tone Mapping - always visible */}
-      <div class={styles.toneMappingSection}>
-        <Select
-          label="Tone Mapping"
-          value={toneMapping}
-          options={toneMappingOptions}
-          onChange={onToneMappingChange}
-        />
-      </div>
     </div>
   );
 }

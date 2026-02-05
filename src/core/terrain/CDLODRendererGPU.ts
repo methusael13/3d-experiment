@@ -17,6 +17,7 @@ import {
   BindGroupLayoutBuilder,
   BindGroupBuilder,
   ShaderSources,
+  VertexBufferLayoutDesc,
 } from '../gpu';
 import {
   TerrainQuadtree,
@@ -139,6 +140,34 @@ export function createDefaultTerrainMaterial(): TerrainMaterial {
   };
 }
 
+/** HDR intermediate format used for all terrain rendering */
+const HDR_FORMAT: GPUTextureFormat = 'rgba16float';
+
+/** Shared vertex buffer layouts for CDLOD pipelines */
+const CDLOD_VERTEX_BUFFER_LAYOUTS: GPUVertexBufferLayout[] = [
+  // Grid vertices (position vec2 + uv vec2 + isSkirt float) = 5 floats
+  {
+    arrayStride: 5 * 4,
+    stepMode: 'vertex',
+    attributes: [
+      { format: 'float32x2', offset: 0, shaderLocation: 0 },  // position
+      { format: 'float32x2', offset: 8, shaderLocation: 1 },  // uv
+      { format: 'float32', offset: 16, shaderLocation: 6 },   // isSkirt
+    ],
+  },
+  // Instance data (offset vec2 + scale + morph + lod)
+  {
+    arrayStride: 5 * 4,
+    stepMode: 'instance',
+    attributes: [
+      { format: 'float32x2', offset: 0, shaderLocation: 2 },  // nodeOffset
+      { format: 'float32', offset: 8, shaderLocation: 3 },    // nodeScale
+      { format: 'float32', offset: 12, shaderLocation: 4 },   // nodeMorph
+      { format: 'float32', offset: 16, shaderLocation: 5 },   // nodeLOD
+    ],
+  },
+];
+
 /**
  * WebGPU-based CDLOD Terrain Renderer
  */
@@ -151,6 +180,7 @@ export class CDLODRendererGPU {
   private pipeline: RenderPipelineWrapper | null = null;
   private wireframePipeline: GPURenderPipeline | null = null;
   private bindGroupLayout: GPUBindGroupLayout | null = null;
+  private pipelineLayout: GPUPipelineLayout | null = null;
   
   // Buffers using unified abstraction
   private gridVertexBuffer: UnifiedGPUBuffer | null = null;
@@ -494,38 +524,13 @@ export class CDLODRendererGPU {
       .comparisonSampler(6, 'fragment')            // Shadow comparison sampler
       .build(this.ctx);
     
-    // Vertex buffer layouts for RenderPipelineWrapper (uses custom type)
-    const wrapperVertexBufferLayouts = [
-      // Grid vertices (position vec2 + uv vec2 + isSkirt float) = 5 floats
-      {
-        arrayStride: 5 * 4,
-        stepMode: 'vertex' as const,
-        attributes: [
-          { format: 'float32x2' as const, offset: 0, shaderLocation: 0 },  // position
-          { format: 'float32x2' as const, offset: 8, shaderLocation: 1 },  // uv
-          { format: 'float32' as const, offset: 16, shaderLocation: 6 },   // isSkirt
-        ],
-      },
-      // Instance data (offset vec2 + scale + morph + lod)
-      {
-        arrayStride: 5 * 4,
-        stepMode: 'instance' as const,
-        attributes: [
-          { format: 'float32x2' as const, offset: 0, shaderLocation: 2 },  // nodeOffset
-          { format: 'float32' as const, offset: 8, shaderLocation: 3 },   // nodeScale
-          { format: 'float32' as const, offset: 12, shaderLocation: 4 },  // nodeMorph
-          { format: 'float32' as const, offset: 16, shaderLocation: 5 },  // nodeLOD
-        ],
-      },
-    ];
-    
     // Create render pipeline using RenderPipelineWrapper
     this.pipeline = RenderPipelineWrapper.create(this.ctx, {
       label: 'cdlod-render-pipeline',
       vertexShader: ShaderSources.terrainCDLOD,
       vertexEntryPoint: 'vs_main',
       fragmentEntryPoint: 'fs_main',
-      vertexBuffers: wrapperVertexBufferLayouts,
+      vertexBuffers: CDLOD_VERTEX_BUFFER_LAYOUTS as VertexBufferLayoutDesc[],
       bindGroupLayouts: [this.bindGroupLayout],
       topology: 'triangle-list',
       cullMode: 'back',
@@ -533,6 +538,7 @@ export class CDLODRendererGPU {
       depthFormat: 'depth24plus',
       depthWriteEnabled: true,
       depthCompare: 'less',
+      colorFormats: ['rgba16float'], // HDR intermediate format
     });
     
     // Create wireframe pipeline with line-list topology
@@ -552,13 +558,13 @@ export class CDLODRendererGPU {
       vertex: {
         module: shaderModule,
         entryPoint: 'vs_main',
-        buffers: wrapperVertexBufferLayouts,
+        buffers: CDLOD_VERTEX_BUFFER_LAYOUTS,
       },
       fragment: {
         module: shaderModule,
         entryPoint: 'fs_main',
         targets: [{
-          format: navigator.gpu.getPreferredCanvasFormat(),
+          format: 'rgba16float' as GPUTextureFormat, // HDR intermediate format
         }],
       },
       primitive: {
@@ -884,44 +890,8 @@ export class CDLODRendererGPU {
     }
     
     try {
-      // Create render pipeline with new shader source
-      this.pipeline = RenderPipelineWrapper.create(this.ctx, {
-        label: 'cdlod-render-pipeline',
-        vertexShader: newSource,
-        vertexEntryPoint: 'vs_main',
-        fragmentEntryPoint: 'fs_main',
-        vertexBuffers: [
-          // Grid vertices (position vec2 + uv vec2 + isSkirt float) = 5 floats
-          {
-            arrayStride: 5 * 4,
-            stepMode: 'vertex',
-            attributes: [
-              { format: 'float32x2', offset: 0, shaderLocation: 0 },  // position
-              { format: 'float32x2', offset: 8, shaderLocation: 1 },  // uv
-              { format: 'float32', offset: 16, shaderLocation: 6 },   // isSkirt
-            ],
-          },
-          // Instance data (offset vec2 + scale + morph + lod)
-          {
-            arrayStride: 5 * 4,
-            stepMode: 'instance',
-            attributes: [
-              { format: 'float32x2', offset: 0, shaderLocation: 2 },  // nodeOffset
-              { format: 'float32', offset: 8, shaderLocation: 3 },   // nodeScale
-              { format: 'float32', offset: 12, shaderLocation: 4 },  // nodeMorph
-              { format: 'float32', offset: 16, shaderLocation: 5 },  // nodeLOD
-            ],
-          },
-        ],
-        bindGroupLayouts: [this.bindGroupLayout],
-        topology: 'triangle-list',
-        cullMode: 'back',
-        frontFace: 'ccw',
-        depthFormat: 'depth24plus',
-        depthWriteEnabled: true,
-        depthCompare: 'less',
-      });
-      
+      // Recreate pipelines with new shader source
+      this.recreatePipelines(newSource);
       console.log('[CDLODRendererGPU] Shader reloaded successfully');
       return true;
     } catch (e) {
@@ -941,71 +911,98 @@ export class CDLODRendererGPU {
     }
     
     try {
-      // Create pipeline layout
-      const pipelineLayout = this.ctx.device.createPipelineLayout({
-        label: 'cdlod-pipeline-layout',
-        bindGroupLayouts: [this.bindGroupLayout],
-      });
-      
-      // Create render pipeline with pre-compiled module
-      const pipeline = this.ctx.device.createRenderPipeline({
-        label: 'cdlod-render-pipeline',
-        layout: pipelineLayout,
-        vertex: {
-          module,
-          entryPoint: 'vs_main',
-          buffers: [
-            // Grid vertices (position vec2 + uv vec2 + isSkirt float) = 5 floats
-            {
-              arrayStride: 5 * 4,
-              stepMode: 'vertex',
-              attributes: [
-                { format: 'float32x2', offset: 0, shaderLocation: 0 },  // position
-                { format: 'float32x2', offset: 8, shaderLocation: 1 },  // uv
-                { format: 'float32', offset: 16, shaderLocation: 6 },   // isSkirt
-              ],
-            },
-            // Instance data (offset vec2 + scale + morph + lod)
-            {
-              arrayStride: 5 * 4,
-              stepMode: 'instance',
-              attributes: [
-                { format: 'float32x2', offset: 0, shaderLocation: 2 },  // nodeOffset
-                { format: 'float32', offset: 8, shaderLocation: 3 },   // nodeScale
-                { format: 'float32', offset: 12, shaderLocation: 4 },  // nodeMorph
-                { format: 'float32', offset: 16, shaderLocation: 5 },  // nodeLOD
-              ],
-            },
-          ],
-        },
-        fragment: {
-          module,
-          entryPoint: 'fs_main',
-          targets: [{
-            format: navigator.gpu.getPreferredCanvasFormat(),
-          }],
-        },
-        primitive: {
-          topology: 'triangle-list',
-          cullMode: 'back',
-          frontFace: 'ccw',
-        },
-        depthStencil: {
-          format: 'depth24plus',
-          depthWriteEnabled: true,
-          depthCompare: 'less',
-        },
-      });
-      
-      // Wrap in RenderPipelineWrapper for consistency
-      this.pipeline = { pipeline } as RenderPipelineWrapper;
-      
+      // Recreate pipelines with pre-compiled module
+      this.recreatePipelinesFromModule(module);
       console.log('[CDLODRendererGPU] Shader reloaded from module successfully');
       return true;
     } catch (e) {
       console.error('[CDLODRendererGPU] Shader reload from module failed:', e);
       return false;
     }
+  }
+  
+  /**
+   * Recreate both solid and wireframe pipelines from shader source
+   * Uses shared constants for vertex layouts and formats
+   */
+  private recreatePipelines(shaderSource: string): void {
+    // Create shader module
+    const shaderModule = this.ctx.device.createShaderModule({
+      label: 'cdlod-shader',
+      code: shaderSource,
+    });
+    
+    this.recreatePipelinesFromModule(shaderModule);
+  }
+  
+  /**
+   * Recreate both solid and wireframe pipelines from pre-compiled module
+   * Uses shared constants for vertex layouts and formats
+   */
+  private recreatePipelinesFromModule(module: GPUShaderModule): void {
+    if (!this.bindGroupLayout) return;
+    
+    // Create or reuse pipeline layout
+    if (!this.pipelineLayout) {
+      this.pipelineLayout = this.ctx.device.createPipelineLayout({
+        label: 'cdlod-pipeline-layout',
+        bindGroupLayouts: [this.bindGroupLayout],
+      });
+    }
+    
+    // Create solid render pipeline
+    const solidPipeline = this.ctx.device.createRenderPipeline({
+      label: 'cdlod-render-pipeline',
+      layout: this.pipelineLayout,
+      vertex: {
+        module,
+        entryPoint: 'vs_main',
+        buffers: CDLOD_VERTEX_BUFFER_LAYOUTS,
+      },
+      fragment: {
+        module,
+        entryPoint: 'fs_main',
+        targets: [{ format: HDR_FORMAT }],
+      },
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'back',
+        frontFace: 'ccw',
+      },
+      depthStencil: {
+        format: 'depth24plus',
+        depthWriteEnabled: true,
+        depthCompare: 'less',
+      },
+    });
+    
+    // Create wireframe pipeline
+    this.wireframePipeline = this.ctx.device.createRenderPipeline({
+      label: 'cdlod-wireframe-pipeline',
+      layout: this.pipelineLayout,
+      vertex: {
+        module,
+        entryPoint: 'vs_main',
+        buffers: CDLOD_VERTEX_BUFFER_LAYOUTS,
+      },
+      fragment: {
+        module,
+        entryPoint: 'fs_main',
+        targets: [{ format: HDR_FORMAT }],
+      },
+      primitive: {
+        topology: 'line-list',
+        cullMode: 'none',
+      },
+      depthStencil: {
+        format: 'depth24plus',
+        depthWriteEnabled: true,
+        depthCompare: 'less-equal',
+      },
+    });
+    
+    // Wrap solid pipeline for consistency with RenderPipelineWrapper interface
+    this.pipeline = { pipeline: solidPipeline } as RenderPipelineWrapper;
   }
   
   /**

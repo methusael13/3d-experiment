@@ -1,35 +1,33 @@
-// Water Rendering Shader
-// Stylized water surface with animated waves, Fresnel effect, and depth-based transparency
-// Designed to render after terrain as a transparent overlay
+// Water Rendering Shader v2
+// High-quality water with atmospheric reflections, sharp sun highlights, and organic waves
+// Based on techniques from shadertoy.com/view/Ms2SD1
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+const PI: f32 = 3.14159265359;
+const DRAG_MULT: f32 = 0.28;  // How much waves pull on the water position
+const WAVE_ITERATIONS_VS: i32 = 8;   // Vertex shader iterations (for displacement)
+const WAVE_ITERATIONS_FS: i32 = 24;  // Fragment shader iterations (for normals)
 
 // ============================================================================
 // Uniform Structures
 // ============================================================================
 
 struct Uniforms {
-  viewProjectionMatrix: mat4x4f,  // 0-15
-  modelMatrix: mat4x4f,           // 16-31
-  cameraPosition: vec3f,          // 32-34
-  time: f32,                      // 35 - animation time in seconds
-  terrainSize: f32,               // 36 - size of terrain in world units
-  waterLevel: f32,                // 37 - Y position of water surface
-  heightScale: f32,               // 38 - terrain height scale for depth calc
-  _pad0: f32,                     // 39
+  viewProjectionMatrix: mat4x4f,  // 0-15 (64 bytes)
+  modelMatrix: mat4x4f,           // 16-31 (64 bytes)
+  cameraPositionTime: vec4f,      // 32-35: xyz = camera position, w = time
+  params: vec4f,                  // 36-39: x = terrainSize, y = waterLevel, z = heightScale, w = sunIntensity
 }
 
 struct WaterMaterial {
-  waterColor: vec4f,              // 0-3 (rgb + alpha)
-  deepColor: vec4f,               // 4-7 (color at max depth)
-  lightDir: vec3f,                // 8-10
-  waveScale: f32,                 // 11 - scale of wave animation
-  lightColor: vec3f,              // 12-14
-  specularPower: f32,             // 15 - shininess for specular
-  foamColor: vec3f,               // 16-18
-  foamThreshold: f32,             // 19 - depth threshold for foam
-  ambientIntensity: f32,          // 20
-  opacity: f32,                   // 21 - base opacity
-  fresnelPower: f32,              // 22 - fresnel exponent
-  depthFalloff: f32,              // 23 - how quickly water becomes opaque with depth
+  sunDirection: vec4f,            // 0-3: xyz = normalized sun dir, w = unused
+  scatterColor: vec4f,            // 4-7: subsurface scattering color (deep water tint)
+  foamColor: vec4f,               // 8-11: shoreline foam color
+  params1: vec4f,                 // 12-15: x = waveScale, y = foamThreshold, z = fresnelPower, w = opacity
+  params2: vec4f,                 // 16-19: x = ambientIntensity, y = depthFalloff, z = unused, w = unused
 }
 
 // ============================================================================
@@ -55,123 +53,138 @@ struct VertexOutput {
   @location(0) worldPosition: vec3f,
   @location(1) texCoord: vec2f,
   @location(2) viewDir: vec3f,
-  @location(3) normal: vec3f,
+  @location(3) distanceToCamera: f32,
 }
 
 // ============================================================================
-// Wave Functions
+// Exponential Wave with Position Drag
 // ============================================================================
 
-// Gerstner wave function - creates realistic ocean-like waves
+// Single wave octave - returns (height, derivative)
+fn waveDx(position: vec2f, direction: vec2f, frequency: f32, timeShift: f32) -> vec2f {
+  let x = dot(direction, position) * frequency + timeShift;
+  let wave = exp(sin(x) - 1.0);  // Sharp peaks, range ~[0, 1]
+  let dx = wave * cos(x);         // Derivative for position drag
+  return vec2f(wave, -dx);
+}
+
+// Sum multiple wave octaves with position dragging
+fn getWaves(inputPos: vec2f, iterations: i32, time: f32) -> f32 {
+  var pos = inputPos;
+  let wavePhaseShift = length(inputPos) * 0.1;  // Avoid identical phases
+  var iter = 0.0;
+  var frequency = 1.0;
+  var timeMultiplier = 2.0;
+  var weight = 1.0;
+  var sumOfValues = 0.0;
+  var sumOfWeights = 0.0;
+  
+  for (var i = 0; i < iterations; i++) {
+    // Pseudo-random wave direction from iteration
+    let p = vec2f(sin(iter), cos(iter));
+    
+    // Calculate wave value and derivative
+    let res = waveDx(pos, p, frequency, time * timeMultiplier + wavePhaseShift);
+    
+    // Position drag - each wave affects sampling position for subsequent waves
+    pos += p * res.y * weight * DRAG_MULT;
+    
+    // Accumulate weighted result
+    sumOfValues += res.x * weight;
+    sumOfWeights += weight;
+    
+    // Modify parameters for next octave
+    weight = mix(weight, 0.0, 0.2);
+    frequency *= 1.18;
+    timeMultiplier *= 1.07;
+    iter += 1232.399963;  // Large prime-ish number for randomness
+  }
+  
+  return sumOfValues / sumOfWeights;
+}
+
+// Gerstner wave for vertex displacement (physically-based)
 fn gerstnerWave(pos: vec2f, dir: vec2f, steepness: f32, wavelength: f32, time: f32) -> vec3f {
-  let k = 2.0 * 3.14159 / wavelength;
-  let c = sqrt(9.8 / k);  // Wave speed from gravity
+  let k = 2.0 * PI / wavelength;
+  let c = sqrt(9.8 / k);
   let d = normalize(dir);
   let f = k * (dot(d, pos) - c * time);
   let a = steepness / k;
   
-  return vec3f(
-    d.x * a * cos(f),
-    a * sin(f),
-    d.y * a * cos(f)
-  );
+  return vec3f(d.x * a * cos(f), a * sin(f), d.y * a * cos(f));
 }
 
-// Calculate wave displacement and normal at a position
-fn calculateWaves(worldXZ: vec2f, time: f32, waveScale: f32) -> vec4f {
-  var displacement = vec3f(0.0);
+// Vertex displacement using Gerstner waves
+fn getVertexDisplacement(worldXZ: vec2f, time: f32, waveScale: f32) -> vec3f {
+  var disp = vec3f(0.0);
   
-  // Multiple wave layers with different directions, wavelengths, and steepness
-  // Wave 1: Primary swell
-  displacement += gerstnerWave(worldXZ, vec2f(1.0, 0.3), 0.15 * waveScale, 30.0, time);
+  // Large primary swell
+  disp += gerstnerWave(worldXZ * 0.02, vec2f(1.0, 0.3), 0.3 * waveScale, 60.0, time);
+  // Secondary cross swell
+  disp += gerstnerWave(worldXZ * 0.02, vec2f(-0.5, 0.7), 0.2 * waveScale, 40.0, time * 1.1);
+  // Medium waves
+  disp += gerstnerWave(worldXZ * 0.05, vec2f(0.3, -0.8), 0.15 * waveScale, 25.0, time * 0.9);
   
-  // Wave 2: Secondary swell
-  displacement += gerstnerWave(worldXZ, vec2f(-0.5, 0.7), 0.1 * waveScale, 20.0, time * 1.1);
-  
-  // Wave 3: Cross wave
-  displacement += gerstnerWave(worldXZ, vec2f(0.3, -0.8), 0.08 * waveScale, 15.0, time * 0.9);
-  
-  // Wave 4: Small ripples
-  displacement += gerstnerWave(worldXZ, vec2f(0.8, 0.6), 0.04 * waveScale, 8.0, time * 1.3);
-  
-  // Wave 5: Tiny detail waves
-  displacement += gerstnerWave(worldXZ, vec2f(-0.6, -0.4), 0.02 * waveScale, 4.0, time * 1.5);
-  
-  return vec4f(displacement, 0.0);
+  return disp;
 }
 
-// Calculate wave normal from displacement derivatives
-fn calculateWaveNormal(worldXZ: vec2f, time: f32, waveScale: f32) -> vec3f {
-  let epsilon = 0.1;
-  
-  // Sample wave heights at nearby points
-  let h0 = calculateWaves(worldXZ, time, waveScale).y;
-  let hx = calculateWaves(worldXZ + vec2f(epsilon, 0.0), time, waveScale).y;
-  let hz = calculateWaves(worldXZ + vec2f(0.0, epsilon), time, waveScale).y;
+// ============================================================================
+// Normal Calculation (using exponential waves for detail)
+// ============================================================================
+
+fn getNormal(pos: vec2f, epsilon: f32, time: f32, iterations: i32) -> vec3f {
+  let h = getWaves(pos, iterations, time);
+  let hx = getWaves(pos + vec2f(epsilon, 0.0), iterations, time);
+  let hz = getWaves(pos + vec2f(0.0, epsilon), iterations, time);
   
   // Calculate tangent vectors
-  let tangentX = vec3f(epsilon, hx - h0, 0.0);
-  let tangentZ = vec3f(0.0, hz - h0, epsilon);
+  let tangentX = vec3f(epsilon, hx - h, 0.0);
+  let tangentZ = vec3f(0.0, hz - h, epsilon);
   
-  // Normal is cross product of tangents
   return normalize(cross(tangentZ, tangentX));
 }
 
 // ============================================================================
-// Vertex Shader
+// Atmosphere Approximation (fast, from reference)
 // ============================================================================
 
-@vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
-  var output: VertexOutput;
+fn cheapAtmosphere(rayDir: vec3f, sunDir: vec3f) -> vec3f {
+  // Trick to avoid division by zero at horizon
+  let special1 = 1.0 / (rayDir.y * 1.0 + 0.1);
+  let special2 = 1.0 / (sunDir.y * 11.0 + 1.0);
   
-  // Scale unit quad to terrain size
-  let worldXZ = input.position * uniforms.terrainSize;
+  let raySunDot = pow(abs(dot(sunDir, rayDir)), 2.0);
+  let sunDot = pow(max(0.0, dot(sunDir, rayDir)), 8.0);
+  let mie = sunDot * special1 * 0.2;
   
-  // Calculate wave displacement
-  let waveDisp = calculateWaves(worldXZ, uniforms.time, material.waveScale);
+  // Sun color shifts orange at low angles
+  let sunColor = mix(vec3f(1.0), max(vec3f(0.0), vec3f(1.0) - vec3f(5.5, 13.0, 22.4) / 22.4), special2);
+  let blueSky = vec3f(5.5, 13.0, 22.4) / 22.4 * sunColor;
+  var blueSky2 = max(vec3f(0.0), blueSky - vec3f(5.5, 13.0, 22.4) * 0.002 * (special1 + -6.0 * sunDir.y * sunDir.y));
+  blueSky2 *= special1 * (0.24 + raySunDot * 0.24);
   
-  // Final world position with wave displacement
-  let worldPos = vec3f(
-    worldXZ.x + waveDisp.x,
-    uniforms.waterLevel + waveDisp.y,
-    worldXZ.y + waveDisp.z
-  );
-  
-  // Transform to clip space
-  let mvp = uniforms.viewProjectionMatrix * uniforms.modelMatrix;
-  output.clipPosition = mvp * vec4f(worldPos, 1.0);
-  
-  // Pass world position
-  output.worldPosition = (uniforms.modelMatrix * vec4f(worldPos, 1.0)).xyz;
-  
-  // Texture coordinates
-  output.texCoord = input.uv;
-  
-  // View direction (camera to vertex)
-  output.viewDir = normalize(uniforms.cameraPosition - output.worldPosition);
-  
-  // Calculate wave normal
-  output.normal = calculateWaveNormal(worldXZ, uniforms.time, material.waveScale);
-  
-  return output;
+  // Increase brightness near horizon
+  return blueSky2 * (1.0 + 1.0 * pow(1.0 - rayDir.y, 3.0));
+}
+
+// Sun disk and glow
+fn getSun(rayDir: vec3f, sunDir: vec3f, intensity: f32) -> f32 {
+  let sunDot = max(0.0, dot(rayDir, sunDir));
+  // Very sharp sun disk
+  let disk = pow(sunDot, 720.0) * 210.0;
+  // Softer glow around sun
+  let glow = pow(sunDot, 8.0) * 0.5;
+  return (disk + glow) * intensity;
 }
 
 // ============================================================================
-// Fragment Shader
+// Simple hash for foam noise
 // ============================================================================
 
-// Fresnel effect - more reflection at grazing angles
-fn fresnelSchlick(cosTheta: f32, F0: f32, power: f32) -> f32 {
-  return F0 + (1.0 - F0) * pow(1.0 - cosTheta, power);
-}
-
-// Simple pseudo-random for foam noise
 fn hash(p: vec2f) -> f32 {
   return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453);
 }
 
-// Value noise for foam pattern
 fn noise(p: vec2f) -> f32 {
   let i = floor(p);
   let f = fract(p);
@@ -184,7 +197,6 @@ fn noise(p: vec2f) -> f32 {
   );
 }
 
-// Foam noise pattern
 fn foamNoise(p: vec2f, time: f32) -> f32 {
   var n = 0.0;
   n += noise(p * 0.5 + time * 0.1) * 0.5;
@@ -193,73 +205,113 @@ fn foamNoise(p: vec2f, time: f32) -> f32 {
   return n;
 }
 
+// ============================================================================
+// Vertex Shader
+// ============================================================================
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+  var output: VertexOutput;
+  
+  let terrainSize = uniforms.params.x;
+  let waterLevel = uniforms.params.y;
+  let time = uniforms.cameraPositionTime.w;
+  let cameraPosition = uniforms.cameraPositionTime.xyz;
+  let waveScale = material.params1.x;
+  
+  // Scale unit quad to terrain size
+  let worldXZ = input.position * terrainSize;
+  
+  // Get Gerstner displacement for vertex animation
+  let disp = getVertexDisplacement(worldXZ, time, waveScale);
+  
+  // Final world position
+  let worldPos = uniforms.modelMatrix * vec4f(
+    worldXZ.x + disp.x,
+    waterLevel + disp.y,
+    worldXZ.y + disp.z,
+    1.0
+  );
+  
+  output.clipPosition = uniforms.viewProjectionMatrix * worldPos;
+  output.worldPosition = worldPos.xyz;
+  output.texCoord = input.uv;
+  output.viewDir = normalize(cameraPosition - worldPos.xyz);
+  output.distanceToCamera = length(cameraPosition - worldPos.xyz);
+  
+  return output;
+}
+
+// ============================================================================
+// Fragment Shader
+// ============================================================================
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-  let normal = normalize(input.normal);
+  let waterLevel = uniforms.params.y;
+  let heightScale = uniforms.params.z;
+  let sunIntensity = uniforms.params.w;
+  let time = uniforms.cameraPositionTime.w;
+  let waveScale = material.params1.x;
+  let foamThreshold = material.params1.y;
+  let fresnelPower = material.params1.z;
+  let opacity = material.params1.w;
+  let ambientIntensity = material.params2.x;
+  let depthFalloff = material.params2.y;
+  
+  let sunDir = normalize(material.sunDirection.xyz);
   let viewDir = normalize(input.viewDir);
-  let lightDir = normalize(material.lightDir);
   
-  // ===== Fresnel Effect =====
-  let NdotV = max(dot(normal, viewDir), 0.0);
-  let fresnel = fresnelSchlick(NdotV, 0.02, material.fresnelPower);
+  // ===== Wave Normal Calculation =====
+  // Use exponential waves with position drag for detailed normals
+  let normalScale = 0.01;  // Scale world position for wave sampling
+  var N = getNormal(input.worldPosition.xz * normalScale, 0.01, time, WAVE_ITERATIONS_FS);
   
-  // ===== Water Depth (from screen-space depth) =====
-  // Get screen UV from clip position
-  let screenUV = input.clipPosition.xy / vec2f(textureDimensions(depthTexture));
+  // Smooth normals with distance (avoid noise at distance)
+  let distFactor = min(1.0, sqrt(input.distanceToCamera * 0.001) * 0.8);
+  N = normalize(mix(N, vec3f(0.0, 1.0, 0.0), distFactor));
   
-  // Sample scene depth
+  // ===== Fresnel =====
+  let NdotV = max(0.0, dot(N, viewDir));
+  let fresnel = 0.02 + 0.98 * pow(1.0 - NdotV, fresnelPower);
+  
+  // ===== Reflection =====
+  var R = normalize(reflect(-viewDir, N));
+  R.y = abs(R.y);  // Ensure reflection points upward
+  
+  // Sky reflection
+  let skyColor = cheapAtmosphere(R, sunDir);
+  let sunReflection = getSun(R, sunDir, sunIntensity);
+  let reflection = skyColor + vec3f(1.0, 0.95, 0.9) * sunReflection;
+  
+  // ===== Subsurface Scattering =====
+  // Approximate light penetrating and scattering through water
+  let depthFactor = (input.worldPosition.y - waterLevel + 1.0) / 2.0;  // Normalize to ~[0,1]
+  let scattering = material.scatterColor.rgb * (0.2 + depthFactor * 0.3);
+  
+  // ===== Water Depth (for shore effects) =====
   let sceneDepth = textureLoad(depthTexture, vec2i(input.clipPosition.xy), 0);
   let waterDepth = input.clipPosition.z / input.clipPosition.w;
+  let depthDiff = max(sceneDepth - waterDepth, 0.0) * heightScale * 10.0;
+  let shoreBlend = 1.0 - exp(-depthDiff * depthFalloff);
   
-  // Calculate linear depth difference (approximate)
-  let depthDiff = max(sceneDepth - waterDepth, 0.0) * uniforms.heightScale * 10.0;
-  
-  // Depth-based opacity (shallow = transparent, deep = opaque)
-  let depthFactor = 1.0 - exp(-depthDiff * material.depthFalloff);
-  
-  // ===== Base Water Color =====
-  // Blend between shallow and deep color based on depth
-  let baseColor = mix(material.waterColor.rgb, material.deepColor.rgb, depthFactor);
-  
-  // ===== Lighting =====
-  // Diffuse (very subtle for water)
-  let NdotL = max(dot(normal, lightDir), 0.0);
-  let diffuse = NdotL * 0.3;
-  
-  // Specular (Blinn-Phong for sun reflection)
-  let halfVec = normalize(lightDir + viewDir);
-  let NdotH = max(dot(normal, halfVec), 0.0);
-  let specular = pow(NdotH, material.specularPower) * fresnel;
-  
-  // ===== Foam =====
-  // Foam appears at shoreline (shallow depth) and on wave crests
-  let foamPattern = foamNoise(input.worldPosition.xz * 0.5, uniforms.time);
-  let shorelineFoam = smoothstep(material.foamThreshold, 0.0, depthDiff);
-  let crestFoam = smoothstep(0.3, 0.5, input.worldPosition.y - uniforms.waterLevel) * 0.3;
-  let foamAmount = max(shorelineFoam, crestFoam) * foamPattern;
+  // ===== Shore Foam =====
+  let foamPattern = foamNoise(input.worldPosition.xz * 0.3, time);
+  let shoreFoam = smoothstep(foamThreshold, 0.0, depthDiff) * foamPattern;
   
   // ===== Final Color Composition =====
-  var finalColor = baseColor;
+  // Blend reflection and scattering based on fresnel
+  var finalColor = fresnel * reflection + (1.0 - fresnel * 0.5) * scattering;
   
-  // Add ambient and diffuse lighting
-  finalColor = finalColor * (material.ambientIntensity + diffuse);
+  // Add ambient
+  finalColor += vec3f(0.02, 0.04, 0.06) * ambientIntensity;
   
-  // Add specular highlight
-  finalColor = finalColor + specular * material.lightColor;
+  // Mix in shore foam
+  finalColor = mix(finalColor, material.foamColor.rgb, shoreFoam * 0.8);
   
-  // Mix in foam
-  finalColor = mix(finalColor, material.foamColor, foamAmount * 0.7);
-  
-  // Add fresnel-based sky reflection (simplified - just brighten)
-  let skyReflection = vec3f(0.6, 0.8, 1.0);
-  finalColor = mix(finalColor, skyReflection, fresnel * 0.4);
-  
-  // ===== Final Alpha =====
-  // Base opacity + depth-based opacity + fresnel reflection
-  let alpha = mix(material.opacity * 0.3, material.opacity, depthFactor) + fresnel * 0.3;
-  
-  // Gamma correction
-  finalColor = pow(finalColor, vec3f(1.0 / 2.2));
+  // ===== Alpha =====
+  // More opaque at depth, more transparent at shores
+  let alpha = mix(opacity * 0.4, opacity, shoreBlend) + fresnel * 0.2;
   
   return vec4f(finalColor, clamp(alpha, 0.0, 0.95));
 }

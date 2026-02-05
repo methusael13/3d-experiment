@@ -64,7 +64,7 @@ export class GridRendererGPU {
       ],
     };
     
-    // Create render pipeline
+    // Create render pipeline (rgba16float for HDR rendering)
     this.pipeline = RenderPipelineWrapper.create(ctx, {
       label: 'grid-pipeline',
       vertexShader: gridShader,
@@ -78,7 +78,7 @@ export class GridRendererGPU {
       depthFormat: 'depth24plus',
       depthWriteEnabled: false, // Grid renders in overlay, no depth write
       depthCompare: 'less-equal',
-      colorFormats: [ctx.format],
+      colorFormats: ['rgba16float'], // HDR intermediate format
     });
     
     // Generate grid geometry

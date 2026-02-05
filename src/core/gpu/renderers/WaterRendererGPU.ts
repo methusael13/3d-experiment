@@ -18,6 +18,7 @@ import {
   CommonBlendStates,
 } from '../index';
 import waterShaderSource from '../shaders/water.wgsl?raw';
+import { registerWGSLShader, unregisterWGSLShader, getWGSLShaderSource } from '@/demos/sceneBuilder/shaderManager';
 
 /**
  * Water configuration
@@ -57,8 +58,8 @@ export interface WaterRenderParams {
   terrainSize: number;
   heightScale: number;
   time: number;
-  lightDirection?: vec3;
-  lightColor?: vec3;
+  sunDirection?: vec3;
+  sunIntensity?: number;
   ambientIntensity?: number;
   depthTexture: UnifiedGPUTexture;
 }
@@ -69,7 +70,7 @@ export interface WaterRenderParams {
 export function createDefaultWaterConfig(): WaterConfig {
   return {
     enabled: false,
-    waterLevel: -0.2,  // Slightly below center
+    waterLevel: 0.2,  // Slightly below center
     waterColor: [0.1, 0.4, 0.6],
     deepColor: [0.02, 0.1, 0.2],
     foamColor: [0.9, 0.95, 1.0],
@@ -115,13 +116,16 @@ export class WaterRendererGPU {
   // Track last depth texture for bind group rebuild
   private lastDepthTexture: UnifiedGPUTexture | null = null;
   
+  // Current shader source (for hot-reloading)
+  private currentShaderSource: string = waterShaderSource;
+  
   constructor(ctx: GPUContext, config?: Partial<WaterConfig>) {
     this.ctx = ctx;
     this.config = { ...createDefaultWaterConfig(), ...config };
     
-    // Uniform builders (40 floats for uniforms, 24 floats for material)
-    this.uniformBuilder = new UniformBuilder(10);  // 10 vec4s
-    this.materialBuilder = new UniformBuilder(24);
+    // Uniform builders (40 floats for uniforms, 20 floats for material)
+    this.uniformBuilder = new UniformBuilder(40);  // 2 mat4 (32) + 2 vec4 (8) = 40 floats
+    this.materialBuilder = new UniformBuilder(20); // 5 vec4 = 20 floats
     
     this.initializeResources();
   }
@@ -133,7 +137,9 @@ export class WaterRendererGPU {
     this.createMesh();
     this.createBuffers();
     this.createSampler();
-    this.createPipeline();
+    this.createBindGroupLayout();
+    this.createRenderPipeline();
+    this.registerShader();
   }
   
   /**
@@ -205,10 +211,10 @@ export class WaterRendererGPU {
       size: 160, // 40 * 4 bytes
     });
     
-    // Material buffer: 24 floats = 96 bytes
+    // Material buffer: 5 vec4s = 20 floats = 80 bytes
     this.materialBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'water-material',
-      size: 96,
+      size: 80,
     });
   }
   
@@ -224,24 +230,32 @@ export class WaterRendererGPU {
   }
   
   /**
-   * Create render pipeline using RenderPipelineWrapper
+   * Create bind group layout (shared between pipeline creations)
    */
-  private createPipeline(): void {
-    // Create bind group layout
+  private createBindGroupLayout(): void {
     this.bindGroupLayout = new BindGroupLayoutBuilder('water-bind-group-layout')
       .uniformBuffer(0, 'all')        // Uniforms
       .uniformBuffer(1, 'all')        // Material
       .depthTexture(2, 'fragment')    // Depth texture for depth-based effects
       .sampler(3, 'fragment', 'filtering')  // Sampler
       .build(this.ctx);
+  }
+  
+  /**
+   * Create render pipeline using RenderPipelineWrapper
+   * Can be called with custom shader source for hot-reloading
+   */
+  private createRenderPipeline(shaderSource: string = this.currentShaderSource): void {
+    if (!this.bindGroupLayout) {
+      this.createBindGroupLayout();
+    }
     
-    // Create render pipeline using RenderPipelineWrapper
     this.pipelineWrapper = RenderPipelineWrapper.create(this.ctx, {
       label: 'water-pipeline',
-      vertexShader: waterShaderSource,
+      vertexShader: shaderSource,
       vertexEntryPoint: 'vs_main',
       fragmentEntryPoint: 'fs_main',
-      bindGroupLayouts: [this.bindGroupLayout],
+      bindGroupLayouts: [this.bindGroupLayout!],
       vertexBuffers: [{
         arrayStride: 16, // 4 floats * 4 bytes
         attributes: [
@@ -255,7 +269,35 @@ export class WaterRendererGPU {
       depthFormat: 'depth24plus',
       depthWriteEnabled: false,  // Don't write depth (transparent)
       depthCompare: 'less',      // But still test against terrain depth
+      colorFormats: ['rgba16float'], // HDR intermediate format
       blendStates: [CommonBlendStates.alpha()],
+    });
+  }
+  
+  /**
+   * Register shader with ShaderManager for live editing
+   */
+  private registerShader(): void {
+    registerWGSLShader('Water', {
+      device: this.ctx.device,
+      source: waterShaderSource,
+      label: 'water-shader',
+      onRecompile: (_module: GPUShaderModule) => {
+        // Get the new source from registry and rebuild pipeline
+        const newSource = getWGSLShaderSource('Water');
+        if (newSource) {
+          console.log('[WaterRendererGPU] Hot-reloading shader...');
+          this.currentShaderSource = newSource;
+          
+          // Invalidate bind group (will be recreated on next render)
+          this.bindGroup = null;
+          this.lastDepthTexture = null;
+          
+          // Rebuild pipeline with new shader
+          this.createRenderPipeline(newSource);
+          console.log('[WaterRendererGPU] Shader hot-reload complete');
+        }
+      },
     });
   }
   
@@ -279,15 +321,42 @@ export class WaterRendererGPU {
       .buffer(1, this.materialBuffer)
       .texture(2, depthTexture)
       .sampler(3, this.sampler)
-      .build(this.ctx, this.bindGroupLayout);
+      .build(this.ctx, this.bindGroupLayout!);
   }
+  
+  // Debug: log once flag
+  private debugLogged = false;
   
   /**
    * Render water surface
    */
   render(passEncoder: GPURenderPassEncoder, params: WaterRenderParams): void {
+    // Debug logging
+    if (!this.debugLogged) {
+      console.log('[WaterRendererGPU] render() called');
+      console.log('[WaterRendererGPU] config.enabled:', this.config.enabled);
+      console.log('[WaterRendererGPU] pipelineWrapper:', !!this.pipelineWrapper);
+      console.log('[WaterRendererGPU] uniformBuffer:', !!this.uniformBuffer);
+      console.log('[WaterRendererGPU] materialBuffer:', !!this.materialBuffer);
+      console.log('[WaterRendererGPU] vertexBuffer:', !!this.vertexBuffer);
+      console.log('[WaterRendererGPU] indexBuffer:', !!this.indexBuffer);
+      console.log('[WaterRendererGPU] indexCount:', this.indexCount);
+      console.log('[WaterRendererGPU] params:', {
+        terrainSize: params.terrainSize,
+        heightScale: params.heightScale,
+        waterLevel: this.config.waterLevel,
+        time: params.time,
+        cameraPosition: Array.from(params.cameraPosition),
+        depthTexture: !!params.depthTexture,
+      });
+    }
+    
     if (!this.config.enabled || !this.pipelineWrapper || !this.uniformBuffer || 
         !this.materialBuffer || !this.vertexBuffer || !this.indexBuffer) {
+      if (!this.debugLogged) {
+        console.log('[WaterRendererGPU] Early return - missing resources');
+        this.debugLogged = true;
+      }
       return;
     }
     
@@ -299,7 +368,18 @@ export class WaterRendererGPU {
     this.updateBindGroup(params.depthTexture);
     
     if (!this.bindGroup) {
+      if (!this.debugLogged) {
+        console.log('[WaterRendererGPU] Early return - no bind group');
+        this.debugLogged = true;
+      }
       return;
+    }
+    
+    if (!this.debugLogged) {
+      console.log('[WaterRendererGPU] Drawing', this.indexCount, 'indices');
+      console.log('[WaterRendererGPU] Pipeline:', this.pipelineWrapper.pipeline);
+      console.log('[WaterRendererGPU] BindGroup:', this.bindGroup);
+      this.debugLogged = true;
     }
     
     // Render
@@ -316,37 +396,45 @@ export class WaterRendererGPU {
   private updateUniforms(params: WaterRenderParams): void {
     // Calculate actual water level in world units
     const waterLevelWorld = this.config.waterLevel * params.heightScale;
+    const sunIntensity = params.sunIntensity ?? 1.0;
     
+    // WGSL struct layout:
+    // mat4 viewProjectionMatrix (64 bytes, indices 0-15)
+    // mat4 modelMatrix (64 bytes, indices 16-31)
+    // vec4 cameraPositionTime (16 bytes, indices 32-35): xyz = camera, w = time
+    // vec4 params (16 bytes, indices 36-39): x = terrainSize, y = waterLevel, z = heightScale, w = sunIntensity
     this.uniformBuilder.reset()
       .mat4(params.viewProjectionMatrix as Float32Array)  // 0-15
       .mat4(params.modelMatrix as Float32Array)           // 16-31
-      .vec3(params.cameraPosition[0], params.cameraPosition[1], params.cameraPosition[2]) // 32-34
-      .float(params.time)                                 // 35
-      .vec4(params.terrainSize, waterLevelWorld, params.heightScale, 0); // 36-39
+      .vec4(params.cameraPosition[0], params.cameraPosition[1], params.cameraPosition[2], params.time) // 32-35: cameraPos + time
+      .vec4(params.terrainSize, waterLevelWorld, params.heightScale, sunIntensity); // 36-39: params
     
     this.uniformBuffer!.write(this.ctx, this.uniformBuilder.build());
   }
   
   /**
    * Update material buffer
+   * Matches WaterMaterial struct in water.wgsl:
+   *   sunDirection: vec4f,   // xyz = sun dir, w = unused
+   *   scatterColor: vec4f,   // subsurface scattering color (deep water tint)
+   *   foamColor: vec4f,      // shoreline foam
+   *   params1: vec4f,        // x = waveScale, y = foamThreshold, z = fresnelPower, w = opacity
+   *   params2: vec4f,        // x = ambientIntensity, y = depthFalloff, z/w = unused
    */
   private updateMaterial(params: WaterRenderParams): void {
-    const lightDir = params.lightDirection || [0.5, 1, 0.5];
-    const lightColor = params.lightColor || [1, 1, 1];
+    const sunDir = params.sunDirection || [0.5, 0.8, 0.3];
     
     this.materialBuilder.reset()
-      // waterColor (vec4)
-      .vec4(this.config.waterColor[0], this.config.waterColor[1], this.config.waterColor[2], 1.0)
-      // deepColor (vec4)
+      // sunDirection (vec4)
+      .vec4(sunDir[0], sunDir[1], sunDir[2], 0.0)
+      // scatterColor (vec4) - deep water tint for subsurface scattering
       .vec4(this.config.deepColor[0], this.config.deepColor[1], this.config.deepColor[2], 1.0)
-      // lightDir (vec3) + waveScale (f32)
-      .vec4(lightDir[0], lightDir[1], lightDir[2], this.config.waveScale)
-      // lightColor (vec3) + specularPower (f32)
-      .vec4(lightColor[0], lightColor[1], lightColor[2], this.config.specularPower)
-      // foamColor (vec3) + foamThreshold (f32)
-      .vec4(this.config.foamColor[0], this.config.foamColor[1], this.config.foamColor[2], this.config.foamThreshold)
-      // ambientIntensity, opacity, fresnelPower, depthFalloff
-      .vec4(params.ambientIntensity ?? 0.3, this.config.opacity, this.config.fresnelPower, this.config.depthFalloff);
+      // foamColor (vec4)
+      .vec4(this.config.foamColor[0], this.config.foamColor[1], this.config.foamColor[2], 1.0)
+      // params1: waveScale, foamThreshold, fresnelPower, opacity
+      .vec4(this.config.waveScale, this.config.foamThreshold, this.config.fresnelPower, this.config.opacity)
+      // params2: ambientIntensity, depthFalloff, unused, unused
+      .vec4(params.ambientIntensity ?? 0.3, this.config.depthFalloff, 0.0, 0.0);
     
     this.materialBuffer!.write(this.ctx, this.materialBuilder.build());
   }
@@ -391,6 +479,9 @@ export class WaterRendererGPU {
   // ============ Cleanup ============
   
   destroy(): void {
+    // Unregister from shader manager
+    unregisterWGSLShader('Water');
+    
     this.vertexBuffer?.destroy();
     this.indexBuffer?.destroy();
     this.uniformBuffer?.destroy();

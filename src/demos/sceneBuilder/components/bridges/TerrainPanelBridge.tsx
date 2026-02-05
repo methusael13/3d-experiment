@@ -10,6 +10,7 @@ import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, ty
 import { isGPUTerrainObject, isTerrainObject, type GPUTerrainSceneObject, type TerrainObject } from '../../../../core/sceneObjects';
 import { debounce } from '../../../../core/utils/debounce';
 import { TerrainManager } from '@/core/terrain';
+import { createDefaultWaterConfig } from '@/core/gpu/renderers';
 
 // ==================== Default Parameter Sets ====================
 
@@ -52,16 +53,7 @@ const DEFAULT_MATERIAL_PARAMS: TerrainMaterialParams = {
   dirtColor: [0.4, 0.3, 0.2],
 };
 
-const DEFAULT_WATER_PARAMS: WaterParams = {
-  enabled: false,
-  waterLevel: 0.2,
-  waveHeight: 0.5,
-  waveSpeed: 1.0,
-  shallowColor: [0.1, 0.4, 0.5],
-  deepColor: [0.0, 0.1, 0.3],
-  depthFalloff: 0.1,
-  opacity: 0.8,
-};
+const DEFAULT_WATER_PARAMS: WaterParams = createDefaultWaterConfig();
 
 const DEFAULT_DETAIL_PARAMS: DetailParams = {
   frequency: 0.5,
@@ -289,8 +281,8 @@ export function ConnectedTerrainPanel({
       const updated = { ...prev, ...changes };
       
       // Send water config to viewport if available
-      if (store.viewport && 'setWebGPUWaterConfig' in store.viewport) {
-        (store.viewport as any).setWebGPUWaterConfig(updated);
+      if (store.viewport) {
+        store.viewport.setWebGPUWaterConfig(updated);
       }
       
       return updated;

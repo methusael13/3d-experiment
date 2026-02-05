@@ -126,37 +126,41 @@ export function SceneBuilderApp({
 
   const processWebGPUTestEnabled = useCallback(async () => {
     const success = await store.viewport?.enableWebGPUTest() ?? false;
-    if (success && store.scene) {
-      // Create GPU based Terrain and add to scene for selection
-      store.gpuTerrainObject = new GPUTerrainSceneObject();
-      const terrainManager = store.viewport?.getWebGPUTerrainManager() ?? null;
-      store.gpuTerrainObject.setTerrainManager(terrainManager);
-
-      // Add to scene so it appears in the ObjectsPanel
-      store.scene.addSceneObject(store.gpuTerrainObject);
+    if (success && store.scene && store.viewport) {
+      store.setIsWebGPU(true);
+      if (store.viewport.getWebGPUContext()) {
+        await store.scene.addWebGPUTerrain(store.viewport.getWebGPUContext()!, {
+          worldSize: 1024,
+          heightScale: 100
+        });
+      }
 
       // Refresh panels
       store.syncFromScene();
-      store.setIsWebGPU(true);
 
+      const terrainManager = store.scene.getWebGPUTerrain()?.getTerrainManager();
       if (terrainManager) {
         const radius = terrainManager.getApproximateSceneRadius();
-        store.viewport?.updateCameraForSceneBounds(radius);
+        store.viewport.registerWebGPUTerrainInPipeline(terrainManager);
+        store.viewport.updateCameraForSceneBounds(radius);
       }
     }
   }, [store]);
 
   const processWebGPUTestDisabled = useCallback(() => {
     // Remove GPU terrain from scene
-    if (store.gpuTerrainObject && store.scene) {
-      store.scene.removeObject(store.gpuTerrainObject.id);
-      store.gpuTerrainObject = null;
+    if (store.scene && store.viewport) {
+      const manager = store.scene.getWebGPUTerrain()?.getTerrainManager();
+      if (manager) {
+        store.viewport.unregisterWebGPUTerrainInPipeline();
+      }
+      store.scene.removeWebGPUTerrain()
       store.syncFromScene();
     }
     store.setIsWebGPU(false);
     store.viewport?.disableWebGPUTest();
   }, [store]);
-  
+
   const handleWebGPUTestToggle = useCallback((enabled: boolean) => {
     if (enabled) {
       processWebGPUTestEnabled();

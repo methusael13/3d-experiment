@@ -130,10 +130,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     globals.ambientIntensity
   );
   
-  // Gamma correction
-  let gammaCorrected = pow(color, vec3f(1.0 / 2.2));
-  
-  return vec4f(gammaCorrected, 1.0);
+  // Output linear HDR - tonemapping and gamma applied in composite pass
+  return vec4f(color, 1.0);
 }
 
 // ============ Single Instance Variant ============

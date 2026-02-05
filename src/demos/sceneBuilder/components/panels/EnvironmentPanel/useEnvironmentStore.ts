@@ -10,7 +10,6 @@ export interface EnvironmentStore {
   sunElevation: number;
   sunAmbient: number;
   hdrExposure: number;
-  toneMapping: string;
   hdrFilename: string;
   
   // Wind state
@@ -31,7 +30,6 @@ export interface EnvironmentStore {
   setSunElevation: (value: number) => void;
   setSunAmbient: (value: number) => void;
   setHdrExposure: (value: number) => void;
-  setToneMapping: (value: string) => void;
   setWindEnabled: (enabled: boolean) => void;
   setWindDirection: (value: number) => void;
   setWindStrength: (value: number) => void;
@@ -54,7 +52,6 @@ export function useEnvironmentStore(
   const [sunElevation, setSunElevationState] = useState(lightingManager.sunLight.elevation);
   const [sunAmbient, setSunAmbientState] = useState(lightingManager.sunLight.ambientIntensity);
   const [hdrExposure, setHdrExposureState] = useState(lightingManager.hdrLight.exposure);
-  const [toneMapping, setToneMappingState] = useState('aces');
   const [hdrFilename, setHdrFilenameState] = useState('No HDR loaded');
   
   // Wind state
@@ -98,12 +95,6 @@ export function useEnvironmentStore(
     lightingManager.hdrLight.exposure = value;
     context.onLightingChanged();
   }, [lightingManager, context]);
-
-  const setToneMapping = useCallback((value: string) => {
-    setToneMappingState(value);
-    // Note: TONE_MAPPING conversion would be done in the component
-    context.onLightingChanged();
-  }, [context]);
 
   const setWindEnabled = useCallback((enabled: boolean) => {
     setWindEnabledState(enabled);
@@ -151,7 +142,6 @@ export function useEnvironmentStore(
     sunElevation,
     sunAmbient,
     hdrExposure,
-    toneMapping,
     hdrFilename,
     windEnabled,
     windDirection,
@@ -166,7 +156,6 @@ export function useEnvironmentStore(
     setSunElevation,
     setSunAmbient,
     setHdrExposure,
-    setToneMapping,
     setWindEnabled,
     setWindDirection,
     setWindStrength,

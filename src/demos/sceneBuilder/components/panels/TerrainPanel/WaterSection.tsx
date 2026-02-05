@@ -1,17 +1,9 @@
 import { useCallback } from 'preact/hooks';
 import { Slider, Checkbox, ColorPicker } from '../../ui';
 import styles from './TerrainPanel.module.css';
+import { WaterConfig } from '../../../../../core/gpu/renderers/WaterRendererGPU';
 
-export interface WaterParams {
-  enabled: boolean;
-  waterLevel: number;
-  waveHeight: number;
-  waveSpeed: number;
-  shallowColor: [number, number, number];
-  deepColor: [number, number, number];
-  depthFalloff: number;
-  opacity: number;
-}
+export type WaterParams = WaterConfig;
 
 export interface WaterSectionProps {
   params: WaterParams;
@@ -49,38 +41,33 @@ export function WaterSection({ params, onParamsChange }: WaterSectionProps) {
         />
 
         <Slider
-          label="Wave Height"
-          value={params.waveHeight}
+          label="Wave Scale"
+          value={params.waveScale}
           min={0}
           max={3}
           step={0.1}
           format={(v) => v.toFixed(1)}
-          onChange={(v) => handleChange('waveHeight', v)}
+          onChange={(v) => handleChange('waveScale', v)}
           disabled={!params.enabled}
         />
 
-        <Slider
-          label="Wave Speed"
-          value={params.waveSpeed}
-          min={0.1}
-          max={3}
-          step={0.1}
-          format={(v) => v.toFixed(1)}
-          onChange={(v) => handleChange('waveSpeed', v)}
-          disabled={!params.enabled}
-        />
-
-        <div class={styles.colorRow}>
+        <div class={styles.colorColumn}>
           <ColorPicker
-            label="Shallow"
-            value={params.shallowColor}
-            onChange={(v) => handleChange('shallowColor', v)}
+            label="Water Color"
+            value={params.waterColor}
+            onChange={(v) => handleChange('waterColor', v)}
             disabled={!params.enabled}
           />
           <ColorPicker
-            label="Deep"
+            label="Deep Color"
             value={params.deepColor}
             onChange={(v) => handleChange('deepColor', v)}
+            disabled={!params.enabled}
+          />
+          <ColorPicker
+            label="Foam Color"
+            value={params.foamColor}
+            onChange={(v) => handleChange('foamColor', v)}
             disabled={!params.enabled}
           />
         </div>

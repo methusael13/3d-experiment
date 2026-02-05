@@ -65,7 +65,7 @@ export class SkyRendererGPU {
       .uniformBuffer(0, 'all')
       .build(ctx);
     
-    // Create sun mode pipeline
+    // Create sun mode pipeline (rgba16float for HDR rendering)
     this.sunPipeline = RenderPipelineWrapper.create(ctx, {
       label: 'sky-sun-pipeline',
       vertexShader: skyShader,
@@ -78,7 +78,7 @@ export class SkyRendererGPU {
       cullMode: 'none',
       depthFormat: undefined, // No depth test for sky
       depthWriteEnabled: false,
-      colorFormats: [ctx.format],
+      colorFormats: ['rgba16float'], // HDR intermediate format
     });
     
     // Create sun bind group
@@ -93,7 +93,7 @@ export class SkyRendererGPU {
       .sampler(2, 'fragment')
       .build(ctx);
     
-    // Create HDR pipeline
+    // Create HDR pipeline (rgba16float for HDR rendering)
     this.hdrPipeline = RenderPipelineWrapper.create(ctx, {
       label: 'sky-hdr-pipeline',
       vertexShader: skyShader,
@@ -106,7 +106,7 @@ export class SkyRendererGPU {
       cullMode: 'none',
       depthFormat: undefined,
       depthWriteEnabled: false,
-      colorFormats: [ctx.format],
+      colorFormats: ['rgba16float'], // HDR intermediate format
     });
     
     // Create initial HDR bind group with dummy texture

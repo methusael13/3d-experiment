@@ -8,7 +8,6 @@ import type { PanelContext } from '../../../componentPanels/panelContext';
 import type { LightingManager } from '../../../lightingManager';
 import type { WindManager } from '../../../wind';
 import { HDRLoader } from '../../../../../loaders';
-import { TONE_MAPPING, TONE_MAPPING_NAMES } from '../../../../../core/sceneObjects/lights';
 
 // Import CSS variables
 import '../../styles/variables.css';
@@ -104,32 +103,24 @@ export function EnvironmentPanel({
     fileInputRef.current?.click();
   }, []);
 
-  const handleToneMappingChange = useCallback((value: string) => {
-    store.setToneMapping(value);
-    lightingManager.toneMapping = (TONE_MAPPING_NAMES as any)[value] ?? TONE_MAPPING.ACES;
-    context.onLightingChanged();
-  }, [store, lightingManager, context]);
-
   // Build tab content
   const tabs: Tab[] = [
     {
       id: 'lighting',
       label: 'Lighting',
       content: (
-        <LightingTab
-          lightMode={store.lightMode}
-          sunAzimuth={store.sunAzimuth}
-          sunElevation={store.sunElevation}
-          sunAmbient={store.sunAmbient}
-          hdrExposure={store.hdrExposure}
-          toneMapping={store.toneMapping}
-          onLightModeChange={store.setLightMode}
-          onSunAzimuthChange={store.setSunAzimuth}
-          onSunElevationChange={store.setSunElevation}
-          onSunAmbientChange={store.setSunAmbient}
-          onHdrExposureChange={store.setHdrExposure}
-          onToneMappingChange={handleToneMappingChange}
-          hdrControls={
+          <LightingTab
+            lightMode={store.lightMode}
+            sunAzimuth={store.sunAzimuth}
+            sunElevation={store.sunElevation}
+            sunAmbient={store.sunAmbient}
+            hdrExposure={store.hdrExposure}
+            onLightModeChange={store.setLightMode}
+            onSunAzimuthChange={store.setSunAzimuth}
+            onSunElevationChange={store.setSunElevation}
+            onSunAmbientChange={store.setSunAmbient}
+            onHdrExposureChange={store.setHdrExposure}
+            hdrControls={
             <HdrGallery
               selectedHdrName={selectedHdrName}
               isLoading={store.isLoadingHdr}

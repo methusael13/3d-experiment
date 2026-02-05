@@ -19,7 +19,7 @@ export { MaterialPanel } from './MaterialPanel';
 export type { MaterialPanelProps } from './MaterialPanel';
 
 export { RenderingPanel } from './RenderingPanel';
-export type { RenderingPanelProps, WebGPUShadowSettings } from './RenderingPanel';
+export type { RenderingPanelProps, WebGPUShadowSettings, SSAOSettings } from './RenderingPanel';
 
 export { TerrainPanel, TERRAIN_PRESETS } from './TerrainPanel';
 export type {

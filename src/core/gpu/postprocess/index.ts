@@ -2,7 +2,7 @@
  * Post-processing module exports
  */
 
-// Core infrastructure
+// Core infrastructure (legacy)
 export { PostProcessStack } from './PostProcessStack';
 export type { PostProcessStackConfig, PostProcessTargets } from './PostProcessStack';
 
@@ -12,6 +12,21 @@ export type { PostProcessInputs, PostProcessUniforms } from './PostProcessPass';
 export { FullscreenQuad } from './FullscreenQuad';
 export type { FullscreenPipelineOptions } from './FullscreenQuad';
 
-// Effects
-export { SSAOPass } from './effects/SSAOPass';
-export type { SSAOConfig } from './effects/SSAOPass';
+// Plugin-based pipeline (new)
+export { PostProcessPipeline } from './PostProcessPipeline';
+export type { 
+  PostProcessEffect, 
+  BaseEffect, 
+  EffectContext, 
+  EffectUniforms, 
+  StandardInput 
+} from './PostProcessPipeline';
+
+export { BufferPool } from './BufferPool';
+
+// Plugin-based effects (use with PostProcessPipeline)
+export { SSAOEffect } from './effects/SSAOEffect';
+export type { SSAOEffectConfig } from './effects/SSAOEffect';
+
+export { CompositeEffect } from './effects/CompositeEffect';
+export type { CompositeEffectConfig } from './effects/CompositeEffect';

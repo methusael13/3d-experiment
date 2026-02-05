@@ -269,8 +269,8 @@ fn fs_sun(input: VertexOutput) -> @location(0) vec4f {
     color += vec3f(1.0, 0.95, 0.9) * (sunDisk + sunGlow) * uniforms.sunIntensity * 0.1;
   }
   
-  // Tone mapping
-  color = tonemap(color);
+  // Tone mapping to be handled in composite pass
+  // color = tonemap(color);
   
   return vec4f(color, 1.0);
 }

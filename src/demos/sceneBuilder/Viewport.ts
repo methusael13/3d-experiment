@@ -36,6 +36,8 @@ import type {
 import { isTerrainObject, type TerrainObject } from '../../core/sceneObjects';
 import type { FPSCameraController } from './FPSCameraController';
 import { WebGPUShadowSettings } from './componentPanels/RenderingPanel';
+import type { SSAOSettings } from './components/panels/RenderingPanel';
+import type { CompositeEffectConfig } from '../../core/gpu/postprocess';
 
 // ==================== Type Definitions ====================
 
@@ -212,7 +214,6 @@ export class Viewport {
   private webgpuTestMode = false;
   private gpuContext: GPUContext | null = null;
   private gpuPipeline: GPUForwardPipeline | null = null;
-  private gpuTerrainManager: TerrainManager | null = null;
   private webgpuCanvas: HTMLCanvasElement | null = null;
 
   // Callbacks (all optional)
@@ -609,23 +610,6 @@ export class Viewport {
       });
       console.log('[Viewport] WebGPU Forward Pipeline created');
       
-      // Create terrain manager for WebGPU rendering
-      const terrainConfig: TerrainManagerConfig = {
-        worldSize: 1024,
-        heightScale: 100,
-      };
-      this.gpuTerrainManager = new TerrainManager(this.gpuContext, terrainConfig);
-      this.gpuPipeline.setTerrainManager(this.gpuTerrainManager);
-      console.log('[Viewport] WebGPU Terrain Manager created');
-      
-      // Initialize and generate terrain
-      console.log('[Viewport] Initializing terrain...');
-      this.gpuTerrainManager.initialize();
-      await this.gpuTerrainManager.generate((stage, progress) => {
-        console.log(`[Viewport] Terrain ${stage}: ${progress.toFixed(0)}%`);
-      });
-      console.log('[Viewport] Terrain generation complete');
-      
       // Show WebGPU canvas, hide WebGL canvas
       this.webgpuCanvas.style.display = 'block';
       this.canvas.style.visibility = 'hidden';
@@ -657,8 +641,6 @@ export class Viewport {
    */
   disableWebGPUTest(): void {
     this.webgpuTestMode = false;
-    this.gpuTerrainManager?.destroy();
-    this.gpuTerrainManager = null;
     this.gpuPipeline?.destroy();
     this.gpuPipeline = null;
     
@@ -675,6 +657,18 @@ export class Viewport {
     
     console.log('[Viewport] WebGPU test mode disabled');
   }
+
+  registerWebGPUTerrainInPipeline(manager: TerrainManager) {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setTerrainManager(manager);
+    }
+  }
+
+  unregisterWebGPUTerrainInPipeline() {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.resetTerrainManager();
+    }
+  }
   
   /**
    * Check if WebGPU test mode is active
@@ -685,9 +679,14 @@ export class Viewport {
   
   /**
    * Get the WebGPU terrain manager (for panel integration)
+   * @deprecated - Terrain is now maintained within the terrain scene object
    */
   getWebGPUTerrainManager(): TerrainManager | null {
-    return this.gpuTerrainManager;
+    return null;
+  }
+
+  getWebGPUContext(): GPUContext | null {
+    return this.gpuContext;
   }
   
   /**
@@ -696,6 +695,34 @@ export class Viewport {
   setWebGPUShadowSettings(settings: WebGPUShadowSettings): void {
     if (this.gpuPipeline) {
       this.gpuPipeline.setShadowSettings(settings);
+    }
+  }
+  
+  /**
+   * Set WebGPU SSAO settings (for RenderingPanel integration)
+   * Uses SSAOSettings which extends SSAOConfig from postprocess module
+   */
+  setSSAOSettings(settings: SSAOSettings): void {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setSSAOEnabled(settings.enabled);
+      if (settings.enabled) {
+        this.gpuPipeline.setSSAOConfig({
+          radius: settings.radius,
+          intensity: settings.intensity,
+          bias: settings.bias,
+          samples: settings.samples,
+          blur: settings.blur,
+        });
+      }
+    }
+  }
+  
+  /**
+   * Set WebGPU composite/tonemapping settings (for RenderingPanel integration)
+   */
+  setCompositeSettings(config: Partial<CompositeEffectConfig>): void {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setCompositeConfig(config);
     }
   }
   
