@@ -247,7 +247,11 @@ export function TerrainPanel({
         {waterParams && onWaterParamsChange && (
           <>
             <div class={styles.divider} />
-            <WaterSection params={waterParams} onParamsChange={onWaterParamsChange} />
+            <WaterSection
+              params={waterParams}
+              onParamsChange={onWaterParamsChange}
+              terrainSize={worldSize}
+            />
           </>
         )}
 

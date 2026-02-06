@@ -242,6 +242,8 @@ export class TransparentPass extends BaseRenderPass {
       sunIntensity,
       ambientIntensity,
       depthTexture: ctx.depthTextureCopy,
+      near: ctx.near,
+      far: ctx.far,
     });
     
     pass.end();

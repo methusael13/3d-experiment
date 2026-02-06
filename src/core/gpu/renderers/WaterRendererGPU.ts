@@ -46,6 +46,20 @@ export interface WaterConfig {
   foamThreshold: number;
   /** How quickly water becomes opaque with depth */
   depthFalloff: number;
+  /** Base wavelength in world units (smaller = more waves, larger = bigger swells) */
+  wavelength: number;
+  
+  // Grid placement parameters
+  /** Grid center X coordinate in world units */
+  gridCenterX: number;
+  /** Grid center Z coordinate in world units */
+  gridCenterZ: number;
+  /** Grid width in world units */
+  gridSizeX: number;
+  /** Grid depth in world units */
+  gridSizeZ: number;
+  /** Cell size in world units (smaller = smoother waves, more triangles) */
+  cellSize: number;
 }
 
 /**
@@ -62,6 +76,10 @@ export interface WaterRenderParams {
   sunIntensity?: number;
   ambientIntensity?: number;
   depthTexture: UnifiedGPUTexture;
+  /** Camera near plane distance (default: 0.1) */
+  near?: number;
+  /** Camera far plane distance (default: 1000) */
+  far?: number;
 }
 
 /**
@@ -78,8 +96,15 @@ export function createDefaultWaterConfig(): WaterConfig {
     opacity: 0.85,
     fresnelPower: 3.0,
     specularPower: 64.0,
-    foamThreshold: 0.5,
+    foamThreshold: 3.0,  // Shore foam distance in world units (meters)
     depthFalloff: 2.0,
+    wavelength: 20.0,  // 20 world units - good default for visible waves
+    // Grid placement defaults - will be set to match terrain size on first render
+    gridCenterX: 0,
+    gridCenterZ: 0,
+    gridSizeX: 1024,  // Will be overridden by terrain size
+    gridSizeZ: 1024,
+    cellSize: 4.0,    // 4 world units per cell (256 cells for 1024 terrain)
   };
 }
 
@@ -105,8 +130,10 @@ export class WaterRendererGPU {
   
   // Mesh data
   private indexCount: number = 0;
+  private currentCellsX: number = 0;
+  private currentCellsZ: number = 0;
   
-  // Uniform builders
+  // Uniform builders (48 floats for uniforms, 20 floats for material)
   private uniformBuilder: UniformBuilder;
   private materialBuilder: UniformBuilder;
   
@@ -123,9 +150,10 @@ export class WaterRendererGPU {
     this.ctx = ctx;
     this.config = { ...createDefaultWaterConfig(), ...config };
     
-    // Uniform builders (40 floats for uniforms, 20 floats for material)
-    this.uniformBuilder = new UniformBuilder(40);  // 2 mat4 (32) + 2 vec4 (8) = 40 floats
-    this.materialBuilder = new UniformBuilder(20); // 5 vec4 = 20 floats
+    // Uniform builders (48 floats for uniforms, 24 floats for material)
+    // 2 mat4 (32) + 4 vec4 (16) = 48 floats
+    this.uniformBuilder = new UniformBuilder(48);
+    this.materialBuilder = new UniformBuilder(24); // 6 vec4 = 24 floats
     
     this.initializeResources();
   }
@@ -143,39 +171,43 @@ export class WaterRendererGPU {
   }
   
   /**
-   * Create water plane mesh (subdivided quad for wave animation)
-   * Higher subdivision = smoother waves but more vertices
-   * 256x256 gives ~4 units per quad on a 1024-unit terrain (131K triangles)
+   * Create water plane mesh with specified cell counts
+   * Grid vertices use normalized 0-1 coordinates; shader transforms to world space
    */
-  private createMesh(): void {
-    const subdivisions = 256; // 256x256 grid = 65536 quads = 131K triangles
-    const vertCount = (subdivisions + 1) * (subdivisions + 1);
+  private createMesh(cellsX: number = 256, cellsZ: number = 256): void {
+    // Store current dimensions for change detection
+    this.currentCellsX = cellsX;
+    this.currentCellsZ = cellsZ;
+    
+    const vertCountX = cellsX + 1;
+    const vertCountZ = cellsZ + 1;
+    const vertCount = vertCountX * vertCountZ;
     
     // Vertices: position (vec2) + uv (vec2) = 4 floats per vertex
     const vertices = new Float32Array(vertCount * 4);
     
     let vi = 0;
-    for (let z = 0; z <= subdivisions; z++) {
-      for (let x = 0; x <= subdivisions; x++) {
-        // Position (-0.5 to 0.5)
-        vertices[vi++] = (x / subdivisions) - 0.5;
-        vertices[vi++] = (z / subdivisions) - 0.5;
+    for (let z = 0; z < vertCountZ; z++) {
+      for (let x = 0; x < vertCountX; x++) {
+        // Position (0 to 1) - shader will transform to world space
+        vertices[vi++] = x / cellsX;
+        vertices[vi++] = z / cellsZ;
         // UV (0 to 1)
-        vertices[vi++] = x / subdivisions;
-        vertices[vi++] = z / subdivisions;
+        vertices[vi++] = x / cellsX;
+        vertices[vi++] = z / cellsZ;
       }
     }
     
     // Indices for triangles
-    const indexCount = subdivisions * subdivisions * 6;
+    const indexCount = cellsX * cellsZ * 6;
     const indices = new Uint32Array(indexCount);
     
     let ii = 0;
-    for (let z = 0; z < subdivisions; z++) {
-      for (let x = 0; x < subdivisions; x++) {
-        const tl = z * (subdivisions + 1) + x;
+    for (let z = 0; z < cellsZ; z++) {
+      for (let x = 0; x < cellsX; x++) {
+        const tl = z * vertCountX + x;
         const tr = tl + 1;
-        const bl = tl + (subdivisions + 1);
+        const bl = tl + vertCountX;
         const br = bl + 1;
         
         indices[ii++] = tl;
@@ -189,7 +221,11 @@ export class WaterRendererGPU {
     
     this.indexCount = indexCount;
     
-    // Create buffers
+    // Destroy old buffers if they exist
+    this.vertexBuffer?.destroy();
+    this.indexBuffer?.destroy();
+    
+    // Create new buffers
     this.vertexBuffer = UnifiedGPUBuffer.createVertex(this.ctx, {
       label: 'water-vertices',
       data: vertices,
@@ -199,22 +235,44 @@ export class WaterRendererGPU {
       label: 'water-indices',
       data: indices,
     });
+    
+    console.log(`[WaterRendererGPU] Mesh created: ${cellsX}x${cellsZ} cells = ${cellsX * cellsZ} quads`);
+  }
+  
+  /**
+   * Rebuild mesh if grid dimensions changed
+   * Returns true if mesh was rebuilt
+   */
+  private rebuildMeshIfNeeded(): boolean {
+    const cellsX = Math.max(1, Math.ceil(this.config.gridSizeX / this.config.cellSize));
+    const cellsZ = Math.max(1, Math.ceil(this.config.gridSizeZ / this.config.cellSize));
+    
+    // Limit to reasonable max to prevent memory issues
+    const maxCells = 2048;
+    const clampedCellsX = Math.min(cellsX, maxCells);
+    const clampedCellsZ = Math.min(cellsZ, maxCells);
+    
+    if (clampedCellsX !== this.currentCellsX || clampedCellsZ !== this.currentCellsZ) {
+      this.createMesh(clampedCellsX, clampedCellsZ);
+      return true;
+    }
+    return false;
   }
   
   /**
    * Create uniform buffers
    */
   private createBuffers(): void {
-    // Uniform buffer: mat4(16) + mat4(16) + vec4(cameraPos+time) + vec4(params) = 40 floats
+    // Uniform buffer: mat4(16) + mat4(16) + vec4(cameraPos+time) + vec4(params) + vec4(gridCenter) + vec4(gridScale) = 48 floats
     this.uniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'water-uniforms',
-      size: 160, // 40 * 4 bytes
+      size: 192, // 48 * 4 bytes
     });
     
-    // Material buffer: 5 vec4s = 20 floats = 80 bytes
+    // Material buffer: 6 vec4s = 24 floats = 96 bytes
     this.materialBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'water-material',
-      size: 80,
+      size: 96,
     });
   }
   
@@ -270,7 +328,7 @@ export class WaterRendererGPU {
       depthWriteEnabled: false,  // Don't write depth (transparent)
       depthCompare: 'less',      // But still test against terrain depth
       colorFormats: ['rgba16float'], // HDR intermediate format
-      blendStates: [CommonBlendStates.alpha()],
+      blendStates: [CommonBlendStates.waterMask()],
     });
   }
   
@@ -324,42 +382,18 @@ export class WaterRendererGPU {
       .build(this.ctx, this.bindGroupLayout!);
   }
   
-  // Debug: log once flag
-  private debugLogged = false;
-  
   /**
    * Render water surface
    */
   render(passEncoder: GPURenderPassEncoder, params: WaterRenderParams): void {
-    // Debug logging
-    if (!this.debugLogged) {
-      console.log('[WaterRendererGPU] render() called');
-      console.log('[WaterRendererGPU] config.enabled:', this.config.enabled);
-      console.log('[WaterRendererGPU] pipelineWrapper:', !!this.pipelineWrapper);
-      console.log('[WaterRendererGPU] uniformBuffer:', !!this.uniformBuffer);
-      console.log('[WaterRendererGPU] materialBuffer:', !!this.materialBuffer);
-      console.log('[WaterRendererGPU] vertexBuffer:', !!this.vertexBuffer);
-      console.log('[WaterRendererGPU] indexBuffer:', !!this.indexBuffer);
-      console.log('[WaterRendererGPU] indexCount:', this.indexCount);
-      console.log('[WaterRendererGPU] params:', {
-        terrainSize: params.terrainSize,
-        heightScale: params.heightScale,
-        waterLevel: this.config.waterLevel,
-        time: params.time,
-        cameraPosition: Array.from(params.cameraPosition),
-        depthTexture: !!params.depthTexture,
-      });
-    }
-    
+    // Rebuild mesh if grid dimensions changed
+    this.rebuildMeshIfNeeded();
+
     if (!this.config.enabled || !this.pipelineWrapper || !this.uniformBuffer || 
         !this.materialBuffer || !this.vertexBuffer || !this.indexBuffer) {
-      if (!this.debugLogged) {
-        console.log('[WaterRendererGPU] Early return - missing resources');
-        this.debugLogged = true;
-      }
       return;
     }
-    
+
     // Update uniforms
     this.updateUniforms(params);
     this.updateMaterial(params);
@@ -368,18 +402,7 @@ export class WaterRendererGPU {
     this.updateBindGroup(params.depthTexture);
     
     if (!this.bindGroup) {
-      if (!this.debugLogged) {
-        console.log('[WaterRendererGPU] Early return - no bind group');
-        this.debugLogged = true;
-      }
       return;
-    }
-    
-    if (!this.debugLogged) {
-      console.log('[WaterRendererGPU] Drawing', this.indexCount, 'indices');
-      console.log('[WaterRendererGPU] Pipeline:', this.pipelineWrapper.pipeline);
-      console.log('[WaterRendererGPU] BindGroup:', this.bindGroup);
-      this.debugLogged = true;
     }
     
     // Render
@@ -397,17 +420,23 @@ export class WaterRendererGPU {
     // Calculate actual water level in world units
     const waterLevelWorld = this.config.waterLevel * params.heightScale;
     const sunIntensity = params.sunIntensity ?? 1.0;
+    const near = params.near ?? 0.1;
+    const far = params.far ?? 2000;
     
-    // WGSL struct layout:
+    // WGSL struct layout (48 floats = 192 bytes):
     // mat4 viewProjectionMatrix (64 bytes, indices 0-15)
     // mat4 modelMatrix (64 bytes, indices 16-31)
     // vec4 cameraPositionTime (16 bytes, indices 32-35): xyz = camera, w = time
     // vec4 params (16 bytes, indices 36-39): x = terrainSize, y = waterLevel, z = heightScale, w = sunIntensity
+    // vec4 gridCenter (16 bytes, indices 40-43): xy = center XZ, zw = unused
+    // vec4 gridScale (16 bytes, indices 44-47): xy = scale XZ, z = near, w = far
     this.uniformBuilder.reset()
       .mat4(params.viewProjectionMatrix as Float32Array)  // 0-15
       .mat4(params.modelMatrix as Float32Array)           // 16-31
       .vec4(params.cameraPosition[0], params.cameraPosition[1], params.cameraPosition[2], params.time) // 32-35: cameraPos + time
-      .vec4(params.terrainSize, waterLevelWorld, params.heightScale, sunIntensity); // 36-39: params
+      .vec4(params.terrainSize, waterLevelWorld, params.heightScale, sunIntensity) // 36-39: params
+      .vec4(this.config.gridCenterX, this.config.gridCenterZ, 0.0, 0.0) // 40-43: gridCenter
+      .vec4(this.config.gridSizeX, this.config.gridSizeZ, near, far);    // 44-47: gridScale + near/far
     
     this.uniformBuffer!.write(this.ctx, this.uniformBuilder.build());
   }
@@ -416,10 +445,11 @@ export class WaterRendererGPU {
    * Update material buffer
    * Matches WaterMaterial struct in water.wgsl:
    *   sunDirection: vec4f,   // xyz = sun dir, w = unused
+   *   waterColor: vec4f,     // shallow water tint (artistic)
    *   scatterColor: vec4f,   // subsurface scattering color (deep water tint)
    *   foamColor: vec4f,      // shoreline foam
    *   params1: vec4f,        // x = waveScale, y = foamThreshold, z = fresnelPower, w = opacity
-   *   params2: vec4f,        // x = ambientIntensity, y = depthFalloff, z/w = unused
+   *   params2: vec4f,        // x = ambientIntensity, y = depthFalloff, z = wavelength, w = unused
    */
   private updateMaterial(params: WaterRenderParams): void {
     const sunDir = params.sunDirection || [0.5, 0.8, 0.3];
@@ -427,14 +457,16 @@ export class WaterRendererGPU {
     this.materialBuilder.reset()
       // sunDirection (vec4)
       .vec4(sunDir[0], sunDir[1], sunDir[2], 0.0)
+      // waterColor (vec4) - shallow water tint
+      .vec4(this.config.waterColor[0], this.config.waterColor[1], this.config.waterColor[2], 1.0)
       // scatterColor (vec4) - deep water tint for subsurface scattering
       .vec4(this.config.deepColor[0], this.config.deepColor[1], this.config.deepColor[2], 1.0)
       // foamColor (vec4)
       .vec4(this.config.foamColor[0], this.config.foamColor[1], this.config.foamColor[2], 1.0)
       // params1: waveScale, foamThreshold, fresnelPower, opacity
       .vec4(this.config.waveScale, this.config.foamThreshold, this.config.fresnelPower, this.config.opacity)
-      // params2: ambientIntensity, depthFalloff, unused, unused
-      .vec4(params.ambientIntensity ?? 0.3, this.config.depthFalloff, 0.0, 0.0);
+      // params2: ambientIntensity, depthFalloff, wavelength, unused
+      .vec4(params.ambientIntensity ?? 0.3, this.config.depthFalloff, this.config.wavelength, 0.0);
     
     this.materialBuffer!.write(this.ctx, this.materialBuilder.build());
   }

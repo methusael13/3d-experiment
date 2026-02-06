@@ -49,6 +49,8 @@
   color: var(--sb-text-primary, #f0f0f0);
   font-family: monospace;
   font-size: 11px;
+  min-width: 0;
+  flex-grow: 1;
 }
 
 .seedInput:focus {
@@ -118,6 +120,28 @@
 .settingsGroup.disabled {
   opacity: 0.5;
   pointer-events: none;
+}
+
+.subsectionTitle {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary, #a0a0a0);
+  margin-top: 12px;
+  margin-bottom: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle, #333);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.gridInfo {
+  font-size: 10px;
+  color: var(--text-muted, #808080);
+  text-align: center;
+  padding: 4px 0;
+  margin-top: 4px;
+  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+  border-radius: 3px;
 }
 
 /* Color layouts */

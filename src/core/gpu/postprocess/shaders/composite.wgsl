@@ -103,8 +103,12 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
   var color = hdr_color.rgb * uniforms.exposure;
   
   // Apply AO in HDR (linear) space before tonemapping
-  // This is physically correct - AO reduces ambient light contribution
-  color = color * ao;
+  // Use alpha to control AO strength: 
+  // - Where alpha = 1 (fully opaque terrain), apply full AO
+  // - Where alpha < 1 (transparent water blend), reduce AO since it was
+  //   computed for geometry hidden beneath the water surface
+  let ao_strength = mix(1.0, ao, hdr_color.a);
+  color = color * ao_strength;
   
   // Apply tonemapping
   color = apply_tonemapping(color);

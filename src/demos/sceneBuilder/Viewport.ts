@@ -2,7 +2,7 @@ import { mat4, quat } from 'gl-matrix';
 import type { Vec2, Vec3, RGB } from '../../core/types';
 import { createAnimationLoop, AnimationLoop } from '../../core/animationLoop';
 import { GPUContext } from '../../core/gpu/GPUContext';
-import { GPUForwardPipeline, type RenderOptions as GPURenderOptions } from '../../core/gpu/pipeline/GPUForwardPipeline';
+import { GPUCamera, GPUForwardPipeline, type RenderOptions as GPURenderOptions } from '../../core/gpu/pipeline/GPUForwardPipeline';
 import { TerrainManager, type TerrainManagerConfig } from '../../core/terrain/TerrainManager';
 import {
   createGridRenderer,
@@ -38,6 +38,7 @@ import type { FPSCameraController } from './FPSCameraController';
 import { WebGPUShadowSettings } from './componentPanels/RenderingPanel';
 import type { SSAOSettings } from './components/panels/RenderingPanel';
 import type { CompositeEffectConfig } from '../../core/gpu/postprocess';
+import { WaterParams } from './components';
 
 // ==================== Type Definitions ====================
 
@@ -706,13 +707,7 @@ export class Viewport {
     if (this.gpuPipeline) {
       this.gpuPipeline.setSSAOEnabled(settings.enabled);
       if (settings.enabled) {
-        this.gpuPipeline.setSSAOConfig({
-          radius: settings.radius,
-          intensity: settings.intensity,
-          bias: settings.bias,
-          samples: settings.samples,
-          blur: settings.blur,
-        });
+        this.gpuPipeline.setSSAOConfig({ ...settings });
       }
     }
   }
@@ -730,26 +725,11 @@ export class Viewport {
    * Set WebGPU water config (for TerrainPanel integration)
    * Maps UI config names to WaterConfig interface
    */
-  setWebGPUWaterConfig(config: {
-    enabled: boolean;
-    waterLevel?: number;
-    waveScale?: number;
-    waterColor?: [number, number, number];
-    deepColor?: [number, number, number];
-    depthFalloff?: number;
-    opacity?: number;
-  }): void {
+  setWebGPUWaterConfig(config: WaterParams): void {
     if (this.gpuPipeline) {
       this.gpuPipeline.setWaterEnabled(config.enabled);
       if (config.enabled) {
-        this.gpuPipeline.setWaterConfig({
-          waterLevel: config.waterLevel,
-          waveScale: config.waveScale,
-          waterColor: config.waterColor,
-          deepColor: config.deepColor,
-          depthFalloff: config.depthFalloff,
-          opacity: config.opacity,
-        });
+        this.gpuPipeline.setWaterConfig({ ...config });
       }
     }
   }
@@ -762,10 +742,12 @@ export class Viewport {
     
     // Create camera adapter for WebGPU pipeline
     const camera = this.cameraController.getCamera();
-    const cameraAdapter = {
-      getViewMatrix: () => camera.getViewMatrix(),
-      getProjectionMatrix: () => camera.getProjectionMatrix(),
-      getPosition: () => camera.getPosition(),
+    const cameraAdapter: GPUCamera = {
+      getViewMatrix: () => camera.getViewMatrix() as Float32Array,
+      getProjectionMatrix: () => camera.getProjectionMatrix() as Float32Array,
+      getPosition: () => camera.getPosition() as number[],
+      near: camera.near,
+      far: camera.far
     };
     
     // Get lighting settings

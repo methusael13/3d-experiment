@@ -36,6 +36,7 @@ import type { GizmoMode, GizmoOrientation } from './gizmos';
 import type { Vec3 } from '../../core/types';
 import type { TerrainObject } from '../../core/sceneObjects';
 import { GPUTerrainSceneObject } from '../../core/sceneObjects';
+import { WaterParams } from './components';
 
 // ==================== Types ====================
 
@@ -931,7 +932,7 @@ export class SceneBuilder implements SceneBuilderDemo {
         this.viewport?.setWebGPUShadowSettings(settings);
       },
       setWebGPUWaterConfig: (config) => {
-        this.viewport?.setWebGPUWaterConfig(config);
+        this.viewport?.setWebGPUWaterConfig(config as WaterParams);
       },
     });
     

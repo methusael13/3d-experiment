@@ -259,7 +259,9 @@ export class RenderContextImpl implements RenderContext {
    * Only copies once per frame
    */
   copyDepthForReading(): void {
-    if (this.depthCopied) return;
+    if (this.depthCopied) {
+      return;
+    }
     
     this.encoder.copyTextureToTexture(
       { texture: this.depthTexture.texture },

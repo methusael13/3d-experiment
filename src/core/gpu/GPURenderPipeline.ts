@@ -404,4 +404,32 @@ export const CommonBlendStates = {
       },
     };
   },
+
+  /**
+   * Water blending: normal alpha blend for color, but clears alpha proportionally to mark water pixels.
+   * This allows visual opacity control while signaling to post-processing (SSAO) to skip these pixels.
+   * 
+   * Water shader outputs pre-multiplied RGB (color * opacity) with alpha = opacity.
+   * 
+   * Color blend: finalColor = srcRGB + dstRGB * (1 - srcAlpha)  → correct visual blending
+   * Alpha blend: finalAlpha = 0 + dstAlpha * (1 - srcAlpha)     → clears alpha where water is opaque
+   * 
+   * Result: High opacity water → low alpha → SSAO skipped
+   */
+  waterMask(): BlendStateDesc {
+    return {
+      color: {
+        // Premultiplied: src already multiplied by opacity, add to dest * (1-opacity)
+        srcFactor: 'one',
+        dstFactor: 'one-minus-src-alpha',
+        operation: 'add',
+      },
+      alpha: {
+        // Clear alpha proportionally: more opaque water = lower final alpha = skip SSAO
+        srcFactor: 'zero',
+        dstFactor: 'one-minus-src-alpha',
+        operation: 'add',
+      },
+    };
+  },
 };

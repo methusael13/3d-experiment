@@ -51,6 +51,10 @@ export interface GPUCamera {
   getViewMatrix(): Float32Array | number[];
   getProjectionMatrix(): Float32Array | number[];
   getPosition(): Float32Array | number[];
+  /** Near clipping plane distance */
+  near?: number;
+  /** Far clipping plane distance */
+  far?: number;
 }
 
 export interface GPUForwardPipelineOptions {
@@ -111,9 +115,9 @@ export class GPUForwardPipeline {
   // Post-processing pipeline (plugin-based)
   private postProcessPipeline: PostProcessPipeline | null = null;
   
-  // Camera parameters
-  private nearPlane = 0.1;
-  private farPlane = 1000;
+  // Default camera parameters (used when camera doesn't provide them)
+  private defaultNearPlane = 0.1;
+  private defaultFarPlane = 2000;
   
   // Renderers
   private gridRenderer: GridRendererGPU;
@@ -454,6 +458,10 @@ export class GPUForwardPipeline {
       ...options,
     };
     
+    // Get near/far from camera or use defaults
+    const nearPlane = camera.near ?? this.defaultNearPlane;
+    const farPlane = camera.far ?? this.defaultFarPlane;
+    
     // Create render context
     const contextOptions: RenderContextOptions = {
       ctx: this.ctx,
@@ -462,8 +470,8 @@ export class GPUForwardPipeline {
       options: mergedOptions,
       width: this.width,
       height: this.height,
-      near: this.nearPlane,
-      far: this.farPlane,
+      near: nearPlane,
+      far: farPlane,
       time: this.time,
       deltaTime,
       sampleCount: this.sampleCount,
@@ -500,8 +508,8 @@ export class GPUForwardPipeline {
       
       // Build effect uniforms
       const effectUniforms: EffectUniforms = {
-        near: this.nearPlane,
-        far: this.farPlane,
+        near: nearPlane,
+        far: farPlane,
         width: this.width,
         height: this.height,
         time: this.time,
