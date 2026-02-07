@@ -22,10 +22,9 @@ import { registerWGSLShader, unregisterWGSLShader, getWGSLShaderSource } from '@
 
 /**
  * Water configuration
+ * Note: Enabled state is controlled by presence/absence of OceanSceneObject in scene
  */
 export interface WaterConfig {
-  /** Enable water rendering */
-  enabled: boolean;
   /** Water surface Y level (normalized -0.5 to 0.5, scaled by heightScale) */
   waterLevel: number;
   /** Water surface color (shallow areas) */
@@ -48,6 +47,8 @@ export interface WaterConfig {
   depthFalloff: number;
   /** Base wavelength in world units (smaller = more waves, larger = bigger swells) */
   wavelength: number;
+  /** High-frequency normal detail strength (0 = none, 1 = full) */
+  detailStrength: number;
   
   // Grid placement parameters
   /** Grid center X coordinate in world units */
@@ -87,18 +88,19 @@ export interface WaterRenderParams {
  */
 export function createDefaultWaterConfig(): WaterConfig {
   return {
-    enabled: false,
     waterLevel: 0.2,  // Slightly below center
-    waterColor: [0.1, 0.4, 0.6],
-    deepColor: [0.02, 0.1, 0.2],
+    // Deep ocean colors - rich saturated blue like Cliffs of Moher
+    waterColor: [0.12, 0.35, 0.55],    // Teal-blue for shallow/surface  
+    deepColor: [0.04, 0.15, 0.35],     // Rich navy blue for deep water (not black!)
     foamColor: [0.9, 0.95, 1.0],
     waveScale: 1.0,
-    opacity: 0.85,
+    opacity: 0.92,    // Higher default opacity for deep ocean look
     fresnelPower: 3.0,
     specularPower: 64.0,
     foamThreshold: 3.0,  // Shore foam distance in world units (meters)
-    depthFalloff: 2.0,
+    depthFalloff: 1.5,   // Reduced for slower color transition (keeps blue longer)
     wavelength: 20.0,  // 20 world units - good default for visible waves
+    detailStrength: 0.3, // High-frequency normal detail (0-1)
     // Grid placement defaults - will be set to match terrain size on first render
     gridCenterX: 0,
     gridCenterZ: 0,
@@ -325,8 +327,8 @@ export class WaterRendererGPU {
       cullMode: 'none',  // Water visible from both sides
       frontFace: 'ccw',
       depthFormat: 'depth24plus',
-      depthWriteEnabled: false,  // Don't write depth (transparent)
-      depthCompare: 'less',      // But still test against terrain depth
+      depthWriteEnabled: true,   // Write depth to prevent overdraw of overlapping wave surfaces
+      depthCompare: 'greater',   // Reversed-Z: test against terrain depth
       colorFormats: ['rgba16float'], // HDR intermediate format
       blendStates: [CommonBlendStates.waterMask()],
     });
@@ -389,7 +391,7 @@ export class WaterRendererGPU {
     // Rebuild mesh if grid dimensions changed
     this.rebuildMeshIfNeeded();
 
-    if (!this.config.enabled || !this.pipelineWrapper || !this.uniformBuffer || 
+    if (!this.pipelineWrapper || !this.uniformBuffer || 
         !this.materialBuffer || !this.vertexBuffer || !this.indexBuffer) {
       return;
     }
@@ -465,8 +467,8 @@ export class WaterRendererGPU {
       .vec4(this.config.foamColor[0], this.config.foamColor[1], this.config.foamColor[2], 1.0)
       // params1: waveScale, foamThreshold, fresnelPower, opacity
       .vec4(this.config.waveScale, this.config.foamThreshold, this.config.fresnelPower, this.config.opacity)
-      // params2: ambientIntensity, depthFalloff, wavelength, unused
-      .vec4(params.ambientIntensity ?? 0.3, this.config.depthFalloff, this.config.wavelength, 0.0);
+      // params2: ambientIntensity, depthFalloff, wavelength, detailStrength
+      .vec4(params.ambientIntensity ?? 0.3, this.config.depthFalloff, this.config.wavelength, this.config.detailStrength);
     
     this.materialBuffer!.write(this.ctx, this.materialBuilder.build());
   }
@@ -488,24 +490,10 @@ export class WaterRendererGPU {
   }
   
   /**
-   * Enable/disable water
-   */
-  setEnabled(enabled: boolean): void {
-    this.config.enabled = enabled;
-  }
-  
-  /**
    * Set water level (normalized -0.5 to 0.5)
    */
   setWaterLevel(level: number): void {
     this.config.waterLevel = Math.max(-0.5, Math.min(0.5, level));
-  }
-  
-  /**
-   * Check if water is enabled
-   */
-  isEnabled(): boolean {
-    return this.config.enabled;
   }
   
   // ============ Cleanup ============

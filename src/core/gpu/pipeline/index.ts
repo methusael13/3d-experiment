@@ -33,6 +33,5 @@ export {
 export type {
   ShadowPassDependencies,
   OpaquePassDependencies,
-  TransparentPassDependencies,
   DebugPassDependencies,
 } from './passes';

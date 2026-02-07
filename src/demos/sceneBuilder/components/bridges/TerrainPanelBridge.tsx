@@ -6,11 +6,10 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import { useComputed } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
-import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, type MaterialParams as TerrainMaterialParams, type WaterParams, type DetailParams } from '../panels';
+import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, type MaterialParams as TerrainMaterialParams, type DetailParams } from '../panels';
 import { isGPUTerrainObject, isTerrainObject, type GPUTerrainSceneObject, type TerrainObject } from '../../../../core/sceneObjects';
 import { debounce } from '../../../../core/utils/debounce';
 import { TerrainManager } from '@/core/terrain';
-import { createDefaultWaterConfig } from '@/core/gpu/renderers';
 
 // ==================== Default Parameter Sets ====================
 
@@ -22,23 +21,30 @@ const DEFAULT_NOISE_PARAMS: NoiseParams = {
   octaves: 6,
   lacunarity: 2.0,
   persistence: 0.5,
-  heightScale: 100,
+  heightScale: 136,
   ridgeWeight: 0.5,
   warpStrength: 0.5,
   warpScale: 2.0,
   warpOctaves: 2,
   rotateOctaves: true,
   octaveRotation: 37.5,
+  // Island mode (disabled by default)
+  islandEnabled: false,
+  islandRadius: 0.4,
+  coastNoiseScale: 5,
+  coastNoiseStrength: 0.2,
+  coastFalloff: 0.3,
+  seaFloorDepth: -0.3,
 };
 
 const DEFAULT_EROSION_PARAMS: ErosionParams = {
   hydraulicEnabled: true,
-  hydraulicIterations: 50000,
+  hydraulicIterations: 300000,
   inertia: 0.05,
   sedimentCapacity: 4,
   depositSpeed: 0.3,
   erodeSpeed: 0.3,
-  thermalEnabled: false,
+  thermalEnabled: true,
   thermalIterations: 50,
   talusAngle: 0.5,
 };
@@ -47,13 +53,15 @@ const DEFAULT_MATERIAL_PARAMS: TerrainMaterialParams = {
   snowLine: 0.7,
   rockLine: 0.4,
   maxGrassSlope: 0.6,
+  beachMaxHeight: 0.15,
+  beachMaxSlope: 0.25,
   grassColor: [0.2, 0.5, 0.1],
   rockColor: [0.4, 0.35, 0.3],
   snowColor: [0.95, 0.95, 0.97],
   dirtColor: [0.4, 0.3, 0.2],
+  beachColor: [0.76, 0.7, 0.5],  // Sandy tan color
 };
 
-const DEFAULT_WATER_PARAMS: WaterParams = createDefaultWaterConfig();
 
 const DEFAULT_DETAIL_PARAMS: DetailParams = {
   frequency: 0.5,
@@ -83,6 +91,12 @@ function buildNoiseConfig(params: NoiseParams) {
     warpOctaves: params.warpOctaves,
     rotateOctaves: params.rotateOctaves,
     octaveRotation: params.octaveRotation,
+    // Island mode
+    islandEnabled: params.islandEnabled,
+    islandRadius: params.islandRadius,
+    coastNoiseScale: params.coastNoiseScale,
+    coastNoiseStrength: params.coastNoiseStrength,
+    seaFloorDepth: params.seaFloorDepth,
   };
 }
 
@@ -111,10 +125,13 @@ function buildMaterialConfig(params: TerrainMaterialParams) {
     snowLine: params.snowLine,
     rockLine: params.rockLine,
     maxGrassSlope: params.maxGrassSlope,
+    beachMaxHeight: params.beachMaxHeight,
+    beachMaxSlope: params.beachMaxSlope,
     grassColor: params.grassColor,
     rockColor: params.rockColor,
     snowColor: params.snowColor,
     dirtColor: params.dirtColor,
+    beachColor: params.beachColor,
   };
 }
 
@@ -132,7 +149,6 @@ export interface ConnectedTerrainPanelProps {
     noiseParams: NoiseParams;
     erosionParams: ErosionParams;
     materialParams: TerrainMaterialParams;
-    waterParams?: WaterParams;
     detailParams?: DetailParams;
   }) => Promise<void>;
 }
@@ -178,14 +194,13 @@ export function ConnectedTerrainPanel({
   });
   
   // Local state for terrain parameters
-  const [resolution, setResolution] = useState(512);
-  const [worldSize, setWorldSize] = useState(100);
+  const [resolution, setResolution] = useState(1024);
+  const [worldSize, setWorldSize] = useState(400);
   const [currentPreset, setCurrentPreset] = useState('default');
   
   const [noiseParams, setNoiseParams] = useState<NoiseParams>(DEFAULT_NOISE_PARAMS);
   const [erosionParams, setErosionParams] = useState<ErosionParams>(DEFAULT_EROSION_PARAMS);
   const [materialParams, setMaterialParams] = useState<TerrainMaterialParams>(DEFAULT_MATERIAL_PARAMS);
-  const [waterParams, setWaterParams] = useState<WaterParams>(DEFAULT_WATER_PARAMS);
   const [detailParams, setDetailParams] = useState<DetailParams>(DEFAULT_DETAIL_PARAMS);
   
   // Rendering mode (WebGL only)
@@ -229,12 +244,8 @@ export function ConnectedTerrainPanel({
   useEffect(() => () => debouncedFullRegen.cancel(), [debouncedFullRegen]);
 
   const handleTerrainBoundsChange = useCallback(() => {
-    if (selectedTerrainInfoRef.current.value?.type === 'webgpu') {
-      const radius = selectedTerrainInfoRef.current.value.manager?.getApproximateSceneRadius();
-      if (radius) {
-        store.viewport?.updateCameraForSceneBounds(radius);
-      }
-    }
+    // Use centralized store method for camera bounds update
+    store.updateCameraFromSceneBounds();
   }, [store]);
 
   // Handlers
@@ -242,14 +253,42 @@ export function ConnectedTerrainPanel({
     const updated = { ...noiseParamsRef.current, ...changes };
     setNoiseParams(updated);
     
+    const terrainInfo = selectedTerrainInfoRef.current.value;
+    
     // Offset changes: immediate heightmap preview + debounced full regen
     if ('offsetX' in changes || 'offsetZ' in changes) {
-      const terrainInfo = selectedTerrainInfoRef.current.value;
       if (terrainInfo?.type === 'webgpu' && terrainInfo.manager) {
         // Immediate: regenerate heightmap only (no erosion) for live preview
         terrainInfo.manager.regenerateHeightmapOnly?.(buildNoiseConfig(updated));
         // Debounced: full regeneration with erosion once slider stops
         debouncedFullRegen();
+      }
+    }
+    
+    // Island mode toggle: instant (just enables/disables in shader)
+    if ('islandEnabled' in changes) {
+      if (terrainInfo?.type === 'webgpu' && terrainInfo.manager) {
+        terrainInfo.manager.setIslandEnabled(updated.islandEnabled);
+      }
+    }
+    
+    // Sea floor depth: instant (uniform-only change)
+    if ('seaFloorDepth' in changes) {
+      if (terrainInfo?.type === 'webgpu' && terrainInfo.manager) {
+        terrainInfo.manager.setSeaFloorDepth(updated.seaFloorDepth);
+      }
+    }
+    
+    // Island mask params: instant regeneration of mask texture only
+    if ('islandRadius' in changes || 'coastNoiseScale' in changes || 'coastNoiseStrength' in changes || 'coastFalloff' in changes) {
+      if (terrainInfo?.type === 'webgpu' && terrainInfo.manager) {
+        terrainInfo.manager.regenerateIslandMask({
+          seed: updated.seed,
+          islandRadius: updated.islandRadius,
+          coastNoiseScale: updated.coastNoiseScale,
+          coastNoiseStrength: updated.coastNoiseStrength,
+          coastFalloff: updated.coastFalloff,
+        });
       }
     }
 
@@ -275,19 +314,6 @@ export function ConnectedTerrainPanel({
       return updated;
     });
   }, [selectedTerrainInfo]);
-  
-  const handleWaterParamsChange = useCallback((changes: Partial<WaterParams>) => {
-    setWaterParams(prev => {
-      const updated = { ...prev, ...changes };
-      
-      // Send water config to viewport if available
-      if (store.viewport) {
-        store.viewport.setWebGPUWaterConfig(updated);
-      }
-      
-      return updated;
-    });
-  }, [store.viewport]);
   
   const handleDetailParamsChange = useCallback((changes: Partial<DetailParams>) => {
     setDetailParams(prev => {
@@ -321,7 +347,6 @@ export function ConnectedTerrainPanel({
     setNoiseParams(DEFAULT_NOISE_PARAMS);
     setErosionParams(DEFAULT_EROSION_PARAMS);
     setMaterialParams(DEFAULT_MATERIAL_PARAMS);
-    setWaterParams(DEFAULT_WATER_PARAMS);
     setDetailParams(DEFAULT_DETAIL_PARAMS);
   }, []);
   
@@ -340,7 +365,6 @@ export function ConnectedTerrainPanel({
           noiseParams,
           erosionParams,
           materialParams,
-          waterParams: store.isWebGPU.value ? waterParams : undefined,
           detailParams: store.isWebGPU.value ? detailParams : undefined,
         });
       }
@@ -424,7 +448,7 @@ export function ConnectedTerrainPanel({
     
     // Clear progress after a delay
     setTimeout(() => setProgress(undefined), 2000);
-  }, [onTerrainUpdate, selectedTerrainInfo, resolution, worldSize, noiseParams, erosionParams, materialParams, waterParams, detailParams, store.isWebGPU, cdlodEnabled, clipmapEnabled]);
+  }, [onTerrainUpdate, selectedTerrainInfo, resolution, worldSize, noiseParams, erosionParams, materialParams, detailParams, store.isWebGPU, cdlodEnabled, clipmapEnabled]);
   
   // Determine if a terrain is selected
   const hasTerrainSelected = selectedTerrainInfo.value !== null;
@@ -442,8 +466,6 @@ export function ConnectedTerrainPanel({
       onErosionParamsChange={handleErosionParamsChange}
       materialParams={materialParams}
       onMaterialParamsChange={handleMaterialParamsChange}
-      waterParams={store.isWebGPU.value ? waterParams : undefined}
-      onWaterParamsChange={store.isWebGPU.value ? handleWaterParamsChange : undefined}
       detailParams={store.isWebGPU.value ? detailParams : undefined}
       onDetailParamsChange={store.isWebGPU.value ? handleDetailParamsChange : undefined}
       cdlodEnabled={cdlodEnabled}

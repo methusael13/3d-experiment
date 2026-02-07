@@ -18,6 +18,7 @@ import cdlodWGSL from './shaders/terrain/cdlod.wgsl?raw';
 // Terrain shaders - compute
 import heightmapGenerationWGSL from './shaders/terrain/heightmap-generation.wgsl?raw';
 import normalMapGenerationWGSL from './shaders/terrain/normal-map-generation.wgsl?raw';
+import islandMaskWGSL from './shaders/terrain/island-mask.wgsl?raw';
 
 // Test shaders
 import testTriangleWGSL from './shaders/test-triangle.wgsl?raw';
@@ -36,6 +37,7 @@ export const ShaderSources = {
   // Terrain - compute
   heightmapGeneration: heightmapGenerationWGSL,
   normalMapGeneration: normalMapGenerationWGSL,
+  islandMask: islandMaskWGSL,
   
   // Test
   testTriangle: testTriangleWGSL,

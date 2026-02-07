@@ -146,7 +146,7 @@ export class ObjectRendererGPU {
       cullMode: 'back',
       depthFormat: 'depth24plus',
       depthWriteEnabled: true,
-      depthCompare: 'less',
+      depthCompare: 'greater',  // Reversed-Z: near=1, far=0
       colorFormats: ['rgba16float'], // HDR intermediate format
     });
     

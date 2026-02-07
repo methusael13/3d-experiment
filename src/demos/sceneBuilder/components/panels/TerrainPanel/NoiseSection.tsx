@@ -19,6 +19,13 @@ export interface NoiseParams {
   // Octave rotation
   rotateOctaves: boolean;
   octaveRotation: number;
+  // Island mode
+  islandEnabled: boolean;
+  islandRadius: number;
+  coastNoiseScale: number;
+  coastNoiseStrength: number;
+  coastFalloff: number;
+  seaFloorDepth: number;
 }
 
 export interface NoiseSectionProps {
@@ -203,6 +210,76 @@ export function NoiseSection({
         format={(v) => `${Math.round(v)}°`}
         onChange={(v) => handleChange('octaveRotation', v)}
         disabled={!params.rotateOctaves}
+      />
+
+      <div class={styles.divider} />
+      <div class={styles.sectionTitle}>Island Mode</div>
+
+      {/* Island Enabled Checkbox */}
+      <Checkbox
+        label="Enable Island (organic coastline)"
+        checked={params.islandEnabled}
+        onChange={(v) => handleChange('islandEnabled', v)}
+      />
+
+      {/* Island Radius */}
+      <Slider
+        label="Island Radius"
+        value={params.islandRadius}
+        min={0.2}
+        max={0.8}
+        step={0.01}
+        format={(v) => `${(v * 100).toFixed(0)}%`}
+        onChange={(v) => handleChange('islandRadius', v)}
+        disabled={!params.islandEnabled}
+      />
+
+      {/* Coast Noise Scale */}
+      <Slider
+        label="Coast Wiggliness"
+        value={params.coastNoiseScale}
+        min={2}
+        max={10}
+        step={0.5}
+        format={(v) => v.toFixed(1)}
+        onChange={(v) => handleChange('coastNoiseScale', v)}
+        disabled={!params.islandEnabled}
+      />
+
+      {/* Coast Noise Strength */}
+      <Slider
+        label="Coast Variation"
+        value={params.coastNoiseStrength}
+        min={0.05}
+        max={0.4}
+        step={0.01}
+        format={(v) => v.toFixed(2)}
+        onChange={(v) => handleChange('coastNoiseStrength', v)}
+        disabled={!params.islandEnabled}
+      />
+
+      {/* Coast Falloff */}
+      <Slider
+        label="Coast Falloff"
+        value={params.coastFalloff}
+        min={0.05}
+        max={0.5}
+        step={0.01}
+        format={(v) => v.toFixed(2)}
+        onChange={(v) => handleChange('coastFalloff', v)}
+        disabled={!params.islandEnabled}
+      />
+
+      {/* Sea Floor Depth */}
+      <Slider
+        label="Sea Floor Depth"
+        value={params.seaFloorDepth}
+        min={-0.5}
+        max={-0.1}
+        step={0.01}
+        format={(v) => v.toFixed(2)}
+        onChange={(v) => handleChange('seaFloorDepth', v)}
+        disabled={!params.islandEnabled}
       />
     </div>
   );

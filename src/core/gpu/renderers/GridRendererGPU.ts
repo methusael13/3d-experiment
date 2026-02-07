@@ -77,7 +77,7 @@ export class GridRendererGPU {
       cullMode: 'none',
       depthFormat: 'depth24plus',
       depthWriteEnabled: false, // Grid renders in overlay, no depth write
-      depthCompare: 'less-equal',
+      depthCompare: 'greater-equal',  // Reversed-Z: use greater-equal for overlay
       colorFormats: ['rgba16float'], // HDR intermediate format
     });
     

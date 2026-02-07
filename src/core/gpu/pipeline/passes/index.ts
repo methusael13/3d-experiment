@@ -11,8 +11,8 @@ import type { SkyRendererGPU } from '../../renderers/SkyRendererGPU';
 import type { ObjectRendererGPU } from '../../renderers/ObjectRendererGPU';
 import type { GridRendererGPU } from '../../renderers/GridRendererGPU';
 import type { ShadowRendererGPU } from '../../renderers/ShadowRendererGPU';
-import type { WaterRendererGPU } from '../../renderers/WaterRendererGPU';
 import type { TerrainManager } from '../../../terrain/TerrainManager';
+import type { OceanManager } from '../../../ocean/OceanManager';
 import type { UnifiedGPUTexture } from '../../GPUTexture';
 
 // ============================================================================
@@ -57,44 +57,42 @@ export class SkyPass extends BaseRenderPass {
 
 export interface ShadowPassDependencies {
   shadowRenderer: ShadowRendererGPU;
-  terrainManager: TerrainManager | null;
 }
 
 /**
  * ShadowPass - Renders shadow map from light's perspective
+ * Reads terrain from ctx.scene
  */
 export class ShadowPass extends BaseRenderPass {
   readonly name = 'shadow';
   readonly priority = PassPriority.SHADOW;
   
-  private deps: ShadowPassDependencies;
+  private shadowRenderer: ShadowRendererGPU;
   
   constructor(deps: ShadowPassDependencies) {
     super();
-    this.deps = deps;
-  }
-  
-  setTerrainManager(tm: TerrainManager | null): void {
-    this.deps.terrainManager = tm;
+    this.shadowRenderer = deps.shadowRenderer;
   }
   
   execute(ctx: RenderContext): void {
     const { shadowEnabled, lightDirection } = ctx.options;
-    const { shadowRenderer, terrainManager } = this.deps;
+    
+    // Get terrain from scene
+    const terrainManager = ctx.scene?.getWebGPUTerrain()?.getTerrainManager() ?? null;
     
     if (!shadowEnabled || !terrainManager) return;
     
     // Update bind group with terrain heightmap
     const heightmap = terrainManager.getHeightmapTexture();
     if (heightmap) {
-      shadowRenderer.updateBindGroup(heightmap);
+      this.shadowRenderer.updateBindGroup(heightmap);
     }
     
     // Get terrain config for shadow params
     const terrainConfig = terrainManager.getConfig();
     
     // Render shadow map
-    shadowRenderer.renderShadowMap(ctx.encoder, {
+    this.shadowRenderer.renderShadowMap(ctx.encoder, {
       lightDirection: lightDirection as [number, number, number],
       cameraPosition: ctx.cameraPosition,
       cameraForward: ctx.cameraForward,
@@ -112,26 +110,24 @@ export class ShadowPass extends BaseRenderPass {
 export interface OpaquePassDependencies {
   objectRenderer: ObjectRendererGPU;
   shadowRenderer: ShadowRendererGPU;
-  terrainManager: TerrainManager | null;
 }
 
 /**
  * OpaquePass - Renders terrain and opaque objects with depth
+ * Reads terrain from ctx.scene
  */
 export class OpaquePass extends BaseRenderPass {
   readonly name = 'opaque';
   readonly priority = PassPriority.OPAQUE;
   
-  private deps: OpaquePassDependencies;
+  private objectRenderer: ObjectRendererGPU;
+  private shadowRenderer: ShadowRendererGPU;
   private identityMatrix = mat4.create();
   
   constructor(deps: OpaquePassDependencies) {
     super();
-    this.deps = deps;
-  }
-  
-  setTerrainManager(tm: TerrainManager | null): void {
-    this.deps.terrainManager = tm;
+    this.objectRenderer = deps.objectRenderer;
+    this.shadowRenderer = deps.shadowRenderer;
   }
   
   execute(ctx: RenderContext): void {
@@ -140,7 +136,8 @@ export class OpaquePass extends BaseRenderPass {
       shadowEnabled, shadowSoftShadows, shadowRadius 
     } = ctx.options;
     
-    const { objectRenderer, shadowRenderer, terrainManager } = this.deps;
+    // Get terrain from scene
+    const terrainManager = ctx.scene?.getWebGPUTerrain()?.getTerrainManager() ?? null;
     
     // Determine loadOp based on whether sky pass ran
     const loadOp = ctx.options.skyMode !== 'none' ? 'load' : 'clear';
@@ -157,8 +154,8 @@ export class OpaquePass extends BaseRenderPass {
         enabled: true,
         softShadows: shadowSoftShadows,
         shadowRadius: shadowRadius,
-        lightSpaceMatrix: shadowRenderer.getLightSpaceMatrix(),
-        shadowMap: shadowRenderer.getShadowMap(),
+        lightSpaceMatrix: this.shadowRenderer.getLightSpaceMatrix(),
+        shadowMap: this.shadowRenderer.getShadowMap(),
       } : undefined;
       
       terrainManager.render(pass, {
@@ -174,7 +171,7 @@ export class OpaquePass extends BaseRenderPass {
     }
     
     // Render objects
-    objectRenderer.render(pass, {
+    this.objectRenderer.render(pass, {
       viewProjectionMatrix: ctx.viewProjectionMatrix,
       cameraPosition: ctx.cameraPosition,
       lightDirection,
@@ -190,39 +187,31 @@ export class OpaquePass extends BaseRenderPass {
 // TRANSPARENT PASS
 // ============================================================================
 
-export interface TransparentPassDependencies {
-  waterRenderer: WaterRendererGPU;
-  terrainManager: TerrainManager | null;
-}
-
 /**
  * TransparentPass - Renders water and other transparent objects
+ * Reads ocean and terrain from ctx.scene
  */
 export class TransparentPass extends BaseRenderPass {
   readonly name = 'transparent';
   readonly priority = PassPriority.TRANSPARENT;
   
-  private deps: TransparentPassDependencies;
-  private identityMatrix = mat4.create();
-  
-  constructor(deps: TransparentPassDependencies) {
+  constructor() {
     super();
-    this.deps = deps;
-  }
-  
-  setTerrainManager(tm: TerrainManager | null): void {
-    this.deps.terrainManager = tm;
   }
   
   execute(ctx: RenderContext): void {
-    const { waterRenderer, terrainManager } = this.deps;
+    // Get ocean and terrain from scene
+    const oceanManager = ctx.scene?.getOcean()?.getOceanManager() ?? null;
+    const terrainManager = ctx.scene?.getWebGPUTerrain()?.getTerrainManager() ?? null;
     
-    if (!waterRenderer.isEnabled() || !terrainManager) return;
+    // Skip if no ocean manager (presence in scene = enabled)
+    if (!oceanManager || !oceanManager.isReady) return;
     
-    // Copy depth for shader reading
+    // Copy depth for shader reading (water uses depth for transparency effects)
     ctx.copyDepthForReading();
     
-    const terrainConfig = terrainManager.getConfig();
+    // Get terrain config for size/scale (default if no terrain)
+    const terrainConfig = terrainManager?.getConfig();
     const { lightDirection, sunIntensity, ambientIntensity } = ctx.options;
     
     const pass = ctx.encoder.beginRenderPass({
@@ -231,9 +220,8 @@ export class TransparentPass extends BaseRenderPass {
       depthStencilAttachment: ctx.getDepthAttachment('load'),
     });
     
-    waterRenderer.render(pass, {
+    oceanManager.render(pass, {
       viewProjectionMatrix: ctx.viewProjectionMatrix,
-      modelMatrix: this.identityMatrix,
       cameraPosition: ctx.cameraPosition,
       terrainSize: terrainConfig?.worldSize ?? 1000,
       heightScale: terrainConfig?.heightScale ?? 50,

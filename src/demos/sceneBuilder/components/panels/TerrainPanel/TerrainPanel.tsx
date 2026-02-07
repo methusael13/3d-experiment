@@ -3,7 +3,6 @@ import { Panel, Slider, Select, Checkbox } from '../../ui';
 import { NoiseSection, type NoiseParams } from './NoiseSection';
 import { ErosionSection, type ErosionParams } from './ErosionSection';
 import { MaterialSection, type MaterialParams } from './MaterialSection';
-import { WaterSection, type WaterParams } from './WaterSection';
 import { DetailSection, type DetailParams } from './DetailSection';
 import styles from './TerrainPanel.module.css';
 
@@ -55,10 +54,6 @@ export interface TerrainPanelProps {
   materialParams: MaterialParams;
   onMaterialParamsChange: (params: Partial<MaterialParams>) => void;
 
-  // Water parameters (WebGPU only)
-  waterParams?: WaterParams;
-  onWaterParamsChange?: (params: Partial<WaterParams>) => void;
-
   // Detail parameters (WebGPU only)
   detailParams?: DetailParams;
   onDetailParamsChange?: (params: Partial<DetailParams>) => void;
@@ -99,8 +94,6 @@ export function TerrainPanel({
   onErosionParamsChange,
   materialParams,
   onMaterialParamsChange,
-  waterParams,
-  onWaterParamsChange,
   detailParams,
   onDetailParamsChange,
   cdlodEnabled,
@@ -241,19 +234,11 @@ export function TerrainPanel({
         <div class={styles.divider} />
 
         {/* Material Section */}
-        <MaterialSection params={materialParams} onParamsChange={onMaterialParamsChange} />
-
-        {/* Water Section (WebGPU only) */}
-        {waterParams && onWaterParamsChange && (
-          <>
-            <div class={styles.divider} />
-            <WaterSection
-              params={waterParams}
-              onParamsChange={onWaterParamsChange}
-              terrainSize={worldSize}
-            />
-          </>
-        )}
+        <MaterialSection 
+          params={materialParams} 
+          onParamsChange={onMaterialParamsChange} 
+          islandEnabled={noiseParams.islandEnabled}
+        />
 
         {/* Detail Section (WebGPU only) */}
         {detailParams && onDetailParamsChange && (
@@ -265,7 +250,7 @@ export function TerrainPanel({
 
         {/* Update Button */}
         <button class={styles.updateBtn} onClick={handleUpdate} disabled={isUpdating}>
-          🔄 Update Terrain
+          Update Terrain
         </button>
 
         {/* Progress Bar */}

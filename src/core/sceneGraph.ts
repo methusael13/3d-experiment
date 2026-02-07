@@ -599,6 +599,17 @@ export class SceneGraph<T = unknown> {
   }
 
   /**
+   * Get the root bounding box encompassing all nodes in the scene.
+   * Returns null if there are no nodes.
+   */
+  getRootBounds(): BoundingBox | null {
+    if (this.bvhDirty) {
+      this.rebuild();
+    }
+    return this.bvhRoot?.bounds.clone() ?? null;
+  }
+
+  /**
    * Get number of nodes
    */
   get size(): number {

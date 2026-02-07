@@ -18,6 +18,9 @@ export { ConnectedMaterialPanel } from './MaterialPanelBridge';
 // TerrainPanel Bridge
 export { ConnectedTerrainPanel, type ConnectedTerrainPanelProps } from './TerrainPanelBridge';
 
+// WaterPanel Bridge
+export { ConnectedWaterPanel } from './WaterPanelBridge';
+
 // MenuBar Bridge
 export { ConnectedMenuBar } from './MenuBarBridge';
 

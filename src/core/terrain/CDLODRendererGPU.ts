@@ -66,9 +66,12 @@ export interface TerrainMaterial {
   rockColor: [number, number, number];
   snowColor: [number, number, number];
   dirtColor: [number, number, number];
+  beachColor: [number, number, number];
   snowLine: number;
   rockLine: number;
   maxGrassSlope: number;
+  beachMaxHeight: number;  // Max normalized height for beach (0-1)
+  beachMaxSlope: number;   // Max slope for beach (0-1)
 }
 
 /**
@@ -80,6 +83,18 @@ export interface TerrainShadowParams {
   shadowRadius: number;
   lightSpaceMatrix: mat4;
   shadowMap: UnifiedGPUTexture | null;
+}
+
+/**
+ * Island mode parameters for terrain rendering
+ */
+export interface IslandRenderParams {
+  /** Enable island mode */
+  enabled: boolean;
+  /** Ocean floor depth (normalized, e.g., -0.3) */
+  seaFloorDepth: number;
+  /** Island mask texture (R8, 1=land, 0=ocean) */
+  maskTexture?: UnifiedGPUTexture | null;
 }
 
 /**
@@ -102,6 +117,8 @@ export interface CDLODRenderParams {
   wireframe?: boolean;
   /** Shadow parameters */
   shadow?: TerrainShadowParams;
+  /** Island mode parameters */
+  island?: IslandRenderParams;
 }
 
 /**
@@ -134,9 +151,12 @@ export function createDefaultTerrainMaterial(): TerrainMaterial {
     rockColor: [0.4, 0.35, 0.3],
     snowColor: [0.95, 0.95, 1.0],
     dirtColor: [0.4, 0.3, 0.2],
+    beachColor: [0.76, 0.7, 0.5],  // Sandy tan color
     snowLine: 0.75,
     rockLine: 0.6,
     maxGrassSlope: 0.5,
+    beachMaxHeight: 0.15,  // Beach only below 15% height
+    beachMaxSlope: 0.25,   // Beach only on gentle slopes
   };
 }
 
@@ -208,6 +228,7 @@ export class CDLODRendererGPU {
   private defaultHeightmap: UnifiedGPUTexture | null = null;
   private defaultNormalMap: UnifiedGPUTexture | null = null;
   private defaultShadowMap: UnifiedGPUTexture | null = null;
+  private defaultIslandMask: UnifiedGPUTexture | null = null;
   
   // Last selection (for debugging)
   private lastSelection: SelectionResult | null = null;
@@ -230,9 +251,9 @@ export class CDLODRendererGPU {
     // Instance data: offsetX, offsetZ, scale, morphFactor, lodLevel (5 floats per instance)
     this.instanceData = new Float32Array(this.config.maxInstances * 5);
     
-    // Uniform builders (48 floats for uniforms including detail params, 52 floats for material with shadows)
-    this.uniformBuilder = new UniformBuilder(48);
-    this.materialBuilder = new UniformBuilder(52); // Expanded for shadow params + lightSpaceMatrix
+    // Uniform builders (52 floats for uniforms including detail + island params, 56 floats for material with beach + shadows)
+    this.uniformBuilder = new UniformBuilder(52);
+    this.materialBuilder = new UniformBuilder(56); // Expanded for beach + shadow params + lightSpaceMatrix
     
     // Initialize material with defaults
     this.currentMaterial = createDefaultTerrainMaterial();
@@ -459,17 +480,22 @@ export class CDLODRendererGPU {
       size: this.config.maxInstances * 5 * 4,
     });
     
-    // Uniform buffer for matrices and terrain params (192 bytes → 256 aligned)
-    // 48 floats: mat4(16) + mat4(16) + vec4(cameraPos+pad) + vec4(terrain params) + vec4(detail params 1) + vec4(detail params 2)
+    // Uniform buffer for matrices and terrain params (208 bytes → 256 aligned)
+    // 52 floats: mat4(16) + mat4(16) + vec4(cameraPos+pad) + vec4(terrain params) + vec4(detail params 1) + vec4(detail params 2) + vec4(island params)
     this.uniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'cdlod-uniforms',
-      size: 192, // Will be aligned to 256
+      size: 208, // Will be aligned to 256
     });
     
-    // Material buffer (128 bytes → 256 aligned)
+    // Material buffer (224 bytes → 256 aligned)
+    // 56 floats: vec4 grass + vec4 rock + vec4 snow + vec4 dirt + vec4 beach + 
+    //           vec4 (snowLine, rockLine, maxGrassSlope, beachMaxHeight) +
+    //           vec4 (lightDir + beachMaxSlope) + vec4 (lightColor + pad) +
+    //           vec4 (ambient, selected, shadowEnabled, shadowSoftness) +
+    //           vec4 (shadowRadius, shadowFadeStart, pad, pad) + mat4 lightSpaceMatrix
     this.materialBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'cdlod-material',
-      size: 128, // Will be aligned to 256
+      size: 224, // Will be aligned to 256
     });
   }
   
@@ -507,6 +533,15 @@ export class CDLODRendererGPU {
     
     // Create default shadow map (1x1 depth texture)
     this.defaultShadowMap = UnifiedGPUTexture.createDepth(this.ctx, 1, 1, 'depth32float', 'cdlod-default-shadowmap');
+    
+    // Create default island mask (1x1, fully land = 1.0, r32float for consistency)
+    this.defaultIslandMask = UnifiedGPUTexture.create2D(this.ctx, {
+      label: 'cdlod-default-island-mask',
+      width: 1,
+      height: 1,
+      format: 'r32float',
+    });
+    this.defaultIslandMask.uploadData(this.ctx, new Float32Array([1.0]), 4); // 1.0 = land
   }
   
   /**
@@ -522,6 +557,7 @@ export class CDLODRendererGPU {
       .sampler(4, 'all', 'filtering')              // Linear sampler
       .depthTexture(5, 'fragment')                 // Shadow map (depth texture)
       .comparisonSampler(6, 'fragment')            // Shadow comparison sampler
+      .texture(7, 'all', 'unfilterable-float')     // Island mask (r32float, sampled in vertex + fragment for beach)
       .build(this.ctx);
     
     // Create render pipeline using RenderPipelineWrapper
@@ -537,7 +573,7 @@ export class CDLODRendererGPU {
       frontFace: 'ccw',
       depthFormat: 'depth24plus',
       depthWriteEnabled: true,
-      depthCompare: 'less',
+      depthCompare: 'greater',  // Reversed-Z: near=1, far=0
       colorFormats: ['rgba16float'], // HDR intermediate format
     });
     
@@ -574,7 +610,7 @@ export class CDLODRendererGPU {
       depthStencil: {
         format: 'depth24plus',
         depthWriteEnabled: true,
-        depthCompare: 'less-equal',  // Less-equal to avoid z-fighting with solid
+        depthCompare: 'greater-equal',  // Reversed-Z: greater-equal to avoid z-fighting
       },
     });
   }
@@ -585,7 +621,8 @@ export class CDLODRendererGPU {
   private updateBindGroup(
     heightmapTexture?: UnifiedGPUTexture,
     normalMapTexture?: UnifiedGPUTexture,
-    shadowMapTexture?: UnifiedGPUTexture | null
+    shadowMapTexture?: UnifiedGPUTexture | null,
+    islandMaskTexture?: UnifiedGPUTexture | null
   ): void {
     if (!this.bindGroupLayout || !this.uniformBuffer || !this.materialBuffer || 
         !this.linearSampler || !this.shadowSampler) {
@@ -595,6 +632,7 @@ export class CDLODRendererGPU {
     const heightmap = heightmapTexture || this.defaultHeightmap!;
     const normalMap = normalMapTexture || this.defaultNormalMap!;
     const shadowMap = shadowMapTexture || this.defaultShadowMap!;
+    const islandMask = islandMaskTexture || this.defaultIslandMask!;
     
     this.bindGroup = new BindGroupBuilder('cdlod-bind-group')
       .buffer(0, this.uniformBuffer)
@@ -604,6 +642,7 @@ export class CDLODRendererGPU {
       .sampler(4, this.linearSampler)
       .texture(5, shadowMap)
       .sampler(6, this.shadowSampler)
+      .texture(7, islandMask)
       .build(this.ctx, this.bindGroupLayout);
   }
   
@@ -643,11 +682,12 @@ export class CDLODRendererGPU {
     this.updateUniformBuffer(params);
     this.updateMaterialBuffer(params);
     
-    // Update bind group with shadow map
+    // Update bind group with shadow map and island mask
     this.updateBindGroup(
       params.heightmapTexture, 
       params.normalMapTexture,
-      params.shadow?.shadowMap
+      params.shadow?.shadowMap,
+      params.island?.maskTexture
     );
     
     if (!this.bindGroup) {
@@ -715,9 +755,11 @@ export class CDLODRendererGPU {
   
   /**
    * Update uniform buffer with matrices and params using UniformBuilder
-   * Layout matches shader Uniforms struct (48 floats = 192 bytes)
+   * Layout matches shader Uniforms struct (52 floats = 208 bytes)
    */
   private updateUniformBuffer(params: CDLODRenderParams): void {
+    const island = params.island;
+    
     this.uniformBuilder.reset()
       .mat4(params.viewProjectionMatrix as Float32Array)  // 0-15
       .mat4(params.modelMatrix as Float32Array)           // 16-31
@@ -735,6 +777,13 @@ export class CDLODRendererGPU {
         this.config.detailFadeEnd,          // 45 - detailFadeEnd
         this.config.detailSlopeInfluence,   // 46 - detailSlopeInfluence
         0.0                                 // 47 - _pad1
+      )
+      // Island mode parameters (48-51)
+      .vec4(
+        island?.enabled ? 1.0 : 0.0,        // 48 - islandEnabled
+        island?.seaFloorDepth ?? -0.3,      // 49 - seaFloorDepth
+        0.0,                                // 50 - _pad2
+        0.0                                 // 51 - _pad3
       );
     
     this.uniformBuffer!.write(this.ctx, this.uniformBuilder.build());
@@ -743,7 +792,7 @@ export class CDLODRendererGPU {
   /**
    * Update material buffer using UniformBuilder
    * Uses stored currentMaterial merged with render params
-   * Layout matches shader Material struct (52 floats = 208 bytes)
+   * Layout matches shader Material struct (56 floats = 224 bytes)
    */
   private updateMaterialBuffer(params: CDLODRenderParams): void {
     const mat = { ...this.currentMaterial, ...params.material };
@@ -763,12 +812,13 @@ export class CDLODRendererGPU {
       .vec4(mat.rockColor[0], mat.rockColor[1], mat.rockColor[2], 1.0)     // 4-7
       .vec4(mat.snowColor[0], mat.snowColor[1], mat.snowColor[2], 1.0)     // 8-11
       .vec4(mat.dirtColor[0], mat.dirtColor[1], mat.dirtColor[2], 1.0)     // 12-15
-      .vec4(mat.snowLine, mat.rockLine, mat.maxGrassSlope, 0)              // 16-19
-      .vec4(lightDir[0], lightDir[1], lightDir[2], 0)                      // 20-23
-      .vec4(lightColor[0], lightColor[1], lightColor[2], 1.0)              // 24-27
-      .vec4(params.ambientIntensity ?? 0.3, params.isSelected ? 1.0 : 0.0, shadowEnabled, shadowSoftness) // 28-31
-      .vec4(shadowRadius, shadowFadeStart, 0, 0)                           // 32-35
-      .mat4(lightSpaceMatrix as Float32Array);                             // 36-51
+      .vec4(mat.beachColor[0], mat.beachColor[1], mat.beachColor[2], 1.0)  // 16-19 - beach color
+      .vec4(mat.snowLine, mat.rockLine, mat.maxGrassSlope, mat.beachMaxHeight) // 20-23
+      .vec4(lightDir[0], lightDir[1], lightDir[2], mat.beachMaxSlope)      // 24-27
+      .vec4(lightColor[0], lightColor[1], lightColor[2], 0)                // 28-31
+      .vec4(params.ambientIntensity ?? 0.3, params.isSelected ? 1.0 : 0.0, shadowEnabled, shadowSoftness) // 32-35
+      .vec4(shadowRadius, shadowFadeStart, 0, 0)                           // 36-39
+      .mat4(lightSpaceMatrix as Float32Array);                             // 40-55
     
     this.materialBuffer!.write(this.ctx, this.materialBuilder.build());
   }
@@ -972,7 +1022,7 @@ export class CDLODRendererGPU {
       depthStencil: {
         format: 'depth24plus',
         depthWriteEnabled: true,
-        depthCompare: 'less',
+        depthCompare: 'greater',  // Reversed-Z: near=1, far=0
       },
     });
     
@@ -997,7 +1047,7 @@ export class CDLODRendererGPU {
       depthStencil: {
         format: 'depth24plus',
         depthWriteEnabled: true,
-        depthCompare: 'less-equal',
+        depthCompare: 'greater-equal',  // Reversed-Z: greater-equal to avoid z-fighting
       },
     });
     
@@ -1025,6 +1075,7 @@ export class CDLODRendererGPU {
     this.defaultHeightmap?.destroy();
     this.defaultNormalMap?.destroy();
     this.defaultShadowMap?.destroy();
+    this.defaultIslandMask?.destroy();
     
     this.gridVertexBuffer = null;
     this.gridIndexBuffer = null;
@@ -1035,6 +1086,7 @@ export class CDLODRendererGPU {
     this.defaultHeightmap = null;
     this.defaultNormalMap = null;
     this.defaultShadowMap = null;
+    this.defaultIslandMask = null;
     this.pipeline = null;
     this.wireframePipeline = null;
     this.bindGroup = null;

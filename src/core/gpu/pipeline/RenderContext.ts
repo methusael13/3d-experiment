@@ -13,6 +13,7 @@ import { GPUContext } from '../GPUContext';
 import { UnifiedGPUTexture } from '../GPUTexture';
 import type { GPUCamera, RenderOptions } from './GPUForwardPipeline';
 import { DEFAULT_RENDER_OPTIONS } from './GPUForwardPipeline';
+import type { Scene } from '../../Scene';
 
 /**
  * Context passed to each render pass
@@ -21,6 +22,7 @@ export interface RenderContext {
   // Core references
   readonly encoder: GPUCommandEncoder;
   readonly ctx: GPUContext;
+  readonly scene: Scene | null;
   
   // Camera state (read-only)
   readonly camera: GPUCamera;
@@ -78,6 +80,7 @@ export interface RenderContextOptions {
   ctx: GPUContext;
   encoder: GPUCommandEncoder;
   camera: GPUCamera;
+  scene: Scene | null;
   options: RenderOptions;
   width: number;
   height: number;
@@ -108,6 +111,7 @@ export interface RenderContextOptions {
 export class RenderContextImpl implements RenderContext {
   readonly encoder: GPUCommandEncoder;
   readonly ctx: GPUContext;
+  readonly scene: Scene | null;
   readonly camera: GPUCamera;
   readonly options: Required<RenderOptions>;
   readonly width: number;
@@ -143,6 +147,7 @@ export class RenderContextImpl implements RenderContext {
   constructor(opts: RenderContextOptions) {
     this.encoder = opts.encoder;
     this.ctx = opts.ctx;
+    this.scene = opts.scene;
     this.camera = opts.camera;
     this.options = { ...DEFAULT_RENDER_OPTIONS, ...opts.options };
     this.width = opts.width;
@@ -244,11 +249,12 @@ export class RenderContextImpl implements RenderContext {
   
   /**
    * Get depth attachment for render pass
+   * Uses reversed-Z clear value (0.0) since near=1, far=0
    */
   getDepthAttachment(loadOp: 'clear' | 'load'): GPURenderPassDepthStencilAttachment {
     return {
       view: this.depthTexture.view,
-      depthClearValue: 1.0,
+      depthClearValue: 0.0,  // Reversed-Z: clear to far plane (0.0)
       depthLoadOp: loadOp,
       depthStoreOp: 'store',
     };

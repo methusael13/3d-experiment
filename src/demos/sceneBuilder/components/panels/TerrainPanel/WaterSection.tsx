@@ -79,6 +79,17 @@ export function WaterSection({ params, onParamsChange, terrainSize = 1024 }: Wat
           disabled={!params.enabled}
         />
 
+        <Slider
+          label="Detail Strength"
+          value={params.detailStrength}
+          min={0}
+          max={1}
+          step={0.05}
+          format={(v) => v.toFixed(2)}
+          onChange={(v) => handleChange('detailStrength', v)}
+          disabled={!params.enabled}
+        />
+
         <div class={styles.colorColumn}>
           <ColorPicker
             label="Water Color"
@@ -104,7 +115,7 @@ export function WaterSection({ params, onParamsChange, terrainSize = 1024 }: Wat
           label="Depth Falloff"
           value={params.depthFalloff}
           min={0.01}
-          max={0.5}
+          max={10.0}
           step={0.01}
           format={(v) => v.toFixed(2)}
           onChange={(v) => handleChange('depthFalloff', v)}

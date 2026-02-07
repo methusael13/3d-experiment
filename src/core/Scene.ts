@@ -31,6 +31,8 @@ import { getModelUrl } from '../loaders';
 import { PrimitiveObject } from './sceneObjects/primitives';
 import { GPUContext } from './gpu';
 import { TerrainManager, TerrainManagerConfig } from './terrain';
+import { OceanManager, type OceanManagerConfig } from './ocean';
+import { OceanSceneObject } from './sceneObjects/OceanSceneObject';
 
 // ============================================================================
 // Types
@@ -103,6 +105,7 @@ export class Scene {
   /** Map of object ID -> SceneObject */
   private objects = new Map<string, AnySceneObject>();
   private gpuTerrainObject: GPUTerrainSceneObject | null = null;
+  private oceanObject: OceanSceneObject | null = null;
   
   /** Set of selected object IDs */
   private selectedIds = new Set<string>();
@@ -303,6 +306,13 @@ export class Scene {
 
     this.removeObject(this.gpuTerrainObject.id);
     this.gpuTerrainObject = null;
+
+    console.log('Current scene objects:', this.objects);
+    console.log('Terrain object:', this.gpuTerrainObject);
+  }
+
+  hasWebGPUTerrain() {
+    return this.getWebGPUTerrain !== null;
   }
 
   async addWebGPUTerrain(gpuContext: GPUContext, config: Partial<TerrainManagerConfig>) {
@@ -326,9 +336,11 @@ export class Scene {
 
       // Add it to scene store
       this.addSceneObject(this.gpuTerrainObject);
+      return this.gpuTerrainObject;
     } catch (error) {
       console.error('[Scene] Error while adding the GPU terrain', error);
       this.removeWebGPUTerrain();
+      return null;
     }
   }
   
@@ -383,6 +395,14 @@ export class Scene {
     // Remove from group first
     this.removeFromGroup(id);
     
+    // Clear special references if this is terrain or ocean
+    if (this.gpuTerrainObject && this.gpuTerrainObject.id === id) {
+      this.gpuTerrainObject = null;
+    }
+    if (this.oceanObject && this.oceanObject.id === id) {
+      this.oceanObject = null;
+    }
+    
     // Destroy renderer and remove
     obj.destroy();
     this.objects.delete(id);
@@ -413,12 +433,96 @@ export class Scene {
   getWebGPUTerrain(): GPUTerrainSceneObject | null {
     return this.gpuTerrainObject;
   }
+
+  // ==========================================================================
+  // Ocean Management (WebGPU)
+  // ==========================================================================
+
+  /**
+   * Add ocean/water to the scene (WebGPU mode)
+   * Creates OceanManager and OceanSceneObject
+   * @param gpuContext - WebGPU context
+   * @param config - Optional initial water configuration
+   */
+  async addOcean(
+    gpuContext: GPUContext,
+    config?: Partial<OceanManagerConfig>
+  ): Promise<OceanSceneObject | null> {
+    if (this.oceanObject) {
+      // Only one ocean per scene
+      console.warn('[Scene] Ocean already exists');
+      return this.oceanObject;
+    }
+
+    try {
+      // Create OceanManager
+      const manager = new OceanManager(gpuContext, config);
+      await manager.initialize();
+
+      // Create OceanSceneObject and link
+      this.oceanObject = new OceanSceneObject();
+      this.oceanObject.setOceanManager(manager);
+
+      // Add to scene (including sceneGraph for selection/raycasting)
+      this.addSceneObject(this.oceanObject);
+      console.log('[Scene] Ocean added to scene');
+
+      return this.oceanObject;
+    } catch (error) {
+      console.error('[Scene] Failed to add ocean:', error);
+      this.oceanObject = null;
+      return null;
+    }
+  }
+
+  /**
+   * Remove ocean from the scene
+   */
+  removeOcean(): void {
+    if (!this.oceanObject) {
+      return;
+    }
+
+    // Remove from scene (sceneGraph, objects map, selection)
+    this.removeObject(this.oceanObject.id);
+    this.oceanObject = null;
+
+    console.log('Current scene objects:', this.objects);
+    console.log('[Scene] Ocean removed:', this.oceanObject);
+  }
+
+  /**
+   * Get the current ocean scene object
+   */
+  getOcean(): OceanSceneObject | null {
+    return this.oceanObject;
+  }
+
+  /**
+   * Check if ocean exists in the scene
+   */
+  hasOcean(): boolean {
+    return this.oceanObject !== null;
+  }
   
   /**
    * Get count of objects
    */
   getObjectCount(): number {
     return this.objects.size;
+  }
+  
+  /**
+   * Get the bounding box encompassing all objects in the scene.
+   * Returns null if there are no objects.
+   */
+  getSceneBounds(): { min: [number, number, number]; max: [number, number, number] } | null {
+    const bounds = this.sceneGraph.getRootBounds();
+    if (!bounds) return null;
+    return {
+      min: [bounds.min[0], bounds.min[1], bounds.min[2]],
+      max: [bounds.max[0], bounds.max[1], bounds.max[2]],
+    };
   }
   
   /**

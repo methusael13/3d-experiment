@@ -182,9 +182,65 @@ export function ConnectedMenuBar() {
     store.syncFromScene();
   }, [store]);
   
-  const handleAddTerrain = useCallback(() => {
-    // TODO: Add terrain - complex, needs TerrainManager setup
-    console.log('[MenuBar] Add Terrain - TODO');
+  const handleAddTerrain = useCallback(async () => {
+    const scene = store.scene;
+    const gpuContext = store.viewport?.getWebGPUContext();
+    if (!scene || !gpuContext) {
+      console.warn('[MenuBar] Cannot add terrain - scene or GPU context not available. Enable WebGPU mode first.');
+      return;
+    }
+
+    if (!store.viewport?.isWebGPUTestMode()) {
+      console.warn('[MenuBar] Cannot add terrain when not in WebGPU mode');
+      return;
+    }
+    
+    // Check if terrain already exists
+    if (scene.getWebGPUTerrain()) {
+      console.warn('[MenuBar] Terrain already exists in scene');
+      return;
+    }
+    
+    // Add terrain to scene
+    const terrainObj = await scene.addWebGPUTerrain(gpuContext, {
+      worldSize: 1024,
+      heightScale: 100
+    });
+    
+    if (terrainObj) {
+      // Select the new terrain object
+      scene.select(terrainObj.id);
+      store.syncFromScene();
+      // Camera bounds updated automatically via scene.onObjectAdded callback
+    }
+  }, [store]);
+  
+  const handleAddWater = useCallback(async () => {
+    const scene = store.scene;
+    const gpuContext = store.viewport?.getWebGPUContext();
+    if (!scene || !gpuContext) {
+      console.warn('[MenuBar] Cannot add water - scene or GPU context not available');
+      return;
+    }
+
+    if (!store.viewport?.isWebGPUTestMode()) {
+      console.warn('[MenuBar] Cannot add water when not in WebGPU mode');
+      return;
+    }
+    
+    // Check if water already exists
+    if (scene.hasOcean()) {
+      console.warn('[MenuBar] Water already exists in scene');
+      return;
+    }
+    
+    // Add ocean to scene
+    const oceanObj = await scene.addOcean(gpuContext);
+    if (oceanObj) {
+      // Select the new ocean object
+      scene.select(oceanObj.id);
+      store.syncFromScene();
+    }
   }, [store]);
   
   // ==================== Menu Definitions ====================
@@ -246,6 +302,7 @@ export function ConnectedMenuBar() {
         { id: 'sphere', label: 'UV Sphere', onClick: () => handleAddPrimitive('sphere') },
         { separator: true, id: 'sep1', label: '' },
         { id: 'terrain', label: 'Terrain', onClick: handleAddTerrain },
+        { id: 'water', label: 'Water', onClick: handleAddWater },
       ],
     },
   ], [
@@ -253,7 +310,7 @@ export function ConnectedMenuBar() {
     handleSelectAll, handleDuplicate, handleDeleteSelected, handleGroupSelection, handleUngroup,
     handleSetViewportMode, handleToggleGrid, handleToggleAxes, handleExpandView, handleFPSCamera, handleCameraPreset,
     handleToggleShaderEditor,
-    handleAddPrimitive, handleAddTerrain,
+    handleAddPrimitive, handleAddTerrain, handleAddWater,
     hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value,
   ]);
   

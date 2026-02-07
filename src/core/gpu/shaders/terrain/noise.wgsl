@@ -28,8 +28,8 @@ struct GenerationParams {
   rotateOctaves: u32,   // 0 = no rotation, 1 = rotate
   octaveRotation: f32,  // Rotation angle in degrees per octave
   
-  _pad0: f32,           // Padding for alignment
-  _pad1: f32,
+  _pad0: f32,           // Padding for vec4 alignment
+  _pad1: f32,           // Padding for vec4 alignment
 }
 
 @group(0) @binding(0) var<uniform> params: GenerationParams;
@@ -271,6 +271,7 @@ fn warpedFbm(p: vec2f) -> f32 {
 // - warpStrength = 0, ridgeWeight = 1 → Pure Ridged
 // - warpStrength > 0 → Domain warped noise
 // - ridgeWeight blends between FBM and Ridged styles
+// - islandEnabled > 0 → Apply island mask for organic coastlines
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) globalId: vec3u) {
   let dims = textureDimensions(outputHeightmap);
@@ -288,7 +289,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
   
   // Generate NORMALIZED height using configurable warped FBM
   // Output range: [-0.5, 0.5] (centered around 0)
-  // Actual heightScale is applied at render time via TerrainManager.config.heightScale
+  // Island masking is handled separately by CDLOD shader using island mask texture
   let height = warpedFbm(worldPos) - 0.5;
   
   // Write to output texture

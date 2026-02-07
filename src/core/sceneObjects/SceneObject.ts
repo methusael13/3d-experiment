@@ -31,6 +31,9 @@ export abstract class SceneObject {
   /** Group this object belongs to (if any) */
   public groupId: string | null;
   
+  /** Whether this object casts shadows (used by shadow pass) */
+  public castsShadow: boolean;
+  
   constructor(name: string = 'Object') {
     this.id = `object-${SceneObject.nextId++}`;
     this.name = name;
@@ -39,6 +42,7 @@ export abstract class SceneObject {
     this.scale = vec3.fromValues(1, 1, 1);
     this.visible = true;
     this.groupId = null;
+    this.castsShadow = false; // Default: no shadows
   }
   
   /**

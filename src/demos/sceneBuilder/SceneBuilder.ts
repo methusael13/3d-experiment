@@ -930,10 +930,7 @@ export class SceneBuilder implements SceneBuilderDemo {
       },
       setWebGPUShadowSettings: (settings) => {
         this.viewport?.setWebGPUShadowSettings(settings);
-      },
-      setWebGPUWaterConfig: (config) => {
-        this.viewport?.setWebGPUWaterConfig(config as WaterParams);
-      },
+      }
     });
     
     // Instantiate panels - ObjectsPanel is now a Preact bridge component

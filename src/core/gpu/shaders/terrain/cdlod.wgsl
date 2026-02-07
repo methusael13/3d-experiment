@@ -25,6 +25,11 @@ struct Uniforms {
   detailFadeEnd: f32,             // 45 - distance where detail is fully faded
   detailSlopeInfluence: f32,      // 46 - how much slope affects detail (0-1)
   _pad1: f32,                     // 47
+  // Island mode parameters
+  islandEnabled: f32,             // 48 - 0 = disabled, 1 = enabled
+  seaFloorDepth: f32,             // 49 - ocean floor depth (negative, e.g., -0.3)
+  _pad2: f32,                     // 50
+  _pad3: f32,                     // 51
 }
 
 // Material uniforms (group 0, binding 1)
@@ -33,23 +38,24 @@ struct Material {
   rockColor: vec4f,               // 4-7
   snowColor: vec4f,               // 8-11
   dirtColor: vec4f,               // 12-15
-  snowLine: f32,                  // 16
-  rockLine: f32,                  // 17
-  maxGrassSlope: f32,             // 18
-  _pad1: f32,                     // 19
-  lightDir: vec3f,                // 20-22
-  _pad2: f32,                     // 23
-  lightColor: vec3f,              // 24-26
-  _pad3: f32,                     // 27
-  ambientIntensity: f32,          // 28
-  isSelected: f32,                // 29
-  shadowEnabled: f32,             // 30 - Enable/disable shadows
-  shadowSoftness: f32,            // 31 - 0 = hard, 1 = soft PCF
-  shadowRadius: f32,              // 32 - Shadow coverage radius
-  shadowFadeStart: f32,           // 33 - Distance where shadow starts fading
-  _pad4: f32,                     // 34
-  _pad5: f32,                     // 35
-  lightSpaceMatrix: mat4x4f,      // 36-51 - Shadow projection matrix
+  beachColor: vec4f,              // 16-19 - Sand/beach color for coastlines
+  snowLine: f32,                  // 20
+  rockLine: f32,                  // 21
+  maxGrassSlope: f32,             // 22
+  beachMaxHeight: f32,            // 23 - Max normalized height for beach (e.g., 0.1)
+  lightDir: vec3f,                // 24-26
+  beachMaxSlope: f32,             // 27 - Max slope for beach (e.g., 0.3)
+  lightColor: vec3f,              // 28-30
+  _pad3: f32,                     // 31
+  ambientIntensity: f32,          // 32
+  isSelected: f32,                // 33
+  shadowEnabled: f32,             // 34 - Enable/disable shadows
+  shadowSoftness: f32,            // 35 - 0 = hard, 1 = soft PCF
+  shadowRadius: f32,              // 36 - Shadow coverage radius
+  shadowFadeStart: f32,           // 37 - Distance where shadow starts fading
+  _pad4: f32,                     // 38
+  _pad5: f32,                     // 39
+  lightSpaceMatrix: mat4x4f,      // 40-55 - Shadow projection matrix
 }
 
 // ============================================================================
@@ -63,6 +69,7 @@ struct Material {
 @group(0) @binding(4) var texSampler: sampler;
 @group(0) @binding(5) var shadowMap: texture_depth_2d;
 @group(0) @binding(6) var shadowSampler: sampler_comparison;
+@group(0) @binding(7) var islandMask: texture_2d<f32>;
 
 // ============================================================================
 // Vertex Structures
@@ -340,6 +347,36 @@ fn worldToUV(worldXZ: vec2f) -> vec2f {
   return (worldXZ - terrainOrigin) / uniforms.terrainSize;
 }
 
+// Sample island mask at UV coordinates using textureLoad (r32float is unfilterable)
+// Returns 0-1, where 1 = land, 0 = ocean
+fn sampleIslandMask(uv: vec2f) -> f32 {
+  let clampedUV = clamp(uv, vec2f(0.0), vec2f(1.0));
+  
+  // Get texture dimensions
+  let dims = textureDimensions(islandMask);
+  
+  // Convert UV to texel coordinates (floating point)
+  let texelF = clampedUV * vec2f(f32(dims.x) - 1.0, f32(dims.y) - 1.0);
+  
+  // Get integer texel coordinates for the 4 corners
+  let texel00 = vec2i(i32(floor(texelF.x)), i32(floor(texelF.y)));
+  let texel10 = clamp(texel00 + vec2i(1, 0), vec2i(0), vec2i(i32(dims.x) - 1, i32(dims.y) - 1));
+  let texel01 = clamp(texel00 + vec2i(0, 1), vec2i(0), vec2i(i32(dims.x) - 1, i32(dims.y) - 1));
+  let texel11 = clamp(texel00 + vec2i(1, 1), vec2i(0), vec2i(i32(dims.x) - 1, i32(dims.y) - 1));
+  
+  // Sample the 4 corners
+  let m00 = textureLoad(islandMask, texel00, 0).r;
+  let m10 = textureLoad(islandMask, texel10, 0).r;
+  let m01 = textureLoad(islandMask, texel01, 0).r;
+  let m11 = textureLoad(islandMask, texel11, 0).r;
+  
+  // Bilinear interpolation
+  let frac = fract(texelF);
+  let m0 = mix(m00, m10, frac.x);
+  let m1 = mix(m01, m11, frac.x);
+  return mix(m0, m1, frac.y);
+}
+
 // Sample height from heightmap texture using textureLoad (r32float is unfilterable)
 fn sampleHeightAt(texCoord: vec2i, mipLevel: i32) -> f32 {
   // Clamp to texture dimensions
@@ -446,7 +483,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   
   // Sample height from heightmap texture at the appropriate LOD mipmap level
   // Heightmap stores NORMALIZED values in range [-0.5, 0.5]
-  let normalizedHeight = sampleHeightSmooth(morphedXZ, input.nodeLOD);
+  var normalizedHeight = sampleHeightSmooth(morphedXZ, input.nodeLOD);
+  
+  // Apply island mask if enabled - blend terrain height with sea floor
+  if (uniforms.islandEnabled > 0.5) {
+    let uv = worldToUV(morphedXZ);
+    let mask = sampleIslandMask(uv);
+    // mask: 1 = land (use terrain height), 0 = ocean (use sea floor depth)
+    normalizedHeight = mix(uniforms.seaFloorDepth, normalizedHeight, mask);
+  }
   
   // Apply heightScale to convert normalized height to world units
   // [-0.5, 0.5] * heightScale → [-heightScale/2, +heightScale/2]
@@ -708,6 +753,33 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let normalizedHeight = (input.worldPosition.y / max(uniforms.heightScale, 1.0)) + 0.5;
   let slope = input.slope;
   
+  // ===== Beach Biome Detection (Island Mode Only) =====
+  // Beach appears in coastal transition zones where:
+  // 1. Island mask is in the falloff region (not full land, not deep ocean)
+  // 2. Elevation is low (near water level)
+  // 3. Slope is gentle (flat areas, not cliffs)
+  var beachWeight = 0.0;
+  if (uniforms.islandEnabled > 0.5) {
+    let uv = worldToUV(worldXZ);
+    let mask = sampleIslandMask(uv);
+    
+    // isNearCoast: 1 when in the coastal falloff zone, 0 at interior or deep ocean
+    // mask ~0.1-0.5 = underwater near coast, ~0.5-0.9 = transitional land, 1.0 = interior
+    let isNearCoast = smoothstep(0.15, 0.5, mask) * (1.0 - smoothstep(0.85, 1.0, mask));
+    
+    // isLowElevation: beach only at low-lying areas
+    let isLowElevation = 1.0 - smoothstep(0.0, material.beachMaxHeight, normalizedHeight);
+    
+    // isFlat: beach only on gentle slopes (no beach on cliffs)
+    let isFlat = 1.0 - smoothstep(0.0, material.beachMaxSlope, slope);
+    
+    // Combine all factors for beach weight
+    beachWeight = isNearCoast * isLowElevation * isFlat;
+    
+    // Sharpen the transition slightly for more defined beach boundaries
+    beachWeight = smoothstep(0.1, 0.5, beachWeight);
+  }
+  
   // Material weight calculation
   var snowWeight = smoothstep(material.snowLine - 0.1, material.snowLine + 0.1, normalizedHeight);
   snowWeight *= (1.0 - smoothstep(0.5, 0.8, slope));
@@ -716,19 +788,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   rockWeight = max(rockWeight, smoothstep(material.rockLine - 0.1, material.rockLine + 0.1, normalizedHeight) * 0.5);
   
   let dirtWeight = 0.0;
-  var grassWeight = 1.0 - max(snowWeight, rockWeight);
   
-  // Normalize weights
-  let totalWeight = snowWeight + rockWeight + dirtWeight + grassWeight;
+  // Grass weight reduced by beach presence
+  var grassWeight = 1.0 - max(snowWeight, max(rockWeight, beachWeight));
+  
+  // Normalize weights (now includes beach)
+  let totalWeight = snowWeight + rockWeight + dirtWeight + grassWeight + beachWeight;
   snowWeight /= totalWeight;
   rockWeight /= totalWeight;
   grassWeight /= totalWeight;
+  let normalizedBeachWeight = beachWeight / totalWeight;
   
   // Blend albedo from material colors
   var albedo = material.grassColor.rgb * grassWeight
              + material.rockColor.rgb * rockWeight
              + material.snowColor.rgb * snowWeight
-             + material.dirtColor.rgb * dirtWeight;
+             + material.dirtColor.rgb * dirtWeight
+             + material.beachColor.rgb * normalizedBeachWeight;
   
   // Simple directional lighting with shadows
   let lightDir = normalize(material.lightDir);

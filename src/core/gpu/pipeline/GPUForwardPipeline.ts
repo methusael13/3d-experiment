@@ -22,8 +22,7 @@ import { UnifiedGPUTexture } from '../GPUTexture';
 import { GridRendererGPU } from '../renderers/GridRendererGPU';
 import { SkyRendererGPU } from '../renderers/SkyRendererGPU';
 import { ObjectRendererGPU } from '../renderers/ObjectRendererGPU';
-import { ShadowRendererGPU, type ShadowCaster, WaterRendererGPU, type WaterConfig } from '../renderers';
-import { TerrainManager } from '../../terrain/TerrainManager';
+import { ShadowRendererGPU } from '../renderers';
 import { WebGPUShadowSettings } from '@/demos/sceneBuilder/componentPanels/RenderingPanel';
 import { 
   PostProcessPipeline, 
@@ -43,6 +42,7 @@ import {
   OverlayPass, 
   DebugPass 
 } from './passes';
+import type { Scene } from '../../Scene';
 
 /**
  * Simple camera interface for WebGPU pipeline
@@ -124,17 +124,9 @@ export class GPUForwardPipeline {
   private skyRenderer: SkyRendererGPU;
   private objectRenderer: ObjectRendererGPU;
   private shadowRenderer: ShadowRendererGPU;
-  private waterRenderer: WaterRendererGPU;
-  private terrainManager: TerrainManager | null = null;
   
   // Render passes (ordered by priority)
   private passes: RenderPass[] = [];
-  private shadowPassRef!: ShadowPass;
-  private opaquePassRef!: OpaquePass;
-  private transparentPassRef!: TransparentPass;
-  
-  // Shadow casters
-  private shadowCasters: ShadowCaster[] = [];
   
   // Default shadow settings
   private shadowEnabled = true;
@@ -173,7 +165,6 @@ export class GPUForwardPipeline {
       resolution: 2048,
       shadowRadius: this.shadowRadius,
     });
-    this.waterRenderer = new WaterRendererGPU(ctx);
     
     // Create render passes
     this.initializePasses();
@@ -184,26 +175,23 @@ export class GPUForwardPipeline {
   
   /**
    * Initialize render passes
+   * Passes read terrain/ocean from ctx.scene during execute()
    */
   private initializePasses(): void {
     // Create passes with renderer references
-    this.shadowPassRef = new ShadowPass({
+    // Note: Terrain and ocean are read from scene during execute(), not stored in passes
+    const shadowPass = new ShadowPass({
       shadowRenderer: this.shadowRenderer,
-      terrainManager: this.terrainManager,
     });
     
     const skyPass = new SkyPass(this.skyRenderer);
     
-    this.opaquePassRef = new OpaquePass({
+    const opaquePass = new OpaquePass({
       objectRenderer: this.objectRenderer,
       shadowRenderer: this.shadowRenderer,
-      terrainManager: this.terrainManager,
     });
     
-    this.transparentPassRef = new TransparentPass({
-      waterRenderer: this.waterRenderer,
-      terrainManager: this.terrainManager,
-    });
+    const transparentPass = new TransparentPass();
     
     const overlayPass = new OverlayPass(this.gridRenderer);
     
@@ -213,10 +201,10 @@ export class GPUForwardPipeline {
     
     // Store passes in priority order
     this.passes = [
-      this.shadowPassRef,
+      shadowPass,
       skyPass,
-      this.opaquePassRef,
-      this.transparentPassRef,
+      opaquePass,
+      transparentPass,
       overlayPass,
       debugPass,
     ].sort((a, b) => a.priority - b.priority);
@@ -244,48 +232,6 @@ export class GPUForwardPipeline {
     this.showShadowThumbnail = show;
   }
   
-  /**
-   * Set the terrain manager for terrain rendering
-   */
-  setTerrainManager(terrainManager: TerrainManager): void {
-    if (this.terrainManager) {
-      this.unregisterShadowCaster(this.terrainManager);
-    }
-    
-    this.terrainManager = terrainManager;
-    this.registerShadowCaster(terrainManager);
-    
-    // Update pass references
-    this.shadowPassRef.setTerrainManager(terrainManager);
-    this.opaquePassRef.setTerrainManager(terrainManager);
-    this.transparentPassRef.setTerrainManager(terrainManager);
-  }
-
-  resetTerrainManager(): void {
-    this.terrainManager = null;
-    this.shadowPassRef.setTerrainManager(null);
-    this.opaquePassRef.setTerrainManager(null);
-    this.transparentPassRef.setTerrainManager(null);
-  }
-  
-  /**
-   * Register a shadow caster
-   */
-  registerShadowCaster(caster: ShadowCaster): void {
-    if (!this.shadowCasters.includes(caster)) {
-      this.shadowCasters.push(caster);
-    }
-  }
-  
-  /**
-   * Unregister a shadow caster
-   */
-  unregisterShadowCaster(caster: ShadowCaster): void {
-    const index = this.shadowCasters.indexOf(caster);
-    if (index !== -1) {
-      this.shadowCasters.splice(index, 1);
-    }
-  }
   
   /**
    * Create depth texture copy for shader sampling
@@ -421,7 +367,7 @@ export class GPUForwardPipeline {
    * Render a frame using pass-based architecture
    */
   render(
-    scene: unknown | null,
+    scene: Scene | null,
     camera: GPUCamera,
     options: RenderOptions = {}
   ): void {
@@ -467,6 +413,7 @@ export class GPUForwardPipeline {
       ctx: this.ctx,
       encoder,
       camera,
+      scene,
       options: mergedOptions,
       width: this.width,
       height: this.height,
@@ -555,25 +502,6 @@ export class GPUForwardPipeline {
     return this.shadowRenderer;
   }
   
-  getWaterRenderer(): WaterRendererGPU {
-    return this.waterRenderer;
-  }
-  
-  setWaterConfig(config: Partial<WaterConfig>): void {
-    this.waterRenderer.setConfig(config);
-  }
-  
-  getWaterConfig(): WaterConfig {
-    return this.waterRenderer.getConfig();
-  }
-  
-  setWaterEnabled(enabled: boolean): void {
-    this.waterRenderer.setEnabled(enabled);
-  }
-  
-  setWaterLevel(level: number): void {
-    this.waterRenderer.setWaterLevel(level);
-  }
   
   // ========== Post-Processing Methods ==========
 
@@ -672,7 +600,7 @@ export class GPUForwardPipeline {
     this.skyRenderer.destroy();
     this.objectRenderer.destroy();
     this.shadowRenderer.destroy();
-    this.waterRenderer.destroy();
+    // OceanManager is owned externally, not destroyed here
     this.postProcessPipeline?.destroy();
     
     // Destroy render passes

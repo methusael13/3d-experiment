@@ -12,6 +12,7 @@ import type { GizmoMode, GizmoOrientation } from '../../gizmos';
 import type { Vec3 } from '../../../../core/types';
 import type { TerrainBlendSettings } from '../../componentPanels';
 import { AnySceneObject, GPUTerrainSceneObject, TerrainObject } from '../../../../core/sceneObjects';
+import { debounce } from '@/core/utils';
 
 // ==================== Types ====================
 
@@ -42,6 +43,7 @@ export interface SceneBuilderStore {
   groups: Signal<Map<string, ObjectGroupData>>;
   selectedIds: Signal<Set<string>>;
   expandedGroupIds: Signal<Set<string>>;
+  sceneBoundsVersion: Signal<number>;
   
   // Viewport state
   viewportState: Signal<ViewportState>;
@@ -80,6 +82,10 @@ export interface SceneBuilderStore {
   setShowGrid(show: boolean): void;
   setShowAxes(show: boolean): void;
   setIsWebGPU(enabled: boolean): void;
+  
+  // Camera bounds management
+  updateCameraFromSceneBounds(): void;
+  setupSceneCallbacks(): void;
 }
 
 // ==================== Create Store ====================
@@ -104,6 +110,30 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   const objectWindSettings = signal<Map<string, ObjectWindSettings>>(new Map());
   const objectTerrainBlendSettings = signal<Map<string, TerrainBlendSettings>>(new Map());
   const isWebGPU = signal<boolean>(false);
+  const sceneBoundsVersion = signal<number>(0);
+  
+  // Debounced camera bounds update function (100ms delay)
+  const debouncedCameraUpdate = debounce(() => {
+    if (!scene || !viewport) return;
+    
+    const bounds = scene.getSceneBounds();
+    if (!bounds) return;
+    
+    // Calculate scene radius from AABB
+    const sizeX = bounds.max[0] - bounds.min[0];
+    const sizeY = bounds.max[1] - bounds.min[1];
+    const sizeZ = bounds.max[2] - bounds.min[2];
+    const radius = Math.sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ) / 2;
+    
+    // Only update if radius is meaningful
+    if (radius > 0.1) {
+      viewport.updateCameraForSceneBounds(radius);
+      console.log('[SceneBuilderStore] Camera updated for scene bounds, radius:', radius.toFixed(1));
+    }
+    
+    // Increment version to signal bounds changed
+    sceneBoundsVersion.value++;
+  }, 100);
   
   // Computed values
   const selectedObjects = computed(() => {
@@ -223,6 +253,34 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     isWebGPU.value = enabled;
   }
   
+  /**
+   * Update camera clip planes based on current scene bounds.
+   * Debounced to prevent excessive updates during rapid changes.
+   */
+  function updateCameraFromSceneBounds(): void {
+    debouncedCameraUpdate();
+  }
+  
+  /**
+   * Setup scene callbacks for automatic camera bounds updates.
+   * Should be called after scene is assigned.
+   */
+  function setupSceneCallbacks(): void {
+    if (!scene) return;
+    
+    // Hook into object added callback
+    scene.onObjectAdded = (obj) => {
+      updateCameraFromSceneBounds();
+    };
+    
+    // Hook into object removed callback
+    scene.onObjectRemoved = (id) => {
+      updateCameraFromSceneBounds();
+    };
+    
+    console.log('[SceneBuilderStore] Scene callbacks setup for auto camera bounds update');
+  }
+  
   return {
     // Signals
     objects,
@@ -235,6 +293,7 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     objectWindSettings,
     objectTerrainBlendSettings,
     isWebGPU,
+    sceneBoundsVersion,
     
     // Computed
     selectedObjects,
@@ -266,7 +325,9 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     setViewportMode,
     setShowGrid,
     setShowAxes,
-    setIsWebGPU
+    setIsWebGPU,
+    updateCameraFromSceneBounds,
+    setupSceneCallbacks
   };
 }
 

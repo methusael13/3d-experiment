@@ -13,7 +13,13 @@ import { GPUContext, UnifiedGPUTexture, ShaderSources } from '../gpu';
 import { type ShadowCaster, type ShadowPassOptions } from '../gpu/renderers/ShadowRendererGPU';
 import { type BoundingBox } from '../gpu/renderers/types';
 import { registerWGSLShader, unregisterWGSLShader } from '../../demos/sceneBuilder/shaderManager';
-import { HeightmapGenerator, NoiseParams, createDefaultNoiseParams } from './HeightmapGenerator';
+import { 
+  HeightmapGenerator, 
+  NoiseParams, 
+  createDefaultNoiseParams,
+  IslandMaskParams,
+  createDefaultIslandMaskParams,
+} from './HeightmapGenerator';
 import { ErosionSimulator, HydraulicErosionParams, ThermalErosionParams } from './ErosionSimulator';
 import { CDLODRendererGPU, CDLODGPUConfig, CDLODRenderParams, TerrainMaterial } from './CDLODRendererGPU';
 import { QuadtreeConfig } from './TerrainQuadtree';
@@ -48,6 +54,29 @@ export interface TerrainGenerationConfig {
 }
 
 /**
+ * Island mode configuration (runtime, not part of generation)
+ */
+export interface IslandConfig {
+  /** Enable island mode */
+  enabled: boolean;
+  /** Ocean floor depth (normalized, e.g., -0.3) */
+  seaFloorDepth: number;
+  /** Island mask generation parameters */
+  maskParams: IslandMaskParams;
+}
+
+/**
+ * Default island configuration
+ */
+export function createDefaultIslandConfig(): IslandConfig {
+  return {
+    enabled: false,
+    seaFloorDepth: -0.3,
+    maskParams: createDefaultIslandMaskParams(),
+  };
+}
+
+/**
  * Terrain manager configuration
  */
 export interface TerrainManagerConfig {
@@ -61,6 +90,8 @@ export interface TerrainManagerConfig {
   rendererConfig?: Partial<CDLODGPUConfig>;
   /** Generation configuration */
   generationConfig?: Partial<TerrainGenerationConfig>;
+  /** Island mode configuration */
+  islandConfig?: IslandConfig;
 }
 
 /**
@@ -90,6 +121,7 @@ export function createDefaultTerrainManagerConfig(): TerrainManagerConfig {
     quadtreeConfig: {},
     rendererConfig: {},
     generationConfig: createDefaultGenerationConfig(),
+    islandConfig: createDefaultIslandConfig(),
   };
 }
 
@@ -115,6 +147,7 @@ export class TerrainManager implements ShadowCaster {
   // Generated textures
   private heightmap: UnifiedGPUTexture | null = null;
   private normalMap: UnifiedGPUTexture | null = null;
+  private islandMask: UnifiedGPUTexture | null = null;
   
   // State
   private isInitialized = false;
@@ -412,12 +445,14 @@ export class TerrainManager implements ShadowCaster {
    */
   render(
     passEncoder: GPURenderPassEncoder,
-    params: Omit<CDLODRenderParams, 'heightmapTexture' | 'normalMapTexture' | 'terrainSize' | 'heightScale'>
+    params: Omit<CDLODRenderParams, 'heightmapTexture' | 'normalMapTexture' | 'terrainSize' | 'heightScale' | 'island'>
   ): void {
     if (!this.renderer) {
       console.warn('TerrainManager not initialized');
       return;
     }
+    
+    const islandConfig = this.config.islandConfig || createDefaultIslandConfig();
     
     this.renderer.render(passEncoder, {
       ...params,
@@ -425,6 +460,11 @@ export class TerrainManager implements ShadowCaster {
       heightScale: this.config.heightScale,
       heightmapTexture: this.heightmap || undefined,
       normalMapTexture: this.normalMap || undefined,
+      island: {
+        enabled: islandConfig.enabled,
+        seaFloorDepth: islandConfig.seaFloorDepth,
+        maskTexture: this.islandMask,
+      },
     });
   }
   
@@ -509,6 +549,10 @@ export class TerrainManager implements ShadowCaster {
     return this.normalMap;
   }
   
+  getIslandMask(): UnifiedGPUTexture | null {
+    return this.islandMask;
+  }
+  
   getRenderer(): CDLODRendererGPU | null {
     return this.renderer;
   }
@@ -579,6 +623,103 @@ export class TerrainManager implements ShadowCaster {
     return this.renderer?.getDetailConfig() ?? null;
   }
   
+  // ============ Island Mode ============
+  
+  /**
+   * Set island mode enabled state
+   * Takes effect immediately on next render frame
+   */
+  setIslandEnabled(enabled: boolean): void {
+    if (!this.config.islandConfig) {
+      this.config.islandConfig = createDefaultIslandConfig();
+    }
+    this.config.islandConfig.enabled = enabled;
+    
+    // Generate island mask if enabling and not yet generated
+    if (enabled && !this.islandMask && this.isInitialized) {
+      this.regenerateIslandMask();
+    }
+  }
+  
+  /**
+   * Get current island mode enabled state
+   */
+  getIslandEnabled(): boolean {
+    return this.config.islandConfig?.enabled ?? false;
+  }
+  
+  /**
+   * Set island sea floor depth (normalized, e.g., -0.3)
+   * Takes effect immediately on next render frame
+   */
+  setSeaFloorDepth(depth: number): void {
+    if (!this.config.islandConfig) {
+      this.config.islandConfig = createDefaultIslandConfig();
+    }
+    this.config.islandConfig.seaFloorDepth = depth;
+  }
+  
+  /**
+   * Get current sea floor depth
+   */
+  getSeaFloorDepth(): number {
+    return this.config.islandConfig?.seaFloorDepth ?? -0.3;
+  }
+  
+  /**
+   * Regenerate island mask with new parameters
+   * This is instant (no heightmap regeneration needed)
+   */
+  regenerateIslandMask(params?: Partial<IslandMaskParams>): void {
+    if (!this.isInitialized || !this.heightmapGenerator) {
+      console.warn('TerrainManager not initialized');
+      return;
+    }
+    
+    // Ensure island config exists
+    if (!this.config.islandConfig) {
+      this.config.islandConfig = createDefaultIslandConfig();
+    }
+    
+    // Update stored params
+    if (params) {
+      this.config.islandConfig.maskParams = {
+        ...this.config.islandConfig.maskParams,
+        ...params,
+      };
+    }
+    
+    // Get resolution from current heightmap or generation config
+    const resolution = this.heightmap?.width ?? 
+      this.config.generationConfig?.resolution ?? 
+      1024;
+    
+    // Clean up old mask
+    this.islandMask?.destroy();
+    
+    // Generate new mask
+    this.islandMask = this.heightmapGenerator.generateIslandMask(
+      resolution,
+      this.config.islandConfig.maskParams
+    );
+    
+    console.log('[TerrainManager] Island mask regenerated');
+  }
+  
+  /**
+   * Get current island mask parameters
+   */
+  getIslandMaskParams(): IslandMaskParams {
+    return this.config.islandConfig?.maskParams ?? createDefaultIslandMaskParams();
+  }
+  
+  /**
+   * Get full island configuration
+   */
+  getIslandConfig(): IslandConfig {
+    return this.config.islandConfig ?? createDefaultIslandConfig();
+  }
+  
   // ============ Cleanup ============
   
   destroy(): void {
@@ -590,12 +731,14 @@ export class TerrainManager implements ShadowCaster {
     this.renderer?.destroy();
     this.heightmap?.destroy();
     this.normalMap?.destroy();
+    this.islandMask?.destroy();
     
     this.heightmapGenerator = null;
     this.erosionSimulator = null;
     this.renderer = null;
     this.heightmap = null;
     this.normalMap = null;
+    this.islandMask = null;
     this.isInitialized = false;
   }
 }

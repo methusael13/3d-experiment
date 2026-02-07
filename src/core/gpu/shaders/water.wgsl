@@ -31,7 +31,7 @@ struct WaterMaterial {
   scatterColor: vec4f,            // 8-11: subsurface scattering color (deep water tint)
   foamColor: vec4f,               // 12-15: shoreline foam color
   params1: vec4f,                 // 16-19: x = waveScale, y = foamThreshold, z = fresnelPower, w = opacity
-  params2: vec4f,                 // 20-23: x = ambientIntensity, y = depthFalloff, z = wavelength, w = unused
+  params2: vec4f,                 // 20-23: x = ambientIntensity, y = depthFalloff, z = wavelength, w = detailStrength
 }
 
 // ============================================================================
@@ -216,6 +216,72 @@ fn foamNoise(p: vec2f, time: f32) -> f32 {
 }
 
 // ============================================================================
+// High-Frequency Normal Detail (Fragment Shader Only)
+// ============================================================================
+
+// Gradient noise - returns derivatives for normal mapping
+fn gradientNoise(p: vec2f) -> vec3f {
+  let i = floor(p);
+  let f = fract(p);
+  
+  // Smoothstep for interpolation
+  let u = f * f * (3.0 - 2.0 * f);
+  let du = 6.0 * f * (1.0 - f);
+  
+  // Hash corners
+  let a = hash(i);
+  let b = hash(i + vec2f(1.0, 0.0));
+  let c = hash(i + vec2f(0.0, 1.0));
+  let d = hash(i + vec2f(1.0, 1.0));
+  
+  // Bilinear interpolation with derivatives
+  let k0 = a;
+  let k1 = b - a;
+  let k2 = c - a;
+  let k3 = a - b - c + d;
+  
+  let value = k0 + k1 * u.x + k2 * u.y + k3 * u.x * u.y;
+  let dx = du.x * (k1 + k3 * u.y);
+  let dy = du.y * (k2 + k3 * u.x);
+  
+  return vec3f(value, dx, dy);  // value, dvalue/dx, dvalue/dy
+}
+
+// Multi-octave detail normal perturbation
+// Returns a normal delta to add to the base normal
+fn detailNormalPerturbation(worldPos: vec2f, time: f32, baseWavelength: f32, strength: f32) -> vec3f {
+  if (strength <= 0.001) {
+    return vec3f(0.0);
+  }
+  
+  var normalDelta = vec3f(0.0);
+  
+  // Detail octaves at higher frequencies than the geometry waves
+  // Base wavelength determines starting scale for details
+  let detailScale = 1.0 / (baseWavelength * 0.1);  // Detail starts at 10% of base wavelength
+  
+  // Octave 1: Medium detail (1/10 of base wavelength)
+  let scale1 = detailScale * 1.0;
+  let g1 = gradientNoise(worldPos * scale1 + time * 0.5);
+  normalDelta.x += g1.y * 0.5;
+  normalDelta.z += g1.z * 0.5;
+  
+  // Octave 2: Fine detail (1/25 of base wavelength)
+  let scale2 = detailScale * 2.5;
+  let g2 = gradientNoise(worldPos * scale2 - time * 0.3);
+  normalDelta.x += g2.y * 0.3;
+  normalDelta.z += g2.z * 0.3;
+  
+  // Octave 3: Very fine detail (1/50 of base wavelength)
+  let scale3 = detailScale * 5.0;
+  let g3 = gradientNoise(worldPos * scale3 + vec2f(time * 0.2, -time * 0.15));
+  normalDelta.x += g3.y * 0.2;
+  normalDelta.z += g3.z * 0.2;
+  
+  return normalDelta * strength;
+}
+
+// ============================================================================
 // Depth Linearization (Reversed Depth Buffer)
 // ============================================================================
 
@@ -258,8 +324,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     1.0
   );
   
-  // Compute normal from binormal and tangent (cross product)
-  let normal = normalize(cross(gerstner.binormal, gerstner.tangent));
+  // Compute normal from tangent and binormal (cross product)
+  // Order matters: cross(tangent, binormal) gives upward normal for flat surface
+  // cross((0,0,1), (1,0,0)) = (0, 1, 0) = upward
+  let normal = normalize(cross(gerstner.tangent, gerstner.binormal));
   
   output.clipPosition = uniforms.viewProjectionMatrix * worldPos;
   output.worldPosition = worldPos.xyz;
@@ -296,9 +364,29 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let distFactor = min(1.0, sqrt(input.distanceToCamera * 0.002) * 0.7);
   var N = normalize(mix(input.gerstnerNormal, vec3f(0.0, 1.0, 0.0), distFactor));
   
+  // ===== High-Frequency Detail Normal (Fragment Shader) =====
+  // Add procedural detail that's independent of mesh resolution
+  let detailStrength = material.params2.w;
+  let wavelength = material.params2.z;
+  
+  // Detail fades with distance to prevent aliasing
+  let detailFade = 1.0 - min(1.0, input.distanceToCamera * 0.003);
+  let detailDelta = detailNormalPerturbation(
+    input.worldPosition.xz, 
+    time, 
+    wavelength, 
+    detailStrength * detailFade
+  );
+  
+  // Perturb the normal with detail
+  N = normalize(N + vec3f(detailDelta.x, 0.0, detailDelta.z));
+  
   // ===== Fresnel =====
+  // Schlick's approximation with smoothstep for softer edge transition
   let NdotV = max(0.0, dot(N, viewDir));
-  let fresnel = 0.02 + 0.98 * pow(1.0 - NdotV, fresnelPower);
+  let rawFresnel = pow(1.0 - NdotV, fresnelPower);
+  // Smoothstep creates a softer transition avoiding the sharp pow() edge
+  let fresnel = 0.02 + 0.98 * smoothstep(0.0, 1.0, rawFresnel);
   
   // ===== Reflection =====
   var R = normalize(reflect(-viewDir, N));
@@ -319,7 +407,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let waterLinear = linearizeDepthReversed(waterDepthNDC, near, far);
   
   // Water depth in world units (distance through water to terrain)
-  let waterDepthMeters = max(sceneLinear - waterLinear, 0.0);
+  let rawWaterDepth = max(sceneLinear - waterLinear, 0.0);
+  
+  // Detect "open ocean" (no terrain underneath - depth buffer shows far plane)
+  // In reversed depth: 0 = far plane, so very small values indicate sky/no geometry
+  let isOpenOcean = sceneDepthNDC < 0.0001;  // Near far plane = open ocean
+  
+  // Cap water depth for color calculations to prevent over-absorption
+  // Beyond ~30m, treat as "deep enough" - this prevents black water in open ocean
+  let maxColorDepth = 30.0;
+  let waterDepthMeters = select(min(rawWaterDepth, maxColorDepth), maxColorDepth, isOpenOcean);
   
   // ===== Subsurface Scattering (Beer-Lambert Absorption) =====
   // Light absorption increases exponentially with depth
@@ -328,7 +425,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let transmittance = exp(-waterDepthMeters * absorptionCoeff);
   
   // Blend shallow (waterColor) to deep (scatterColor) based on depth
-  // transmittance: 1 at surface, 0 at depth
+  // transmittance: 1 at surface (shallow color), 0 at depth (deep color)
+  // Note: deep color is the TARGET, not something we absorb through to black
   let waterTint = mix(material.scatterColor.rgb, material.waterColor.rgb, transmittance);
   
   // Shore blend based on actual depth
@@ -342,18 +440,28 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let shoreFoam = select(0.0, foamFade * foamPattern, foamThreshold > 0.0);
   
   // ===== Final Color Composition =====
-  // Blend reflection and scattering based on fresnel
-  var finalColor = fresnel * reflection + (1.0 - fresnel * 0.5) * scattering;
+  // Balanced blend: water tint is base color, reflection is added on top via fresnel
+  // - At steep angles (looking down): fresnel ~0.02, mostly water tint visible
+  // - At glancing angles (horizon): fresnel ~1.0, mostly reflection visible
+  // The 0.4 reflection multiplier ensures water tint shows through even at glancing angles
+  var finalColor = mix(waterTint, reflection, fresnel * 0.4) + fresnel * reflection * 0.3;
   
-  // Add ambient
-  finalColor += vec3f(0.02, 0.04, 0.06) * ambientIntensity;
+  // Add ambient (slightly stronger for deep ocean richness)
+  finalColor += vec3f(0.02, 0.04, 0.08) * ambientIntensity;
   
   // Mix in shore foam
   finalColor = mix(finalColor, material.foamColor.rgb, shoreFoam * 0.8);
   
   // ===== Alpha =====
-  // More opaque at depth, more transparent at shores
-  let alpha = clamp(mix(opacity * 0.4, opacity, shoreBlend) + fresnel * 0.2, 0.0, 0.95);
+  // Deep ocean mode: use high base opacity everywhere, only reduce slightly at very shallow shores
+  // transmittance is 1.0 at surface, 0.0 at depth - we want OPPOSITE behavior for opacity
+  // shoreBlend (1 - transmittance) is high for deep water, low for shore
+  // Minimum alpha of 0.7 ensures water is never too transparent
+  let minAlpha = 0.7;
+  let baseAlpha = max(opacity, minAlpha);
+  // Only reduce alpha at very shallow shores (within 2m depth) for soft edge
+  let shoreEdgeFade = saturate(waterDepthMeters / 2.0);
+  let alpha = mix(minAlpha, baseAlpha, shoreEdgeFade) + fresnel * 0.15;
   
   // Output pre-multiplied alpha for waterMask blend state:
   // - RGB is pre-multiplied by alpha for correct color blending

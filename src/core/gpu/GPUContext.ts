@@ -130,7 +130,7 @@ export class GPUContext {
     this._context.configure({
       device: this._device,
       format: this._format,
-      alphaMode: 'premultiplied',
+      alphaMode: 'opaque',
     });
 
     console.log('[GPUContext] Canvas configured, format:', this._format);

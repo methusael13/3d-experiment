@@ -3,7 +3,7 @@ import type { Vec2, Vec3, RGB } from '../../core/types';
 import { createAnimationLoop, AnimationLoop } from '../../core/animationLoop';
 import { GPUContext } from '../../core/gpu/GPUContext';
 import { GPUCamera, GPUForwardPipeline, type RenderOptions as GPURenderOptions } from '../../core/gpu/pipeline/GPUForwardPipeline';
-import { TerrainManager, type TerrainManagerConfig } from '../../core/terrain/TerrainManager';
+import type { TerrainManager } from '../../core/terrain/TerrainManager';
 import {
   createGridRenderer,
   createOriginMarkerRenderer,
@@ -39,6 +39,7 @@ import { WebGPUShadowSettings } from './componentPanels/RenderingPanel';
 import type { SSAOSettings } from './components/panels/RenderingPanel';
 import type { CompositeEffectConfig } from '../../core/gpu/postprocess';
 import { WaterParams } from './components';
+import type { Scene } from '../../core/Scene';
 
 // ==================== Type Definitions ====================
 
@@ -162,6 +163,9 @@ export class Viewport {
 
   // Scene graph reference (for raycasting)
   private sceneGraph: SceneGraph | null = null;
+  
+  // Scene reference (for WebGPU pipeline rendering)
+  private scene: Scene | null = null;
 
   // Render data (reference from controller)
   private renderData: RenderData = {
@@ -659,17 +663,6 @@ export class Viewport {
     console.log('[Viewport] WebGPU test mode disabled');
   }
 
-  registerWebGPUTerrainInPipeline(manager: TerrainManager) {
-    if (this.gpuPipeline) {
-      this.gpuPipeline.setTerrainManager(manager);
-    }
-  }
-
-  unregisterWebGPUTerrainInPipeline() {
-    if (this.gpuPipeline) {
-      this.gpuPipeline.resetTerrainManager();
-    }
-  }
   
   /**
    * Check if WebGPU test mode is active
@@ -722,19 +715,6 @@ export class Viewport {
   }
   
   /**
-   * Set WebGPU water config (for TerrainPanel integration)
-   * Maps UI config names to WaterConfig interface
-   */
-  setWebGPUWaterConfig(config: WaterParams): void {
-    if (this.gpuPipeline) {
-      this.gpuPipeline.setWaterEnabled(config.enabled);
-      if (config.enabled) {
-        this.gpuPipeline.setWaterConfig({ ...config });
-      }
-    }
-  }
-  
-  /**
    * Render using WebGPU (full pipeline with grid/sky)
    */
   private renderWebGPUTest(): void {
@@ -774,8 +754,8 @@ export class Viewport {
       lightDirection,  // Pass pre-computed direction
     };
     
-    // Use render with simple camera adapter
-    this.gpuPipeline.render(null as any, cameraAdapter as any, options);
+    // Use render with scene and camera adapter
+    this.gpuPipeline.render(this.scene, cameraAdapter as any, options);
   }
 
   // ==================== Render Loop ====================
@@ -879,6 +859,10 @@ export class Viewport {
 
   setSceneGraph(sg: SceneGraph): void {
     this.sceneGraph = sg;
+  }
+  
+  setScene(scene: Scene): void {
+    this.scene = scene;
   }
 
   setRenderData(data: Partial<RenderData>): void {

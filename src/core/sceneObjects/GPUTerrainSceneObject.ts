@@ -27,6 +27,9 @@ export class GPUTerrainSceneObject extends SceneObject {
   constructor() {
     super('Terrain');
     
+    // Terrain casts shadows
+    this.castsShadow = true;
+    
     // Lock position at origin
     vec3.set(this.position, 0, 0, 0);
     vec3.set(this.scale, 1, 1, 1);

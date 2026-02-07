@@ -447,32 +447,100 @@ export class CameraObject extends SceneObject {
   }
   
   /**
-   * Compute the projection matrix
+   * Compute the projection matrix using reversed-Z for better depth precision.
+   * 
+   * Reversed-Z maps near plane to 1.0 and far plane to 0.0, which provides
+   * much better depth precision at far distances compared to standard depth.
+   * This is the industry-standard approach used by Unreal, Unity, Godot, etc.
+   * 
+   * Standard depth:  near=0, far=1 → precision concentrated near camera
+   * Reversed-Z:      near=1, far=0 → precision distributed more uniformly
+   * 
+   * WebGPU expects [0,1] depth range, so we build the matrix directly for that.
    */
   private computeProjectionMatrix(): void {
     if (this.projectionMode === 'perspective') {
       const fovRad = this.fov * Math.PI / 180;
-      mat4.perspective(
-        this.projectionMatrix,
-        fovRad,
-        this.aspectRatio,
-        this.near,
-        this.far
-      );
+      this.computeReversedZPerspective(fovRad, this.aspectRatio, this.near, this.far);
     } else {
-      // Orthographic
+      // Orthographic with reversed-Z
       const halfHeight = this.orthoSize;
       const halfWidth = halfHeight * this.aspectRatio;
-      mat4.ortho(
-        this.projectionMatrix,
-        -halfWidth,
-        halfWidth,
-        -halfHeight,
-        halfHeight,
-        this.near,
-        this.far
-      );
+      this.computeReversedZOrtho(-halfWidth, halfWidth, -halfHeight, halfHeight, this.near, this.far);
     }
+  }
+  
+  /**
+   * Compute reversed-Z perspective projection matrix.
+   * 
+   * For reversed-Z with [0,1] depth range (WebGPU):
+   * - Near plane maps to z=1
+   * - Far plane maps to z=0
+   * 
+   * The matrix elements are:
+   * [0]  = 1/(aspect*tan(fov/2))
+   * [5]  = 1/tan(fov/2)  
+   * [10] = near / (far - near)           // Reversed: was -(far+near)/(far-near)
+   * [11] = -1                             // Same as standard
+   * [14] = (far * near) / (far - near)    // Reversed: was -2*far*near/(far-near)
+   * [15] = 0
+   */
+  private computeReversedZPerspective(fov: number, aspect: number, near: number, far: number): void {
+    const f = 1.0 / Math.tan(fov / 2);
+    const nf = 1 / (far - near);
+    
+    const out = this.projectionMatrix;
+    out[0] = f / aspect;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4] = 0;
+    out[5] = f;
+    out[6] = 0;
+    out[7] = 0;
+    out[8] = 0;
+    out[9] = 0;
+    out[10] = near * nf;           // Reversed-Z: near / (far - near)
+    out[11] = -1;
+    out[12] = 0;
+    out[13] = 0;
+    out[14] = far * near * nf;     // Reversed-Z: (far * near) / (far - near)
+    out[15] = 0;
+  }
+  
+  /**
+   * Compute reversed-Z orthographic projection matrix.
+   * 
+   * For reversed-Z with [0,1] depth range:
+   * - Near plane maps to z=1
+   * - Far plane maps to z=0
+   */
+  private computeReversedZOrtho(
+    left: number, right: number, 
+    bottom: number, top: number, 
+    near: number, far: number
+  ): void {
+    const lr = 1 / (left - right);
+    const bt = 1 / (bottom - top);
+    const nf = 1 / (far - near);
+    
+    const out = this.projectionMatrix;
+    out[0] = -2 * lr;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+    out[4] = 0;
+    out[5] = -2 * bt;
+    out[6] = 0;
+    out[7] = 0;
+    out[8] = 0;
+    out[9] = 0;
+    out[10] = nf;                           // Reversed-Z: 1 / (far - near)
+    out[11] = 0;
+    out[12] = (left + right) * lr;
+    out[13] = (top + bottom) * bt;
+    out[14] = far * nf;                     // Reversed-Z: far / (far - near)
+    out[15] = 1;
   }
   
   /**

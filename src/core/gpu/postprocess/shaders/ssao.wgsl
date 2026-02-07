@@ -50,12 +50,12 @@ struct SSAOParams {
 @group(0) @binding(2) var<uniform> params: SSAOParams;
 @group(0) @binding(3) var<storage, read> sampleKernel: array<vec4f>;
 
-// Linearize depth value
+// Linearize depth value (Reversed-Z: 1=near, 0=far)
 fn linearizeDepth(depth: f32) -> f32 {
   let near = params.projParams.x;
   let far = params.projParams.y;
-  // Handle both standard and reverse-Z depth buffers
-  return (near * far) / (far - depth * (far - near));
+  // Reversed-Z depth buffer: depth=1 at near plane, depth=0 at far plane
+  return near * far / (near + depth * (far - near));
 }
 
 // Reconstruct view-space position from depth
@@ -172,8 +172,8 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
   // Sample depth
   let depth = textureLoad(depthTexture, pixelCoord, 0).r;
   
-  // Skip sky pixels (depth = 1.0 or 0.0 depending on convention)
-  if (depth >= 0.9999 || depth <= 0.0001) {
+  // Skip sky pixels (depth ≈ 0.0 for reversed-Z, cleared to 0.0)
+  if (depth <= 0.0001) {
     return vec4f(1.0, 1.0, 1.0, 1.0);
   }
   

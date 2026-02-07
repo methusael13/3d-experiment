@@ -160,7 +160,7 @@ export class RenderPipelineWrapper {
       stripIndexFormat,
       depthFormat,
       depthWriteEnabled = true,
-      depthCompare = 'less',
+      depthCompare = 'greater',  // Reversed-Z: near=1, far=0, so use 'greater' for depth test
       sampleCount = 1,
       colorFormats = [ctx.format],
       blendStates,

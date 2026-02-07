@@ -14,7 +14,7 @@ import { clearImportedModels } from '../../../../loaders';
 import { getSceneBuilderStore, resetSceneBuilderStore } from '../state';
 import { ViewportContainer } from '../viewport';
 import { ObjectsPanel } from '../panels';
-import { ConnectedObjectPanel, ConnectedEnvironmentPanel, ConnectedRenderingPanel, ConnectedMaterialPanel, ConnectedTerrainPanel, ConnectedMenuBar, ShaderDebugPanelContainer } from '../bridges';
+import { ConnectedObjectPanel, ConnectedEnvironmentPanel, ConnectedRenderingPanel, ConnectedMaterialPanel, ConnectedTerrainPanel, ConnectedWaterPanel, ConnectedMenuBar, ShaderDebugPanelContainer } from '../bridges';
 import { useKeyboardShortcuts } from '../hooks';
 import { Viewport } from '../../Viewport';
 import styles from './SceneBuilderApp.module.css';
@@ -60,8 +60,9 @@ export function SceneBuilderApp({
     store.lightingManager = lightingManager;
     store.windManager = windManager;
     
-    // Set viewport scene graph
+    // Set viewport scene graph and scene reference
     viewport.setSceneGraph(sceneGraph);
+    viewport.setScene(scene);
     
     // Setup scene event listeners
     scene.onSelectionChanged = () => {
@@ -70,10 +71,12 @@ export function SceneBuilderApp({
     
     scene.onObjectAdded = () => {
       store.syncFromScene();
+      store.updateCameraFromSceneBounds();
     };
     
     scene.onObjectRemoved = () => {
       store.syncFromScene();
+      store.updateCameraFromSceneBounds();
     };
     
     scene.onGroupChanged = () => {
@@ -128,33 +131,21 @@ export function SceneBuilderApp({
     const success = await store.viewport?.enableWebGPUTest() ?? false;
     if (success && store.scene && store.viewport) {
       store.setIsWebGPU(true);
-      if (store.viewport.getWebGPUContext()) {
-        await store.scene.addWebGPUTerrain(store.viewport.getWebGPUContext()!, {
-          worldSize: 1024,
-          heightScale: 100
-        });
-      }
-
       // Refresh panels
       store.syncFromScene();
-
-      const terrainManager = store.scene.getWebGPUTerrain()?.getTerrainManager();
-      if (terrainManager) {
-        const radius = terrainManager.getApproximateSceneRadius();
-        store.viewport.registerWebGPUTerrainInPipeline(terrainManager);
-        store.viewport.updateCameraForSceneBounds(radius);
-      }
+      console.log('[SceneBuilderApp] WebGPU mode enabled. Use Add > Terrain to add terrain.');
     }
   }, [store]);
 
   const processWebGPUTestDisabled = useCallback(() => {
-    // Remove GPU terrain from scene
-    if (store.scene && store.viewport) {
-      const manager = store.scene.getWebGPUTerrain()?.getTerrainManager();
-      if (manager) {
-        store.viewport.unregisterWebGPUTerrainInPipeline();
+    // Remove GPU terrain and ocean from scene when disabling WebGPU
+    if (store.scene) {
+      if (store.scene.hasWebGPUTerrain()) {
+        store.scene.removeWebGPUTerrain();
       }
-      store.scene.removeWebGPUTerrain()
+      if (store.scene.hasOcean()) {
+        store.scene.removeOcean();
+      }
       store.syncFromScene();
     }
     store.setIsWebGPU(false);
@@ -197,6 +188,9 @@ export function SceneBuilderApp({
 
           {/* Terrain Panel */}
           <ConnectedTerrainPanel />
+          
+          {/* Water Panel - shows when ocean object selected */}
+          <ConnectedWaterPanel />
         </div>
         
         {/* Viewport */}
