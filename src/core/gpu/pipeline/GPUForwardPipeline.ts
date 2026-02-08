@@ -116,6 +116,7 @@ export class GPUForwardPipeline {
   private msaaColorTexture: UnifiedGPUTexture | null = null;
   private msaaHdrColorTexture: UnifiedGPUTexture | null = null;
   private sceneColorTexture: UnifiedGPUTexture | null = null;
+  private sceneColorTextureCopy: UnifiedGPUTexture | null = null;
   
   // Post-processing pipeline (plugin-based)
   private postProcessPipeline: PostProcessPipeline | null = null;
@@ -296,6 +297,21 @@ export class GPUForwardPipeline {
   }
   
   /**
+   * Create copy of scene color texture for shader reading (e.g., water refraction)
+   */
+  private createSceneColorTextureCopy(): UnifiedGPUTexture {
+    return UnifiedGPUTexture.create2D(this.ctx, {
+      label: 'scene-color-hdr-copy',
+      width: this.width,
+      height: this.height,
+      format: 'rgba16float',
+      renderTarget: false,  // Not a render target, just copy destination
+      sampled: true,
+      copyDst: true,
+    });
+  }
+  
+  /**
    * Create MSAA HDR texture
    */
   private createMsaaHdrColorTexture(): UnifiedGPUTexture {
@@ -311,6 +327,8 @@ export class GPUForwardPipeline {
   private initializePostProcessing(): void {
     // Create HDR intermediate buffer for scene rendering
     this.sceneColorTexture = this.createSceneColorTexture();
+    // Create copy for reading (water refraction needs scene rendered before water)
+    this.sceneColorTextureCopy = this.createSceneColorTextureCopy();
     
     if (this.sampleCount > 1) {
       this.msaaHdrColorTexture = this.createMsaaHdrColorTexture();
@@ -372,6 +390,11 @@ export class GPUForwardPipeline {
     if (this.sceneColorTexture) {
       this.sceneColorTexture.destroy();
       this.sceneColorTexture = this.createSceneColorTexture();
+    }
+    
+    if (this.sceneColorTextureCopy) {
+      this.sceneColorTextureCopy.destroy();
+      this.sceneColorTextureCopy = this.createSceneColorTextureCopy();
     }
     
     if (this.msaaHdrColorTexture) {
@@ -490,6 +513,7 @@ export class GPUForwardPipeline {
       outputView,
       useHDR: !!useHDR,
       sceneColorTexture: this.sceneColorTexture ?? undefined,
+      sceneColorTextureCopy: this.sceneColorTextureCopy ?? undefined,
       msaaHdrColorTexture: this.msaaHdrColorTexture ?? undefined,
       msaaColorTexture: this.msaaColorTexture ?? undefined,
       // Unified SceneEnvironment (shadow + IBL) for all renderers
@@ -664,6 +688,7 @@ export class GPUForwardPipeline {
     this.msaaColorTexture?.destroy();
     this.msaaHdrColorTexture?.destroy();
     this.sceneColorTexture?.destroy();
+    this.sceneColorTextureCopy?.destroy();
     this.gridRenderer.destroy();
     this.skyRenderer.destroy();
     // objectRenderer is owned by GPUContext, not destroyed here

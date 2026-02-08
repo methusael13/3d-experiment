@@ -50,6 +50,12 @@ export interface OceanRenderParams {
   far?: number;
   /** Scene environment for IBL reflections (optional) */
   sceneEnvironment?: SceneEnvironment | null;
+  /** Scene color texture for water refraction (copy of scene before water renders) */
+  sceneColorTexture?: UnifiedGPUTexture;
+  /** Screen width in pixels (for refraction UV calculation) */
+  screenWidth?: number;
+  /** Screen height in pixels (for refraction UV calculation) */
+  screenHeight?: number;
 }
 
 /**
@@ -113,6 +119,10 @@ export class OceanManager {
       near: params.near,
       far: params.far,
       sceneEnvironment: params.sceneEnvironment,
+      // Refraction support
+      sceneColorTexture: params.sceneColorTexture,
+      screenWidth: params.screenWidth,
+      screenHeight: params.screenHeight,
     });
   }
   

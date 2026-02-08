@@ -36,6 +36,10 @@ export class PlaceholderTextures {
   private _normalView: GPUTextureView;
   private _linearSampler: GPUSampler;
   
+  // HDR scene color placeholder (for refraction when no scene color available)
+  private _sceneColorHDR: GPUTexture;
+  private _sceneColorHDRView: GPUTextureView;
+  
   private constructor(ctx: GPUContext) {
     const device = ctx.device;
     
@@ -163,6 +167,18 @@ export class PlaceholderTextures {
       addressModeU: 'repeat',
       addressModeV: 'repeat',
     });
+    
+    // ============ HDR Placeholders ============
+    
+    // 1x1 black HDR texture (for scene color placeholder in water refraction)
+    this._sceneColorHDR = device.createTexture({
+      label: 'placeholder-scene-color-hdr',
+      size: { width: 1, height: 1 },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this._sceneColorHDRView = this._sceneColorHDR.createView();
+    // Default to black (no refraction contribution when no scene color available)
   }
   
   /**
@@ -187,6 +203,7 @@ export class PlaceholderTextures {
       inst._white.destroy();
       inst._black.destroy();
       inst._normal.destroy();
+      inst._sceneColorHDR.destroy();
       PlaceholderTextures.instance = null;
     }
   }
@@ -205,4 +222,6 @@ export class PlaceholderTextures {
   get blackView(): GPUTextureView { return this._blackView; }
   get normalView(): GPUTextureView { return this._normalView; }
   get linearSampler(): GPUSampler { return this._linearSampler; }
+  
+  get sceneColorHDRView(): GPUTextureView { return this._sceneColorHDRView; }
 }

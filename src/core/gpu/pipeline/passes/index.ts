@@ -241,6 +241,10 @@ export class OpaquePass extends BaseRenderPass {
  * TransparentPass - Renders water and other transparent objects
  * Category: scene (goes through post-processing)
  * Reads ocean and terrain from ctx.scene
+ * 
+ * For water refraction:
+ * - Copies scene color before water rendering
+ * - Passes scene color copy texture to water for refraction sampling
  */
 export class TransparentPass extends BaseRenderPass {
   readonly name = 'transparent';
@@ -261,6 +265,9 @@ export class TransparentPass extends BaseRenderPass {
     
     // Copy depth for shader reading (water uses depth for transparency effects)
     ctx.copyDepthForReading();
+    
+    // Copy scene color for refraction (before water renders over it)
+    ctx.copySceneColorForReading();
     
     // Get terrain config for size/scale (default if no terrain)
     const terrainConfig = terrainManager?.getConfig();
@@ -285,6 +292,10 @@ export class TransparentPass extends BaseRenderPass {
       near: ctx.near,
       far: ctx.far,
       sceneEnvironment: ctx.sceneEnvironment,
+      // Pass scene color copy for water refraction
+      sceneColorTexture: ctx.sceneColorTextureCopy,
+      screenWidth: ctx.width,
+      screenHeight: ctx.height,
     });
     
     pass.end();

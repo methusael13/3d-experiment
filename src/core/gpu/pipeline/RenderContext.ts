@@ -53,6 +53,7 @@ export interface RenderContext {
   // Textures
   readonly depthTexture: UnifiedGPUTexture;
   readonly depthTextureCopy: UnifiedGPUTexture;
+  readonly sceneColorTextureCopy?: UnifiedGPUTexture;
   
   // Output texture/view (swap chain or HDR intermediate)
   readonly outputTexture: GPUTexture;
@@ -76,6 +77,7 @@ export interface RenderContext {
   getBackbufferColorAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment;
   getDepthAttachment(loadOp: 'clear' | 'load'): GPURenderPassDepthStencilAttachment;
   copyDepthForReading(): void;
+  copySceneColorForReading(): void;
 }
 
 /**
@@ -103,6 +105,7 @@ export interface RenderContextOptions {
   
   // Optional post-processing textures
   sceneColorTexture?: UnifiedGPUTexture;
+  sceneColorTextureCopy?: UnifiedGPUTexture;
   msaaHdrColorTexture?: UnifiedGPUTexture;
   msaaColorTexture?: UnifiedGPUTexture;
   
@@ -147,6 +150,7 @@ export class RenderContextImpl implements RenderContext {
   readonly useMSAA: boolean;
   
   readonly sceneColorTexture?: UnifiedGPUTexture;
+  readonly sceneColorTextureCopy?: UnifiedGPUTexture;
   readonly msaaHdrColorTexture?: UnifiedGPUTexture;
   readonly msaaColorTexture?: UnifiedGPUTexture;
   
@@ -154,6 +158,7 @@ export class RenderContextImpl implements RenderContext {
   readonly sceneEnvironment?: SceneEnvironment;
   
   private depthCopied = false;
+  private sceneColorCopied = false;
   
   constructor(opts: RenderContextOptions) {
     this.encoder = opts.encoder;
@@ -178,6 +183,7 @@ export class RenderContextImpl implements RenderContext {
     this.useMSAA = opts.sampleCount > 1;
     
     this.sceneColorTexture = opts.sceneColorTexture;
+    this.sceneColorTextureCopy = opts.sceneColorTextureCopy;
     this.msaaHdrColorTexture = opts.msaaHdrColorTexture;
     this.msaaColorTexture = opts.msaaColorTexture;
     
@@ -306,5 +312,27 @@ export class RenderContextImpl implements RenderContext {
     );
     
     this.depthCopied = true;
+  }
+  
+  /**
+   * Copy scene color texture for shader reading (e.g., water refraction)
+   * Only copies once per frame. Requires sceneColorTexture and sceneColorTextureCopy.
+   */
+  copySceneColorForReading(): void {
+    if (this.sceneColorCopied) {
+      return;
+    }
+    
+    if (!this.sceneColorTexture || !this.sceneColorTextureCopy) {
+      return;
+    }
+    
+    this.encoder.copyTextureToTexture(
+      { texture: this.sceneColorTexture.texture },
+      { texture: this.sceneColorTextureCopy.texture },
+      { width: this.width, height: this.height, depthOrArrayLayers: 1 }
+    );
+    
+    this.sceneColorCopied = true;
   }
 }

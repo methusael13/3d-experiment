@@ -50,6 +50,8 @@ export interface WaterConfig {
   wavelength: number;
   /** High-frequency normal detail strength (0 = none, 1 = full) */
   detailStrength: number;
+  /** Refraction strength for shallow water (0 = none, 0.5-1.5 = typical) */
+  refractionStrength: number;
   
   // Grid placement parameters
   /** Grid center X coordinate in world units */
@@ -84,6 +86,12 @@ export interface WaterRenderParams {
   far?: number;
   /** Scene environment for IBL reflections (optional) */
   sceneEnvironment?: SceneEnvironment | null;
+  /** Scene color texture for refraction (rendered terrain/objects) */
+  sceneColorTexture?: UnifiedGPUTexture | null;
+  /** Screen width in pixels (for refraction UV calculation) */
+  screenWidth?: number;
+  /** Screen height in pixels (for refraction UV calculation) */
+  screenHeight?: number;
 }
 
 /**
@@ -104,6 +112,7 @@ export function createDefaultWaterConfig(): WaterConfig {
     depthFalloff: 1.5,   // Reduced for slower color transition (keeps blue longer)
     wavelength: 20.0,  // 20 world units - good default for visible waves
     detailStrength: 0.3, // High-frequency normal detail (0-1)
+    refractionStrength: 0.8, // Subtle refraction for shallow water visibility
     // Grid placement defaults - will be set to match terrain size on first render
     gridCenterX: 0,
     gridCenterZ: 0,
@@ -145,15 +154,16 @@ export class WaterRendererGPU {
   private currentCellsX: number = 0;
   private currentCellsZ: number = 0;
   
-  // Uniform builders (48 floats for uniforms, 20 floats for material)
+  // Uniform builders (48 floats for uniforms, 28 floats for material)
   private uniformBuilder: UniformBuilder;
   private materialBuilder: UniformBuilder;
   
   // Sampler
   private sampler: GPUSampler | null = null;
   
-  // Track last depth texture for bind group rebuild
+  // Track textures for bind group rebuild
   private lastDepthTexture: UnifiedGPUTexture | null = null;
+  private lastSceneColorTexture: GPUTextureView | null = null;
   
   // Current shader source (for hot-reloading)
   private currentShaderSource: string = waterShaderSource;
@@ -162,10 +172,10 @@ export class WaterRendererGPU {
     this.ctx = ctx;
     this.config = { ...createDefaultWaterConfig(), ...config };
     
-    // Uniform builders (48 floats for uniforms, 24 floats for material)
+    // Uniform builders (48 floats for uniforms, 28 floats for material)
     // 2 mat4 (32) + 4 vec4 (16) = 48 floats
     this.uniformBuilder = new UniformBuilder(48);
-    this.materialBuilder = new UniformBuilder(24); // 6 vec4 = 24 floats
+    this.materialBuilder = new UniformBuilder(28); // 7 vec4 = 28 floats
     
     // Create default SceneEnvironment for Group 3 layout and placeholder bind group
     this.defaultSceneEnvironment = new SceneEnvironment(ctx);
@@ -284,10 +294,10 @@ export class WaterRendererGPU {
       size: 192, // 48 * 4 bytes
     });
     
-    // Material buffer: 6 vec4s = 24 floats = 96 bytes
+    // Material buffer: 7 vec4s = 28 floats = 112 bytes
     this.materialBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'water-material',
-      size: 96,
+      size: 112,
     });
   }
   
@@ -311,6 +321,7 @@ export class WaterRendererGPU {
       .uniformBuffer(1, 'all')        // Material
       .depthTexture(2, 'fragment')    // Depth texture for depth-based effects
       .sampler(3, 'fragment', 'filtering')  // Sampler
+      .texture(4, 'fragment', 'float')      // Scene color texture for refraction
       .build(this.ctx);
   }
   
@@ -410,26 +421,39 @@ export class WaterRendererGPU {
   }
   
   /**
-   * Update bind group with depth texture
+   * Update bind group with depth texture and scene color texture
    */
-  private updateBindGroup(depthTexture: UnifiedGPUTexture): void {
+  private updateBindGroup(depthTexture: UnifiedGPUTexture, sceneColorView: GPUTextureView | null): void {
     if (!this.bindGroupLayout || !this.uniformBuffer || !this.materialBuffer || !this.sampler) {
       return;
     }
     
-    // Only rebuild if depth texture changed
-    if (depthTexture === this.lastDepthTexture && this.bindGroup) {
+    // Use placeholder if no scene color provided
+    const placeholders = PlaceholderTextures.get(this.ctx);
+    const effectiveSceneColorView = sceneColorView ?? placeholders.sceneColorHDRView;
+    
+    // Only rebuild if textures changed
+    if (depthTexture === this.lastDepthTexture && 
+        effectiveSceneColorView === this.lastSceneColorTexture && 
+        this.bindGroup) {
       return;
     }
     
     this.lastDepthTexture = depthTexture;
+    this.lastSceneColorTexture = effectiveSceneColorView;
     
-    this.bindGroup = new BindGroupBuilder('water-bind-group')
-      .buffer(0, this.uniformBuffer)
-      .buffer(1, this.materialBuffer)
-      .texture(2, depthTexture)
-      .sampler(3, this.sampler)
-      .build(this.ctx, this.bindGroupLayout!);
+    // Create bind group with raw GPUTextureView for scene color
+    this.bindGroup = this.ctx.device.createBindGroup({
+      label: 'water-bind-group',
+      layout: this.bindGroupLayout!,
+      entries: [
+        { binding: 0, resource: { buffer: this.uniformBuffer.buffer } },
+        { binding: 1, resource: { buffer: this.materialBuffer.buffer } },
+        { binding: 2, resource: depthTexture.view },
+        { binding: 3, resource: this.sampler },
+        { binding: 4, resource: effectiveSceneColorView },
+      ],
+    });
   }
   
   /**
@@ -448,8 +472,9 @@ export class WaterRendererGPU {
     this.updateUniforms(params);
     this.updateMaterial(params);
     
-    // Update bind group with current depth texture
-    this.updateBindGroup(params.depthTexture);
+    // Update bind group with current depth texture and scene color
+    const sceneColorView = params.sceneColorTexture?.view ?? null;
+    this.updateBindGroup(params.depthTexture, sceneColorView);
     
     if (!this.bindGroup) {
       return;
@@ -505,10 +530,16 @@ export class WaterRendererGPU {
    *   scatterColor: vec4f,   // subsurface scattering color (deep water tint)
    *   foamColor: vec4f,      // shoreline foam
    *   params1: vec4f,        // x = waveScale, y = foamThreshold, z = fresnelPower, w = opacity
-   *   params2: vec4f,        // x = ambientIntensity, y = depthFalloff, z = wavelength, w = unused
+   *   params2: vec4f,        // x = ambientIntensity, y = depthFalloff, z = wavelength, w = detailStrength
+   *   params3: vec4f,        // x = refractionStrength, y = screenWidth, z = screenHeight, w = unused
    */
   private updateMaterial(params: WaterRenderParams): void {
     const sunDir = params.sunDirection || [0.5, 0.8, 0.3];
+    const screenWidth = params.screenWidth ?? 1920;
+    const screenHeight = params.screenHeight ?? 1080;
+    
+    // If no scene color texture provided, disable refraction
+    const refractionStrength = params.sceneColorTexture ? this.config.refractionStrength : 0.0;
     
     this.materialBuilder.reset()
       // sunDirection (vec4)
@@ -522,7 +553,9 @@ export class WaterRendererGPU {
       // params1: waveScale, foamThreshold, fresnelPower, opacity
       .vec4(this.config.waveScale, this.config.foamThreshold, this.config.fresnelPower, this.config.opacity)
       // params2: ambientIntensity, depthFalloff, wavelength, detailStrength
-      .vec4(params.ambientIntensity ?? 0.3, this.config.depthFalloff, this.config.wavelength, this.config.detailStrength);
+      .vec4(params.ambientIntensity ?? 0.3, this.config.depthFalloff, this.config.wavelength, this.config.detailStrength)
+      // params3: refractionStrength, screenWidth, screenHeight, unused
+      .vec4(refractionStrength, screenWidth, screenHeight, 0.0);
     
     this.materialBuffer!.write(this.ctx, this.materialBuilder.build());
   }
@@ -570,5 +603,6 @@ export class WaterRendererGPU {
     this.bindGroupLayout = null;
     this.sampler = null;
     this.lastDepthTexture = null;
+    this.lastSceneColorTexture = null;
   }
 }

@@ -32,6 +32,7 @@ struct WaterMaterial {
   foamColor: vec4f,               // 12-15: shoreline foam color
   params1: vec4f,                 // 16-19: x = waveScale, y = foamThreshold, z = fresnelPower, w = opacity
   params2: vec4f,                 // 20-23: x = ambientIntensity, y = depthFalloff, z = wavelength, w = detailStrength
+  params3: vec4f,                 // 24-27: x = refractionStrength, y = screenWidth, z = screenHeight, w = unused
 }
 
 // ============================================================================
@@ -42,6 +43,7 @@ struct WaterMaterial {
 @group(0) @binding(1) var<uniform> material: WaterMaterial;
 @group(0) @binding(2) var depthTexture: texture_depth_2d;
 @group(0) @binding(3) var texSampler: sampler;
+@group(0) @binding(4) var sceneColorTexture: texture_2d<f32>;  // Scene color for refraction
 
 // ============================================================================
 // Bindings - Group 3 (SceneEnvironment: Shadow + IBL)
@@ -477,12 +479,54 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let foamFade = 1.0 - saturate(waterDepthMeters / max(foamThreshold, 0.001));
   let shoreFoam = select(0.0, foamFade * foamPattern, foamThreshold > 0.0);
   
+  // ===== Refraction (shallow water sees terrain through distortion) =====
+  let refractionStrength = material.params3.x;
+  let screenWidth = material.params3.y;
+  let screenHeight = material.params3.z;
+  
+  var refractedColor = vec3f(0.0);
+  var refractionMix = 0.0;
+  
+  if (refractionStrength > 0.001 && !isOpenOcean) {
+    // Calculate screen UV (0-1 range)
+    let screenUV = vec2f(input.clipPosition.x / screenWidth, input.clipPosition.y / screenHeight);
+    
+    // Refraction offset based on water normal (XZ components distort the UV)
+    // Stronger distortion at shallow depths, fades at deeper areas
+    let depthAttenuation = exp(-waterDepthMeters * 0.5);  // Refraction visible at shallow depths
+    let refractionOffset = N.xz * refractionStrength * depthAttenuation * 0.1;
+    
+    // Clamp UV to valid range to prevent edge artifacts
+    let refractedUV = clamp(screenUV + refractionOffset, vec2f(0.001), vec2f(0.999));
+    
+    // Sample scene color at refracted position
+    let texCoord = vec2i(refractedUV * vec2f(screenWidth, screenHeight));
+    refractedColor = textureLoad(sceneColorTexture, texCoord, 0).rgb;
+    
+    // How much refraction contributes: more at shallow depths, less at deep
+    // At 0m depth: full refraction, at ~5m+: mostly water color
+    refractionMix = depthAttenuation * (1.0 - fresnel * 0.5);  // Reduce refraction at glancing angles
+    
+    // Apply water tint to refracted color (like looking through tinted glass)
+    // The deeper the water, the more the refracted image is tinted
+    let tintStrength = 1.0 - depthAttenuation;  // More tint at depth
+    refractedColor = mix(refractedColor, refractedColor * waterTint * 2.0, tintStrength);
+  }
+  
   // ===== Final Color Composition =====
   // Balanced blend: water tint is base color, reflection is added on top via fresnel
   // - At steep angles (looking down): fresnel ~0.02, mostly water tint visible
   // - At glancing angles (horizon): fresnel ~1.0, mostly reflection visible
+  
+  // Start with water color, blend in refracted scene at shallow depths
+  var baseColor = waterTint;
+  if (refractionMix > 0.001) {
+    // At shallow depths, show refracted terrain instead of pure water color
+    baseColor = mix(waterTint, refractedColor, refractionMix);
+  }
+  
   // The 0.4 reflection multiplier ensures water tint shows through even at glancing angles
-  var finalColor = mix(waterTint, reflection, fresnel * 0.4) + fresnel * reflection * 0.3;
+  var finalColor = mix(baseColor, reflection, fresnel * 0.4) + fresnel * reflection * 0.3;
   
   // Add ambient (slightly stronger for deep ocean richness)
   finalColor += vec3f(0.02, 0.04, 0.08) * ambientIntensity;
