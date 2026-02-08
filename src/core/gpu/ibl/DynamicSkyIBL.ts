@@ -273,10 +273,12 @@ export class DynamicSkyIBL {
   }
   
   private createBrdfLut(): GPUTexture {
+    // Note: Using rgba16float instead of rg16float because rg16float doesn't support storage textures
+    // We only use RG channels, BA are wasted but this is a one-time cost
     return this.ctx.device.createTexture({
       label: 'brdf-lut',
       size: { width: this.options.brdfLutResolution, height: this.options.brdfLutResolution },
-      format: 'rg16float',
+      format: 'rgba16float',
       usage: 
         GPUTextureUsage.TEXTURE_BINDING | 
         GPUTextureUsage.STORAGE_BINDING,
@@ -336,7 +338,7 @@ export class DynamicSkyIBL {
       label: 'brdf-lut-layout',
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, storageTexture: { 
-          access: 'write-only', format: 'rg16float', viewDimension: '2d' 
+          access: 'write-only', format: 'rgba16float', viewDimension: '2d' 
         }},
       ],
     });
@@ -811,9 +813,11 @@ export class DynamicSkyIBL {
   
   /**
    * Check if IBL is ready to be used for rendering
+   * Once initialized, IBL is always ready because double-buffering ensures
+   * the current buffer always has valid data (we render to the non-current buffer)
    */
   isReady(): boolean {
-    return this.initialized && this.state.blendFactor >= 0.5;
+    return this.initialized;
   }
   
   /**

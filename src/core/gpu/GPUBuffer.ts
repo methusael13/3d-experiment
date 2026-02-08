@@ -103,8 +103,11 @@ export class UnifiedGPUBuffer {
     if (writable) usage |= GPUBufferUsage.COPY_DST;
     if (readback) usage |= GPUBufferUsage.COPY_SRC;
     
-    const bufferSize = data ? data.byteLength : size!;
-    if (!bufferSize) throw new Error('Either data or size must be provided');
+    const dataSize = data ? data.byteLength : size!;
+    if (!dataSize) throw new Error('Either data or size must be provided');
+    
+    // When mappedAtCreation is true, buffer size must be multiple of 4
+    const bufferSize = alignTo4(dataSize);
 
     const buffer = ctx.device.createBuffer({
       size: bufferSize,

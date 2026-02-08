@@ -6,6 +6,14 @@
  * - Full PBR lighting (GGX BRDF)
  * - Optional textures: baseColor, normal, metallicRoughness, occlusion, emissive
  * - Directional light + ambient hemisphere
+ * - Shadow mapping
+ * - Image-Based Lighting (IBL)
+ * 
+ * Bind Group Layout:
+ * - Group 0: Global uniforms (camera, light, shadow params)
+ * - Group 1: Per-mesh uniforms (model matrix, material)
+ * - Group 2: PBR textures (baseColor, normal, metallicRoughness, occlusion, emissive)
+ * - Group 3: Environment (shadow map + IBL cubemaps) - COMBINED to stay within 4 group limit
  */
 
 // ============ Constants ============
@@ -73,19 +81,19 @@ struct SingleModelUniforms {
 @group(2) @binding(8) var emissiveTexture: texture_2d<f32>;
 @group(2) @binding(9) var emissiveSampler: sampler;
 
-// ============ Shadow Map (Group 3) ============
+// ============ Environment (Group 3) - Shadow Map + IBL Combined ============
+// Combined into single group to stay within WebGPU's 4 bind group limit
 
+// Shadow resources (bindings 0-1)
 @group(3) @binding(0) var shadowMap: texture_depth_2d;
 @group(3) @binding(1) var shadowSampler: sampler_comparison;
 
-// ============ IBL Textures (Group 4) ============
-// Image-Based Lighting from environment cubemap
-
-@group(4) @binding(0) var iblDiffuse: texture_cube<f32>;        // Diffuse irradiance cubemap
-@group(4) @binding(1) var iblSpecular: texture_cube<f32>;       // Specular prefilter cubemap (with mips)
-@group(4) @binding(2) var iblBrdfLut: texture_2d<f32>;          // BRDF integration LUT
-@group(4) @binding(3) var iblCubemapSampler: sampler;           // Cubemap sampler
-@group(4) @binding(4) var iblLutSampler: sampler;               // BRDF LUT sampler
+// IBL resources (bindings 2-6)
+@group(3) @binding(2) var iblDiffuse: texture_cube<f32>;        // Diffuse irradiance cubemap
+@group(3) @binding(3) var iblSpecular: texture_cube<f32>;       // Specular prefilter cubemap (with mips)
+@group(3) @binding(4) var iblBrdfLut: texture_2d<f32>;          // BRDF integration LUT
+@group(3) @binding(5) var iblCubemapSampler: sampler;           // Cubemap sampler
+@group(3) @binding(6) var iblLutSampler: sampler;               // BRDF LUT sampler
 
 // ============ Vertex Shader ============
 
@@ -347,7 +355,7 @@ fn cotangentFrame(N: vec3f, p: vec3f, uv: vec2f) -> mat3x3f {
   return mat3x3f(T * invmax, B * invmax, N);
 }
 
-// ============ Fragment Shader ============
+// ============ Fragment Shader (No IBL) ============
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
@@ -439,7 +447,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   return vec4f(color, alpha);
 }
 
-// ============ No-Texture Variant ============
+// ============ No-Texture Variant (No IBL) ============
 // Simplified variant when no textures are bound (faster for primitives)
 
 @fragment

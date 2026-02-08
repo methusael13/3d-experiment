@@ -8,9 +8,10 @@
  * This only needs to be generated once at startup as it's independent
  * of the environment map.
  * 
- * Output: 512x512 RG16Float texture
+ * Output: 512x512 RGBA16Float texture (using RG channels only)
  *   R = scale factor for F0
  *   G = bias term
+ *   B, A = unused (rgba16float required for storage texture compatibility)
  */
 
 // ============================================================================
@@ -27,7 +28,8 @@ const NUM_SAMPLES: u32 = 1024u;
 // Uniforms
 // ============================================================================
 
-@group(0) @binding(0) var outputTexture: texture_storage_2d<rg16float, write>;
+// Note: Using rgba16float because rg16float doesn't support storage textures
+@group(0) @binding(0) var outputTexture: texture_storage_2d<rgba16float, write>;
 
 // ============================================================================
 // Helper Functions

@@ -8,6 +8,14 @@
  * - Metallic-roughness texture
  * - Occlusion texture
  * - Emissive texture
+ * - Shadow mapping
+ * - Image-Based Lighting (IBL)
+ * 
+ * Bind Group Layout (4 groups max - WebGPU limit):
+ * - Group 0: Global uniforms (camera, light, shadow params)
+ * - Group 1: Per-mesh uniforms (model matrix, material)
+ * - Group 2: PBR textures (baseColor, normal, metallicRoughness, occlusion, emissive)
+ * - Group 3: Environment (shadow map + IBL cubemaps combined)
  */
 
 import { mat4, vec3 } from 'gl-matrix';
@@ -16,7 +24,6 @@ import { UnifiedGPUBuffer } from '../GPUBuffer';
 import { UnifiedGPUTexture } from '../GPUTexture';
 import { RenderPipelineWrapper } from '../GPURenderPipeline';
 import { BindGroupLayoutBuilder, BindGroupBuilder } from '../GPUBindGroup';
-import { ShadowReceiverUtils, type ShadowReceiverResources } from './ShadowReceiverUtils';
 
 // Import shaders
 import objectShaderDefault from '../shaders/object.wgsl?raw';
@@ -110,6 +117,17 @@ export interface ObjectRenderParams {
   shadowBias?: number;
 }
 
+/**
+ * IBL resources for environment lighting
+ */
+export interface IBLResources {
+  diffuseCubemap: GPUTextureView;
+  specularCubemap: GPUTextureView;
+  brdfLut: GPUTextureView;
+  cubemapSampler?: GPUSampler;
+  lutSampler?: GPUSampler;
+}
+
 // ============ Default Values ============
 
 const DEFAULT_MATERIAL: GPUMaterial = {
@@ -144,8 +162,7 @@ export class ObjectRendererGPU {
   private globalBindGroupLayout!: GPUBindGroupLayout;
   private modelBindGroupLayout!: GPUBindGroupLayout;
   private textureBindGroupLayout!: GPUBindGroupLayout;
-  private shadowMapBindGroupLayout!: GPUBindGroupLayout;  // For receiving shadows
-  private iblBindGroupLayout!: GPUBindGroupLayout;        // For IBL textures (Group 4)
+  private environmentBindGroupLayout!: GPUBindGroupLayout;  // Combined shadow + IBL (Group 3)
   
   // Global uniforms
   private globalUniformBuffer!: UnifiedGPUBuffer;
@@ -157,8 +174,21 @@ export class ObjectRendererGPU {
   private defaultSampler!: GPUSampler;
   private placeholderTextureBindGroup!: GPUBindGroup;
   
-  // Shadow receiving resources (group 3) - using ShadowReceiverUtils
-  private shadowReceiverResources!: ShadowReceiverResources;
+  // Environment resources (shadow + IBL) - group 3
+  private shadowSampler!: GPUSampler;
+  private placeholderShadowMap!: GPUTexture;
+  private placeholderShadowMapView!: GPUTextureView;
+  private placeholderCubemap!: GPUTexture;
+  private placeholderCubemapView!: GPUTextureView;
+  private placeholderBrdfLut!: GPUTexture;
+  private placeholderBrdfLutView!: GPUTextureView;
+  private iblCubemapSampler!: GPUSampler;
+  private iblLutSampler!: GPUSampler;
+  
+  // Environment bind groups
+  private environmentBindGroup!: GPUBindGroup;  // Shadow only (no IBL)
+  private currentShadowMapView: GPUTextureView | null = null;  // Current shadow map
+  private currentIBLResources: IBLResources | null = null;
   
   // Shadow pass resources
   private shadowPipeline: GPURenderPipeline | null = null;
@@ -201,8 +231,8 @@ export class ObjectRendererGPU {
     this.placeholderTexture = this.createPlaceholderTexture([128, 128, 128, 255]);
     this.placeholderNormalTexture = this.createPlaceholderTexture([128, 128, 255, 255]); // neutral normal
     
-    // Create shadow receiving resources using shared utilities
-    this.shadowReceiverResources = ShadowReceiverUtils.createResources(ctx.device, 'object-shadow');
+    // Create environment resources (shadow + IBL placeholders)
+    this.createEnvironmentResources();
     
     // Create bind group layouts
     this.globalBindGroupLayout = new BindGroupLayoutBuilder('object-global-layout')
@@ -216,19 +246,20 @@ export class ObjectRendererGPU {
     
     this.textureBindGroupLayout = this.createTextureBindGroupLayout();
     
-    // Use shadow receiver layout from shared utils
-    this.shadowMapBindGroupLayout = this.shadowReceiverResources.bindGroupLayout;
+    // Create combined environment bind group layout (shadow + IBL)
+    this.environmentBindGroupLayout = this.createEnvironmentBindGroupLayout();
     
-    // Create IBL bind group layout (Group 4)
-    this.iblBindGroupLayout = this.createIBLBindGroupLayout();
+    // Create default environment bind group (shadow only, placeholder IBL)
+    this.environmentBindGroup = this.createEnvironmentBindGroup(null, null);
     
-    // Create pipelines (now with 4 bind group layouts to include shadow map)
-    this.pipelineWithTextures = this.createPipeline('fs_main', true);
-    this.pipelineNoTextures = this.createPipeline('fs_notex', false);
+    // Create pipelines (4 bind group layouts max)
+    // Non-IBL pipelines use fs_main/fs_notex
+    this.pipelineWithTextures = this.createPipeline('fs_main', true, false);
+    this.pipelineNoTextures = this.createPipeline('fs_notex', false, false);
     
-    // Create IBL pipelines (5 bind groups: 0-4)
-    this.pipelineWithTexturesIBL = this.createPipelineIBL('fs_main_ibl', true);
-    this.pipelineNoTexturesIBL = this.createPipelineIBL('fs_notex_ibl', false);
+    // IBL pipelines use fs_main_ibl/fs_notex_ibl
+    this.pipelineWithTexturesIBL = this.createPipeline('fs_main_ibl', true, true);
+    this.pipelineNoTexturesIBL = this.createPipeline('fs_notex_ibl', false, true);
     
     // Create global bind group
     this.globalBindGroup = new BindGroupBuilder('object-global-bindgroup')
@@ -237,7 +268,6 @@ export class ObjectRendererGPU {
     
     // Create placeholder texture bind group
     this.placeholderTextureBindGroup = this.createTextureBindGroup(null);
-    
     
     // Create shadow pass resources
     this.createShadowPipeline();
@@ -265,12 +295,76 @@ export class ObjectRendererGPU {
    */
   private rebuildPipelines(): void {
     try {
-      this.pipelineWithTextures = this.createPipeline('fs_main', true);
-      this.pipelineNoTextures = this.createPipeline('fs_notex', false);
+      this.pipelineWithTextures = this.createPipeline('fs_main', true, false);
+      this.pipelineNoTextures = this.createPipeline('fs_notex', false, false);
+      this.pipelineWithTexturesIBL = this.createPipeline('fs_main_ibl', true, true);
+      this.pipelineNoTexturesIBL = this.createPipeline('fs_notex_ibl', false, true);
       console.log('[ObjectRendererGPU] Pipelines rebuilt successfully');
     } catch (error) {
       console.error('[ObjectRendererGPU] Failed to rebuild pipelines:', error);
     }
+  }
+  
+  /**
+   * Create environment resources (shadow + IBL placeholders)
+   */
+  private createEnvironmentResources(): void {
+    const device = this.ctx.device;
+    
+    // Shadow comparison sampler
+    this.shadowSampler = device.createSampler({
+      label: 'object-shadow-comparison-sampler',
+      compare: 'less',
+      magFilter: 'linear',
+      minFilter: 'linear',
+    });
+    
+    // Placeholder shadow map (1x1 at max depth = no shadow)
+    this.placeholderShadowMap = device.createTexture({
+      label: 'object-placeholder-shadow-map',
+      size: { width: 1, height: 1 },
+      format: 'depth32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.placeholderShadowMapView = this.placeholderShadowMap.createView();
+    
+    // Placeholder cubemap for IBL (1x1 black)
+    this.placeholderCubemap = device.createTexture({
+      label: 'object-placeholder-cubemap',
+      size: { width: 1, height: 1, depthOrArrayLayers: 6 },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      dimension: '2d',
+    });
+    this.placeholderCubemapView = this.placeholderCubemap.createView({
+      dimension: 'cube',
+    });
+    
+    // Placeholder BRDF LUT (1x1)
+    this.placeholderBrdfLut = device.createTexture({
+      label: 'object-placeholder-brdf-lut',
+      size: { width: 1, height: 1 },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this.placeholderBrdfLutView = this.placeholderBrdfLut.createView();
+    
+    // IBL cubemap sampler
+    this.iblCubemapSampler = device.createSampler({
+      label: 'object-ibl-cubemap-sampler',
+      magFilter: 'linear',
+      minFilter: 'linear',
+      mipmapFilter: 'linear',
+    });
+    
+    // IBL BRDF LUT sampler
+    this.iblLutSampler = device.createSampler({
+      label: 'object-ibl-lut-sampler',
+      magFilter: 'linear',
+      minFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    });
   }
   
   /**
@@ -300,30 +394,77 @@ export class ObjectRendererGPU {
   }
   
   /**
-   * Create IBL bind group layout (Group 4)
-   * Contains diffuse irradiance cubemap, specular prefilter cubemap, and BRDF LUT
+   * Create combined environment bind group layout (Group 3)
+   * Contains shadow map + IBL textures to stay within 4 bind group limit
+   * 
+   * Layout:
+   * - binding 0: Shadow depth texture (depth, comparison)
+   * - binding 1: Shadow sampler (comparison)
+   * - binding 2: IBL diffuse cubemap (float, cube)
+   * - binding 3: IBL specular cubemap (float, cube)
+   * - binding 4: BRDF LUT texture (float, 2d)
+   * - binding 5: IBL cubemap sampler (filtering)
+   * - binding 6: IBL LUT sampler (filtering)
    */
-  private createIBLBindGroupLayout(): GPUBindGroupLayout {
+  private createEnvironmentBindGroupLayout(): GPUBindGroupLayout {
     return this.ctx.device.createBindGroupLayout({
-      label: 'object-ibl-layout',
+      label: 'object-environment-layout',
       entries: [
-        // Diffuse irradiance cubemap
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: 'cube' } },
-        // Specular prefilter cubemap (with mips for roughness levels)
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: 'cube' } },
-        // BRDF integration LUT (2D texture)
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
-        // Cubemap sampler (for diffuse and specular)
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-        // BRDF LUT sampler (clamp to edge)
-        { binding: 4, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        // Shadow resources (bindings 0-1)
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
+        // IBL resources (bindings 2-6)
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: 'cube' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: 'cube' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
       ],
     });
   }
   
   /**
-   * Create IBL bind group from IBL textures
-   * Call this to create a bind group from DynamicSkyIBL or HDR IBL textures
+   * Create environment bind group with shadow map and optional IBL
+   * 
+   * @param shadowMapView - Shadow map view (null = use placeholder)
+   * @param ibl - IBL resources (null = use placeholder)
+   */
+  private createEnvironmentBindGroup(
+    shadowMapView: GPUTextureView | null,
+    ibl: IBLResources | null,
+  ): GPUBindGroup {
+    const shadow = shadowMapView ?? this.placeholderShadowMapView;
+    const diffuse = ibl?.diffuseCubemap ?? this.placeholderCubemapView;
+    const specular = ibl?.specularCubemap ?? this.placeholderCubemapView;
+    const brdf = ibl?.brdfLut ?? this.placeholderBrdfLutView;
+    const cubeSampler = ibl?.cubemapSampler ?? this.iblCubemapSampler;
+    const lutSampler = ibl?.lutSampler ?? this.iblLutSampler;
+    
+    return this.ctx.device.createBindGroup({
+      label: 'object-environment-bindgroup',
+      layout: this.environmentBindGroupLayout,
+      entries: [
+        { binding: 0, resource: shadow },
+        { binding: 1, resource: this.shadowSampler },
+        { binding: 2, resource: diffuse },
+        { binding: 3, resource: specular },
+        { binding: 4, resource: brdf },
+        { binding: 5, resource: cubeSampler },
+        { binding: 6, resource: lutSampler },
+      ],
+    });
+  }
+  
+  /**
+   * Get the environment bind group layout (for external use)
+   */
+  getEnvironmentBindGroupLayout(): GPUBindGroupLayout {
+    return this.environmentBindGroupLayout;
+  }
+  
+  /**
+   * Create IBL bind group from IBL textures (legacy API - now uses combined environment)
+   * This creates an environment bind group with current shadow map + provided IBL
    */
   createIBLBindGroup(
     diffuseCubemap: GPUTextureView,
@@ -332,53 +473,26 @@ export class ObjectRendererGPU {
     cubemapSampler?: GPUSampler,
     lutSampler?: GPUSampler,
   ): GPUBindGroup {
-    // Create samplers if not provided
-    const cubeSampler = cubemapSampler ?? this.ctx.device.createSampler({
-      label: 'ibl-cubemap-sampler',
-      magFilter: 'linear',
-      minFilter: 'linear',
-      mipmapFilter: 'linear',
-    });
-    
-    const brdfSampler = lutSampler ?? this.ctx.device.createSampler({
-      label: 'ibl-brdf-lut-sampler',
-      magFilter: 'linear',
-      minFilter: 'linear',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    });
-    
-    return this.ctx.device.createBindGroup({
-      label: 'object-ibl-bindgroup',
-      layout: this.iblBindGroupLayout,
-      entries: [
-        { binding: 0, resource: diffuseCubemap },
-        { binding: 1, resource: specularCubemap },
-        { binding: 2, resource: brdfLut },
-        { binding: 3, resource: cubeSampler },
-        { binding: 4, resource: brdfSampler },
-      ],
-    });
-  }
-  
-  /**
-   * Get the IBL bind group layout (for external creation)
-   */
-  getIBLBindGroupLayout(): GPUBindGroupLayout {
-    return this.iblBindGroupLayout;
+    const ibl: IBLResources = {
+      diffuseCubemap,
+      specularCubemap,
+      brdfLut,
+      cubemapSampler,
+      lutSampler,
+    };
+    return this.createEnvironmentBindGroup(this.currentShadowMapView, ibl);
   }
   
   /**
    * Create render pipeline
+   * All pipelines use same 4 bind group layouts for consistency
    */
-  private createPipeline(fragmentEntry: string, withTextures: boolean): RenderPipelineWrapper {
-    // All pipelines include all 4 bind group layouts to keep shadow map at group 3
-    // Even non-textured pipelines include texture layout for consistent group indices
+  private createPipeline(fragmentEntry: string, withTextures: boolean, withIBL: boolean): RenderPipelineWrapper {
     const layouts = [
       this.globalBindGroupLayout,      // group 0
       this.modelBindGroupLayout,       // group 1
-      this.textureBindGroupLayout,     // group 2 (always present)
-      this.shadowMapBindGroupLayout,   // group 3
+      this.textureBindGroupLayout,     // group 2
+      this.environmentBindGroupLayout, // group 3 (shadow + IBL)
     ];
     
     return RenderPipelineWrapper.create(this.ctx, {
@@ -405,45 +519,6 @@ export class ObjectRendererGPU {
       depthWriteEnabled: true,
       depthCompare: 'greater',  // Reversed-Z
       colorFormats: ['rgba16float'], // HDR intermediate
-    });
-  }
-  
-  /**
-   * Create IBL render pipeline (with 5 bind groups including IBL)
-   */
-  private createPipelineIBL(fragmentEntry: string, withTextures: boolean): RenderPipelineWrapper {
-    // IBL pipelines have 5 bind groups: groups 0-3 same as regular, plus IBL at group 4
-    const layouts = [
-      this.globalBindGroupLayout,      // group 0
-      this.modelBindGroupLayout,       // group 1
-      this.textureBindGroupLayout,     // group 2 (always present)
-      this.shadowMapBindGroupLayout,   // group 3
-      this.iblBindGroupLayout,         // group 4 (IBL textures)
-    ];
-    
-    return RenderPipelineWrapper.create(this.ctx, {
-      label: `object-pipeline-ibl-${fragmentEntry}`,
-      vertexShader: this.currentShaderSource,
-      fragmentShader: this.currentShaderSource,
-      vertexEntryPoint: 'vs_main',
-      fragmentEntryPoint: fragmentEntry,
-      vertexBuffers: [
-        {
-          arrayStride: 32,
-          attributes: [
-            { shaderLocation: 0, offset: 0, format: 'float32x3' },
-            { shaderLocation: 1, offset: 12, format: 'float32x3' },
-            { shaderLocation: 2, offset: 24, format: 'float32x2' },
-          ],
-        },
-      ],
-      bindGroupLayouts: layouts,
-      topology: 'triangle-list',
-      cullMode: 'back',
-      depthFormat: 'depth24plus',
-      depthWriteEnabled: true,
-      depthCompare: 'greater',
-      colorFormats: ['rgba16float'],
     });
   }
   
@@ -544,7 +619,7 @@ export class ObjectRendererGPU {
   /**
    * Check if material has any textures
    */
-  private hasTextures(material: GPUMaterial): boolean {
+  private materialHasTextures(material: GPUMaterial): boolean {
     const tex = material.textures;
     if (!tex) return false;
     return !!(tex.baseColor || tex.normal || tex.metallicRoughness || tex.occlusion || tex.emissive);
@@ -608,7 +683,7 @@ export class ObjectRendererGPU {
       .build(this.ctx, this.modelBindGroupLayout);
     
     // Check if material has textures
-    const hasTextures = this.hasTextures(material);
+    const hasTextures = this.materialHasTextures(material);
     
     // Create texture bind group if needed
     let textureBindGroup: GPUBindGroup | null = null;
@@ -692,7 +767,7 @@ export class ObjectRendererGPU {
     if (!mesh) return;
     
     mesh.material.textures = { ...mesh.material.textures, ...textures };
-    mesh.hasTextures = this.hasTextures(mesh.material);
+    mesh.hasTextures = this.materialHasTextures(mesh.material);
     
     // Recreate texture bind group
     if (mesh.hasTextures) {
@@ -700,6 +775,42 @@ export class ObjectRendererGPU {
     } else {
       mesh.textureBindGroup = null;
     }
+  }
+  
+  /**
+   * Write material data to a buffer (64 bytes)
+   * Layout must match MaterialUniforms in shader
+   */
+  private writeMaterialToBuffer(buffer: UnifiedGPUBuffer, material: GPUMaterial): void {
+    const data = new Float32Array(16); // 64 bytes / 4
+    
+    // albedo (vec3f) + metallic (f32)
+    data[0] = material.albedo[0];
+    data[1] = material.albedo[1];
+    data[2] = material.albedo[2];
+    data[3] = material.metallic;
+    
+    // roughness + normalScale + occlusionStrength + alphaCutoff
+    data[4] = material.roughness;
+    data[5] = material.normalScale ?? 1.0;
+    data[6] = material.occlusionStrength ?? 1.0;
+    data[7] = material.alphaCutoff ?? 0.5;
+    
+    // emissiveFactor (vec3f) + useAlphaCutoff flag
+    data[8] = material.emissive?.[0] ?? 0;
+    data[9] = material.emissive?.[1] ?? 0;
+    data[10] = material.emissive?.[2] ?? 0;
+    // useAlphaCutoff: 1.0 = alphaMode is MASK (apply cutoff), 0.0 = OPAQUE/BLEND (no cutoff)
+    data[11] = material.alphaMode === 'MASK' ? 1.0 : 0.0;
+    
+    // Texture flags
+    const tex = material.textures;
+    data[12] = tex?.baseColor ? 1.0 : 0.0;
+    data[13] = tex?.normal ? 1.0 : 0.0;
+    data[14] = tex?.metallicRoughness ? 1.0 : 0.0;
+    data[15] = tex?.occlusion ? 1.0 : 0.0;
+    
+    buffer.write(this.ctx, data);
   }
   
   /**
@@ -752,42 +863,6 @@ export class ObjectRendererGPU {
   }
   
   /**
-   * Write material data to a buffer (64 bytes)
-   * Layout must match MaterialUniforms in shader
-   */
-  private writeMaterialToBuffer(buffer: UnifiedGPUBuffer, material: GPUMaterial): void {
-    const data = new Float32Array(16); // 64 bytes / 4
-    
-    // albedo (vec3f) + metallic (f32)
-    data[0] = material.albedo[0];
-    data[1] = material.albedo[1];
-    data[2] = material.albedo[2];
-    data[3] = material.metallic;
-    
-    // roughness + normalScale + occlusionStrength + alphaCutoff
-    data[4] = material.roughness;
-    data[5] = material.normalScale ?? 1.0;
-    data[6] = material.occlusionStrength ?? 1.0;
-    data[7] = material.alphaCutoff ?? 0.5;
-    
-    // emissiveFactor (vec3f) + useAlphaCutoff flag
-    data[8] = material.emissive?.[0] ?? 0;
-    data[9] = material.emissive?.[1] ?? 0;
-    data[10] = material.emissive?.[2] ?? 0;
-    // useAlphaCutoff: 1.0 = alphaMode is MASK (apply cutoff), 0.0 = OPAQUE/BLEND (no cutoff)
-    data[11] = material.alphaMode === 'MASK' ? 1.0 : 0.0;
-    
-    // Texture flags
-    const tex = material.textures;
-    data[12] = tex?.baseColor ? 1.0 : 0.0;
-    data[13] = tex?.normal ? 1.0 : 0.0;
-    data[14] = tex?.metallicRoughness ? 1.0 : 0.0;
-    data[15] = tex?.occlusion ? 1.0 : 0.0;
-    
-    buffer.write(this.ctx, data);
-  }
-  
-  /**
    * Render all meshes with IBL (Image-Based Lighting)
    * Uses IBL pipelines for ambient lighting from environment cubemaps
    */
@@ -812,10 +887,8 @@ export class ObjectRendererGPU {
       if (currentPipeline !== targetPipeline) {
         passEncoder.setPipeline(targetPipeline.pipeline);
         passEncoder.setBindGroup(0, this.globalBindGroup);
-        // Shadow map bind group (group 3)
-        passEncoder.setBindGroup(3, this.shadowReceiverResources.currentBindGroup);
-        // IBL bind group (group 4)
-        passEncoder.setBindGroup(4, iblBindGroup);
+        // Environment bind group (group 3) - IBL provided
+        passEncoder.setBindGroup(3, iblBindGroup);
         currentPipeline = targetPipeline;
       }
       
@@ -864,8 +937,8 @@ export class ObjectRendererGPU {
       if (currentPipeline !== targetPipeline) {
         passEncoder.setPipeline(targetPipeline.pipeline);
         passEncoder.setBindGroup(0, this.globalBindGroup);
-        // Shadow map bind group (group 3) - same for all meshes
-        passEncoder.setBindGroup(3, this.shadowReceiverResources.currentBindGroup);
+        // Environment bind group (group 3) - no IBL
+        passEncoder.setBindGroup(3, this.environmentBindGroup);
         currentPipeline = targetPipeline;
       }
       
@@ -938,26 +1011,27 @@ export class ObjectRendererGPU {
    * @param shadowMapView - The depth texture view from the shadow map
    */
   setShadowResources(shadowMapView: GPUTextureView): void {
-    // Use ShadowReceiverUtils to update bind group with actual shadow map
-    this.shadowReceiverResources.currentBindGroup = ShadowReceiverUtils.updateBindGroup(
-      this.ctx.device,
-      this.shadowReceiverResources,
-      shadowMapView,
-      'object-shadow-map-bindgroup'
-    );
+    this.currentShadowMapView = shadowMapView;
+    // Recreate environment bind group with new shadow map
+    this.environmentBindGroup = this.createEnvironmentBindGroup(shadowMapView, this.currentIBLResources);
   }
   
   /**
    * Clear shadow resources back to placeholder
    */
   clearShadowResources(): void {
-    // Use ShadowReceiverUtils to reset to placeholder
-    this.shadowReceiverResources.currentBindGroup = ShadowReceiverUtils.updateBindGroup(
-      this.ctx.device,
-      this.shadowReceiverResources,
-      null,  // null = use placeholder
-      'object-shadow-map-bindgroup-placeholder'
-    );
+    this.currentShadowMapView = null;
+    // Reset to placeholder
+    this.environmentBindGroup = this.createEnvironmentBindGroup(null, this.currentIBLResources);
+  }
+  
+  /**
+   * Set IBL resources for environment lighting
+   */
+  setIBLResources(ibl: IBLResources | null): void {
+    this.currentIBLResources = ibl;
+    // Recreate environment bind group with IBL
+    this.environmentBindGroup = this.createEnvironmentBindGroup(this.currentShadowMapView, ibl);
   }
   
   /**
@@ -1148,6 +1222,9 @@ export class ObjectRendererGPU {
     this.globalUniformBuffer.destroy();
     this.placeholderTexture.destroy();
     this.placeholderNormalTexture.destroy();
+    this.placeholderShadowMap.destroy();
+    this.placeholderCubemap.destroy();
+    this.placeholderBrdfLut.destroy();
     
     // Destroy shadow resources
     this.shadowUniformBuffer?.destroy();
