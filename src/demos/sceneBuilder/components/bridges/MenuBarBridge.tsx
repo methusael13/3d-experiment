@@ -2,11 +2,15 @@
  * MenuBarBridge - Connects MenuBar to the store
  */
 
-import { useComputed } from '@preact/signals';
-import { useCallback, useMemo } from 'preact/hooks';
+import { useComputed, signal } from '@preact/signals';
+import { useCallback, useMemo, useRef } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
 import { MenuBar, type MenuDefinition, type MenuAction } from '../layout';
 import { shaderPanelVisible, toggleShaderPanel } from './ShaderDebugPanelBridge';
+import { FPSCameraController } from '../../FPSCameraController';
+
+// Signal to track FPS mode state
+export const fpsModeActive = signal(false);
 
 export function ConnectedMenuBar() {
   const store = getSceneBuilderStore();
@@ -132,12 +136,81 @@ export function ConnectedMenuBar() {
     console.log('[MenuBar] Expand View - TODO');
   }, []);
   
+  // FPS camera controller ref (persists across renders)
+  const fpsControllerRef = useRef<FPSCameraController | null>(null);
+  
   const handleFPSCamera = useCallback(() => {
-    // Toggle FPS camera mode
     const viewport = store.viewport;
-    if (viewport) {
-      // TODO: viewport.toggleFPSMode()
-      console.log('[MenuBar] FPS Camera - TODO');
+    const scene = store.scene;
+    if (!viewport || !scene) {
+      console.warn('[MenuBar] FPS Camera - viewport or scene not available');
+      return;
+    }
+    
+    // If already in FPS mode, exit
+    if (fpsModeActive.value) {
+      if (fpsControllerRef.current) {
+        fpsControllerRef.current.exit();
+      }
+      return;
+    }
+    
+    // Get terrain from scene
+    const gpuTerrain = scene.getWebGPUTerrain();
+    if (!gpuTerrain) {
+      console.warn('[MenuBar] FPS Camera - no terrain in scene');
+      return;
+    }
+    
+    const terrainManager = gpuTerrain.getTerrainManager();
+    if (!terrainManager) {
+      console.warn('[MenuBar] FPS Camera - no TerrainManager available');
+      return;
+    }
+    
+    if (!terrainManager.hasCPUHeightfield()) {
+      console.warn('[MenuBar] FPS Camera - terrain CPU heightfield not ready (terrain may still be generating)');
+      return;
+    }
+    
+    // Create FPS controller if needed
+    if (!fpsControllerRef.current) {
+      fpsControllerRef.current = new FPSCameraController();
+    }
+    
+    const inputManager = viewport.getInputManager();
+    if (!inputManager) {
+      console.warn('[MenuBar] FPS Camera - InputManager not available');
+      return;
+    }
+    
+    // Get WebGPU canvas (or fall back to main canvas)
+    const canvas = (viewport as any).webgpuCanvas || (viewport as any).canvas;
+    if (!canvas) {
+      console.warn('[MenuBar] FPS Camera - canvas not available');
+      return;
+    }
+    
+    // Activate FPS mode
+    const activated = fpsControllerRef.current.activate(
+      canvas,
+      terrainManager,
+      inputManager,
+      {
+        onExit: () => {
+          fpsModeActive.value = false;
+          viewport.setFPSMode(false, null);
+          console.log('[MenuBar] FPS Camera mode exited');
+        },
+      }
+    );
+    
+    if (activated) {
+      fpsModeActive.value = true;
+      viewport.setFPSMode(true, fpsControllerRef.current);
+      console.log('[MenuBar] FPS Camera mode activated');
+    } else {
+      console.warn('[MenuBar] FPS Camera - failed to activate');
     }
   }, [store]);
   
@@ -277,7 +350,7 @@ export function ConnectedMenuBar() {
         { id: 'axes', label: 'Show Axes', checked: viewportState.value.showAxes, onClick: handleToggleAxes },
         { separator: true, id: 'sep2', label: '' },
         { id: 'expand', label: 'Expand View', onClick: handleExpandView },
-        { id: 'fps', label: 'FPS Camera', onClick: handleFPSCamera },
+        { id: 'fps', label: 'FPS Camera', checked: fpsModeActive.value, onClick: handleFPSCamera },
         { separator: true, id: 'sep3', label: '' },
         { id: 'shaderEditor', label: 'Shader Editor', checked: shaderPanelVisible.value, onClick: handleToggleShaderEditor },
         { separator: true, id: 'sep4', label: '' },
@@ -311,7 +384,7 @@ export function ConnectedMenuBar() {
     handleSetViewportMode, handleToggleGrid, handleToggleAxes, handleExpandView, handleFPSCamera, handleCameraPreset,
     handleToggleShaderEditor,
     handleAddPrimitive, handleAddTerrain, handleAddWater,
-    hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value,
+    hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value, fpsModeActive.value,
   ]);
   
   return <MenuBar menus={menus} />;

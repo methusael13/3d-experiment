@@ -153,6 +153,10 @@ export class TerrainManager {
   private isInitialized = false;
   private isGenerating = false;
   
+  // CPU-side heightfield for collision/FPS camera
+  private cpuHeightfield: Float32Array | null = null;
+  private heightfieldResolution: number = 0;
+  
   constructor(ctx: GPUContext, config?: Partial<TerrainManagerConfig>) {
     this.ctx = ctx;
     this.config = { ...createDefaultTerrainManagerConfig(), ...config };
@@ -310,9 +314,83 @@ export class TerrainManager {
       await this.ctx.device.queue.onSubmittedWorkDone();
       progressCallback?.('Complete', 100);
       
+      // Readback heightmap to CPU for collision/FPS camera
+      await this.readbackHeightmap();
     } finally {
       this.isGenerating = false;
     }
+  }
+  
+  /**
+   * Read GPU heightmap texture back to CPU for collision detection
+   * This enables FPS camera ground following without GPU access per frame
+   */
+  private async readbackHeightmap(): Promise<void> {
+    if (!this.heightmap) {
+      console.warn('[TerrainManager] No heightmap to readback');
+      return;
+    }
+    const startTime = performance.now();
+    
+    const width = this.heightmap.width;
+    const height = this.heightmap.height;
+    const bytesPerPixel = 4; // r32float = 4 bytes
+    const bytesPerRow = Math.ceil(width * bytesPerPixel / 256) * 256; // Must be multiple of 256
+    const bufferSize = bytesPerRow * height;
+    
+    // Create staging buffer (COPY_DST | MAP_READ)
+    const stagingBuffer = this.ctx.device.createBuffer({
+      label: 'heightmap-readback-staging',
+      size: bufferSize,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    
+    // Copy texture to buffer
+    const encoder = this.ctx.device.createCommandEncoder({
+      label: 'heightmap-readback-encoder',
+    });
+    
+    encoder.copyTextureToBuffer(
+      { 
+        texture: this.heightmap.texture,
+        mipLevel: 0, // Read from highest resolution mip
+      },
+      { 
+        buffer: stagingBuffer, 
+        bytesPerRow,
+        rowsPerImage: height,
+      },
+      { width, height, depthOrArrayLayers: 1 }
+    );
+    
+    this.ctx.queue.submit([encoder.finish()]);
+    
+    // Map buffer and copy to CPU
+    await stagingBuffer.mapAsync(GPUMapMode.READ);
+    const mappedRange = stagingBuffer.getMappedRange();
+    
+    // Copy to Float32Array, handling row padding
+    this.cpuHeightfield = new Float32Array(width * height);
+    this.heightfieldResolution = width;
+    
+    const srcView = new Float32Array(mappedRange);
+    const srcRowElements = bytesPerRow / bytesPerPixel;
+    
+    for (let y = 0; y < height; y++) {
+      const srcOffset = y * srcRowElements;
+      const dstOffset = y * width;
+      this.cpuHeightfield.set(
+        srcView.subarray(srcOffset, srcOffset + width),
+        dstOffset
+      );
+    }
+    
+    stagingBuffer.unmap();
+    stagingBuffer.destroy();    
+    console.log(`[TerrainManager] CPU heightfield ready (${width}x${height})`);
+
+    const latencySec = ((performance.now() - startTime) / 1000).toFixed(2);
+    console.log(`[TerrainManager] Time taken for read back: ${latencySec}s`);
   }
   
   /**
@@ -520,6 +598,86 @@ export class TerrainManager {
   
   getErosionStats(): { hydraulic: number; thermal: number } {
     return this.erosionSimulator?.getIterationCounts() || { hydraulic: 0, thermal: 0 };
+  }
+  
+  // ============ Height Sampling (CPU) ============
+  
+  /**
+   * Check if CPU heightfield is available for collision/sampling
+   */
+  hasCPUHeightfield(): boolean {
+    return this.cpuHeightfield !== null && this.heightfieldResolution > 0;
+  }
+  
+  /**
+   * Sample terrain height at world coordinates
+   * Uses bilinear interpolation for smooth results
+   * 
+   * @param worldX - World X coordinate
+   * @param worldZ - World Z coordinate
+   * @returns Height in world units, or 0 if no heightfield available
+   */
+  sampleHeightAt(worldX: number, worldZ: number): number {
+    if (!this.cpuHeightfield || this.heightfieldResolution === 0) {
+      return 0;
+    }
+    
+    const worldSize = this.config.worldSize;
+    const heightScale = this.config.heightScale;
+    const resolution = this.heightfieldResolution;
+    
+    // Convert world coords to terrain-local UV (terrain centered at origin)
+    const halfSize = worldSize / 2;
+    const localX = worldX + halfSize;
+    const localZ = worldZ + halfSize;
+    
+    // Convert to UV (0-1)
+    const u = localX / worldSize;
+    const v = localZ / worldSize;
+    
+    // Clamp to valid range
+    const clampedU = Math.max(0, Math.min(1, u));
+    const clampedV = Math.max(0, Math.min(1, v));
+    
+    // Convert to heightfield coordinates
+    const fx = clampedU * (resolution - 1);
+    const fz = clampedV * (resolution - 1);
+    
+    const ix = Math.floor(fx);
+    const iz = Math.floor(fz);
+    const fracX = fx - ix;
+    const fracZ = fz - iz;
+    
+    const ix1 = Math.min(ix + 1, resolution - 1);
+    const iz1 = Math.min(iz + 1, resolution - 1);
+    
+    // Sample four corners (heightmap stores normalized heights in [-0.5, 0.5])
+    const h00 = this.cpuHeightfield[iz * resolution + ix];
+    const h10 = this.cpuHeightfield[iz * resolution + ix1];
+    const h01 = this.cpuHeightfield[iz1 * resolution + ix];
+    const h11 = this.cpuHeightfield[iz1 * resolution + ix1];
+    
+    // Bilinear interpolation
+    const h0 = h00 * (1 - fracX) + h10 * fracX;
+    const h1 = h01 * (1 - fracX) + h11 * fracX;
+    const normalizedHeight = h0 * (1 - fracZ) + h1 * fracZ;
+    
+    // Convert to world height
+    return normalizedHeight * heightScale;
+  }
+  
+  /**
+   * Get terrain bounds in world coordinates
+   * Useful for FPS camera boundary clamping
+   */
+  getWorldBounds(): { minX: number; maxX: number; minZ: number; maxZ: number } {
+    const halfSize = this.config.worldSize / 2;
+    return {
+      minX: -halfSize,
+      maxX: halfSize,
+      minZ: -halfSize,
+      maxZ: halfSize,
+    };
   }
   
   // ============ Configuration ============

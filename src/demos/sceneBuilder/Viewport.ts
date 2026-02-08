@@ -737,15 +737,29 @@ export class Viewport {
   private renderWebGPUTest(): void {
     if (!this.gpuContext || !this.gpuPipeline || !this.cameraController) return;
     
-    // Create camera adapter for WebGPU pipeline
-    const camera = this.cameraController.getCamera();
-    const cameraAdapter: GPUCamera = {
-      getViewMatrix: () => camera.getViewMatrix() as Float32Array,
-      getProjectionMatrix: () => camera.getProjectionMatrix() as Float32Array,
-      getPosition: () => camera.getPosition() as number[],
-      near: camera.near,
-      far: camera.far
-    };
+    // Create camera adapter for WebGPU pipeline (use FPS camera if active)
+    let cameraAdapter: GPUCamera;
+    
+    if (this.fpsMode && this.fpsController) {
+      // Use FPS camera matrices
+      cameraAdapter = {
+        getViewMatrix: () => this.fpsController!.getViewMatrix() as Float32Array,
+        getProjectionMatrix: () => this.fpsController!.getProjectionMatrix() as Float32Array,
+        getPosition: () => this.fpsController!.getPosition() as number[],
+        near: this.fpsController!.near,
+        far: this.fpsController!.far,
+      };
+    } else {
+      // Use orbit camera
+      const camera = this.cameraController.getCamera();
+      cameraAdapter = {
+        getViewMatrix: () => camera.getViewMatrix() as Float32Array,
+        getProjectionMatrix: () => camera.getProjectionMatrix() as Float32Array,
+        getPosition: () => camera.getPosition() as number[],
+        near: camera.near,
+        far: camera.far,
+      };
+    }
     
     // Get lighting settings
     // Note: lightParams.direction is pre-computed from DirectionalLight
@@ -780,7 +794,7 @@ export class Viewport {
     // Render gizmo via TransformGizmoManager (skip in FPS mode)
     // This uses the same screen-space scale as hit testing for consistency
     if (!this.fpsMode && this.transformGizmo?.hasGPURenderer()) {
-      const vpMatrix = camera.getViewProjectionMatrix();
+      const vpMatrix = this.cameraController!.getCamera().getViewProjectionMatrix();
       this.renderGizmoOverlay(vpMatrix as Float32Array);
     }
   }
@@ -894,6 +908,13 @@ export class Viewport {
   }
 
   private render(deltaTime: number): void {
+    const dt = deltaTime / 1000;
+    
+    // Update FPS camera if active (needed for both WebGL and WebGPU paths)
+    if (this.fpsMode && this.fpsController) {
+      this.fpsController.update(dt);
+    }
+    
     // WebGPU test mode - bypass WebGL2 entirely
     if (this.webgpuTestMode) {
       this.renderWebGPUTest();
@@ -901,13 +922,6 @@ export class Viewport {
     }
     
     if (!this.gl || !this.cameraController) return;
-
-    const dt = deltaTime / 1000;
-    
-    // Update FPS camera if active
-    if (this.fpsMode && this.fpsController) {
-      this.fpsController.update(dt);
-    }
     
     // Let controller update wind physics
     this.onUpdate(dt);

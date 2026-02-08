@@ -484,42 +484,13 @@ export class SceneBuilder implements SceneBuilderDemo {
   
   /**
    * Enter FPS camera mode on selected terrain
+   * Note: FPS mode for WebGPU terrain is handled via MenuBarBridge in the Preact version.
+   * This legacy method is disabled for WebGL terrain.
    */
   private enterFPSMode(): void {
-    const terrain = this.getSelectedTerrain();
-    if (!terrain || !this.viewport) return;
-    
-    const canvas = this.container.querySelector('#canvas') as HTMLCanvasElement;
-    if (!canvas) return;
-    
-    // Create FPS controller if needed
-    if (!this.fpsController) {
-      this.fpsController = new FPSCameraController();
-    }
-    
-    // Activate FPS mode
-    const inputManager = this.viewport?.getInputManager();
-    if (!inputManager) {
-      console.error('[SceneBuilder] InputManager not available');
-      return;
-    }
-    
-    const success = this.fpsController.activate(canvas, terrain, inputManager, {
-      onExit: () => this.exitFPSMode(),
-    });
-    
-    if (!success) return;
-    
-    this.fpsMode = true;
-    this.lastFrameTime = performance.now();
-    
-    // Update viewport to FPS mode
-    this.viewport.setFPSMode(true, this.fpsController);
-    
-    // Hide UI elements
-    this.setUIVisibility(false);
-    
-    console.log('[SceneBuilder] Entered FPS mode');
+    // FPS mode is disabled in legacy SceneBuilder
+    // Use the Preact-based MenuBarBridge for WebGPU terrain FPS mode
+    console.warn('[SceneBuilder] FPS mode not supported in legacy SceneBuilder. Use WebGPU mode with Preact UI.');
   }
   
   /**

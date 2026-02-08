@@ -145,6 +145,11 @@ export class TransformGizmoManager {
     // Delegate to active gizmo's renderGPU method
     // This ensures proper local/world orientation handling
     this.getActiveGizmo().renderGPU(passEncoder, vpMatrix, this.gizmoRendererGPU);
+    
+    // Always render uniform scale 2D overlay if active
+    // This uses HTML canvas overlay, not WebGPU, but must be called from here
+    // to ensure the overlay is rendered during WebGPU mode
+    this.uniformScaleGizmo.render(vpMatrix as mat4);
   }
   
   setMode(newMode: GizmoMode): void {
