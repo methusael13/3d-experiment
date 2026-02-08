@@ -1,19 +1,33 @@
 /**
- * ShaderDebugPanelBridge - Wraps the imperative ShaderDebugPanel class with Preact
+ * ShaderDebugPanelBridge - Uses DockingManager to show shader editor in a dockable window
  */
 
 import { h } from 'preact';
-import { useRef, useEffect, useCallback } from 'preact/hooks';
+import { useCallback, useEffect } from 'preact/hooks';
 import { signal } from '@preact/signals';
-import { ShaderDebugPanel } from '../../ShaderDebugPanel';
+import { useDockingManager, WindowConfig } from '../ui';
+import { ShaderDebugContent } from '../panels/ShaderDebugPanel';
+
+// ==================== Window Configuration ====================
+
+const SHADER_WINDOW_ID = 'shader-editor';
+
+const getShaderWindowConfig = (onClose: () => void): WindowConfig => ({
+  id: SHADER_WINDOW_ID,
+  title: 'Shader Editor',
+  icon: '🔧',
+  defaultPosition: { x: window.innerWidth - 570, y: 60 },
+  defaultSize: { width: 550, height: 500 },
+  minSize: { width: 400, height: 300 },
+  maxSize: { width: 900, height: 800 },
+  content: <ShaderDebugContent />,
+  onClose,
+});
+
+// ==================== Global Visibility Signal ====================
 
 // Global visibility signal (accessible for menu/keyboard toggle)
 export const shaderPanelVisible = signal(false);
-
-// Handler for syncing close event back to signal
-function handlePanelClose() {
-  shaderPanelVisible.value = false;
-}
 
 // ==================== Hook for Shader Panel ====================
 
@@ -35,51 +49,32 @@ export function useShaderDebugPanel() {
 
 // ==================== Component ====================
 
-export interface ShaderDebugPanelContainerProps {
-  container?: HTMLDivElement | null;
-}
-
 /**
- * ShaderDebugPanelContainer - Mounts the ShaderDebugPanel to a container
- * The panel is rendered imperatively by the ShaderDebugPanel class
+ * ShaderDebugPanelContainer - Syncs visibility signal with DockingManager
+ * Renders nothing - the actual window is rendered by DockingManagerProvider
  */
-export function ShaderDebugPanelContainer({ container }: ShaderDebugPanelContainerProps) {
-  const panelRef = useRef<ShaderDebugPanel | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+export function ShaderDebugPanelContainer() {
+  const { openWindow, closeWindow, isWindowOpen } = useDockingManager();
   
-  // Initialize panel
-  useEffect(() => {
-    const target = container || containerRef.current;
-    if (!target) return;
-    
-    panelRef.current = new ShaderDebugPanel(target, {
-      onClose: handlePanelClose,
-    });
-    
-    return () => {
-      panelRef.current?.destroy();
-      panelRef.current = null;
-    };
-  }, [container]);
+  // Handler for window close (sync back to signal)
+  const handleClose = useCallback(() => {
+    shaderPanelVisible.value = false;
+  }, []);
   
-  // Sync visibility with signal
+  // Sync signal with DockingManager
   useEffect(() => {
-    const panel = panelRef.current;
-    if (!panel) return;
+    const visible = shaderPanelVisible.value;
+    const isOpen = isWindowOpen(SHADER_WINDOW_ID);
     
-    if (shaderPanelVisible.value) {
-      panel.show();
-    } else {
-      panel.hide();
+    if (visible && !isOpen) {
+      openWindow(getShaderWindowConfig(handleClose));
+    } else if (!visible && isOpen) {
+      closeWindow(SHADER_WINDOW_ID);
     }
-  }, [shaderPanelVisible.value]);
+  }, [shaderPanelVisible.value, openWindow, closeWindow, isWindowOpen, handleClose]);
   
-  // If no external container, render a placeholder div for panel mounting
-  if (container) {
-    return null;
-  }
-  
-  return <div ref={containerRef} />;
+  // No DOM output - window rendered by DockingManager
+  return null;
 }
 
 // ==================== Export Helpers ====================

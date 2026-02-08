@@ -15,6 +15,7 @@ import { ViewportContainer } from '../viewport';
 import { ObjectsPanel } from '../panels';
 import { ConnectedObjectPanel, ConnectedEnvironmentPanel, ConnectedRenderingPanel, ConnectedMaterialPanel, ConnectedTerrainPanel, ConnectedWaterPanel, ConnectedMenuBar, ShaderDebugPanelContainer } from '../bridges';
 import { useKeyboardShortcuts } from '../hooks';
+import { DockingManagerProvider } from '../ui';
 import { Viewport } from '../../Viewport';
 import styles from './SceneBuilderApp.module.css';
 
@@ -145,9 +146,10 @@ export function SceneBuilderApp({
   // ==================== Render ====================
   
   return (
-    <div class={styles.container}>
-      {/* Menu Bar */}
-      <ConnectedMenuBar />
+    <DockingManagerProvider>
+      <div class={styles.container}>
+        {/* Menu Bar */}
+        <ConnectedMenuBar />
       
       {/* Main Content (sidebars + viewport) */}
       <div class={styles.mainContent}>
@@ -196,9 +198,10 @@ export function SceneBuilderApp({
         </div>
       </div>
       
-      {/* Shader Debug Panel - Floating at root level to avoid viewport clipping */}
-      <ShaderDebugPanelContainer />
-    </div>
+        {/* Shader Debug Panel - Floating at root level to avoid viewport clipping */}
+        <ShaderDebugPanelContainer />
+      </div>
+    </DockingManagerProvider>
   );
 }
 

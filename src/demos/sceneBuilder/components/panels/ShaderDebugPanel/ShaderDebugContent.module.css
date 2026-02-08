@@ -1,0 +1,171 @@
+/**
+ * ShaderDebugContent Styles
+ * Catppuccin Mocha theme colors
+ */
+
+.content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 12px;
+  gap: 8px;
+  overflow: hidden;
+}
+
+/* ==================== Toolbar ==================== */
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.select {
+  flex: 1;
+  min-width: 150px;
+  padding: 6px 10px;
+  background: #313244;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  color: #cdd6f4;
+  font-size: 12px;
+}
+
+.select:focus {
+  outline: none;
+  border-color: #89b4fa;
+}
+
+.typeToggle {
+  display: flex;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.typeBtn {
+  padding: 6px 10px;
+  border: none;
+  background: #313244;
+  color: #6c7086;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.typeBtn:hover {
+  background: #45475a;
+  color: #a6adc8;
+}
+
+.typeBtn.active {
+  background: #89b4fa;
+  color: #1e1e2e;
+}
+
+.applyBtn,
+.applyAllBtn,
+.resetBtn,
+.refreshBtn {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.applyBtn {
+  background: #89b4fa;
+  color: #1e1e2e;
+}
+
+.applyBtn:hover {
+  background: #b4befe;
+}
+
+.applyAllBtn {
+  background: #a6e3a1;
+  color: #1e1e2e;
+}
+
+.applyAllBtn:hover {
+  background: #b5e8b0;
+}
+
+.resetBtn {
+  background: #45475a;
+  color: #cdd6f4;
+}
+
+.resetBtn:hover {
+  background: #585b70;
+}
+
+.refreshBtn {
+  background: #45475a;
+  color: #cdd6f4;
+  padding: 6px 10px;
+  font-size: 14px;
+}
+
+.refreshBtn:hover {
+  background: #585b70;
+}
+
+/* ==================== Editor ==================== */
+
+.editorContainer {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.editorContainer :global(.cm-editor) {
+  height: 100%;
+}
+
+.editorContainer :global(.cm-scroller) {
+  overflow: auto;
+}
+
+/* ==================== Error Display ==================== */
+
+.errorDisplay {
+  max-height: 80px;
+  overflow: auto;
+  padding: 8px;
+  background: #302030;
+  border: 1px solid #f38ba8;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  color: #f38ba8;
+  white-space: pre-wrap;
+  flex-shrink: 0;
+}
+
+/* ==================== Status Bar ==================== */
+
+.statusBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  font-size: 11px;
+  color: #6c7086;
+  flex-shrink: 0;
+}
+
+.statusText {
+  color: #a6adc8;
+}
+
+.modifiedIndicator {
+  color: #f9e2af;
+}

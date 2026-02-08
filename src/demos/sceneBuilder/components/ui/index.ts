@@ -22,3 +22,10 @@ export type { PanelProps } from './Panel/Panel';
 
 export { Tabs } from './Tabs/Tabs';
 export type { TabsProps, Tab } from './Tabs/Tabs';
+
+// Docking Window System
+export { DockableWindow } from './DockableWindow';
+export type { DockableWindowProps, WindowPosition, WindowSize } from './DockableWindow';
+
+export { DockingManagerProvider, DockingManagerContext, useDockingManager } from './DockingManager';
+export type { WindowConfig, WindowState, DockingManagerContextValue } from './DockingManager';

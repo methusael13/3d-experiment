@@ -1,0 +1,108 @@
+/**
+ * DockableWindow Styles
+ * Catppuccin Mocha theme colors
+ */
+
+.window {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  background: #1e1e2e;
+  border: 1px solid #45475a;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  font-family: system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+  /* z-index set via inline style from DockingManager */
+}
+
+.window.minimized {
+  height: auto !important;
+}
+
+.window.minimized .body,
+.window.minimized .resizeHandle {
+  display: none;
+}
+
+/* ==================== Header ==================== */
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #313244;
+  cursor: move;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #cdd6f4;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.icon {
+  font-size: 14px;
+}
+
+.controls {
+  display: flex;
+  gap: 4px;
+}
+
+.controlBtn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #a6adc8;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.controlBtn:hover {
+  background: #45475a;
+  color: #cdd6f4;
+}
+
+.controlBtn.closeBtn:hover {
+  background: #f38ba8;
+  color: #1e1e2e;
+}
+
+/* ==================== Body ==================== */
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ==================== Resize Handle ==================== */
+
+.resizeHandle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, #45475a 50%);
+}
+
+.resizeHandle:hover {
+  background: linear-gradient(135deg, transparent 50%, #6c7086 50%);
+}
