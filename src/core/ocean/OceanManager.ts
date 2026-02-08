@@ -14,6 +14,7 @@ import {
   createDefaultWaterConfig 
 } from '../gpu/renderers/WaterRendererGPU';
 import { UnifiedGPUTexture } from '../gpu/GPUTexture';
+import type { SceneEnvironment } from '../gpu/renderers/shared';
 
 /**
  * Ocean manager configuration
@@ -47,6 +48,8 @@ export interface OceanRenderParams {
   depthTexture: UnifiedGPUTexture;
   near?: number;
   far?: number;
+  /** Scene environment for IBL reflections (optional) */
+  sceneEnvironment?: SceneEnvironment | null;
 }
 
 /**
@@ -109,6 +112,7 @@ export class OceanManager {
       depthTexture: params.depthTexture,
       near: params.near,
       far: params.far,
+      sceneEnvironment: params.sceneEnvironment,
     });
   }
   

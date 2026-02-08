@@ -179,13 +179,6 @@ export class OpaquePass extends BaseRenderPass {
     const lightSpaceMatrix = shadowEnabled ? this.shadowRenderer.getLightSpaceMatrix() : null;
     const shadowMap = shadowEnabled ? this.shadowRenderer.getShadowMap() : null;
     
-    // Set shadow resources on object renderer for receiving shadows
-    if (shadowEnabled && shadowMap) {
-      this.objectRenderer.setShadowResources(shadowMap.view);
-    } else {
-      this.objectRenderer.clearShadowResources();
-    }
-    
     // Determine loadOp based on whether sky pass ran
     const loadOp = ctx.options.skyMode !== 'none' ? 'load' : 'clear';
     
@@ -195,9 +188,9 @@ export class OpaquePass extends BaseRenderPass {
       depthStencilAttachment: ctx.getDepthAttachment('clear'),
     });
     
-    // Render terrain
+    // Render terrain (terrain uses its own SceneEnvironment integration)
     if (terrainManager?.isReady) {
-      // Build shadow params only if we have valid shadow data
+      // Build shadow params for terrain (terrain has its own shadow implementation)
       const shadowParams = (shadowEnabled && lightSpaceMatrix && shadowMap) ? {
         enabled: true,
         softShadows: shadowSoftShadows,
@@ -215,6 +208,7 @@ export class OpaquePass extends BaseRenderPass {
         ambientIntensity,
         wireframe,
         shadow: shadowParams,
+        sceneEnvironment: ctx.sceneEnvironment,
       });
     }
     
@@ -231,14 +225,9 @@ export class OpaquePass extends BaseRenderPass {
       shadowBias: 0.002,
     };
     
-    // Render objects with IBL if available and enabled
-    if (dynamicIBL && ctx.iblReady && ctx.iblBindGroup) {
-      // Use IBL rendering path with image-based ambient lighting
-      this.objectRenderer.renderWithIBL(pass, renderParams, ctx.iblBindGroup);
-    } else {
-      // Standard rendering without IBL
-      this.objectRenderer.render(pass, renderParams);
-    }
+    // Render objects with unified SceneEnvironment (shadow + IBL)
+    // Falls back to standard render if no environment provided
+    this.objectRenderer.renderWithSceneEnvironment(pass, renderParams, ctx.sceneEnvironment ?? null);
     
     pass.end();
   }
@@ -295,6 +284,7 @@ export class TransparentPass extends BaseRenderPass {
       depthTexture: ctx.depthTextureCopy,
       near: ctx.near,
       far: ctx.far,
+      sceneEnvironment: ctx.sceneEnvironment,
     });
     
     pass.end();

@@ -23,6 +23,7 @@ import { GridRendererGPU } from '../renderers/GridRendererGPU';
 import { SkyRendererGPU } from '../renderers/SkyRendererGPU';
 import { ObjectRendererGPU } from '../renderers/ObjectRendererGPU';
 import { ShadowRendererGPU } from '../renderers';
+import { SceneEnvironment, type IBLResources } from '../renderers/shared';
 import { DynamicSkyIBL, type IBLTextures } from '../ibl';
 import { WebGPUShadowSettings } from '@/demos/sceneBuilder/componentPanels/RenderingPanel';
 import { 
@@ -134,6 +135,9 @@ export class GPUForwardPipeline {
   private iblBindGroup: GPUBindGroup | null = null;
   private iblEnabled: boolean = true;  // Can be toggled for performance
   
+  // Shared environment (shadow + IBL) - Group 3 for all renderers
+  private sceneEnvironment: SceneEnvironment;
+  
   // Render passes (ordered by priority)
   private passes: RenderPass[] = [];
   
@@ -178,6 +182,9 @@ export class GPUForwardPipeline {
     
     // Create Dynamic Sky IBL for image-based lighting
     this.dynamicSkyIBL = new DynamicSkyIBL(ctx);
+    
+    // Create shared SceneEnvironment for shadow + IBL (Group 3 bind group)
+    this.sceneEnvironment = new SceneEnvironment(ctx);
     
     // Create render passes
     this.initializePasses();
@@ -421,9 +428,6 @@ export class GPUForwardPipeline {
     
     // ========== UPDATE DYNAMIC SKY IBL ==========
     // Only update in sun mode when dynamicIBL is enabled
-    let iblBindGroup: GPUBindGroup | undefined;
-    let iblTextures: IBLTextures | undefined;
-    
     if (mergedOptions.skyMode === 'sun' && mergedOptions.dynamicIBL && this.iblEnabled) {
       // Normalize sun direction
       const lightDir = mergedOptions.lightDirection;
@@ -435,17 +439,31 @@ export class GPUForwardPipeline {
       // Update IBL (processes one task per frame)
       this.dynamicSkyIBL.update(encoder, sunDirection, mergedOptions.sunIntensity, deltaTime);
       
-      // Get IBL textures if ready
+      // Get IBL textures if ready and update SceneEnvironment
       if (this.dynamicSkyIBL.isReady()) {
-        iblTextures = this.dynamicSkyIBL.getIBLTextures();
+        const iblTextures = this.dynamicSkyIBL.getIBLTextures();
         
-        // Create IBL bind group for object renderer
-        iblBindGroup = this.objectRenderer.createIBLBindGroup(
-          iblTextures.diffuse,
-          iblTextures.specular,
-          iblTextures.brdfLut
-        );
+        // Update SceneEnvironment with IBL resources
+        const iblResources: IBLResources = {
+          diffuseCubemap: iblTextures.diffuse,
+          specularCubemap: iblTextures.specular,
+          brdfLut: iblTextures.brdfLut,
+        };
+        this.sceneEnvironment.setIBL(iblResources);
       }
+    } else {
+      // Clear IBL when not in sun mode or IBL disabled
+      this.sceneEnvironment.setIBL(null);
+    }
+    
+    // Update SceneEnvironment with shadow map
+    if (mergedOptions.shadowEnabled) {
+      const shadowMap = this.shadowRenderer.getShadowMap();
+      if (shadowMap) {
+        this.sceneEnvironment.setShadowMap(shadowMap.view);
+      }
+    } else {
+      this.sceneEnvironment.setShadowMap(null);
     }
     
     // Get near/far from camera or use defaults
@@ -474,9 +492,8 @@ export class GPUForwardPipeline {
       sceneColorTexture: this.sceneColorTexture ?? undefined,
       msaaHdrColorTexture: this.msaaHdrColorTexture ?? undefined,
       msaaColorTexture: this.msaaColorTexture ?? undefined,
-      // IBL textures for object rendering
-      iblTextures,
-      iblBindGroup,
+      // Unified SceneEnvironment (shadow + IBL) for all renderers
+      sceneEnvironment: this.sceneEnvironment,
     };
     
     const renderCtx = new RenderContextImpl(contextOptions);
@@ -689,5 +706,13 @@ export class GPUForwardPipeline {
    */
   isIBLReady(): boolean {
     return this.dynamicSkyIBL.isReady();
+  }
+  
+  /**
+   * Get the shared SceneEnvironment for renderers to use
+   * Contains combined shadow + IBL bind group (Group 3)
+   */
+  getSceneEnvironment(): SceneEnvironment {
+    return this.sceneEnvironment;
   }
 }

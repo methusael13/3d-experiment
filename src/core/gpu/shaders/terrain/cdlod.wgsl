@@ -72,6 +72,39 @@ struct Material {
 @group(0) @binding(7) var islandMask: texture_2d<f32>;
 
 // ============================================================================
+// Environment Bindings (Group 3) - IBL for ambient lighting
+// ============================================================================
+
+// Note: Shadow resources (bindings 0-1) are in Group 3 but terrain uses its own
+// Group 0 shadow implementation for LOD-aware shadow sampling
+@group(3) @binding(0) var env_shadowMap: texture_depth_2d;
+@group(3) @binding(1) var env_shadowSampler: sampler_comparison;
+@group(3) @binding(2) var env_iblDiffuse: texture_cube<f32>;
+@group(3) @binding(3) var env_iblSpecular: texture_cube<f32>;
+@group(3) @binding(4) var env_brdfLut: texture_2d<f32>;
+@group(3) @binding(5) var env_cubeSampler: sampler;
+@group(3) @binding(6) var env_lutSampler: sampler;
+
+// ============================================================================
+// IBL Functions
+// ============================================================================
+
+// Sample diffuse irradiance from IBL cubemap for ambient lighting
+// Returns pre-convolved irradiance for Lambert diffuse
+fn sampleIBLDiffuse(worldNormal: vec3f) -> vec3f {
+  return textureSample(env_iblDiffuse, env_cubeSampler, worldNormal).rgb;
+}
+
+// Simplified IBL for terrain - diffuse only (terrain is non-metallic)
+// Uses diffuse cubemap to replace flat ambient color
+fn calculateTerrainIBL(worldNormal: vec3f, albedo: vec3f) -> vec3f {
+  // Sample diffuse irradiance (already convolved for hemisphere)
+  let irradiance = sampleIBLDiffuse(worldNormal);
+  // Scale down IBL intensity for terrain (full intensity can be too bright)
+  return irradiance * albedo * 0.3;
+}
+
+// ============================================================================
 // Vertex Structures
 // ============================================================================
 
@@ -809,15 +842,28 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   // Simple directional lighting with shadows
   let lightDir = normalize(material.lightDir);
   let NdotL = max(dot(normal, lightDir), 0.0);
-  let ambient = material.ambientIntensity;
   
   // Calculate shadow (with slope-dependent bias for artifact-free slopes)
   let shadow = calculateShadow(input.lightSpacePos, input.worldPosition, normal, lightDir);
   
-  // Apply shadow to diffuse component only (ambient is always visible)
-  let diffuse = NdotL * (1.0 - ambient) * shadow;
+  // ===== Ambient Lighting: IBL or Flat =====
+  // Use IBL diffuse irradiance if available (from SceneEnvironment Group 3)
+  // IBL provides physically-based ambient that varies with normal direction
+  let iblAmbient = calculateTerrainIBL(normal, albedo);
   
-  var finalColor = albedo * (ambient + diffuse) * material.lightColor.rgb;
+  // Flat ambient fallback (scaled by material intensity)
+  let flatAmbient = albedo * material.ambientIntensity;
+  
+  // Blend between IBL and flat ambient (IBL takes precedence if available)
+  // IBL is considered "available" if it produces non-black values
+  let iblStrength = length(iblAmbient);
+  let useIBL = step(0.001, iblStrength);  // 1 if IBL has content, 0 if black
+  let ambientColor = mix(flatAmbient, iblAmbient, useIBL);
+  
+  // Apply shadow to diffuse component only (ambient is always visible)
+  let diffuse = NdotL * material.lightColor.rgb * shadow;
+  
+  var finalColor = ambientColor + albedo * diffuse;
   
   // Selection highlight
   if (material.isSelected > 0.5) {

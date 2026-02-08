@@ -19,6 +19,7 @@ import {
   ShaderSources,
   VertexBufferLayoutDesc,
 } from '../gpu';
+import { SceneEnvironment } from '../gpu/renderers/shared';
 import cdlodShadowShader from '../gpu/shaders/terrain/cdlod-shadow.wgsl?raw';
 import {
   TerrainQuadtree,
@@ -120,6 +121,8 @@ export interface CDLODRenderParams {
   shadow?: TerrainShadowParams;
   /** Island mode parameters */
   island?: IslandRenderParams;
+  /** Scene environment for IBL (optional - provides ambient lighting from sky) */
+  sceneEnvironment?: SceneEnvironment | null;
 }
 
 /**
@@ -252,13 +255,18 @@ export class CDLODRendererGPU {
   // Current material state for live updates
   private currentMaterial: TerrainMaterial;
   
+  // Shared SceneEnvironment for IBL (passed from pipeline)
+  private sceneEnvironment: SceneEnvironment | null = null;
+  
   constructor(
     ctx: GPUContext,
     quadtreeConfig?: Partial<QuadtreeConfig>,
-    rendererConfig?: Partial<CDLODGPUConfig>
+    rendererConfig?: Partial<CDLODGPUConfig>,
+    sceneEnvironment?: SceneEnvironment
   ) {
     this.ctx = ctx;
     this.config = { ...createDefaultCDLODGPUConfig(), ...rendererConfig };
+    this.sceneEnvironment = sceneEnvironment ?? null;
     
     // Instance data: offsetX, offsetZ, scale, morphFactor, lodLevel (5 floats per instance)
     this.instanceData = new Float32Array(this.config.maxInstances * 5);
@@ -574,6 +582,10 @@ export class CDLODRendererGPU {
   
   /**
    * Create the render pipeline using RenderPipelineWrapper
+   * 
+   * Bind Group Layout:
+   * - Group 0: Terrain-specific resources (uniforms, material, heightmap, normalmap, etc.)
+   * - Group 3: SceneEnvironment (shadow + IBL) - shared across all renderers
    */
   private createPipeline(): void {
     // Create bind group layout using BindGroupLayoutBuilder
@@ -588,37 +600,56 @@ export class CDLODRendererGPU {
       .texture(7, 'all', 'unfilterable-float')     // Island mask (r32float, sampled in vertex + fragment for beach)
       .build(this.ctx);
     
-    // Create render pipeline using RenderPipelineWrapper
-    this.pipeline = RenderPipelineWrapper.create(this.ctx, {
-      label: 'cdlod-render-pipeline',
-      vertexShader: ShaderSources.terrainCDLOD,
-      vertexEntryPoint: 'vs_main',
-      fragmentEntryPoint: 'fs_main',
-      vertexBuffers: CDLOD_VERTEX_BUFFER_LAYOUTS as VertexBufferLayoutDesc[],
-      bindGroupLayouts: [this.bindGroupLayout],
-      topology: 'triangle-list',
-      cullMode: 'back',
-      frontFace: 'ccw',
-      depthFormat: 'depth24plus',
-      depthWriteEnabled: true,
-      depthCompare: 'greater',  // Reversed-Z: near=1, far=0
-      colorFormats: ['rgba16float'], // HDR intermediate format
-    });
+    // Get SceneEnvironment layout for Group 3 (IBL resources)
+    // If SceneEnvironment not provided, create an empty placeholder layout for Group 3
+    const envLayout = this.sceneEnvironment?.layout ?? this.createPlaceholderEnvironmentLayout();
     
-    // Create wireframe pipeline with line-list topology
+    // Create shader module
     const shaderModule = this.ctx.device.createShaderModule({
-      label: 'cdlod-wireframe-shader',
+      label: 'cdlod-shader',
       code: ShaderSources.terrainCDLOD,
     });
     
-    const pipelineLayout = this.ctx.device.createPipelineLayout({
-      label: 'cdlod-wireframe-pipeline-layout',
-      bindGroupLayouts: [this.bindGroupLayout],
+    // Create pipeline layout with Groups 0 and 3
+    // Groups 1 and 2 are unused (set to undefined/null)
+    this.pipelineLayout = this.ctx.device.createPipelineLayout({
+      label: 'cdlod-pipeline-layout',
+      bindGroupLayouts: [this.bindGroupLayout, undefined as any, undefined as any, envLayout],
     });
     
+    // Create solid render pipeline
+    const solidPipeline = this.ctx.device.createRenderPipeline({
+      label: 'cdlod-render-pipeline',
+      layout: this.pipelineLayout,
+      vertex: {
+        module: shaderModule,
+        entryPoint: 'vs_main',
+        buffers: CDLOD_VERTEX_BUFFER_LAYOUTS,
+      },
+      fragment: {
+        module: shaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: HDR_FORMAT }],
+      },
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'back',
+        frontFace: 'ccw',
+      },
+      depthStencil: {
+        format: 'depth24plus',
+        depthWriteEnabled: true,
+        depthCompare: 'greater',  // Reversed-Z: near=1, far=0
+      },
+    });
+    
+    // Wrap in RenderPipelineWrapper for consistency
+    this.pipeline = { pipeline: solidPipeline } as RenderPipelineWrapper;
+    
+    // Create wireframe pipeline with line-list topology
     this.wireframePipeline = this.ctx.device.createRenderPipeline({
       label: 'cdlod-wireframe-pipeline',
-      layout: pipelineLayout,
+      layout: this.pipelineLayout,
       vertex: {
         module: shaderModule,
         entryPoint: 'vs_main',
@@ -640,6 +671,18 @@ export class CDLODRendererGPU {
         depthWriteEnabled: true,
         depthCompare: 'greater-equal',  // Reversed-Z: greater-equal to avoid z-fighting
       },
+    });
+  }
+  
+  /**
+   * Create a placeholder environment layout for Group 3 when SceneEnvironment is not provided
+   * This matches the SceneEnvironment layout structure for compatibility
+   * Uses raw WebGPU API since BindGroupLayoutBuilder doesn't support cube textures
+   */
+  private createPlaceholderEnvironmentLayout(): GPUBindGroupLayout {
+    return this.ctx.device.createBindGroupLayout({
+      label: 'cdlod-placeholder-env-layout',
+      entries: SceneEnvironment.getDefaultBindGroupLayoutEntries(),
     });
   }
   
@@ -729,6 +772,12 @@ export class CDLODRendererGPU {
       // Wireframe rendering - shows LOD grid density
       passEncoder.setPipeline(this.wireframePipeline!);
       passEncoder.setBindGroup(0, this.bindGroup);
+      
+      // Set bind group 3 for IBL if SceneEnvironment is provided
+      if (params.sceneEnvironment) {
+        passEncoder.setBindGroup(3, params.sceneEnvironment.bindGroup);
+      }
+      
       passEncoder.setVertexBuffer(0, this.gridVertexBuffer.buffer);
       passEncoder.setVertexBuffer(1, this.instanceBuffer.buffer);
       passEncoder.setIndexBuffer(this.wireframeIndexBuffer!.buffer, 'uint32');
@@ -739,6 +788,12 @@ export class CDLODRendererGPU {
       // Solid rendering
       passEncoder.setPipeline(this.pipeline.pipeline);
       passEncoder.setBindGroup(0, this.bindGroup);
+      
+      // Set bind group 3 for IBL if SceneEnvironment is provided
+      if (params.sceneEnvironment) {
+        passEncoder.setBindGroup(3, params.sceneEnvironment.bindGroup);
+      }
+      
       passEncoder.setVertexBuffer(0, this.gridVertexBuffer.buffer);
       passEncoder.setVertexBuffer(1, this.instanceBuffer.buffer);
       passEncoder.setIndexBuffer(this.gridIndexBuffer.buffer, 'uint32');

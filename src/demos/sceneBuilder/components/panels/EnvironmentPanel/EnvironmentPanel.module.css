@@ -305,7 +305,6 @@
 /* IBL Toggle */
 .iblToggle {
   display: flex;
-  align-items: center;
   gap: 6px;
   margin-top: 12px;
   padding-top: 12px;

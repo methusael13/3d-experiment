@@ -17,6 +17,7 @@ import {
   RenderPipelineWrapper,
   CommonBlendStates,
 } from '../index';
+import { SceneEnvironment, PlaceholderTextures } from './shared';
 import waterShaderSource from '../shaders/water.wgsl?raw';
 import { registerWGSLShader, unregisterWGSLShader, getWGSLShaderSource } from '@/demos/sceneBuilder/shaderManager';
 
@@ -81,6 +82,8 @@ export interface WaterRenderParams {
   near?: number;
   /** Camera far plane distance (default: 1000) */
   far?: number;
+  /** Scene environment for IBL reflections (optional) */
+  sceneEnvironment?: SceneEnvironment | null;
 }
 
 /**
@@ -118,8 +121,15 @@ export class WaterRendererGPU {
   private config: WaterConfig;
   
   // Pipeline
-  private pipelineWrapper: RenderPipelineWrapper | null = null;
+  private pipeline: GPURenderPipeline | null = null;
+  private pipelineLayout: GPUPipelineLayout | null = null;
   private bindGroupLayout: GPUBindGroupLayout | null = null;
+  
+  // Default SceneEnvironment for fallback (provides Group 3 layout + placeholder bind group)
+  private defaultSceneEnvironment: SceneEnvironment;
+  
+  // Deprecated: kept for compatibility during transition
+  private pipelineWrapper: RenderPipelineWrapper | null = null;
   
   // Buffers
   private vertexBuffer: UnifiedGPUBuffer | null = null;
@@ -156,6 +166,9 @@ export class WaterRendererGPU {
     // 2 mat4 (32) + 4 vec4 (16) = 48 floats
     this.uniformBuilder = new UniformBuilder(48);
     this.materialBuilder = new UniformBuilder(24); // 6 vec4 = 24 floats
+    
+    // Create default SceneEnvironment for Group 3 layout and placeholder bind group
+    this.defaultSceneEnvironment = new SceneEnvironment(ctx);
     
     this.initializeResources();
   }
@@ -302,36 +315,71 @@ export class WaterRendererGPU {
   }
   
   /**
-   * Create render pipeline using RenderPipelineWrapper
-   * Can be called with custom shader source for hot-reloading
+   * Create render pipeline with 4-group layout
+   * - Group 0: Water-specific resources
+   * - Group 3: SceneEnvironment (IBL + shadow) - uses SceneEnvironment.layout
    */
   private createRenderPipeline(shaderSource: string = this.currentShaderSource): void {
     if (!this.bindGroupLayout) {
       this.createBindGroupLayout();
     }
     
-    this.pipelineWrapper = RenderPipelineWrapper.create(this.ctx, {
-      label: 'water-pipeline',
-      vertexShader: shaderSource,
-      vertexEntryPoint: 'vs_main',
-      fragmentEntryPoint: 'fs_main',
-      bindGroupLayouts: [this.bindGroupLayout!],
-      vertexBuffers: [{
-        arrayStride: 16, // 4 floats * 4 bytes
-        attributes: [
-          { format: 'float32x2', offset: 0, shaderLocation: 0 },  // position
-          { format: 'float32x2', offset: 8, shaderLocation: 1 },  // uv
-        ],
-      }],
-      topology: 'triangle-list',
-      cullMode: 'none',  // Water visible from both sides
-      frontFace: 'ccw',
-      depthFormat: 'depth24plus',
-      depthWriteEnabled: true,   // Write depth to prevent overdraw of overlapping wave surfaces
-      depthCompare: 'greater',   // Reversed-Z: test against terrain depth
-      colorFormats: ['rgba16float'], // HDR intermediate format
-      blendStates: [CommonBlendStates.waterMask()],
+    // Create shader module
+    const shaderModule = this.ctx.device.createShaderModule({
+      label: 'water-shader',
+      code: shaderSource,
     });
+    
+    // Create 4-group pipeline layout (Groups 1,2 unused)
+    // Use SceneEnvironment.layout for Group 3 to ensure compatibility
+    this.pipelineLayout = this.ctx.device.createPipelineLayout({
+      label: 'water-pipeline-layout',
+      bindGroupLayouts: [this.bindGroupLayout!, undefined as any, undefined as any, this.defaultSceneEnvironment.layout],
+    });
+    
+    // Vertex buffer layout
+    const vertexBuffers: GPUVertexBufferLayout[] = [{
+      arrayStride: 16, // 4 floats * 4 bytes
+      attributes: [
+        { format: 'float32x2', offset: 0, shaderLocation: 0 },  // position
+        { format: 'float32x2', offset: 8, shaderLocation: 1 },  // uv
+      ],
+    }];
+    
+    // Create pipeline
+    this.pipeline = this.ctx.device.createRenderPipeline({
+      label: 'water-pipeline',
+      layout: this.pipelineLayout,
+      vertex: {
+        module: shaderModule,
+        entryPoint: 'vs_main',
+        buffers: vertexBuffers,
+      },
+      fragment: {
+        module: shaderModule,
+        entryPoint: 'fs_main',
+        targets: [{
+          format: 'rgba16float',
+          blend: {
+            color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'zero', dstFactor: 'zero', operation: 'add' },
+          },
+        }],
+      },
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'none',  // Water visible from both sides
+        frontFace: 'ccw',
+      },
+      depthStencil: {
+        format: 'depth24plus',
+        depthWriteEnabled: true,
+        depthCompare: 'greater',   // Reversed-Z
+      },
+    });
+    
+    // Wrap for compatibility
+    this.pipelineWrapper = { pipeline: this.pipeline } as RenderPipelineWrapper;
   }
   
   /**
@@ -391,7 +439,7 @@ export class WaterRendererGPU {
     // Rebuild mesh if grid dimensions changed
     this.rebuildMeshIfNeeded();
 
-    if (!this.pipelineWrapper || !this.uniformBuffer || 
+    if (!this.pipeline || !this.uniformBuffer || 
         !this.materialBuffer || !this.vertexBuffer || !this.indexBuffer) {
       return;
     }
@@ -408,8 +456,14 @@ export class WaterRendererGPU {
     }
     
     // Render
-    passEncoder.setPipeline(this.pipelineWrapper.pipeline);
+    passEncoder.setPipeline(this.pipeline);
     passEncoder.setBindGroup(0, this.bindGroup);
+    
+    // Set bind group 3 for IBL reflections
+    // Use provided SceneEnvironment or fall back to default (placeholder textures)
+    const environment = params.sceneEnvironment ?? this.defaultSceneEnvironment;
+    passEncoder.setBindGroup(3, environment.bindGroup);
+    
     passEncoder.setVertexBuffer(0, this.vertexBuffer.buffer);
     passEncoder.setIndexBuffer(this.indexBuffer.buffer, 'uint32');
     passEncoder.drawIndexed(this.indexCount);

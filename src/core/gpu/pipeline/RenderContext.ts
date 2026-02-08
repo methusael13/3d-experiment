@@ -14,7 +14,7 @@ import { UnifiedGPUTexture } from '../GPUTexture';
 import type { GPUCamera, RenderOptions } from './GPUForwardPipeline';
 import { DEFAULT_RENDER_OPTIONS } from './GPUForwardPipeline';
 import type { Scene } from '../../Scene';
-import type { IBLTextures } from '../ibl';
+import type { SceneEnvironment } from '../renderers/shared';
 
 /**
  * Context passed to each render pass
@@ -68,10 +68,8 @@ export interface RenderContext {
   readonly msaaHdrColorTexture?: UnifiedGPUTexture;
   readonly msaaColorTexture?: UnifiedGPUTexture;
   
-  // IBL (Image-Based Lighting)
-  readonly iblTextures?: IBLTextures;
-  readonly iblBindGroup?: GPUBindGroup;
-  readonly iblReady: boolean;
+  // Unified environment (shadow + IBL)
+  readonly sceneEnvironment?: SceneEnvironment;
   
   // Helper methods
   getColorAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment;
@@ -111,9 +109,8 @@ export interface RenderContextOptions {
   // Flags
   useHDR: boolean;
   
-  // IBL (Image-Based Lighting)
-  iblTextures?: IBLTextures;
-  iblBindGroup?: GPUBindGroup;
+  // Unified environment (shadow + IBL)
+  sceneEnvironment?: SceneEnvironment;
 }
 
 /**
@@ -153,10 +150,8 @@ export class RenderContextImpl implements RenderContext {
   readonly msaaHdrColorTexture?: UnifiedGPUTexture;
   readonly msaaColorTexture?: UnifiedGPUTexture;
   
-  // IBL
-  readonly iblTextures?: IBLTextures;
-  readonly iblBindGroup?: GPUBindGroup;
-  readonly iblReady: boolean;
+  // Unified environment (shadow + IBL)
+  readonly sceneEnvironment?: SceneEnvironment;
   
   private depthCopied = false;
   
@@ -186,10 +181,8 @@ export class RenderContextImpl implements RenderContext {
     this.msaaHdrColorTexture = opts.msaaHdrColorTexture;
     this.msaaColorTexture = opts.msaaColorTexture;
     
-    // IBL
-    this.iblTextures = opts.iblTextures;
-    this.iblBindGroup = opts.iblBindGroup;
-    this.iblReady = !!(opts.iblTextures && opts.iblBindGroup);
+    // Unified environment (shadow + IBL)
+    this.sceneEnvironment = opts.sceneEnvironment;
     
     // Compute matrices
     const viewMat = this.camera.getViewMatrix();

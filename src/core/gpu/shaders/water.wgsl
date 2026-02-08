@@ -35,13 +35,28 @@ struct WaterMaterial {
 }
 
 // ============================================================================
-// Bindings
+// Bindings - Group 0 (Water-specific)
 // ============================================================================
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<uniform> material: WaterMaterial;
 @group(0) @binding(2) var depthTexture: texture_depth_2d;
 @group(0) @binding(3) var texSampler: sampler;
+
+// ============================================================================
+// Bindings - Group 3 (SceneEnvironment: Shadow + IBL)
+// ============================================================================
+
+// Shadow resources (bindings 0-1) - available but water typically doesn't receive shadows
+@group(3) @binding(0) var env_shadowMap: texture_depth_2d;
+@group(3) @binding(1) var env_shadowSampler: sampler_comparison;
+
+// IBL resources for reflection (bindings 2-6)
+@group(3) @binding(2) var env_iblDiffuse: texture_cube<f32>;
+@group(3) @binding(3) var env_iblSpecular: texture_cube<f32>;
+@group(3) @binding(4) var env_brdfLut: texture_2d<f32>;
+@group(3) @binding(5) var env_cubeSampler: sampler;
+@group(3) @binding(6) var env_lutSampler: sampler;
 
 // ============================================================================
 // Vertex Structures
@@ -155,7 +170,29 @@ fn getGerstnerWaves(worldXZ: vec2f, time: f32, waveScale: f32, baseWavelength: f
 }
 
 // ============================================================================
-// Atmosphere Approximation (fast, from reference)
+// IBL Environment Reflection
+// ============================================================================
+
+// Sample IBL specular cubemap for environment reflection
+// Uses rough LOD (0 = mirror, higher = more diffuse) for water
+fn sampleIBLReflection(reflectDir: vec3f, roughness: f32) -> vec3f {
+  // Water uses low roughness for sharp reflections
+  // textureSampleLevel: LOD 0 = highest detail (most mirror-like)
+  let lod = roughness * 6.0;  // Max 6 mip levels typically
+  let envColor = textureSampleLevel(env_iblSpecular, env_cubeSampler, reflectDir, lod).rgb;
+  
+  // Check if IBL is actually populated (not placeholder black)
+  let brightness = dot(envColor, vec3f(0.299, 0.587, 0.114));
+  if (brightness < 0.001) {
+    // Fallback to procedural atmosphere when IBL is placeholder
+    return cheapAtmosphere(reflectDir, normalize(vec3f(0.5, 0.8, 0.3)));
+  }
+  
+  return envColor;
+}
+
+// ============================================================================
+// Atmosphere Approximation (fallback when IBL not available)
 // ============================================================================
 
 fn cheapAtmosphere(rayDir: vec3f, sunDir: vec3f) -> vec3f {
@@ -392,8 +429,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   var R = normalize(reflect(-viewDir, N));
   R.y = abs(R.y);  // Ensure reflection points upward
   
-  // Sky reflection
-  let skyColor = cheapAtmosphere(R, sunDir);
+  // Sky reflection from IBL cubemap (falls back to cheapAtmosphere if IBL is placeholder)
+  // Water uses low roughness (0.05) for sharp mirror-like reflections
+  let skyColor = sampleIBLReflection(R, 0.05);
   let sunReflection = getSun(R, sunDir, sunIntensity);
   let reflection = skyColor + vec3f(1.0, 0.95, 0.9) * sunReflection;
   
