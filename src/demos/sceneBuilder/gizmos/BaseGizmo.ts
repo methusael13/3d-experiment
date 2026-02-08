@@ -5,6 +5,7 @@
 
 import { mat4, vec3, quat } from 'gl-matrix';
 import type { Vec3, RGB } from '../../../core/types';
+import type { GizmoRendererGPU, GizmoColor } from '../../../core/gpu/renderers/GizmoRendererGPU';
 
 /**
  * Camera interface for gizmo rendering
@@ -488,12 +489,68 @@ export abstract class BaseGizmo {
     return [result[0], result[1], result[2]];
   }
   
+  // ==================== WebGPU Rendering Support ====================
+  
+  /**
+   * Build model matrix with screen-space scaling for WebGPU rendering.
+   * Applies local rotation if in local mode.
+   */
+  protected buildGPUModelMatrix(): mat4 {
+    const model = mat4.create();
+    mat4.translate(model, model, this.targetPosition as unknown as vec3);
+    
+    // Apply local rotation if in local mode
+    if (this.orientation === 'local') {
+      const rotMat = this.getRotationMatrix();
+      mat4.multiply(model, model, rotMat);
+    }
+    
+    // Apply screen-space scale
+    const scale = this.getScreenSpaceScale();
+    mat4.scale(model, model, [scale, scale, scale]);
+    
+    return model;
+  }
+  
+  /**
+   * Get axis colors for WebGPU rendering based on hover/active state.
+   * Returns [xColor, yColor, zColor] with highlighting for active axis.
+   */
+  protected getGPUAxisColors(): [GizmoColor, GizmoColor, GizmoColor] {
+    const baseColors: [GizmoColor, GizmoColor, GizmoColor] = [
+      [AXIS_COLORS.x[0], AXIS_COLORS.x[1], AXIS_COLORS.x[2], 1],
+      [AXIS_COLORS.y[0], AXIS_COLORS.y[1], AXIS_COLORS.y[2], 1],
+      [AXIS_COLORS.z[0], AXIS_COLORS.z[1], AXIS_COLORS.z[2], 1],
+    ];
+    
+    // Highlight active axis when dragging
+    if (this.isDraggingFlag && this.activeAxis) {
+      const axisIndex = { x: 0, y: 1, z: 2 }[this.activeAxis];
+      const highlight = AXIS_COLORS[`${this.activeAxis}Highlight`];
+      baseColors[axisIndex] = [highlight[0], highlight[1], highlight[2], 1];
+    }
+    
+    return baseColors;
+  }
+  
   // ==================== Abstract Methods ====================
   
   /**
-   * Render the gizmo
+   * Render the gizmo (WebGL2)
    */
   abstract render(vpMatrix: mat4): void;
+  
+  /**
+   * Render the gizmo using WebGPU
+   * @param passEncoder - Active WebGPU render pass encoder
+   * @param vpMatrix - View-projection matrix
+   * @param renderer - GizmoRendererGPU instance for drawing primitives
+   */
+  abstract renderGPU(
+    passEncoder: GPURenderPassEncoder,
+    vpMatrix: mat4 | Float32Array,
+    renderer: GizmoRendererGPU
+  ): void;
   
   /**
    * Handle mouse down - returns true if gizmo was hit

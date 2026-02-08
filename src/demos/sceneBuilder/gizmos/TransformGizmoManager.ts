@@ -1,6 +1,7 @@
 /**
  * TransformGizmoManager - Orchestrates transform gizmo modes
  * Provides the same API as the old createTransformGizmo() factory function
+ * Supports both WebGL2 and WebGPU rendering backends
  */
 
 import { mat4, quat } from 'gl-matrix';
@@ -10,6 +11,8 @@ import { TranslateGizmo } from './TranslateGizmo';
 import { RotateGizmo } from './RotateGizmo';
 import { ScaleGizmo } from './ScaleGizmo';
 import { UniformScaleGizmo } from './UniformScaleGizmo';
+import type { GPUContext } from '../../../core/gpu/GPUContext';
+import { GizmoRendererGPU } from '../../../core/gpu/renderers/GizmoRendererGPU';
 
 export type GizmoMode = 'translate' | 'rotate' | 'scale';
 // GizmoOrientation is re-exported from BaseGizmo
@@ -27,6 +30,10 @@ export class TransformGizmoManager {
   private readonly rotateGizmo: RotateGizmo;
   private readonly scaleGizmo: ScaleGizmo;
   private readonly uniformScaleGizmo: UniformScaleGizmo;
+  
+  // WebGPU renderer (optional)
+  private gpuContext: GPUContext | null = null;
+  private gizmoRendererGPU: GizmoRendererGPU | null = null;
   
   private mode: GizmoMode = 'translate';
   private orientation: GizmoOrientation = 'world';
@@ -103,6 +110,43 @@ export class TransformGizmoManager {
     this.uniformScaleGizmo.render(vpMatrix);
   }
   
+  // ==================== WebGPU Rendering ====================
+  
+  /**
+   * Initialize WebGPU gizmo renderer
+   * Call this when switching to WebGPU mode
+   */
+  initGPURenderer(ctx: GPUContext): void {
+    if (this.gizmoRendererGPU) {
+      this.gizmoRendererGPU.destroy();
+    }
+    this.gpuContext = ctx;
+    this.gizmoRendererGPU = new GizmoRendererGPU(ctx);
+    console.log('[TransformGizmoManager] WebGPU renderer initialized');
+  }
+  
+  /**
+   * Check if WebGPU renderer is available
+   */
+  hasGPURenderer(): boolean {
+    return this.gizmoRendererGPU !== null;
+  }
+  
+  /**
+   * Render gizmo using WebGPU
+   * Delegates to the active gizmo's renderGPU method so that each gizmo
+   * can use its own internal state (orientation, rotation, etc.)
+   * @param passEncoder - Active render pass encoder
+   * @param vpMatrix - View-projection matrix (from camera)
+   */
+  renderGPU(passEncoder: GPURenderPassEncoder, vpMatrix: mat4 | Float32Array): void {
+    if (!this.enabled || !this.gizmoRendererGPU) return;
+    
+    // Delegate to active gizmo's renderGPU method
+    // This ensures proper local/world orientation handling
+    this.getActiveGizmo().renderGPU(passEncoder, vpMatrix, this.gizmoRendererGPU);
+  }
+  
   setMode(newMode: GizmoMode): void {
     this.mode = newMode;
     // Re-apply target to active gizmo on mode change using quaternion directly
@@ -110,7 +154,11 @@ export class TransformGizmoManager {
     const target = this.currentTarget;
     this.getActiveGizmo().setTargetWithQuat(target.position, target.rotationQuat, target.scale);
   }
-  
+
+  getActiveMode(): GizmoMode {
+    return this.mode;
+  }
+
   setOrientation(newOrientation: GizmoOrientation): void {
     this.orientation = newOrientation;
     // Pass to all gizmos
@@ -254,6 +302,45 @@ export class TransformGizmoManager {
     return this.uniformScaleGizmo.isActive;
   }
   
+  /**
+   * Check if gizmo is enabled
+   */
+  get isEnabled(): boolean {
+    return this.enabled;
+  }
+  
+  /**
+   * Get current gizmo mode
+   */
+  getMode(): GizmoMode {
+    return this.mode;
+  }
+  
+  /**
+   * Get current target transform data
+   */
+  getTarget(): { position: Vec3; rotation: Vec3; scale: Vec3 } | null {
+    if (!this.enabled) return null;
+    return {
+      position: [...this.currentTarget.position] as Vec3,
+      rotation: [...this.currentTarget.rotation] as Vec3,
+      scale: [...this.currentTarget.scale] as Vec3,
+    };
+  }
+  
+  /**
+   * Get currently hovered axis (0=X, 1=Y, 2=Z) or null if none
+   */
+  getHoveredAxis(): number | null {
+    const active = this.getActiveGizmo();
+    // Access internal hoveredAxis property if available
+    if ('hoveredAxis' in active && typeof (active as any).hoveredAxis === 'number') {
+      const axis = (active as any).hoveredAxis;
+      return axis >= 0 ? axis : null;
+    }
+    return null;
+  }
+  
   // ==================== Cleanup ====================
   
   destroy(): void {
@@ -261,6 +348,9 @@ export class TransformGizmoManager {
     this.rotateGizmo.destroy();
     this.scaleGizmo.destroy();
     this.uniformScaleGizmo.destroy();
+    this.gizmoRendererGPU?.destroy();
+    this.gizmoRendererGPU = null;
+    this.gpuContext = null;
   }
 }
 

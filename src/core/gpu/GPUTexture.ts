@@ -76,6 +76,89 @@ export interface GPUSamplerOptions {
   maxAnisotropy?: number;
 }
 
+// Mipmap generation pipeline (lazily created, shared across all textures)
+let mipmapPipeline: GPURenderPipeline | null = null;
+let mipmapSampler: GPUSampler | null = null;
+
+// Mipmap shader (simple box filter downsample)
+const MIPMAP_SHADER = `
+  @group(0) @binding(0) var srcTexture: texture_2d<f32>;
+  @group(0) @binding(1) var srcSampler: sampler;
+
+  struct VertexOutput {
+    @builtin(position) position: vec4f,
+    @location(0) uv: vec2f,
+  }
+
+  @vertex
+  fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+    // Full-screen triangle
+    var output: VertexOutput;
+    let x = f32((vertexIndex << 1u) & 2u);
+    let y = f32(vertexIndex & 2u);
+    output.position = vec4f(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+    output.uv = vec2f(x, y);
+    return output;
+  }
+
+  @fragment
+  fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+    return textureSample(srcTexture, srcSampler, input.uv);
+  }
+`;
+
+/**
+ * Get or create the mipmap generation pipeline
+ */
+function getMipmapPipeline(device: GPUDevice, format: GPUTextureFormat): GPURenderPipeline {
+  if (mipmapPipeline && mipmapSampler) {
+    return mipmapPipeline;
+  }
+
+  const shaderModule = device.createShaderModule({
+    label: 'mipmap-shader',
+    code: MIPMAP_SHADER,
+  });
+
+  mipmapSampler = device.createSampler({
+    label: 'mipmap-sampler',
+    minFilter: 'linear',
+    magFilter: 'linear',
+  });
+
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: 'mipmap-bind-group-layout',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+    ],
+  });
+
+  const pipelineLayout = device.createPipelineLayout({
+    label: 'mipmap-pipeline-layout',
+    bindGroupLayouts: [bindGroupLayout],
+  });
+
+  mipmapPipeline = device.createRenderPipeline({
+    label: 'mipmap-pipeline',
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: 'vs_main',
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: 'fs_main',
+      targets: [{ format }],
+    },
+    primitive: {
+      topology: 'triangle-list',
+    },
+  });
+
+  return mipmapPipeline;
+}
+
 /**
  * Unified GPU texture class
  */
@@ -314,6 +397,77 @@ export class UnifiedGPUTexture {
       { texture: this._texture },
       { width: bitmap.width, height: bitmap.height }
     );
+  }
+
+  /**
+   * Generate mipmaps for this texture
+   * Should be called after uploading data to mip level 0
+   * 
+   * Note: The texture must have been created with:
+   * - mipLevelCount > 1
+   * - renderTarget: true (for RENDER_ATTACHMENT usage)
+   */
+  generateMipmaps(ctx: GPUContext): void {
+    if (this._mipLevelCount <= 1) {
+      return; // No mipmaps to generate
+    }
+
+    const pipeline = getMipmapPipeline(ctx.device, this._format);
+    const encoder = ctx.device.createCommandEncoder({ label: 'mipmap-encoder' });
+
+    let srcWidth = this._width;
+    let srcHeight = this._height;
+
+    for (let level = 1; level < this._mipLevelCount; level++) {
+      const dstWidth = Math.max(1, srcWidth >> 1);
+      const dstHeight = Math.max(1, srcHeight >> 1);
+
+      // Create view for source mip level
+      const srcView = this._texture.createView({
+        label: `${this._label}-mip-src-${level - 1}`,
+        baseMipLevel: level - 1,
+        mipLevelCount: 1,
+      });
+
+      // Create view for destination mip level
+      const dstView = this._texture.createView({
+        label: `${this._label}-mip-dst-${level}`,
+        baseMipLevel: level,
+        mipLevelCount: 1,
+      });
+
+      // Create bind group for this pass
+      const bindGroupLayout = pipeline.getBindGroupLayout(0);
+      const bindGroup = ctx.device.createBindGroup({
+        label: `mipmap-bind-group-${level}`,
+        layout: bindGroupLayout,
+        entries: [
+          { binding: 0, resource: srcView },
+          { binding: 1, resource: mipmapSampler! },
+        ],
+      });
+
+      // Render pass to generate this mip level
+      const pass = encoder.beginRenderPass({
+        label: `mipmap-pass-${level}`,
+        colorAttachments: [{
+          view: dstView,
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        }],
+      });
+
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.draw(3); // Full-screen triangle
+      pass.end();
+
+      srcWidth = dstWidth;
+      srcHeight = dstHeight;
+    }
+
+    ctx.queue.submit([encoder.finish()]);
   }
 
   /**

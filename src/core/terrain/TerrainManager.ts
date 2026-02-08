@@ -10,7 +10,6 @@
 
 import { mat4, vec3 } from 'gl-matrix';
 import { GPUContext, UnifiedGPUTexture, ShaderSources } from '../gpu';
-import { type ShadowCaster, type ShadowPassOptions } from '../gpu/renderers/ShadowRendererGPU';
 import { type BoundingBox } from '../gpu/renderers/types';
 import { registerWGSLShader, unregisterWGSLShader } from '../../demos/sceneBuilder/shaderManager';
 import { 
@@ -133,9 +132,10 @@ export type GenerationProgressCallback = (stage: string, progress: number) => vo
 /**
  * TerrainManager - Orchestrates terrain generation and rendering
  * 
- * Implements ShadowCaster to participate in shadow pass rendering.
+ * Note: Shadow casting is handled by GPUTerrainSceneObject which delegates
+ * to CDLODRendererGPU.renderShadowPass()
  */
-export class TerrainManager implements ShadowCaster {
+export class TerrainManager {
   private ctx: GPUContext;
   private config: TerrainManagerConfig;
   
@@ -500,49 +500,6 @@ export class TerrainManager implements ShadowCaster {
     const diagonal = worldSize * Math.SQRT2 * 0.5; // Half diagonal
     const maxHeight = worldSize * heightScale; // Height is scaled by worldSize
     return Math.sqrt(diagonal * diagonal + maxHeight * maxHeight);
-  }
-  
-  // ============ ShadowCaster Implementation ============
-  
-  /**
-   * Check if terrain can cast shadows (has valid geometry)
-   */
-  get canCastShadows(): boolean {
-    return this.isReady && (this.getGeometryBuffers()?.instanceCount ?? 0) > 0;
-  }
-  
-  /**
-   * Render terrain depth for shadow map generation
-   * Called by GPUForwardPipeline during shadow pass
-   */
-  renderToShadowPass(
-    passEncoder: GPURenderPassEncoder,
-    options: ShadowPassOptions
-  ): void {
-    const geometryBuffers = this.getGeometryBuffers();
-    if (!geometryBuffers || geometryBuffers.instanceCount === 0) {
-      return;
-    }
-    
-    // Draw terrain geometry using the shadow pipeline already set by ShadowRendererGPU
-    passEncoder.setVertexBuffer(0, geometryBuffers.vertexBuffer!.buffer);
-    passEncoder.setVertexBuffer(1, geometryBuffers.instanceBuffer!.buffer);
-    passEncoder.setIndexBuffer(geometryBuffers.indexBuffer!.buffer, 'uint32');
-    passEncoder.drawIndexed(geometryBuffers.indexCount, geometryBuffers.instanceCount);
-  }
-  
-  /**
-   * Get terrain bounding box for frustum culling
-   */
-  getBoundingBox(): BoundingBox | null {
-    const halfSize = this.config.worldSize / 2;
-    const minHeight = -this.config.heightScale * 0.5;
-    const maxHeight = this.config.heightScale * 2;
-    
-    return {
-      min: [-halfSize, minHeight, -halfSize] as vec3,
-      max: [halfSize, maxHeight, halfSize] as vec3,
-    };
   }
   
   getNormalMap(): UnifiedGPUTexture | null {

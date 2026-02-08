@@ -1,4 +1,4 @@
-import { Slider } from '../../ui';
+import { Slider, Checkbox } from '../../ui';
 import styles from './EnvironmentPanel.module.css';
 
 interface LightingTabProps {
@@ -7,11 +7,14 @@ interface LightingTabProps {
   sunElevation: number;
   sunAmbient: number;
   hdrExposure: number;
+  /** Dynamic IBL (Image-Based Lighting) from procedural sky */
+  dynamicIBL?: boolean;
   onLightModeChange: (mode: 'directional' | 'hdr') => void;
   onSunAzimuthChange: (value: number) => void;
   onSunElevationChange: (value: number) => void;
   onSunAmbientChange: (value: number) => void;
   onHdrExposureChange: (value: number) => void;
+  onDynamicIBLChange?: (enabled: boolean) => void;
   hdrControls: preact.ComponentChildren;
 }
 
@@ -21,11 +24,13 @@ export function LightingTab({
   sunElevation,
   sunAmbient,
   hdrExposure,
+  dynamicIBL = true,
   onLightModeChange,
   onSunAzimuthChange,
   onSunElevationChange,
   onSunAmbientChange,
   onHdrExposureChange,
+  onDynamicIBLChange,
   hdrControls,
 }: LightingTabProps) {
   return (
@@ -78,6 +83,20 @@ export function LightingTab({
             format={(v) => v.toFixed(2)}
             onChange={onSunAmbientChange}
           />
+          
+          {/* Dynamic IBL Toggle - only shown in WebGPU mode */}
+          {onDynamicIBLChange && (
+            <div class={styles.iblToggle}>
+              <Checkbox
+                label="Dynamic IBL"
+                checked={dynamicIBL}
+                onChange={onDynamicIBLChange}
+              />
+              <span class={styles.iblTooltip} title="Image-Based Lighting from procedural sky. Provides realistic ambient lighting and reflections.">
+                ℹ️
+              </span>
+            </div>
+          )}
         </div>
       )}
 

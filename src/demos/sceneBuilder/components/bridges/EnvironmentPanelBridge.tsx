@@ -58,8 +58,12 @@ export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironm
           store.viewport.setWindParams(store.windManager.getShaderUniforms());
         }
       },
+      // Dynamic IBL callback - only provided in WebGPU mode
+      onDynamicIBLChanged: store.isWebGPU.value ? (enabled: boolean) => {
+        store.viewport?.setDynamicIBL?.(enabled);
+      } : undefined,
     });
-  }, [store.scene, store.gl, store.windManager, store.lightingManager, externalContext]);
+  }, [store.scene, store.gl, store.windManager, store.lightingManager, store.isWebGPU.value, externalContext]);
   
   return (
     <EnvironmentPanel

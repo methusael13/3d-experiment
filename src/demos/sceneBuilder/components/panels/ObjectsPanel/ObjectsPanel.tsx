@@ -1,5 +1,5 @@
 import { useCallback, useRef } from 'preact/hooks';
-import { importModelFile, importGLTFDirectory } from '../../../../../loaders';
+import { sceneSerializer } from '@/loaders/SceneSerializer';
 import { Panel, Select } from '../../ui';
 import type { Scene } from '../../../../../core/Scene';
 import styles from './ObjectsPanel.module.css';
@@ -45,7 +45,7 @@ export function ObjectsPanel({
   onSelect,
   onSelectAll,
   onClearSelection,
-  onToggleGroup,
+  onToggleGroup
 }: ObjectsPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -69,11 +69,13 @@ export function ObjectsPanel({
       const input = e.target as HTMLInputElement;
       const file = input.files?.[0];
       if (file) {
-        const result = await importModelFile(file);
+        const result = await sceneSerializer.importModelFile(file);
         if (result) {
           const { modelPath, displayName } = result;
           const obj = await scene.addObject(modelPath, displayName);
           if (obj) scene.select(obj.id);
+        } else {
+          console.error('Failed to import glb file');
         }
       }
       input.value = '';
@@ -87,7 +89,7 @@ export function ObjectsPanel({
       const input = e.target as HTMLInputElement;
       const files = input.files;
       if (files && files.length > 0) {
-        const result = await importGLTFDirectory(files);
+        const result = await sceneSerializer.importGLTFDirectory(files);
         if (result) {
           const { modelPath, displayName } = result;
           const obj = await scene.addObject(modelPath, displayName);
@@ -201,8 +203,8 @@ export function ObjectsPanel({
           ref={folderInputRef}
           type="file"
           // @ts-ignore - webkitdirectory is not in types
-          webkitdirectory=""
-          directory=""
+          webkitdirectory
+          directory
           style={{ display: 'none' }}
           onChange={handleImportFolder}
         />

@@ -5,15 +5,12 @@
  */
 
 import { mat4 } from 'gl-matrix';
-import { BaseRenderPass, PassPriority } from '../RenderPass';
+import { BaseRenderPass, PassPriority, type PassCategory } from '../RenderPass';
 import type { RenderContext } from '../RenderContext';
 import type { SkyRendererGPU } from '../../renderers/SkyRendererGPU';
 import type { ObjectRendererGPU } from '../../renderers/ObjectRendererGPU';
 import type { GridRendererGPU } from '../../renderers/GridRendererGPU';
 import type { ShadowRendererGPU } from '../../renderers/ShadowRendererGPU';
-import type { TerrainManager } from '../../../terrain/TerrainManager';
-import type { OceanManager } from '../../../ocean/OceanManager';
-import type { UnifiedGPUTexture } from '../../GPUTexture';
 
 // ============================================================================
 // SKY PASS
@@ -21,10 +18,12 @@ import type { UnifiedGPUTexture } from '../../GPUTexture';
 
 /**
  * SkyPass - Renders sky background (sun or HDR)
+ * Category: scene (goes through post-processing)
  */
 export class SkyPass extends BaseRenderPass {
   readonly name = 'sky';
   readonly priority = PassPriority.SKY;
+  readonly category: PassCategory = 'scene';
   
   constructor(private skyRenderer: SkyRendererGPU) {
     super();
@@ -57,49 +56,82 @@ export class SkyPass extends BaseRenderPass {
 
 export interface ShadowPassDependencies {
   shadowRenderer: ShadowRendererGPU;
+  objectRenderer: ObjectRendererGPU;
 }
 
 /**
  * ShadowPass - Renders shadow map from light's perspective
- * Reads terrain from ctx.scene
+ * Category: scene (shadow maps are used by scene passes)
+ * 
+ * Uses actual mesh geometry via ShadowCaster interface. Scene objects that
+ * implement ShadowCaster (terrain, etc.) render their own depth. Batched
+ * objects (primitives) are handled separately via ObjectRendererGPU.
  */
 export class ShadowPass extends BaseRenderPass {
   readonly name = 'shadow';
   readonly priority = PassPriority.SHADOW;
+  readonly category: PassCategory = 'scene';
   
   private shadowRenderer: ShadowRendererGPU;
+  private objectRenderer: ObjectRendererGPU;
   
   constructor(deps: ShadowPassDependencies) {
     super();
     this.shadowRenderer = deps.shadowRenderer;
+    this.objectRenderer = deps.objectRenderer;
   }
   
   execute(ctx: RenderContext): void {
     const { shadowEnabled, lightDirection } = ctx.options;
     
-    // Get terrain from scene
-    const terrainManager = ctx.scene?.getWebGPUTerrain()?.getTerrainManager() ?? null;
+    if (!shadowEnabled) return;
     
-    if (!shadowEnabled || !terrainManager) return;
-    
-    // Update bind group with terrain heightmap
-    const heightmap = terrainManager.getHeightmapTexture();
-    if (heightmap) {
-      this.shadowRenderer.updateBindGroup(heightmap);
-    }
-    
-    // Get terrain config for shadow params
-    const terrainConfig = terrainManager.getConfig();
-    
-    // Render shadow map
-    this.shadowRenderer.renderShadowMap(ctx.encoder, {
+    // Update shadow renderer params and compute light space matrix
+    this.shadowRenderer.updateLightMatrix({
       lightDirection: lightDirection as [number, number, number],
       cameraPosition: ctx.cameraPosition,
       cameraForward: ctx.cameraForward,
-      heightScale: terrainConfig?.heightScale ?? 50,
-      terrainSize: terrainConfig?.worldSize ?? 1000,
-      gridSize: 129,
     });
+    
+    const shadowMap = this.shadowRenderer.getShadowMap();
+    const lightSpaceMatrix = this.shadowRenderer.getLightSpaceMatrix();
+    const shadowConfig = this.shadowRenderer.getConfig();
+    const lightPos = this.shadowRenderer.getDirectionalLightPos();
+    
+    if (!shadowMap) return;
+    
+    // Begin shadow render pass
+    const passEncoder = ctx.encoder.beginRenderPass({
+      label: 'unified-shadow-pass',
+      colorAttachments: [],
+      depthStencilAttachment: {
+        view: shadowMap.view,
+        depthClearValue: 1.0,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+      },
+    });
+    
+    passEncoder.setViewport(0, 0, shadowConfig.resolution, shadowConfig.resolution, 0, 1);
+    
+    // Render shadow casters via ShadowCaster interface
+    // This includes terrain and any other objects that implement ShadowCaster
+    const shadowCasters = ctx.scene?.getShadowCasters() ?? [];
+    for (const caster of shadowCasters) {
+      if (caster.canCastShadows) {
+        caster.renderDepthOnly(
+          passEncoder,
+          lightSpaceMatrix,
+          lightPos
+        );
+      }
+    }
+
+    // Render batched object shadows via ObjectRendererGPU
+    // (PrimitiveObjects are batched together, not individual ShadowCasters)
+    this.objectRenderer.renderShadowPass(passEncoder, lightSpaceMatrix, lightPos);
+    
+    passEncoder.end();
   }
 }
 
@@ -114,11 +146,14 @@ export interface OpaquePassDependencies {
 
 /**
  * OpaquePass - Renders terrain and opaque objects with depth
+ * Category: scene (goes through post-processing)
  * Reads terrain from ctx.scene
+ * Supports IBL (Image-Based Lighting) for realistic ambient lighting
  */
 export class OpaquePass extends BaseRenderPass {
   readonly name = 'opaque';
   readonly priority = PassPriority.OPAQUE;
+  readonly category: PassCategory = 'scene';
   
   private objectRenderer: ObjectRendererGPU;
   private shadowRenderer: ShadowRendererGPU;
@@ -133,11 +168,23 @@ export class OpaquePass extends BaseRenderPass {
   execute(ctx: RenderContext): void {
     const { 
       wireframe, ambientIntensity, lightDirection,
-      shadowEnabled, shadowSoftShadows, shadowRadius 
+      shadowEnabled, shadowSoftShadows, shadowRadius,
+      dynamicIBL
     } = ctx.options;
     
     // Get terrain from scene
     const terrainManager = ctx.scene?.getWebGPUTerrain()?.getTerrainManager() ?? null;
+    
+    // Get shadow map and light space matrix if shadows enabled
+    const lightSpaceMatrix = shadowEnabled ? this.shadowRenderer.getLightSpaceMatrix() : null;
+    const shadowMap = shadowEnabled ? this.shadowRenderer.getShadowMap() : null;
+    
+    // Set shadow resources on object renderer for receiving shadows
+    if (shadowEnabled && shadowMap) {
+      this.objectRenderer.setShadowResources(shadowMap.view);
+    } else {
+      this.objectRenderer.clearShadowResources();
+    }
     
     // Determine loadOp based on whether sky pass ran
     const loadOp = ctx.options.skyMode !== 'none' ? 'load' : 'clear';
@@ -150,12 +197,13 @@ export class OpaquePass extends BaseRenderPass {
     
     // Render terrain
     if (terrainManager?.isReady) {
-      const shadowParams = shadowEnabled ? {
+      // Build shadow params only if we have valid shadow data
+      const shadowParams = (shadowEnabled && lightSpaceMatrix && shadowMap) ? {
         enabled: true,
         softShadows: shadowSoftShadows,
         shadowRadius: shadowRadius,
-        lightSpaceMatrix: this.shadowRenderer.getLightSpaceMatrix(),
-        shadowMap: this.shadowRenderer.getShadowMap(),
+        lightSpaceMatrix: lightSpaceMatrix,
+        shadowMap: shadowMap,
       } : undefined;
       
       terrainManager.render(pass, {
@@ -170,14 +218,27 @@ export class OpaquePass extends BaseRenderPass {
       });
     }
     
-    // Render objects
-    this.objectRenderer.render(pass, {
+    // Common render parameters for objects
+    const renderParams = {
       viewProjectionMatrix: ctx.viewProjectionMatrix,
       cameraPosition: ctx.cameraPosition,
       lightDirection,
-      lightColor: [1, 1, 1],
+      lightColor: [1, 1, 1] as [number, number, number],
       ambientIntensity,
-    });
+      // Shadow parameters for objects to receive shadows
+      lightSpaceMatrix: lightSpaceMatrix ?? undefined,
+      shadowEnabled: shadowEnabled,
+      shadowBias: 0.002,
+    };
+    
+    // Render objects with IBL if available and enabled
+    if (dynamicIBL && ctx.iblReady && ctx.iblBindGroup) {
+      // Use IBL rendering path with image-based ambient lighting
+      this.objectRenderer.renderWithIBL(pass, renderParams, ctx.iblBindGroup);
+    } else {
+      // Standard rendering without IBL
+      this.objectRenderer.render(pass, renderParams);
+    }
     
     pass.end();
   }
@@ -189,11 +250,13 @@ export class OpaquePass extends BaseRenderPass {
 
 /**
  * TransparentPass - Renders water and other transparent objects
+ * Category: scene (goes through post-processing)
  * Reads ocean and terrain from ctx.scene
  */
 export class TransparentPass extends BaseRenderPass {
   readonly name = 'transparent';
   readonly priority = PassPriority.TRANSPARENT;
+  readonly category: PassCategory = 'scene';
   
   constructor() {
     super();
@@ -244,10 +307,12 @@ export class TransparentPass extends BaseRenderPass {
 
 /**
  * OverlayPass - Renders grid and axes (depth test, no write)
+ * Category: viewport (renders AFTER post-processing to avoid tonemapping)
  */
 export class OverlayPass extends BaseRenderPass {
   readonly name = 'overlay';
   readonly priority = PassPriority.OVERLAY;
+  readonly category: PassCategory = 'viewport';
   
   constructor(private gridRenderer: GridRendererGPU) {
     super();
@@ -258,9 +323,10 @@ export class OverlayPass extends BaseRenderPass {
     
     if (!showGrid && !showAxes) return;
     
+    // Viewport passes render to final backbuffer (after post-processing)
     const pass = ctx.encoder.beginRenderPass({
       label: 'overlay-pass',
-      colorAttachments: [ctx.getColorAttachment('load')],
+      colorAttachments: [ctx.getBackbufferColorAttachment('load')],
       depthStencilAttachment: ctx.getDepthAttachment('load'),
     });
     
@@ -283,14 +349,12 @@ export interface DebugPassDependencies {
 
 /**
  * DebugPass - Renders debug visualizations (shadow map thumbnail)
- * 
- * Note: When useHDR is true, this pass is skipped because the final swap chain
- * isn't available until after post-processing. The debug thumbnail is rendered
- * separately after the PostProcessPipeline.execute() call.
+ * Category: viewport (renders AFTER post-processing)
  */
 export class DebugPass extends BaseRenderPass {
   readonly name = 'debug';
   readonly priority = PassPriority.DEBUG;
+  readonly category: PassCategory = 'viewport';
   
   private deps: DebugPassDependencies;
   
@@ -305,10 +369,7 @@ export class DebugPass extends BaseRenderPass {
     // Skip if not enabled
     if (!showShadowThumbnail || !shadowEnabled) return;
     
-    // When HDR path is active, skip here - thumbnail will be rendered
-    // after post-processing completes to draw on final swap chain
-    if (ctx.useHDR) return;
-    
+    // Viewport passes render directly to backbuffer
     const thumbnailSize = 200;
     const thumbnailX = 10;
     const thumbnailY = 10;
@@ -324,3 +385,6 @@ export class DebugPass extends BaseRenderPass {
     );
   }
 }
+
+// NOTE: GizmoPass was removed - gizmo rendering is now handled by TransformGizmoManager
+// directly in the Viewport, outside the forward pipeline passes.

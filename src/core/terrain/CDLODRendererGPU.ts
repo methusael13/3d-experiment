@@ -19,6 +19,7 @@ import {
   ShaderSources,
   VertexBufferLayoutDesc,
 } from '../gpu';
+import cdlodShadowShader from '../gpu/shaders/terrain/cdlod-shadow.wgsl?raw';
 import {
   TerrainQuadtree,
   TerrainNode,
@@ -196,9 +197,16 @@ export class CDLODRendererGPU {
   private config: CDLODGPUConfig;
   private quadtree: TerrainQuadtree;
   
+  // Debug: unique instance ID
+  private readonly instanceId = Math.random().toString(36).substr(2, 9);
+  
   // Pipeline
   private pipeline: RenderPipelineWrapper | null = null;
   private wireframePipeline: GPURenderPipeline | null = null;
+  private shadowPipeline: GPURenderPipeline | null = null;
+  private shadowBindGroupLayout: GPUBindGroupLayout | null = null;
+  private shadowBindGroup: GPUBindGroup | null = null;
+  private shadowUniformBuffer: UnifiedGPUBuffer | null = null;
   private bindGroupLayout: GPUBindGroupLayout | null = null;
   private pipelineLayout: GPUPipelineLayout | null = null;
   
@@ -233,6 +241,10 @@ export class CDLODRendererGPU {
   // Last selection (for debugging)
   private lastSelection: SelectionResult | null = null;
   
+  // Shadow-specific instance buffer (separate from camera view)
+  private shadowInstanceBuffer: UnifiedGPUBuffer | null = null;
+  private shadowInstanceData: Float32Array;
+  
   // Uniform builders for efficient updates
   private uniformBuilder: UniformBuilder;
   private materialBuilder: UniformBuilder;
@@ -250,6 +262,7 @@ export class CDLODRendererGPU {
     
     // Instance data: offsetX, offsetZ, scale, morphFactor, lodLevel (5 floats per instance)
     this.instanceData = new Float32Array(this.config.maxInstances * 5);
+    this.shadowInstanceData = new Float32Array(this.config.maxInstances * 5);
     
     // Uniform builders (52 floats for uniforms including detail + island params, 56 floats for material with beach + shadows)
     this.uniformBuilder = new UniformBuilder(52);
@@ -274,6 +287,7 @@ export class CDLODRendererGPU {
     this.createSamplers();
     this.createDefaultTextures();
     this.createPipeline();
+    this.createShadowPipeline();
   }
   
   /**
@@ -480,6 +494,12 @@ export class CDLODRendererGPU {
       size: this.config.maxInstances * 5 * 4,
     });
     
+    // Separate instance buffer for shadow pass (independent of camera view)
+    this.shadowInstanceBuffer = UnifiedGPUBuffer.createVertex(this.ctx, {
+      label: 'cdlod-shadow-instances',
+      size: this.config.maxInstances * 5 * 4,
+    });
+    
     // Uniform buffer for matrices and terrain params (208 bytes → 256 aligned)
     // 52 floats: mat4(16) + mat4(16) + vec4(cameraPos+pad) + vec4(terrain params) + vec4(detail params 1) + vec4(detail params 2) + vec4(island params)
     this.uniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
@@ -496,6 +516,14 @@ export class CDLODRendererGPU {
     this.materialBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'cdlod-material',
       size: 224, // Will be aligned to 256
+    });
+    
+    // Shadow uniform buffer (96 bytes = mat4 + vec4 + vec4)
+    // lightSpaceMatrix(16 floats) + cameraPos(3) + pad(1) + terrainSize, heightScale, gridSize, skirtDepth(4)
+    // = 24 floats × 4 bytes = 96 bytes
+    this.shadowUniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
+      label: 'cdlod-shadow-uniforms',
+      size: 96,
     });
   }
   
@@ -1062,6 +1090,185 @@ export class CDLODRendererGPU {
   getShaderSource(): string {
     return ShaderSources.terrainCDLOD;
   }
+  
+  // ============ Shadow Pass ============
+  
+  /**
+   * Create shadow pass pipeline and resources
+   * Uses depth-only rendering with the same vertex layout as main render
+   */
+  private createShadowPipeline(): void {
+    // Create bind group layout for shadow pass
+    // Binding 0: uniforms (lightSpaceMatrix, terrain params)
+    // Binding 1: heightmap texture
+    this.shadowBindGroupLayout = new BindGroupLayoutBuilder('cdlod-shadow-bind-group-layout')
+      .uniformBuffer(0, 'vertex')                          // Shadow uniforms
+      .texture(1, 'vertex', 'unfilterable-float')          // Heightmap (r32float)
+      .build(this.ctx);
+    
+    // Create pipeline layout
+    const pipelineLayout = this.ctx.device.createPipelineLayout({
+      label: 'cdlod-shadow-pipeline-layout',
+      bindGroupLayouts: [this.shadowBindGroupLayout],
+    });
+    
+    // Create shader module
+    const shaderModule = this.ctx.device.createShaderModule({
+      label: 'cdlod-shadow-shader',
+      code: cdlodShadowShader,
+    });
+    
+    // Create depth-only render pipeline
+    this.shadowPipeline = this.ctx.device.createRenderPipeline({
+      label: 'cdlod-shadow-pipeline',
+      layout: pipelineLayout,
+      vertex: {
+        module: shaderModule,
+        entryPoint: 'vs_shadow',
+        buffers: CDLOD_VERTEX_BUFFER_LAYOUTS,
+      },
+      // No fragment shader - depth-only rendering
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'back',
+        frontFace: 'ccw',
+      },
+      depthStencil: {
+        format: 'depth32float',
+        depthWriteEnabled: true,
+        depthCompare: 'less',  // Standard depth for shadow map (not reversed-Z)
+      },
+    });
+  }
+  
+  /**
+   * Update shadow bind group with current heightmap texture
+   */
+  private updateShadowBindGroup(heightmapTexture?: UnifiedGPUTexture): void {
+    if (!this.shadowBindGroupLayout || !this.shadowUniformBuffer) {
+      return;
+    }
+    
+    const heightmap = heightmapTexture || this.defaultHeightmap!;
+    
+    this.shadowBindGroup = new BindGroupBuilder('cdlod-shadow-bind-group')
+      .buffer(0, this.shadowUniformBuffer)
+      .texture(1, heightmap)
+      .build(this.ctx, this.shadowBindGroupLayout);
+  }
+  
+  /**
+   * Update shadow uniform buffer with light space matrix and terrain params
+   */
+  private updateShadowUniformBuffer(
+    lightSpaceMatrix: mat4,
+    cameraPosition: vec3,
+    terrainSize: number,
+    heightScale: number
+  ): void {
+    if (!this.shadowUniformBuffer) return;
+    
+    // Shadow uniform layout (matches shader ShadowUniforms struct):
+    // mat4 lightSpaceMatrix (16 floats)
+    // vec3 cameraPosition + pad (4 floats)
+    // terrainSize, heightScale, gridSize, skirtDepth (4 floats)
+    const data = new Float32Array(24);
+    
+    // Light space matrix
+    data.set(lightSpaceMatrix as Float32Array, 0);
+    
+    // Camera position
+    data[16] = cameraPosition[0];
+    data[17] = cameraPosition[1];
+    data[18] = cameraPosition[2];
+    data[19] = 0; // padding
+    
+    // Terrain params
+    data[20] = terrainSize;
+    data[21] = heightScale;
+    data[22] = this.config.gridSize;
+    data[23] = this.config.skirtDepthMultiplier;
+    
+    this.shadowUniformBuffer.write(this.ctx, data);
+  }
+  
+  /**
+   * Render terrain to shadow map using light-centric LOD selection
+   * 
+   * Unlike camera rendering, shadow maps need camera-independent LOD selection.
+   * We use a virtual "shadow camera" positioned above the terrain center,
+   * which provides consistent shadows regardless of actual camera position.
+   * 
+   * @param passEncoder - Shadow map render pass encoder
+   * @param lightSpaceMatrix - Light's view-projection matrix
+   * @param shadowCenter - Center of shadow volume in world space (XZ)
+   * @param terrainSize - Terrain world size
+   * @param heightScale - Terrain height scale
+   * @param heightmapTexture - Optional heightmap texture
+   */
+  renderShadowPass(
+    passEncoder: GPURenderPassEncoder,
+    lightSpaceMatrix: mat4,
+    lightPosition: vec3,
+    terrainSize: number,
+    heightScale: number,
+    heightmapTexture?: UnifiedGPUTexture,
+  ): void {
+    if (!this.shadowPipeline || !this.shadowUniformBuffer ||
+        !this.gridVertexBuffer || !this.gridIndexBuffer || !this.shadowInstanceBuffer) {
+      return;
+    }
+
+    const shadowSelection = this.quadtree.select(lightPosition, lightSpaceMatrix);
+    if (shadowSelection.nodes.length === 0) {
+      return;
+    }
+    
+    // Update shadow instance buffer (separate from main camera instance buffer)
+    this.updateShadowInstanceBuffer(shadowSelection.nodes);
+    // Update shadow uniforms
+    this.updateShadowUniformBuffer(lightSpaceMatrix, lightPosition, terrainSize, heightScale);
+    // Update bind group with heightmap
+    this.updateShadowBindGroup(heightmapTexture);
+    
+    if (!this.shadowBindGroup) {
+      return;
+    }
+    
+    // Draw shadow pass with shadow-specific instance buffer
+    passEncoder.setPipeline(this.shadowPipeline);
+    passEncoder.setBindGroup(0, this.shadowBindGroup);
+    passEncoder.setVertexBuffer(0, this.gridVertexBuffer.buffer);
+    passEncoder.setVertexBuffer(1, this.shadowInstanceBuffer.buffer);
+    passEncoder.setIndexBuffer(this.gridIndexBuffer.buffer, 'uint32');
+    
+    passEncoder.drawIndexed(this.gridIndexCount, shadowSelection.nodes.length);
+  }
+
+  /**
+   * Update shadow instance buffer with selected nodes
+   * Uses a separate buffer from camera rendering for independence
+   */
+  private updateShadowInstanceBuffer(nodes: TerrainNode[]): void {
+    const count = Math.min(nodes.length, this.config.maxInstances);
+    const maxLodLevels = this.quadtree.getConfig().maxLodLevels;
+    
+    for (let i = 0; i < count; i++) {
+      const node = nodes[i];
+      const offset = i * 5;
+      
+      this.shadowInstanceData[offset + 0] = node.center[0];     // offsetX
+      this.shadowInstanceData[offset + 1] = node.center[2];     // offsetZ
+      this.shadowInstanceData[offset + 2] = node.size / (this.config.gridSize - 1);  // scale
+      this.shadowInstanceData[offset + 3] = node.morphFactor;   // morph
+      this.shadowInstanceData[offset + 4] = maxLodLevels - 1 - node.lodLevel;
+    }
+    
+    this.shadowInstanceBuffer!.write(
+      this.ctx,
+      this.shadowInstanceData.subarray(0, count * 5)
+    );
+  }
 
   // ============ Cleanup ============
 
@@ -1070,8 +1277,10 @@ export class CDLODRendererGPU {
     this.gridIndexBuffer?.destroy();
     this.wireframeIndexBuffer?.destroy();
     this.instanceBuffer?.destroy();
+    this.shadowInstanceBuffer?.destroy();
     this.uniformBuffer?.destroy();
     this.materialBuffer?.destroy();
+    this.shadowUniformBuffer?.destroy();
     this.defaultHeightmap?.destroy();
     this.defaultNormalMap?.destroy();
     this.defaultShadowMap?.destroy();
@@ -1081,16 +1290,21 @@ export class CDLODRendererGPU {
     this.gridIndexBuffer = null;
     this.wireframeIndexBuffer = null;
     this.instanceBuffer = null;
+    this.shadowInstanceBuffer = null;
     this.uniformBuffer = null;
     this.materialBuffer = null;
+    this.shadowUniformBuffer = null;
     this.defaultHeightmap = null;
     this.defaultNormalMap = null;
     this.defaultShadowMap = null;
     this.defaultIslandMask = null;
     this.pipeline = null;
     this.wireframePipeline = null;
+    this.shadowPipeline = null;
     this.bindGroup = null;
+    this.shadowBindGroup = null;
     this.bindGroupLayout = null;
+    this.shadowBindGroupLayout = null;
     this.linearSampler = null;
     this.shadowSampler = null;
   }

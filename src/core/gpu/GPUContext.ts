@@ -3,6 +3,8 @@
  * Handles adapter/device acquisition and provides the core GPU resources
  */
 
+import { ObjectRendererGPU } from './renderers/ObjectRendererGPU';
+
 export interface GPUContextOptions {
   powerPreference?: GPUPowerPreference;
   requiredFeatures?: GPUFeatureName[];
@@ -21,6 +23,9 @@ export class GPUContext {
   private _canvas: HTMLCanvasElement | null = null;
   private _context: GPUCanvasContext | null = null;
   private _format: GPUTextureFormat = 'bgra8unorm';
+  
+  // Shared renderers (lazy initialized)
+  private _objectRenderer: ObjectRendererGPU | null = null;
 
   private constructor() {}
 
@@ -174,6 +179,17 @@ export class GPUContext {
   }
 
   /**
+   * Get the shared object renderer (lazy initialized)
+   * Used for rendering primitives and models
+   */
+  get objectRenderer(): ObjectRendererGPU {
+    if (!this._objectRenderer) {
+      this._objectRenderer = new ObjectRendererGPU(this);
+    }
+    return this._objectRenderer;
+  }
+
+  /**
    * Get device limits
    */
   get limits(): GPUSupportedLimits {
@@ -241,6 +257,12 @@ export class GPUContext {
    * Destroy the context and release resources
    */
   destroy(): void {
+    // Destroy shared renderers
+    if (this._objectRenderer) {
+      this._objectRenderer.destroy();
+      this._objectRenderer = null;
+    }
+    
     if (this._device) {
       this._device.destroy();
       this._device = null;

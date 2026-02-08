@@ -8,6 +8,7 @@ import { BaseGizmo, GizmoCamera, GizmoAxis, AXIS_COLORS } from './BaseGizmo';
 import { screenToRay, rayPlaneIntersect } from '../../../core/utils/raycastUtils';
 import { Vec3 } from '../../../core/types';
 import { toVec3 } from '../../../core/utils/mathUtils';
+import type { GizmoRendererGPU } from '../../../core/gpu/renderers/GizmoRendererGPU';
 
 /**
  * Rotate gizmo with circular rings for each axis
@@ -454,6 +455,21 @@ export class RotateGizmo extends BaseGizmo {
   handleMouseUp(): void {
     this.isDraggingFlag = false;
     this.activeAxis = null;
+  }
+  
+  // ==================== WebGPU Rendering ====================
+  
+  renderGPU(
+    passEncoder: GPURenderPassEncoder,
+    vpMatrix: mat4 | Float32Array,
+    renderer: GizmoRendererGPU
+  ): void {
+    if (!this.enabled) return;
+    
+    const modelMatrix = this.buildGPUModelMatrix();
+    const axisColors = this.getGPUAxisColors();
+    
+    renderer.renderRotateRings(passEncoder, vpMatrix, modelMatrix, axisColors);
   }
   
   destroy(): void {

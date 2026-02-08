@@ -7,7 +7,6 @@ import { useEffect, useCallback, useMemo, useRef } from 'preact/hooks';
 import { render } from 'preact';
 import { createSceneGraph, type SceneGraph } from '../../../../core/sceneGraph';
 import { createScene, type Scene } from '../../../../core/Scene';
-import { GPUTerrainSceneObject } from '../../../../core/sceneObjects';
 import { createLightingManager, type LightingManager } from '../../lightingManager';
 import { WindManager } from '../../wind';
 import { clearImportedModels } from '../../../../loaders';
@@ -64,25 +63,8 @@ export function SceneBuilderApp({
     viewport.setSceneGraph(sceneGraph);
     viewport.setScene(scene);
     
-    // Setup scene event listeners
-    scene.onSelectionChanged = () => {
-      store.syncFromScene();
-    };
     
-    scene.onObjectAdded = () => {
-      store.syncFromScene();
-      store.updateCameraFromSceneBounds();
-    };
-    
-    scene.onObjectRemoved = () => {
-      store.syncFromScene();
-      store.updateCameraFromSceneBounds();
-    };
-    
-    scene.onGroupChanged = () => {
-      store.syncFromScene();
-    };
-    
+    store.setupSceneCallbacks();
     // Initial sync
     store.syncFromScene();
     

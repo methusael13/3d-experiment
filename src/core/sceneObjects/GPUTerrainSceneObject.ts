@@ -6,19 +6,22 @@
  * - AABB for raycasting/selection
  * - Entry in the scene object list
  * - Connection point for TerrainPanel
+ * - ShadowCaster implementation for shadow map rendering
  * 
  * Terrain is always centered at origin and cannot be transformed.
  */
 
-import { vec3 } from 'gl-matrix';
+import { mat4, vec3 } from 'gl-matrix';
 import { SceneObject } from './SceneObject';
 import type { AABB } from './types';
+import type { ShadowCaster } from '../gpu/renderers/types';
 import type { TerrainManager } from '../terrain/TerrainManager';
 
 /**
  * GPUTerrainSceneObject - Scene object proxy for GPU terrain
+ * Implements ShadowCaster to participate in shadow map rendering.
  */
-export class GPUTerrainSceneObject extends SceneObject {
+export class GPUTerrainSceneObject extends SceneObject implements ShadowCaster {
   readonly objectType = 'terrain-gpu';
   
   /** Reference to the TerrainManager for config access */
@@ -86,6 +89,39 @@ export class GPUTerrainSceneObject extends SceneObject {
   getHeightScale(): number {
     if (!this._terrainManager) return 10;
     return this._terrainManager.getConfig().heightScale;
+  }
+  
+  // ==================== ShadowCaster Implementation ====================
+  
+  /**
+   * Whether this terrain can cast shadows
+   * Returns true if terrain is ready and shadow casting is enabled
+   */
+  get canCastShadows(): boolean {
+    return this.castsShadow && (this._terrainManager?.isReady ?? false);
+  }
+  
+  /**
+   * Render terrain depth to shadow map
+   * Delegates to CDLODRenderer's shadow pass
+   */
+  renderDepthOnly(passEncoder: GPURenderPassEncoder, lightSpaceMatrix: mat4, lightPosition: vec3): void {
+    if (!this._terrainManager?.isReady) return;
+    
+    const renderer = this._terrainManager.getRenderer();
+    const heightmap = this._terrainManager.getHeightmapTexture();
+    const config = this._terrainManager.getConfig();
+    
+    if (renderer) {
+      renderer.renderShadowPass(
+        passEncoder,
+        lightSpaceMatrix,
+        lightPosition,
+        config.worldSize,
+        config.heightScale,
+        heightmap ?? undefined
+      );
+    }
   }
   
   // ==================== Transform Overrides (terrain is fixed) ====================

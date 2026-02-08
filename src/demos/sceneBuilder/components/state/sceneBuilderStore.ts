@@ -11,7 +11,8 @@ import type { WindManager, ObjectWindSettings } from '../../wind';
 import type { GizmoMode, GizmoOrientation } from '../../gizmos';
 import type { Vec3 } from '../../../../core/types';
 import type { TerrainBlendSettings } from '../../componentPanels';
-import { AnySceneObject, GPUTerrainSceneObject, TerrainObject } from '../../../../core/sceneObjects';
+import { AnySceneObject, GPUTerrainSceneObject, ModelObject, TerrainObject, isModelObject, isPrimitiveObject } from '../../../../core/sceneObjects';
+import { PrimitiveObject } from '../../../../core/sceneObjects/PrimitiveObject';
 import { debounce } from '@/core/utils';
 
 // ==================== Types ====================
@@ -44,6 +45,7 @@ export interface SceneBuilderStore {
   selectedIds: Signal<Set<string>>;
   expandedGroupIds: Signal<Set<string>>;
   sceneBoundsVersion: Signal<number>;
+  transformVersion: Signal<number>;  // Incremented when object transforms change
   
   // Viewport state
   viewportState: Signal<ViewportState>;
@@ -111,6 +113,7 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   const objectTerrainBlendSettings = signal<Map<string, TerrainBlendSettings>>(new Map());
   const isWebGPU = signal<boolean>(false);
   const sceneBoundsVersion = signal<number>(0);
+  const transformVersion = signal<number>(0);  // Incremented when object transforms change
   
   // Debounced camera bounds update function (100ms delay)
   const debouncedCameraUpdate = debounce(() => {
@@ -123,8 +126,12 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     const sizeX = bounds.max[0] - bounds.min[0];
     const sizeY = bounds.max[1] - bounds.min[1];
     const sizeZ = bounds.max[2] - bounds.min[2];
-    const radius = Math.sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ) / 2;
-    
+    const radius = Math.max(
+      // Make sure radius is at least a minimum of 10 units
+      10,
+      Math.sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ) / 2
+    );
+
     // Only update if radius is meaningful
     if (radius > 0.1) {
       viewport.updateCameraForSceneBounds(radius);
@@ -183,6 +190,9 @@ export function createSceneBuilderStore(): SceneBuilderStore {
       // Sync selection
       const selectedIdsList = currentScene.getSelectedIds();
       selectedIds.value = new Set(selectedIdsList);
+      
+      // Increment transform version to force computed values to re-run
+      transformVersion.value++;
 
       viewport?.setRenderData({
         objects: allObjects as any,
@@ -251,6 +261,12 @@ export function createSceneBuilderStore(): SceneBuilderStore {
 
   function setIsWebGPU(enabled: boolean): void {
     isWebGPU.value = enabled;
+    
+    // When switching to WebGPU mode, initialize all existing objects
+    if (enabled) {
+      // Small delay to ensure GPUContext is ready
+      setTimeout(() => initAllObjectsWebGPU(), 100);
+    }
   }
   
   /**
@@ -268,17 +284,94 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   function setupSceneCallbacks(): void {
     if (!scene) return;
     
+    scene.onSelectionChanged = () => {
+      syncFromScene();
+    }
+
     // Hook into object added callback
     scene.onObjectAdded = (obj) => {
+      syncFromScene();
       updateCameraFromSceneBounds();
+      
+      // Initialize WebGPU resources for the object if in WebGPU mode
+      initObjectWebGPU(obj);
     };
     
     // Hook into object removed callback
     scene.onObjectRemoved = (id) => {
+      syncFromScene();
       updateCameraFromSceneBounds();
     };
+
+    scene.onGroupChanged = () => {
+      syncFromScene();
+    }
     
     console.log('[SceneBuilderStore] Scene callbacks setup for auto camera bounds update');
+  }
+  
+  /**
+   * Initialize WebGPU resources for a scene object if in WebGPU mode.
+   * Called automatically when objects are added to the scene.
+   */
+  function initObjectWebGPU(obj: AnySceneObject): void {
+    console.log(`[SceneBuilderStore] initObjectWebGPU called for: ${obj.name}, isWebGPU: ${isWebGPU.value}`);
+    
+    // Skip if not in WebGPU mode
+    if (!isWebGPU.value) {
+      console.log(`[SceneBuilderStore] Skipping - not in WebGPU mode`);
+      return;
+    }
+    
+    // Get GPU context from viewport
+    const gpuContext = viewport?.getWebGPUContext();
+    console.log(`[SceneBuilderStore] GPUContext:`, gpuContext ? 'available' : 'NOT AVAILABLE');
+    if (!gpuContext) return;
+    
+    // Handle PrimitiveObject (cube, sphere, plane)
+    // Use type guard + cast to access initWebGPU method
+    if (isPrimitiveObject(obj)) {
+      const primitive = obj as unknown as PrimitiveObject;
+      console.log(`[SceneBuilderStore] Calling initWebGPU on primitive: ${obj.name}`);
+      primitive.initWebGPU(gpuContext);
+      console.log('[SceneBuilderStore] meshId after init:', primitive.meshId);
+      return;
+    }
+    
+    if (isModelObject(obj)) {
+      const model = obj as unknown as ModelObject;
+      console.log(`[SceneBuilderStore] Calling initWebGPU on model: ${obj.name}`);
+      model.initWebGPU(gpuContext);
+      console.log('[SceneBuilderStore] meshIds after init:', model.meshIds);
+      return;
+    }
+  }
+  
+  /**
+   * Initialize WebGPU resources for all existing objects.
+   * Called when switching to WebGPU mode.
+   */
+  function initAllObjectsWebGPU(): void {
+    if (!isWebGPU.value) return;
+    
+    const gpuContext = viewport?.getWebGPUContext();
+    if (!gpuContext) return;
+    
+    for (const obj of objects.value) {
+      if (isPrimitiveObject(obj)) {
+        const primitive = obj as unknown as PrimitiveObject;
+        if (!primitive.isGPUInitialized) {
+          primitive.initWebGPU(gpuContext);
+          console.log(`[SceneBuilderStore] Initialized WebGPU for existing primitive: ${obj.name}`);
+        }
+      } else if (isModelObject(obj)) {
+        const model = obj as unknown as ModelObject;
+        if (!model.isGPUInitialized) {
+          model.initWebGPU(gpuContext);
+          console.log(`[SceneBuilderStore] Initialized WebGPU for existing model: ${obj.name}`);
+        }
+      }
+    }
   }
   
   return {
@@ -294,6 +387,7 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     objectTerrainBlendSettings,
     isWebGPU,
     sceneBoundsVersion,
+    transformVersion,
     
     // Computed
     selectedObjects,

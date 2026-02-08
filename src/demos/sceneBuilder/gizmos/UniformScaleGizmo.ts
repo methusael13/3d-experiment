@@ -5,6 +5,7 @@
 
 import { mat4 } from 'gl-matrix';
 import { BaseGizmo, GizmoCamera } from './BaseGizmo';
+import type { GizmoRendererGPU } from '../../../core/gpu/renderers/GizmoRendererGPU';
 
 export class UniformScaleGizmo extends BaseGizmo {
   private overlayCanvas: HTMLCanvasElement | null = null;
@@ -159,6 +160,21 @@ export class UniformScaleGizmo extends BaseGizmo {
   
   handleMouseUp(): void {
     // Nothing needed
+  }
+  
+  // ==================== WebGPU Rendering ====================
+  
+  /**
+   * UniformScaleGizmo uses 2D canvas overlay, not WebGPU rendering.
+   * This is a no-op implementation to satisfy the abstract method.
+   */
+  renderGPU(
+    passEncoder: GPURenderPassEncoder,
+    vpMatrix: mat4 | Float32Array,
+    renderer: GizmoRendererGPU
+  ): void {
+    // UniformScaleGizmo renders via 2D canvas overlay, not WebGPU
+    // The overlay is rendered in the regular render() method
   }
   
   destroy(): void {

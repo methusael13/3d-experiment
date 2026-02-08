@@ -16,13 +16,14 @@
  * The CompositePass always runs to apply tonemapping and gamma correction.
  */
 
-import { mat4 } from 'gl-matrix';
+import { mat4, vec3 } from 'gl-matrix';
 import { GPUContext } from '../GPUContext';
 import { UnifiedGPUTexture } from '../GPUTexture';
 import { GridRendererGPU } from '../renderers/GridRendererGPU';
 import { SkyRendererGPU } from '../renderers/SkyRendererGPU';
 import { ObjectRendererGPU } from '../renderers/ObjectRendererGPU';
 import { ShadowRendererGPU } from '../renderers';
+import { DynamicSkyIBL, type IBLTextures } from '../ibl';
 import { WebGPUShadowSettings } from '@/demos/sceneBuilder/componentPanels/RenderingPanel';
 import { 
   PostProcessPipeline, 
@@ -40,7 +41,7 @@ import {
   OpaquePass, 
   TransparentPass, 
   OverlayPass, 
-  DebugPass 
+  DebugPass,
 } from './passes';
 import type { Scene } from '../../Scene';
 
@@ -76,6 +77,8 @@ export interface RenderOptions {
   shadowSoftShadows?: boolean;
   shadowRadius?: number;
   showShadowThumbnail?: boolean;
+  /** Enable dynamic IBL (Image-Based Lighting) from procedural sky. Default: true in sun mode */
+  dynamicIBL?: boolean;
 }
 
 /**
@@ -94,6 +97,7 @@ export const DEFAULT_RENDER_OPTIONS: Required<RenderOptions> = {
   shadowSoftShadows: true,
   shadowRadius: 200,
   showShadowThumbnail: false,
+  dynamicIBL: true,  // Enabled by default for sun mode
 };
 
 /**
@@ -124,6 +128,11 @@ export class GPUForwardPipeline {
   private skyRenderer: SkyRendererGPU;
   private objectRenderer: ObjectRendererGPU;
   private shadowRenderer: ShadowRendererGPU;
+  
+  // IBL (Image-Based Lighting)
+  private dynamicSkyIBL: DynamicSkyIBL;
+  private iblBindGroup: GPUBindGroup | null = null;
+  private iblEnabled: boolean = true;  // Can be toggled for performance
   
   // Render passes (ordered by priority)
   private passes: RenderPass[] = [];
@@ -160,11 +169,15 @@ export class GPUForwardPipeline {
     // Create renderers
     this.gridRenderer = new GridRendererGPU(ctx);
     this.skyRenderer = new SkyRendererGPU(ctx);
-    this.objectRenderer = new ObjectRendererGPU(ctx);
+    // Use shared objectRenderer from GPUContext (so primitives add meshes to the same instance)
+    this.objectRenderer = ctx.objectRenderer;
     this.shadowRenderer = new ShadowRendererGPU(ctx, {
       resolution: 2048,
       shadowRadius: this.shadowRadius,
     });
+    
+    // Create Dynamic Sky IBL for image-based lighting
+    this.dynamicSkyIBL = new DynamicSkyIBL(ctx);
     
     // Create render passes
     this.initializePasses();
@@ -182,6 +195,7 @@ export class GPUForwardPipeline {
     // Note: Terrain and ocean are read from scene during execute(), not stored in passes
     const shadowPass = new ShadowPass({
       shadowRenderer: this.shadowRenderer,
+      objectRenderer: this.objectRenderer,
     });
     
     const skyPass = new SkyPass(this.skyRenderer);
@@ -200,6 +214,7 @@ export class GPUForwardPipeline {
     });
     
     // Store passes in priority order
+    // Note: Gizmos are rendered by TransformGizmoManager, not by the pipeline
     this.passes = [
       shadowPass,
       skyPass,
@@ -395,7 +410,7 @@ export class GPUForwardPipeline {
     const useHDR = this.postProcessPipeline && this.sceneColorTexture;
     
     // Merge options with instance defaults
-    const mergedOptions: RenderOptions = {
+    const mergedOptions: Required<RenderOptions> = {
       ...DEFAULT_RENDER_OPTIONS,
       shadowEnabled: this.shadowEnabled,
       shadowSoftShadows: this.shadowSoftShadows,
@@ -403,6 +418,35 @@ export class GPUForwardPipeline {
       showShadowThumbnail: this.showShadowThumbnail,
       ...options,
     };
+    
+    // ========== UPDATE DYNAMIC SKY IBL ==========
+    // Only update in sun mode when dynamicIBL is enabled
+    let iblBindGroup: GPUBindGroup | undefined;
+    let iblTextures: IBLTextures | undefined;
+    
+    if (mergedOptions.skyMode === 'sun' && mergedOptions.dynamicIBL && this.iblEnabled) {
+      // Normalize sun direction
+      const lightDir = mergedOptions.lightDirection;
+      const len = Math.sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
+      const sunDirection: [number, number, number] = len > 0 
+        ? [lightDir[0] / len, lightDir[1] / len, lightDir[2] / len]
+        : [0, 1, 0];
+      
+      // Update IBL (processes one task per frame)
+      this.dynamicSkyIBL.update(encoder, sunDirection, mergedOptions.sunIntensity, deltaTime);
+      
+      // Get IBL textures if ready
+      if (this.dynamicSkyIBL.isReady()) {
+        iblTextures = this.dynamicSkyIBL.getIBLTextures();
+        
+        // Create IBL bind group for object renderer
+        iblBindGroup = this.objectRenderer.createIBLBindGroup(
+          iblTextures.diffuse,
+          iblTextures.specular,
+          iblTextures.brdfLut
+        );
+      }
+    }
     
     // Get near/far from camera or use defaults
     const nearPlane = camera.near ?? this.defaultNearPlane;
@@ -430,13 +474,17 @@ export class GPUForwardPipeline {
       sceneColorTexture: this.sceneColorTexture ?? undefined,
       msaaHdrColorTexture: this.msaaHdrColorTexture ?? undefined,
       msaaColorTexture: this.msaaColorTexture ?? undefined,
+      // IBL textures for object rendering
+      iblTextures,
+      iblBindGroup,
     };
     
     const renderCtx = new RenderContextImpl(contextOptions);
     
-    // Execute all enabled render passes in order
+    // ========== SCENE PASSES (render to HDR buffer) ==========
+    // Execute scene category passes first (terrain, objects, water, sky)
     for (const pass of this.passes) {
-      if (pass.enabled) {
+      if (pass.enabled && pass.category === 'scene') {
         pass.execute(renderCtx);
       }
     }
@@ -467,7 +515,8 @@ export class GPUForwardPipeline {
         inverseViewMatrix: new Float32Array(inverseViewMatrix),
       };
       
-      // Execute post-processing pipeline
+      // Execute post-processing pipeline (tonemapping, SSAO, etc.)
+      // This writes the final composited result to outputView (backbuffer)
       this.postProcessPipeline.execute(
         encoder,
         this.sceneColorTexture,
@@ -475,12 +524,14 @@ export class GPUForwardPipeline {
         outputView,
         effectUniforms
       );
-      
-      // Render debug thumbnail after composite (if enabled)
-      if (mergedOptions.showShadowThumbnail && mergedOptions.shadowEnabled) {
-        this.shadowRenderer.renderDebugThumbnail(
-          encoder, outputView, 10, 10, 200, this.width, this.height
-        );
+    }
+    
+    // ========== VIEWPORT PASSES (render directly to backbuffer) ==========
+    // Execute viewport category passes AFTER post-processing
+    // These render grid, gizmos, debug overlays without tonemapping
+    for (const pass of this.passes) {
+      if (pass.enabled && pass.category === 'viewport') {
+        pass.execute(renderCtx);
       }
     }
     
@@ -598,8 +649,9 @@ export class GPUForwardPipeline {
     this.sceneColorTexture?.destroy();
     this.gridRenderer.destroy();
     this.skyRenderer.destroy();
-    this.objectRenderer.destroy();
+    // objectRenderer is owned by GPUContext, not destroyed here
     this.shadowRenderer.destroy();
+    this.dynamicSkyIBL.destroy();
     // OceanManager is owned externally, not destroyed here
     this.postProcessPipeline?.destroy();
     
@@ -607,5 +659,35 @@ export class GPUForwardPipeline {
     for (const pass of this.passes) {
       pass.destroy?.();
     }
+  }
+  
+  // ========== IBL Methods ==========
+  
+  /**
+   * Enable or disable IBL rendering
+   */
+  setIBLEnabled(enabled: boolean): void {
+    this.iblEnabled = enabled;
+  }
+  
+  /**
+   * Check if IBL is enabled
+   */
+  isIBLEnabled(): boolean {
+    return this.iblEnabled;
+  }
+  
+  /**
+   * Get the DynamicSkyIBL instance for direct access
+   */
+  getDynamicSkyIBL(): DynamicSkyIBL {
+    return this.dynamicSkyIBL;
+  }
+  
+  /**
+   * Check if IBL is ready for rendering
+   */
+  isIBLReady(): boolean {
+    return this.dynamicSkyIBL.isReady();
   }
 }

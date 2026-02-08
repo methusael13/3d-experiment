@@ -5,6 +5,7 @@
 
 import { mat4, vec3, quat } from 'gl-matrix';
 import { BaseGizmo, GizmoCamera, GizmoAxis } from './BaseGizmo';
+import type { GizmoRendererGPU } from '../../../core/gpu/renderers/GizmoRendererGPU';
 
 /**
  * Translate gizmo with arrow endpoints for each axis
@@ -240,6 +241,22 @@ export class TranslateGizmo extends BaseGizmo {
   handleMouseUp(): void {
     this.isDraggingFlag = false;
     this.activeAxis = null;
+  }
+  
+  // ==================== WebGPU Rendering ====================
+  
+  renderGPU(
+    passEncoder: GPURenderPassEncoder,
+    vpMatrix: mat4 | Float32Array,
+    renderer: GizmoRendererGPU
+  ): void {
+    if (!this.enabled) return;
+    
+    const modelMatrix = this.buildGPUModelMatrix();
+    const axisColors = this.getGPUAxisColors();
+    
+    renderer.renderTranslateLines(passEncoder, vpMatrix, modelMatrix, axisColors);
+    renderer.renderTranslateArrows(passEncoder, vpMatrix, modelMatrix, axisColors);
   }
   
   destroy(): void {

@@ -177,17 +177,11 @@ export function ConnectedTerrainPanel({
     
     const sceneObj = store.scene.getObject(selectedObj.id);
     if (!sceneObj) return null;
-    
-    // Check for WebGPU terrain
+
     if (isGPUTerrainObject(sceneObj)) {
       const gpuTerrain = sceneObj as GPUTerrainSceneObject;
       const manager = gpuTerrain.getTerrainManager();
       return { type: 'webgpu', manager } as GPUTerrainInfo;
-    }
-    
-    // Check for WebGL terrain
-    if (isTerrainObject(sceneObj)) {
-      return { type: 'webgl', terrainObject: sceneObj as TerrainObject } as TerrainInfo;
     }
     
     return null;
@@ -278,9 +272,9 @@ export function ConnectedTerrainPanel({
         terrainInfo.manager.setSeaFloorDepth(updated.seaFloorDepth);
       }
     }
-    
+
     // Island mask params: instant regeneration of mask texture only
-    if ('islandRadius' in changes || 'coastNoiseScale' in changes || 'coastNoiseStrength' in changes || 'coastFalloff' in changes) {
+    if (['islandRadius', 'coastNoiseScale', 'coastNoiseStrength', 'coastFalloff'].some(x => x in changes)) {
       if (terrainInfo?.type === 'webgpu' && terrainInfo.manager) {
         terrainInfo.manager.regenerateIslandMask({
           seed: updated.seed,
@@ -449,13 +443,14 @@ export function ConnectedTerrainPanel({
     // Clear progress after a delay
     setTimeout(() => setProgress(undefined), 2000);
   }, [onTerrainUpdate, selectedTerrainInfo, resolution, worldSize, noiseParams, erosionParams, materialParams, detailParams, store.isWebGPU, cdlodEnabled, clipmapEnabled]);
-  
-  // Determine if a terrain is selected
-  const hasTerrainSelected = selectedTerrainInfo.value !== null;
+
+  // Only render if terrain is selected
+  if (selectedTerrainInfo.value === null) {
+    return;
+  }
   
   return (
     <TerrainPanel
-      hasTerrainSelected={hasTerrainSelected}
       resolution={resolution}
       onResolutionChange={setResolution}
       worldSize={worldSize}

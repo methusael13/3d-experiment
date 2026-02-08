@@ -27,6 +27,9 @@ export function ConnectedObjectPanel() {
   });
   
   const transform = useComputed<TransformData>(() => {
+    // Read transformVersion to force re-computation when transforms change
+    const _ = store.transformVersion.value;
+    
     const obj = selectedObject.value;
     if (!obj) {
       return { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] };
@@ -62,6 +65,9 @@ export function ConnectedObjectPanel() {
   
   // Primitive-specific computed values (for Edit tab)
   const primitiveType = useComputed<'cube' | 'plane' | 'sphere' | undefined>(() => {
+    // Read transformVersion to force re-computation when scene state changes
+    const _ = store.transformVersion.value;
+    
     const obj = selectedObject.value;
     if (!obj || obj.objectType !== 'primitive' || !store.scene) return undefined;
     const sceneObj = store.scene.getObject(obj.id);
@@ -70,6 +76,9 @@ export function ConnectedObjectPanel() {
   });
   
   const primitiveConfig = useComputed<PrimitiveConfig | undefined>(() => {
+    // Read transformVersion to force re-computation when scene state changes
+    const _ = store.transformVersion.value;
+    
     const obj = selectedObject.value;
     if (!obj || obj.objectType !== 'primitive' || !store.scene) return undefined;
     const sceneObj = store.scene.getObject(obj.id);
@@ -78,6 +87,9 @@ export function ConnectedObjectPanel() {
   });
   
   const showNormals = useComputed<boolean>(() => {
+    // Read transformVersion to force re-computation when scene state changes
+    const _ = store.transformVersion.value;
+    
     const obj = selectedObject.value;
     if (!obj || obj.objectType !== 'primitive' || !store.scene) return false;
     const sceneObj = store.scene.getObject(obj.id);

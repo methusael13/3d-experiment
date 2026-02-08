@@ -11,6 +11,8 @@ export interface EnvironmentStore {
   sunAmbient: number;
   hdrExposure: number;
   hdrFilename: string;
+  /** Dynamic IBL (Image-Based Lighting) from procedural sky - WebGPU only */
+  dynamicIBL: boolean;
   
   // Wind state
   windEnabled: boolean;
@@ -39,6 +41,7 @@ export interface EnvironmentStore {
   setHdrProgress: (progress: number) => void;
   setIsLoadingHdr: (loading: boolean) => void;
   setHdrFilename: (filename: string) => void;
+  setDynamicIBL: (enabled: boolean) => void;
 }
 
 export function useEnvironmentStore(
@@ -53,6 +56,7 @@ export function useEnvironmentStore(
   const [sunAmbient, setSunAmbientState] = useState(lightingManager.sunLight.ambientIntensity);
   const [hdrExposure, setHdrExposureState] = useState(lightingManager.hdrLight.exposure);
   const [hdrFilename, setHdrFilenameState] = useState('No HDR loaded');
+  const [dynamicIBL, setDynamicIBLState] = useState(true); // Default enabled
   
   // Wind state
   const [windEnabled, setWindEnabledState] = useState(windManager.enabled);
@@ -136,6 +140,14 @@ export function useEnvironmentStore(
     setHdrFilenameState(filename);
   }, []);
 
+  const setDynamicIBL = useCallback((enabled: boolean) => {
+    setDynamicIBLState(enabled);
+    // Notify context about IBL change (if callback exists)
+    if (context.onDynamicIBLChanged) {
+      context.onDynamicIBLChanged(enabled);
+    }
+  }, [context]);
+
   return {
     lightMode,
     sunAzimuth,
@@ -143,6 +155,7 @@ export function useEnvironmentStore(
     sunAmbient,
     hdrExposure,
     hdrFilename,
+    dynamicIBL,
     windEnabled,
     windDirection,
     windStrength,
@@ -165,5 +178,6 @@ export function useEnvironmentStore(
     setHdrProgress,
     setIsLoadingHdr,
     setHdrFilename,
+    setDynamicIBL,
   };
 }

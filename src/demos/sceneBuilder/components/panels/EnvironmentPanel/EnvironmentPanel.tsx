@@ -115,11 +115,13 @@ export function EnvironmentPanel({
             sunElevation={store.sunElevation}
             sunAmbient={store.sunAmbient}
             hdrExposure={store.hdrExposure}
+            dynamicIBL={store.dynamicIBL}
             onLightModeChange={store.setLightMode}
             onSunAzimuthChange={store.setSunAzimuth}
             onSunElevationChange={store.setSunElevation}
             onSunAmbientChange={store.setSunAmbient}
             onHdrExposureChange={store.setHdrExposure}
+            onDynamicIBLChange={context.onDynamicIBLChanged ? store.setDynamicIBL : undefined}
             hdrControls={
             <HdrGallery
               selectedHdrName={selectedHdrName}

@@ -5,6 +5,7 @@
 
 import { mat4, vec3 } from 'gl-matrix';
 import { BaseGizmo, GizmoCamera, GizmoAxis } from './BaseGizmo';
+import type { GizmoRendererGPU } from '../../../core/gpu/renderers/GizmoRendererGPU';
 
 export class ScaleGizmo extends BaseGizmo {
   private linesBuffer: WebGLBuffer;
@@ -168,6 +169,22 @@ export class ScaleGizmo extends BaseGizmo {
   handleMouseUp(): void {
     this.isDraggingFlag = false;
     this.activeAxis = null;
+  }
+  
+  // ==================== WebGPU Rendering ====================
+  
+  renderGPU(
+    passEncoder: GPURenderPassEncoder,
+    vpMatrix: mat4 | Float32Array,
+    renderer: GizmoRendererGPU
+  ): void {
+    if (!this.enabled) return;
+    
+    const modelMatrix = this.buildGPUModelMatrix();
+    const axisColors = this.getGPUAxisColors();
+    
+    renderer.renderScaleLines(passEncoder, vpMatrix, modelMatrix, axisColors);
+    renderer.renderScaleBoxes(passEncoder, vpMatrix, modelMatrix, axisColors);
   }
   
   destroy(): void {

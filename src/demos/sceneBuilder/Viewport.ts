@@ -220,6 +220,9 @@ export class Viewport {
   private gpuContext: GPUContext | null = null;
   private gpuPipeline: GPUForwardPipeline | null = null;
   private webgpuCanvas: HTMLCanvasElement | null = null;
+  
+  // Dynamic IBL (Image-Based Lighting) setting for WebGPU mode
+  private dynamicIBLEnabled = true;  // Enabled by default
 
   // Callbacks (all optional)
   private readonly onFps: (fps: number) => void;
@@ -615,6 +618,12 @@ export class Viewport {
       });
       console.log('[Viewport] WebGPU Forward Pipeline created');
       
+      // Initialize WebGPU gizmo renderer on TransformGizmoManager
+      if (this.transformGizmo && this.gpuContext) {
+        this.transformGizmo.initGPURenderer(this.gpuContext);
+        console.log('[Viewport] WebGPU gizmo renderer initialized');
+      }
+      
       // Show WebGPU canvas, hide WebGL canvas
       this.webgpuCanvas.style.display = 'block';
       this.canvas.style.visibility = 'hidden';
@@ -693,6 +702,14 @@ export class Viewport {
   }
   
   /**
+   * Set Dynamic IBL (Image-Based Lighting) enabled state
+   * Controls whether the DynamicSkyIBL system is active for realistic ambient lighting
+   */
+  setDynamicIBL(enabled: boolean): void {
+    this.dynamicIBLEnabled = enabled;
+  }
+  
+  /**
    * Set WebGPU SSAO settings (for RenderingPanel integration)
    * Uses SSAOSettings which extends SSAOConfig from postprocess module
    */
@@ -742,6 +759,8 @@ export class Viewport {
     // Only available on directional light type, not HDR
     const lightDirection = (this.lightParams as any)?.direction as [number, number, number] | undefined;
     
+    // Note: Gizmos are rendered by TransformGizmoManager after the pipeline finishes
+    
     // Render options
     const options: GPURenderOptions = {
       showGrid: this.showGrid,
@@ -752,10 +771,58 @@ export class Viewport {
       wireframe: this.viewportMode == 'wireframe',
       ambientIntensity,
       lightDirection,  // Pass pre-computed direction
+      dynamicIBL: this.dynamicIBLEnabled,  // Pass Dynamic IBL state
     };
     
     // Use render with scene and camera adapter
     this.gpuPipeline.render(this.scene, cameraAdapter as any, options);
+    
+    // Render gizmo via TransformGizmoManager (skip in FPS mode)
+    // This uses the same screen-space scale as hit testing for consistency
+    if (!this.fpsMode && this.transformGizmo?.hasGPURenderer()) {
+      const vpMatrix = camera.getViewProjectionMatrix();
+      this.renderGizmoOverlay(vpMatrix as Float32Array);
+    }
+  }
+  
+  /**
+   * Render gizmo overlay using WebGPU
+   * Creates a separate render pass after the main pipeline to render gizmos
+   */
+  private renderGizmoOverlay(vpMatrix: Float32Array): void {
+    if (!this.gpuContext || !this.transformGizmo) return;
+    
+    // Get current backbuffer
+    const outputTexture = this.gpuContext.context?.getCurrentTexture();
+    if (!outputTexture) return;
+    
+    const outputView = outputTexture.createView();
+    
+    // Create command encoder for gizmo pass
+    const encoder = this.gpuContext.device.createCommandEncoder({
+      label: 'gizmo-overlay-encoder',
+    });
+    
+    // Create render pass that renders on top of existing content
+    // Load existing color, use existing depth for depth testing
+    const passEncoder = encoder.beginRenderPass({
+      label: 'gizmo-overlay-pass',
+      colorAttachments: [{
+        view: outputView,
+        loadOp: 'load',    // Keep existing color
+        storeOp: 'store',
+      }],
+      // No depth attachment - gizmos render without depth test in this overlay
+      // (The GizmoRendererGPU disables depth test internally via pipeline state)
+    });
+    
+    // Render gizmo
+    this.transformGizmo.renderGPU(passEncoder, vpMatrix);
+    
+    passEncoder.end();
+    
+    // Submit gizmo commands
+    this.gpuContext.queue.submit([encoder.finish()]);
   }
 
   // ==================== Render Loop ====================

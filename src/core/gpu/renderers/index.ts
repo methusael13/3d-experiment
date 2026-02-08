@@ -5,12 +5,11 @@
 export { GridRendererGPU } from './GridRendererGPU';
 export { SkyRendererGPU } from './SkyRendererGPU';
 export { ObjectRendererGPU } from './ObjectRendererGPU';
+export { GizmoRendererGPU, type GizmoColor, type GizmoDrawCommand } from './GizmoRendererGPU';
 export { 
   ShadowRendererGPU, 
   type ShadowConfig, 
-  type ShadowRenderParams, 
-  type ShadowCaster, 
-  type ShadowPassOptions,
+  type LightMatrixParams,
   createDefaultShadowConfig 
 } from './ShadowRendererGPU';
 export {
@@ -20,5 +19,8 @@ export {
   createDefaultWaterConfig,
 } from './WaterRendererGPU';
 
+// Shadow receiver utilities
+export { ShadowReceiverUtils, type ShadowReceiverResources } from './ShadowReceiverUtils';
+
 // Types
-export type { BoundingBox, ShadowReceiver } from './types';
+export type { BoundingBox, ShadowCaster, ShadowReceiver } from './types';

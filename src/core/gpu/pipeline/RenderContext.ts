@@ -14,6 +14,7 @@ import { UnifiedGPUTexture } from '../GPUTexture';
 import type { GPUCamera, RenderOptions } from './GPUForwardPipeline';
 import { DEFAULT_RENDER_OPTIONS } from './GPUForwardPipeline';
 import type { Scene } from '../../Scene';
+import type { IBLTextures } from '../ibl';
 
 /**
  * Context passed to each render pass
@@ -67,8 +68,14 @@ export interface RenderContext {
   readonly msaaHdrColorTexture?: UnifiedGPUTexture;
   readonly msaaColorTexture?: UnifiedGPUTexture;
   
+  // IBL (Image-Based Lighting)
+  readonly iblTextures?: IBLTextures;
+  readonly iblBindGroup?: GPUBindGroup;
+  readonly iblReady: boolean;
+  
   // Helper methods
   getColorAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment;
+  getBackbufferColorAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment;
   getDepthAttachment(loadOp: 'clear' | 'load'): GPURenderPassDepthStencilAttachment;
   copyDepthForReading(): void;
 }
@@ -103,6 +110,10 @@ export interface RenderContextOptions {
   
   // Flags
   useHDR: boolean;
+  
+  // IBL (Image-Based Lighting)
+  iblTextures?: IBLTextures;
+  iblBindGroup?: GPUBindGroup;
 }
 
 /**
@@ -142,6 +153,11 @@ export class RenderContextImpl implements RenderContext {
   readonly msaaHdrColorTexture?: UnifiedGPUTexture;
   readonly msaaColorTexture?: UnifiedGPUTexture;
   
+  // IBL
+  readonly iblTextures?: IBLTextures;
+  readonly iblBindGroup?: GPUBindGroup;
+  readonly iblReady: boolean;
+  
   private depthCopied = false;
   
   constructor(opts: RenderContextOptions) {
@@ -169,6 +185,11 @@ export class RenderContextImpl implements RenderContext {
     this.sceneColorTexture = opts.sceneColorTexture;
     this.msaaHdrColorTexture = opts.msaaHdrColorTexture;
     this.msaaColorTexture = opts.msaaColorTexture;
+    
+    // IBL
+    this.iblTextures = opts.iblTextures;
+    this.iblBindGroup = opts.iblBindGroup;
+    this.iblReady = !!(opts.iblTextures && opts.iblBindGroup);
     
     // Compute matrices
     const viewMat = this.camera.getViewMatrix();
@@ -239,6 +260,22 @@ export class RenderContextImpl implements RenderContext {
       };
     }
     
+    return {
+      view: this.outputView,
+      clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },
+      loadOp,
+      storeOp: 'store',
+    };
+  }
+  
+  /**
+   * Get color attachment that renders directly to swap chain backbuffer
+   * Used by viewport passes (gizmos, grid, debug) that render AFTER post-processing
+   * Always targets the swap chain, never the HDR intermediate buffer
+   */
+  getBackbufferColorAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment {
+    // Viewport passes always render to the final swap chain
+    // No MSAA for viewport passes - they render on top of the composited result
     return {
       view: this.outputView,
       clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },

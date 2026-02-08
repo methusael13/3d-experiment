@@ -33,9 +33,6 @@ const RESOLUTION_OPTIONS = [
 ];
 
 export interface TerrainPanelProps {
-  // Whether a terrain is currently selected
-  hasTerrainSelected?: boolean;
-  
   // Resolution & world size
   resolution: number;
   onResolutionChange: (resolution: number) => void;
@@ -83,7 +80,6 @@ export interface TerrainPanelProps {
 }
 
 export function TerrainPanel({
-  hasTerrainSelected = false,
   resolution,
   onResolutionChange,
   worldSize,
@@ -111,23 +107,6 @@ export function TerrainPanel({
 
   // Calculate heightScaleMax based on worldSize
   const heightScaleMax = useMemo(() => Math.max(1, worldSize / 10 + 100), [worldSize]);
-
-  // Show placeholder if no terrain selected
-  if (!hasTerrainSelected) {
-    return (
-      <Panel title="Terrain">
-        <div class={styles.panel}>
-          <div class={styles.noTerrainPlaceholder}>
-            <div class={styles.placeholderIcon}>🏔️</div>
-            <div class={styles.placeholderText}>No terrain selected</div>
-            <div class={styles.placeholderHint}>
-              Select a terrain object from the scene to edit its parameters
-            </div>
-          </div>
-        </div>
-      </Panel>
-    );
-  }
 
   const handleUpdate = useCallback(async () => {
     setIsUpdating(true);

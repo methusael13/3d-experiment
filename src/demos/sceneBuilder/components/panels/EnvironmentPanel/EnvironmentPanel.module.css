@@ -301,3 +301,24 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
+
+/* IBL Toggle */
+.iblToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--sb-border);
+}
+
+.iblTooltip {
+  cursor: help;
+  opacity: 0.6;
+  font-size: var(--sb-font-sm);
+  transition: opacity 0.15s;
+}
+
+.iblTooltip:hover {
+  opacity: 1;
+}

@@ -234,9 +234,9 @@ export function RenderingPanel({
       </Section>
 
       {/* WebGPU Mode Section */}
-      <Section title="🧪 WebGPU Mode" defaultCollapsed={false}>
+      <Section title="WebGPU Mode" defaultCollapsed={false}>
         <Checkbox
-          label="Enable WebGPU Terrain"
+          label="Enable WebGPU"
           checked={webgpuEnabled}
           onChange={handleWebGPUToggle}
         />

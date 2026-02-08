@@ -25,8 +25,9 @@ import {
   type SerializedModelObject,
   type SerializedTerrainObject,
   type TerrainParams,
-  GPUTerrainSceneObject
+  GPUTerrainSceneObject,
 } from './sceneObjects';
+import type { ShadowCaster } from './gpu/renderers/types';
 import { getModelUrl } from '../loaders';
 import { PrimitiveObject } from './sceneObjects/primitives';
 import { GPUContext } from './gpu';
@@ -197,6 +198,9 @@ export class Scene {
     
     this.callbacks.onObjectAdded?.(primitive);
     
+    // Auto-select the newly added primitive
+    this.select(id);
+    
     return primitive;
   }
   
@@ -223,7 +227,7 @@ export class Scene {
     
     return true;
   }
-  
+
   /**
    * Add a model object to the scene (async)
    */
@@ -246,7 +250,7 @@ export class Scene {
       
       // Override the auto-generated ID
       (model as any).id = id;
-      
+
       // Add to internal map
       this.objects.set(id, model);
       
@@ -268,7 +272,7 @@ export class Scene {
       return null;
     }
   }
-  
+
   /**
    * Add a pre-created SceneObject to the scene (for objects like GPUTerrainSceneObject)
    * Unlike addPrimitive/addObject/addTerrain, this doesn't create the object - it just registers it
@@ -513,6 +517,25 @@ export class Scene {
   }
   
   /**
+   * Get all shadow casters in the scene.
+   * Returns objects that implement the ShadowCaster interface.
+   * Note: Batched objects (PrimitiveObject) are handled separately by ObjectRendererGPU.
+   */
+  getShadowCasters(): ShadowCaster[] {
+    const casters: ShadowCaster[] = [];
+    
+    // Add GPU terrain if it exists and implements ShadowCaster
+    if (this.gpuTerrainObject && this.gpuTerrainObject.canCastShadows) {
+      casters.push(this.gpuTerrainObject);
+    }
+    
+    // Note: PrimitiveObjects are batched in ObjectRendererGPU and handled separately
+    // Future: Add individual shadow casters like ModelObject when they implement ShadowCaster
+    
+    return casters;
+  }
+  
+  /**
    * Get the bounding box encompassing all objects in the scene.
    * Returns null if there are no objects.
    */
@@ -571,16 +594,24 @@ export class Scene {
   }
   
   /**
-   * Update object transform in scene graph
+   * Update object transform in scene graph AND GPU buffers (if WebGPU enabled)
    */
   updateObjectTransform(id: string): void {
     const obj = this.objects.get(id);
     if (obj) {
+      // Update scene graph
       this.sceneGraph.update(id, {
         position: [obj.position[0], obj.position[1], obj.position[2]],
         rotation: [obj.rotation[0], obj.rotation[1], obj.rotation[2]],
         scale: [obj.scale[0], obj.scale[1], obj.scale[2]],
       });
+      
+      // Update GPU transform buffer if WebGPU is initialized
+      if (isPrimitiveObject(obj) && obj.isGPUInitialized) {
+        obj.updateGPUTransform();
+      } else if (isModelObject(obj) && obj.isGPUInitialized) {
+        obj.updateGPUTransform();
+      }
     }
   }
   

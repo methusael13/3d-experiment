@@ -79,6 +79,9 @@ export interface PanelContext {
     depthFalloff?: number;
     opacity?: number;
   }): void;
+  
+  /** Callback when dynamic IBL setting changes (WebGPU only) */
+  onDynamicIBLChanged?(enabled: boolean): void;
 }
 
 /**
@@ -132,6 +135,9 @@ export interface PanelContextConfig {
     depthFalloff?: number;
     opacity?: number;
   }) => void;
+  
+  /** Callback when dynamic IBL setting changes (WebGPU only) */
+  onDynamicIBLChanged?: (enabled: boolean) => void;
 }
 
 /**
@@ -234,5 +240,8 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     
     // WebGPU water config
     setWebGPUWaterConfig: config.setWebGPUWaterConfig,
+    
+    // Dynamic IBL
+    onDynamicIBLChanged: config.onDynamicIBLChanged,
   };
 }
