@@ -7,6 +7,7 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks'
 import { useComputed } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
 import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, type MaterialParams as TerrainMaterialParams, type DetailParams } from '../panels';
+import { BiomeMaskPanelBridge } from './BiomeMaskPanelBridge';
 import { isGPUTerrainObject, isTerrainObject, type GPUTerrainSceneObject, type TerrainObject } from '../../../../core/sceneObjects';
 import { debounce } from '../../../../core/utils/debounce';
 import { TerrainManager } from '@/core/terrain';
@@ -204,6 +205,9 @@ export function ConnectedTerrainPanel({
   
   // Progress state
   const [progress, setProgress] = useState<TerrainProgress | undefined>(undefined);
+  
+  // Biome mask editor visibility
+  const [biomeMaskEditorVisible, setBiomeMaskEditorVisible] = useState(false);
   
   // Refs to hold current values for debounced callbacks (avoids stale closures)
   const noiseParamsRef = useRef(noiseParams);
@@ -482,12 +486,32 @@ export function ConnectedTerrainPanel({
     setTimeout(() => setProgress(undefined), 2000);
   }, [onTerrainUpdate, selectedTerrainInfo, resolution, worldSize, noiseParams, erosionParams, materialParams, detailParams, store.isWebGPU, cdlodEnabled, clipmapEnabled]);
 
+  // Compute terrain state for VegetationSection
+  const isTerrainReady = useMemo(() => {
+    const terrainInfo = selectedTerrainInfo.value;
+    return terrainInfo?.type === 'webgpu' && terrainInfo.manager?.isReady;
+  }, [selectedTerrainInfo.value]);
+  
+  const hasFlowMap = useMemo(() => {
+    const terrainInfo = selectedTerrainInfo.value;
+    return terrainInfo?.type === 'webgpu' && terrainInfo.manager?.getFlowMap() != null;
+  }, [selectedTerrainInfo.value]);
+  
+  const handleOpenBiomeMaskEditor = useCallback(() => {
+    setBiomeMaskEditorVisible(true);
+  }, []);
+  
+  const handleCloseBiomeMaskEditor = useCallback(() => {
+    setBiomeMaskEditorVisible(false);
+  }, []);
+
   // Only render if terrain is selected
   if (selectedTerrainInfo.value === null) {
-    return;
+    return null;
   }
   
   return (
+    <>
     <TerrainPanel
       resolution={resolution}
       onResolutionChange={setResolution}
@@ -511,6 +535,17 @@ export function ConnectedTerrainPanel({
       onUpdate={handleUpdate}
       progress={progress}
       isWebGPU={store.isWebGPU.value}
+      onOpenBiomeMaskEditor={handleOpenBiomeMaskEditor}
+      isTerrainReady={isTerrainReady}
+      hasFlowMap={hasFlowMap}
     />
+    
+    {/* Biome Mask Editor Dockable Window */}
+    <BiomeMaskPanelBridge
+      visible={biomeMaskEditorVisible}
+      onClose={handleCloseBiomeMaskEditor}
+      defaultPosition={{ x: 400, y: 100 }}
+    />
+    </>
   );
 }

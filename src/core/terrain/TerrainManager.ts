@@ -20,6 +20,7 @@ import {
   createDefaultIslandMaskParams,
 } from './HeightmapGenerator';
 import { ErosionSimulator, HydraulicErosionParams, ThermalErosionParams } from './ErosionSimulator';
+import { BiomeMaskGenerator, BiomeParams, createDefaultBiomeParams } from '../vegetation';
 import { CDLODRendererGPU, CDLODGPUConfig, CDLODRenderParams, TerrainMaterial } from './CDLODRendererGPU';
 import { QuadtreeConfig } from './TerrainQuadtree';
 
@@ -144,11 +145,15 @@ export class TerrainManager {
   private erosionSimulator: ErosionSimulator | null = null;
   private renderer: CDLODRendererGPU | null = null;
   
+  // Vegetation system
+  private biomeMaskGenerator: BiomeMaskGenerator | null = null;
+  
   // Generated textures
   private heightmap: UnifiedGPUTexture | null = null;
   private normalMap: UnifiedGPUTexture | null = null;
   private islandMask: UnifiedGPUTexture | null = null;
   private flowMap: UnifiedGPUTexture | null = null;
+  private biomeMask: UnifiedGPUTexture | null = null;
   
   // State
   private isInitialized = false;
@@ -174,6 +179,9 @@ export class TerrainManager {
     
     // Create erosion simulator
     this.erosionSimulator = new ErosionSimulator(this.ctx);
+    
+    // Create biome mask generator
+    this.biomeMaskGenerator = new BiomeMaskGenerator(this.ctx);
     
     // Create renderer with quadtree and renderer configs
     const quadtreeConfig: Partial<QuadtreeConfig> = {
@@ -601,6 +609,14 @@ export class TerrainManager {
     return this.islandMask;
   }
   
+  /**
+   * Get biome probability mask texture (RGBA8)
+   * R = grassland, G = rock, B = forest, A = reserved
+   */
+  getBiomeMask(): UnifiedGPUTexture | null {
+    return this.biomeMask;
+  }
+  
   getRenderer(): CDLODRendererGPU | null {
     return this.renderer;
   }
@@ -848,6 +864,60 @@ export class TerrainManager {
     return this.config.islandConfig ?? createDefaultIslandConfig();
   }
   
+  // ============ Biome Mask ============
+  
+  /**
+   * Generate biome mask from current heightmap and flow map
+   * Must be called after terrain generation (heightmap exists)
+   * 
+   * @param params Optional biome parameters override
+   * @returns The generated biome mask texture, or null if heightmap not ready
+   */
+  generateBiomeMask(params?: Partial<BiomeParams>): UnifiedGPUTexture | null {
+    if (!this.biomeMaskGenerator || !this.heightmap) {
+      console.warn('[TerrainManager] Cannot generate biome mask - heightmap not ready');
+      return null;
+    }
+    
+    // Generate biome mask using heightmap and optional flow map
+    this.biomeMask = this.biomeMaskGenerator.generate(
+      this.heightmap,
+      this.flowMap,
+      params
+    );
+    
+    return this.biomeMask;
+  }
+  
+  /**
+   * Regenerate biome mask with new parameters
+   * @param params New biome parameters
+   */
+  regenerateBiomeMask(params?: Partial<BiomeParams>): UnifiedGPUTexture | null {
+    return this.generateBiomeMask(params);
+  }
+  
+  /**
+   * Get current biome parameters
+   */
+  getBiomeParams(): BiomeParams {
+    return this.biomeMaskGenerator?.getParams() ?? createDefaultBiomeParams();
+  }
+  
+  /**
+   * Set biome parameters (does not regenerate - call regenerateBiomeMask())
+   */
+  setBiomeParams(params: Partial<BiomeParams>): void {
+    this.biomeMaskGenerator?.setParams(params);
+  }
+  
+  /**
+   * Check if biome mask has been generated
+   */
+  hasBiomeMask(): boolean {
+    return this.biomeMask !== null;
+  }
+  
   // ============ Cleanup ============
   
   destroy(): void {
@@ -857,16 +927,20 @@ export class TerrainManager {
     this.heightmapGenerator?.destroy();
     this.erosionSimulator?.destroy();
     this.renderer?.destroy();
+    this.biomeMaskGenerator?.destroy();
     this.heightmap?.destroy();
     this.normalMap?.destroy();
     this.islandMask?.destroy();
+    this.biomeMask?.destroy();
     
     this.heightmapGenerator = null;
     this.erosionSimulator = null;
     this.renderer = null;
+    this.biomeMaskGenerator = null;
     this.heightmap = null;
     this.normalMap = null;
     this.islandMask = null;
+    this.biomeMask = null;
     this.isInitialized = false;
   }
 }

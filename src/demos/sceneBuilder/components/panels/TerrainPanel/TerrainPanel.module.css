@@ -283,3 +283,38 @@
   padding-left: 4px;
   font-style: italic;
 }
+
+.warningText {
+  color: #f0a020;
+}
+
+.infoText {
+  color: #6af;
+}
+
+/* Action button (opens dialogs/editors) */
+.actionButton {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid var(--sb-border, #555);
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-primary, #f0f0f0);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.actionButton:hover:not(:disabled) {
+  background: var(--sb-bg-hover, #444);
+  border-color: #666;
+}
+
+.actionButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

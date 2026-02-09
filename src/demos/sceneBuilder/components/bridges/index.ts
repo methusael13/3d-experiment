@@ -33,3 +33,6 @@ export {
   showShaderPanel,
   hideShaderPanel,
 } from './ShaderDebugPanelBridge';
+
+// BiomeMaskPanel Bridge
+export { BiomeMaskPanelBridge, type BiomeMaskPanelBridgeProps } from './BiomeMaskPanelBridge';

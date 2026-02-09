@@ -1,0 +1,165 @@
+/**
+ * BiomeMaskContent styles - Dockable window content with preview + controls
+ */
+
+.content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--panel-bg, #1e1e1e);
+  color: var(--panel-text, #ccc);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+/* Preview Area */
+.previewArea {
+  position: relative;
+  flex-shrink: 0;
+  aspect-ratio: 1;
+  max-height: 256px;
+  background: #111;
+  border-bottom: 1px solid var(--border-color, #333);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.previewCanvas {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.previewPlaceholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  text-align: center;
+  padding: 16px;
+}
+
+.warning {
+  color: #f0a020;
+}
+
+.info {
+  color: #6af;
+}
+
+/* Legend overlay */
+.legend {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  display: flex;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 4px 8px;
+  border-radius: 3px;
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.legendColor {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.legendLabel {
+  font-size: 10px;
+  color: #aaa;
+}
+
+/* Generate button */
+.generateButton {
+  flex-shrink: 0;
+  margin: 8px;
+  padding: 8px 16px;
+  background: var(--accent-color, #4a7);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.generateButton:hover:not(:disabled) {
+  background: var(--accent-hover, #5b8);
+}
+
+.generateButton:disabled {
+  background: var(--disabled-bg, #333);
+  color: var(--disabled-text, #666);
+  cursor: not-allowed;
+}
+
+/* Controls Area */
+.controls {
+  flex: 1;
+  min-height: 0; /* Essential for flex children to scroll properly */
+  overflow-y: auto;
+  padding: 0 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Sections */
+.section {
+  background: var(--section-bg, #252525);
+  border-radius: 4px;
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sectionHeader:hover {
+  background: var(--section-hover, #2a2a2a);
+}
+
+.sectionTitleGroup {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sectionColorDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.sectionTitle {
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--panel-text-bright, #ddd);
+}
+
+.expandIcon {
+  font-size: 9px;
+  color: var(--panel-text-dim, #888);
+}
+
+.sectionContent {
+  padding: 6px 8px;
+  padding-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

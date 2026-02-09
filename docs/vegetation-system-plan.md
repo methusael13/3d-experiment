@@ -243,6 +243,12 @@ export class BiomeMaskGenerator {
 - [ ] Sample flow map (with fallback if null)
 - [ ] Output RGBA biome probabilities
 - [ ] Integrate with TerrainManager
+- [ ] Create a docking window via the docking window manager to live tweak the biome mask
+  - [ ] The panel will have a biome mask preview on the top (reuse float texture visualizer if possible)
+  - [ ] Below the preview, we will have the shader uniform controls to control the biome mask
+  - [ ] For display purposes, each biome will be represented by different colors
+  - [ ] Tweaking the controls should live feedback the update on the texture
+- [ ] This docking window should be triggered from the terrain panel
 
 ---
 

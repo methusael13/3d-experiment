@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo } from 'preact/hooks';
 import { Panel, Slider, Select, Checkbox } from '../../ui';
 import { NoiseSection, type NoiseParams } from './NoiseSection';
 import { ErosionSection, type ErosionParams } from './ErosionSection';
+import { VegetationSection } from './VegetationSection';
 import { MaterialSection, type MaterialParams } from './MaterialSection';
 import { DetailSection, type DetailParams } from './DetailSection';
 import styles from './TerrainPanel.module.css';
@@ -77,6 +78,11 @@ export interface TerrainPanelProps {
 
   // Mode indicator
   isWebGPU?: boolean;
+
+  // Vegetation section
+  onOpenBiomeMaskEditor?: () => void;
+  isTerrainReady?: boolean;
+  hasFlowMap?: boolean;
 }
 
 export function TerrainPanel({
@@ -102,6 +108,9 @@ export function TerrainPanel({
   onUpdate,
   progress,
   isWebGPU = false,
+  onOpenBiomeMaskEditor,
+  isTerrainReady,
+  hasFlowMap,
 }: TerrainPanelProps) {
   const [isUpdating, setIsUpdating] = useState(false);
 
@@ -211,6 +220,18 @@ export function TerrainPanel({
         <ErosionSection params={erosionParams} onParamsChange={onErosionParamsChange} />
 
         <div class={styles.divider} />
+
+        {/* Vegetation Section (WebGPU only) */}
+        {isWebGPU && (
+          <>
+            <VegetationSection
+              onOpenBiomeMaskEditor={onOpenBiomeMaskEditor}
+              isTerrainReady={isTerrainReady}
+              hasFlowMap={hasFlowMap}
+            />
+            <div class={styles.divider} />
+          </>
+        )}
 
         {/* Material Section */}
         <MaterialSection 

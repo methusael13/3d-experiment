@@ -23,6 +23,9 @@ export type { PanelProps } from './Panel/Panel';
 export { Tabs } from './Tabs/Tabs';
 export type { TabsProps, Tab } from './Tabs/Tabs';
 
+export { GPUTexturePreview } from './GPUTexturePreview';
+export type { GPUTexturePreviewProps } from './GPUTexturePreview';
+
 // Docking Window System
 export { DockableWindow } from './DockableWindow';
 export type { DockableWindowProps, WindowPosition, WindowSize } from './DockableWindow';
