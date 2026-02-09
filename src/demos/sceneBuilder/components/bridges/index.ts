@@ -36,3 +36,6 @@ export {
 
 // BiomeMaskPanel Bridge
 export { BiomeMaskPanelBridge, type BiomeMaskPanelBridgeProps } from './BiomeMaskPanelBridge';
+
+// VegetationPanel Bridge
+export { VegetationPanelBridge, type VegetationPanelBridgeProps } from './VegetationPanelBridge';

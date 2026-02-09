@@ -31,7 +31,7 @@ src/core/gpu/shaders/vegetation/
 
 ---
 
-## Phase 0: Water Flow Map Enhancement
+## Phase 0: Water Flow Map Enhancement [Complete]
 
 **Goal:** Track water flow during hydraulic erosion to identify fertile areas.
 
@@ -128,7 +128,7 @@ getFlowMap(): UnifiedGPUTexture | null {
 
 ---
 
-## Phase 1: Biome Mask Generation
+## Phase 1: Biome Mask Generation [Complete]
 
 **Goal:** Generate RGBA texture encoding biome probabilities from terrain data.
 
@@ -252,9 +252,39 @@ export class BiomeMaskGenerator {
 
 ---
 
-## Phase 2: Plant Foundation
+## Phase 2: Plant Foundation [Complete]
 
-**Goal:** Define plant types and create the registry.
+**Goal:** Define plant types and create the registry with UI controls.
+
+### Implementation Summary
+
+This phase was extended beyond the original plan to include a **dynamic UI** for managing plant types instead of hardcoded presets. Key additions:
+
+1. **PlantRegistry.ts** - Manages plant types per biome with event-driven updates
+2. **AtlasRegionDetector.ts** - Auto-detects sprite regions from opacity maps
+3. **VegetationContent.tsx** - UI panel with biome tabs and plant editors
+4. **AssetPickerModal** - Modal for selecting texture atlases from Asset Library
+5. **VegetationPanelBridge** - Opens vegetation editor in DockableWindow
+
+### Files Created
+```
+src/core/vegetation/
+├── types.ts                    # PlantType, AtlasRegion, BiomeChannel, etc.
+├── PlantRegistry.ts            # Dynamic registry with event system
+└── AtlasRegionDetector.ts      # Connected component analysis for atlas regions
+
+src/demos/sceneBuilder/components/
+├── ui/AssetPickerModal/        # Modal for asset selection
+│   ├── AssetPickerModal.tsx
+│   ├── AssetPickerModal.module.css
+│   └── index.ts
+├── panels/VegetationPanel/     # Plant registry editor UI
+│   ├── VegetationContent.tsx
+│   ├── VegetationContent.module.css
+│   └── index.ts
+└── bridges/
+    └── VegetationPanelBridge.tsx
+```
 
 ### `types.ts`
 
@@ -966,11 +996,16 @@ src/core/gpu/shaders/vegetation/
 - [ ] Output RGBA biome probabilities
 - [ ] Integrate with TerrainManager
 
-#### Phase 2: Plant Foundation
-- [ ] Create types.ts
-- [ ] Create PlantRegistry.ts
-- [ ] Define grassland plant presets
-- [ ] Add atlas region injection
+#### Phase 2: Plant Foundation [Complete]
+- [x] Create types.ts (PlantType, AtlasRegion, BiomePlantConfig, VegetationConfig, WindParams)
+- [x] Create PlantRegistry.ts (dynamic registry with events)
+- [x] Define grassland plant presets (GRASSLAND_PLANT_PRESETS, FOREST_PLANT_PRESETS)
+- [x] Add atlas region injection (setPlantAtlas method)
+- [x] Create AtlasRegionDetector.ts (auto-detect sprite regions from opacity maps)
+- [x] Create VegetationContent.tsx (UI panel with biome tabs)
+- [x] Create AssetPickerModal (reusable asset selection modal)
+- [x] Create VegetationPanelBridge (opens vegetation editor in DockableWindow)
+- [x] Integrate PlantRegistry into TerrainManager
 
 #### Phase 3: Spawning
 - [ ] Create spawn.wgsl

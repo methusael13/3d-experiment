@@ -81,6 +81,7 @@ export interface TerrainPanelProps {
 
   // Vegetation section
   onOpenBiomeMaskEditor?: () => void;
+  onOpenPlantRegistry?: () => void;
   isTerrainReady?: boolean;
   hasFlowMap?: boolean;
 }
@@ -109,6 +110,7 @@ export function TerrainPanel({
   progress,
   isWebGPU = false,
   onOpenBiomeMaskEditor,
+  onOpenPlantRegistry,
   isTerrainReady,
   hasFlowMap,
 }: TerrainPanelProps) {
@@ -226,6 +228,7 @@ export function TerrainPanel({
           <>
             <VegetationSection
               onOpenBiomeMaskEditor={onOpenBiomeMaskEditor}
+              onOpenPlantRegistry={onOpenPlantRegistry}
               isTerrainReady={isTerrainReady}
               hasFlowMap={hasFlowMap}
             />

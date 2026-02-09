@@ -94,6 +94,12 @@
   background: rgba(74, 144, 217, 0.1);
 }
 
+.thumbnail.dragging {
+  opacity: 0.5;
+  border-color: var(--accent-color, #4a90d9);
+  cursor: grabbing;
+}
+
 .imageContainer {
   position: relative;
   width: 100%;

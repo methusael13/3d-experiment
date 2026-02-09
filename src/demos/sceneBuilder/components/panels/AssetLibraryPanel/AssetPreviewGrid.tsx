@@ -3,9 +3,14 @@
  * Displays assets with lazy-loaded thumbnails
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'preact/hooks';
+import { useState, useCallback, useMemo } from 'preact/hooks';
 import type { Asset } from '../../hooks/useAssetLibrary';
 import styles from './AssetPreviewGrid.module.css';
+
+// ==================== Constants ====================
+
+/** Custom MIME type for asset library drag-and-drop */
+export const ASSET_LIBRARY_MIME_TYPE = 'application/x-asset-library-item';
 
 // ==================== Types ====================
 
@@ -45,14 +50,16 @@ interface AssetThumbnailProps {
   isSelected: boolean;
   onClick: () => void;
   onDoubleClick: () => void;
+  onDragStart: (asset: Asset, e: DragEvent) => void;
 }
 
 // Asset server base URL
 const ASSET_SERVER_URL = 'http://localhost:3002';
 
-function AssetThumbnail({ asset, isSelected, onClick, onDoubleClick }: AssetThumbnailProps) {
+function AssetThumbnail({ asset, isSelected, onClick, onDoubleClick, onDragStart }: AssetThumbnailProps) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   
   // Use direct preview image URL (served at /api/previews/:filename)
   const previewUrl = asset.previewPath 
@@ -67,11 +74,23 @@ function AssetThumbnail({ asset, isSelected, onClick, onDoubleClick }: AssetThum
     setImageError(true);
   }, []);
   
+  const handleDragStart = useCallback((e: DragEvent) => {
+    setIsDragging(true);
+    onDragStart(asset, e);
+  }, [asset, onDragStart]);
+  
+  const handleDragEnd = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+  
   return (
     <div 
-      class={`${styles.thumbnail} ${isSelected ? styles.selected : ''}`}
+      class={`${styles.thumbnail} ${isSelected ? styles.selected : ''} ${isDragging ? styles.dragging : ''}`}
       onClick={onClick}
       onDblClick={onDoubleClick}
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      draggable={true}
       title={asset.name}
     >
       <div class={styles.imageContainer}>
@@ -117,6 +136,20 @@ export function AssetPreviewGrid({
   onDoubleClickAsset,
   onSearchChange,
 }: AssetPreviewGridProps) {
+  
+  // Handle drag start - serialize asset data to transfer
+  const handleAssetDragStart = useCallback((asset: Asset, e: DragEvent) => {
+    if (!e.dataTransfer) return;
+    
+    // Set custom MIME type with asset JSON
+    e.dataTransfer.setData(ASSET_LIBRARY_MIME_TYPE, JSON.stringify(asset));
+    
+    // Also set text/plain as fallback for debugging
+    e.dataTransfer.setData('text/plain', asset.name);
+    
+    // Set drag effect
+    e.dataTransfer.effectAllowed = 'copy';
+  }, []);
   
   // Filter assets by search query
   const filteredAssets = useMemo(() => {
@@ -169,6 +202,7 @@ export function AssetPreviewGrid({
               isSelected={asset.id === selectedAssetId}
               onClick={() => onSelectAsset(asset)}
               onDoubleClick={() => onDoubleClickAsset(asset)}
+              onDragStart={handleAssetDragStart}
             />
           ))
         ) : (

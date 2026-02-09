@@ -11,6 +11,7 @@ import { createLightingManager, type LightingManager } from '../../lightingManag
 import { WindManager } from '../../wind';
 import { clearImportedModels, sceneSerializer } from '../../../../loaders';
 import type { Asset } from '../hooks/useAssetLibrary';
+import { useAssetImport } from '../hooks';
 import { getSceneBuilderStore, resetSceneBuilderStore } from '../state';
 import { ViewportContainer } from '../viewport';
 import { ObjectsPanel } from '../panels';
@@ -120,59 +121,17 @@ export function SceneBuilderApp({
     setAssetLibraryVisible(prev => !prev);
   }, []);
 
+  // ==================== Asset Import ====================
+  
+  const { importAsset } = useAssetImport();
+  
   /**
    * Handle adding an asset from the library to the scene
    * Called when user double-clicks an asset in the Asset Library
    */
   const handleAddAssetToScene = useCallback(async (asset: Asset) => {
-    if (!store.scene) {
-      console.warn('[SceneBuilderApp] Cannot add asset: scene not initialized');
-      return;
-    }
-    
-    // Only handle model types for now (includes vegetation which is type='model' with category='vegetation')
-    if (asset.type !== 'model') {
-      console.log(`[SceneBuilderApp] Asset type "${asset.type}" not yet supported for scene import`);
-      return;
-    }
-    
-    // Find the main model file for this asset
-    // First try by fileType, then fallback to extension matching
-    let modelFile = asset.files.find(f => f.fileType === 'model' && (f.lodLevel === null || f.lodLevel === 0));
-    
-    // Fallback: find .gltf or .glb file by extension if fileType wasn't set
-    if (!modelFile) {
-      modelFile = asset.files.find(f => 
-        f.path.endsWith('.gltf') || f.path.endsWith('.glb')
-      );
-    }
-    
-    const filePath = modelFile?.path ?? asset.path;
-    
-    // Normalize path to include leading slash for Vite to serve from public/
-    const normalizedPath = filePath.startsWith('/') ? filePath : `/${filePath}`;
-    
-    // Add object to scene
-    const obj = await store.scene.addObject(normalizedPath, asset.name);
-    
-    if (obj) {
-      // Register the asset reference for save/load tracking
-      sceneSerializer.registerAssetRef(obj.id, {
-        assetId: asset.id,
-        assetName: asset.name,
-        assetType: asset.type,
-        assetSubtype: asset.subtype ?? undefined,
-      });
-      
-      // Select the newly added object
-      store.scene.select(obj.id);
-      store.syncFromScene();
-      
-      console.log(`[SceneBuilderApp] Added asset "${asset.name}" to scene (id: ${obj.id})`);
-    } else {
-      console.error(`[SceneBuilderApp] Failed to add asset "${asset.name}" to scene`);
-    }
-  }, [store]);
+    await importAsset(asset);
+  }, [importAsset]);
 
   const processWebGPUTestEnabled = useCallback(async () => {
     const success = await store.viewport?.enableWebGPUTest() ?? false;

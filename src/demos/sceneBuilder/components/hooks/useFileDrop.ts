@@ -3,9 +3,11 @@
  */
 
 import { useEffect, useCallback, useState } from 'preact/hooks';
-import { signal } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
 import { sceneSerializer } from '../../../../loaders/SceneSerializer';
+import { importAssetToScene } from './useAssetImport';
+import { ASSET_LIBRARY_MIME_TYPE } from '../panels/AssetLibraryPanel/AssetPreviewGrid';
+import type { Asset } from './useAssetLibrary';
 
 export interface FileDropState {
   isDragging: boolean;
@@ -63,6 +65,27 @@ export function useFileDrop(containerRef: { current: HTMLElement | null }) {
       return;
     }
     
+    // Check for asset library drop (custom MIME type)
+    const assetData = e.dataTransfer?.getData(ASSET_LIBRARY_MIME_TYPE);
+    if (assetData) {
+      try {
+        const asset = JSON.parse(assetData) as Asset;
+        console.log(`[FileDrop] Asset library drop: ${asset.name}`);
+        
+        const result = await importAssetToScene(asset);
+        if (!result.success) {
+          setState(s => ({ ...s, lastError: result.error ?? 'Failed to import asset' }));
+        }
+      } catch (err) {
+        console.error('[FileDrop] Asset import error:', err);
+        setState(s => ({ ...s, lastError: String(err) }));
+      } finally {
+        setState(s => ({ ...s, isProcessing: false }));
+      }
+      return;
+    }
+    
+    // Handle file drops (from filesystem)
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) {
       setState(s => ({ ...s, isProcessing: false }));

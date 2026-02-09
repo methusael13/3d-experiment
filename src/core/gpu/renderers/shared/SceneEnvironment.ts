@@ -57,45 +57,7 @@ export class SceneEnvironment {
   private createLayout(): GPUBindGroupLayout {
     return this.ctx.device.createBindGroupLayout({
       label: 'shared-environment-layout',
-      entries: [
-        // Shadow resources
-        {
-          binding: ENVIRONMENT_BINDINGS.SHADOW_MAP,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: 'depth' },
-        },
-        {
-          binding: ENVIRONMENT_BINDINGS.SHADOW_SAMPLER,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: 'comparison' },
-        },
-        // IBL resources
-        {
-          binding: ENVIRONMENT_BINDINGS.IBL_DIFFUSE,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: 'float', viewDimension: 'cube' },
-        },
-        {
-          binding: ENVIRONMENT_BINDINGS.IBL_SPECULAR,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: 'float', viewDimension: 'cube' },
-        },
-        {
-          binding: ENVIRONMENT_BINDINGS.BRDF_LUT,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: 'float' },
-        },
-        {
-          binding: ENVIRONMENT_BINDINGS.IBL_CUBE_SAMPLER,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: 'filtering' },
-        },
-        {
-          binding: ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: { type: 'filtering' },
-        },
-      ],
+      entries: SceneEnvironment.getDefaultBindGroupLayoutEntries(),
     });
   }
 

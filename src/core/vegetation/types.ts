@@ -5,6 +5,348 @@
  * biome parameters, plant types, and configuration.
  */
 
+// ==================== Atlas & Texture Types ====================
+
+/**
+ * Region within a texture atlas (UV coordinates in pixels).
+ */
+export interface AtlasRegion {
+  /** X offset in pixels */
+  u: number;
+  /** Y offset in pixels */
+  v: number;
+  /** Width in pixels */
+  width: number;
+  /** Height in pixels */
+  height: number;
+}
+
+/**
+ * Normalized atlas region (0-1 UV coordinates).
+ * Used in shaders for texture sampling.
+ */
+export interface AtlasRegionNormalized {
+  /** U offset (0-1) */
+  u: number;
+  /** V offset (0-1) */
+  v: number;
+  /** Width (0-1) */
+  width: number;
+  /** Height (0-1) */
+  height: number;
+}
+
+/**
+ * Reference to a texture atlas asset with detected sprite regions.
+ */
+export interface AtlasReference {
+  /** Asset ID from the Asset Library */
+  assetId: string;
+  /** Asset name for display */
+  assetName: string;
+  /** Path to the opacity map for region detection */
+  opacityPath: string;
+  /** Path to the base color texture */
+  baseColorPath: string;
+  /** Atlas dimensions */
+  atlasSize: [number, number];
+  /** Detected sprite regions */
+  regions: AtlasRegion[];
+}
+
+// ==================== Plant Types ====================
+
+/**
+ * Definition of a plant type for vegetation spawning.
+ */
+export interface PlantType {
+  /** Unique identifier */
+  id: string;
+  /** Display name */
+  name: string;
+  
+  // Visual properties
+  /** Fallback color when no texture [R, G, B] (0-1) */
+  color: [number, number, number];
+  /** Reference to texture atlas (null = use color) */
+  atlasRef: AtlasReference | null;
+  /** Specific region in atlas to use (null = random from available) */
+  atlasRegionIndex: number | null;
+  
+  // Size in world units
+  /** Minimum size [width, height] */
+  minSize: [number, number];
+  /** Maximum size [width, height] */
+  maxSize: [number, number];
+  
+  // Spawn distribution
+  /** Base spawn probability (0-1) */
+  spawnProbability: number;
+  /** Which biome channel this plant spawns in */
+  biomeChannel: BiomeChannel;
+  /** Minimum biome value required to spawn (0-1) */
+  biomeThreshold: number;
+  
+  // Clustering
+  /** Clustering strength (0 = uniform, 1 = highly clustered) */
+  clusterStrength: number;
+  /** Minimum spacing between instances (world units) */
+  minSpacing: number;
+  
+  // LOD
+  /** Maximum distance before fade out (world units) */
+  maxDistance: number;
+  /** LOD priority bias (higher = more important, render at greater distance) */
+  lodBias: number;
+}
+
+/**
+ * Creates a default plant type with sensible values.
+ */
+export function createDefaultPlantType(id: string, name: string): PlantType {
+  return {
+    id,
+    name,
+    color: [0.3, 0.6, 0.2],
+    atlasRef: null,
+    atlasRegionIndex: null,
+    minSize: [0.3, 0.5],
+    maxSize: [0.5, 1.0],
+    spawnProbability: 0.5,
+    biomeChannel: 'r',
+    biomeThreshold: 0.3,
+    clusterStrength: 0.3,
+    minSpacing: 0.2,
+    maxDistance: 200,
+    lodBias: 1.0,
+  };
+}
+
+// ==================== Vegetation Configuration ====================
+
+/**
+ * Global vegetation system configuration.
+ */
+export interface VegetationConfig {
+  /** Master enable/disable */
+  enabled: boolean;
+  /** Global density multiplier (0-2) */
+  globalDensity: number;
+  /** Enable wind animation */
+  windEnabled: boolean;
+  /** Debug visualization mode */
+  debugMode: boolean;
+}
+
+/**
+ * Creates default vegetation configuration.
+ */
+export function createDefaultVegetationConfig(): VegetationConfig {
+  return {
+    enabled: true,
+    globalDensity: 1.0,
+    windEnabled: true,
+    debugMode: false,
+  };
+}
+
+/**
+ * Wind animation parameters.
+ */
+export interface WindParams {
+  /** Wind direction (XZ plane, normalized) */
+  direction: [number, number];
+  /** Wind strength (0-1) */
+  strength: number;
+  /** Base oscillation frequency */
+  frequency: number;
+  /** Local gust strength variation */
+  gustStrength: number;
+  /** Spatial frequency of gusts */
+  gustFrequency: number;
+}
+
+/**
+ * Creates default wind parameters.
+ */
+export function createDefaultWindParams(): WindParams {
+  return {
+    direction: [1, 0],
+    strength: 0.3,
+    frequency: 1.0,
+    gustStrength: 0.2,
+    gustFrequency: 0.5,
+  };
+}
+
+// ==================== Biome Plant Configuration ====================
+
+/**
+ * Configuration for plants within a specific biome.
+ */
+export interface BiomePlantConfig {
+  /** Biome channel (r, g, b, a) */
+  biomeChannel: BiomeChannel;
+  /** Display name for the biome */
+  biomeName: string;
+  /** Color for visualization */
+  displayColor: [number, number, number];
+  /** Plants assigned to this biome */
+  plants: PlantType[];
+}
+
+/**
+ * Default biome configurations.
+ */
+export const DEFAULT_BIOME_CONFIGS: Record<BiomeChannel, Omit<BiomePlantConfig, 'plants'>> = {
+  r: {
+    biomeChannel: 'r',
+    biomeName: 'Grassland',
+    displayColor: [0.3, 0.7, 0.2],
+  },
+  g: {
+    biomeChannel: 'g',
+    biomeName: 'Rock/Cliff',
+    displayColor: [0.5, 0.5, 0.5],
+  },
+  b: {
+    biomeChannel: 'b',
+    biomeName: 'Forest Edge',
+    displayColor: [0.1, 0.4, 0.15],
+  },
+  a: {
+    biomeChannel: 'a',
+    biomeName: 'Reserved',
+    displayColor: [0.0, 0.0, 0.0],
+  },
+};
+
+// ==================== Default Plant Presets ====================
+
+/**
+ * Default grassland plant presets.
+ */
+export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
+  {
+    id: 'tall-grass',
+    name: 'Tall Grass',
+    color: [0.3, 0.6, 0.2],
+    atlasRef: null,
+    atlasRegionIndex: null,
+    minSize: [0.3, 0.5],
+    maxSize: [0.5, 1.2],
+    spawnProbability: 0.6,
+    biomeChannel: 'r',
+    biomeThreshold: 0.3,
+    clusterStrength: 0.4,
+    minSpacing: 0.2,
+    maxDistance: 200,
+    lodBias: 1.0,
+  },
+  {
+    id: 'short-grass',
+    name: 'Short Grass Clump',
+    color: [0.4, 0.5, 0.2],
+    atlasRef: null,
+    atlasRegionIndex: null,
+    minSize: [0.2, 0.15],
+    maxSize: [0.3, 0.3],
+    spawnProbability: 0.8,
+    biomeChannel: 'r',
+    biomeThreshold: 0.2,
+    clusterStrength: 0.2,
+    minSpacing: 0.1,
+    maxDistance: 100,
+    lodBias: 0.8,
+  },
+  {
+    id: 'wildflower-yellow',
+    name: 'Yellow Wildflower',
+    color: [0.9, 0.8, 0.2],
+    atlasRef: null,
+    atlasRegionIndex: null,
+    minSize: [0.15, 0.2],
+    maxSize: [0.25, 0.4],
+    spawnProbability: 0.15,
+    biomeChannel: 'r',
+    biomeThreshold: 0.5,
+    clusterStrength: 0.7,
+    minSpacing: 0.3,
+    maxDistance: 150,
+    lodBias: 1.2,
+  },
+  {
+    id: 'wildflower-purple',
+    name: 'Purple Wildflower',
+    color: [0.6, 0.3, 0.7],
+    atlasRef: null,
+    atlasRegionIndex: null,
+    minSize: [0.12, 0.18],
+    maxSize: [0.22, 0.35],
+    spawnProbability: 0.1,
+    biomeChannel: 'r',
+    biomeThreshold: 0.5,
+    clusterStrength: 0.6,
+    minSpacing: 0.35,
+    maxDistance: 150,
+    lodBias: 1.2,
+  },
+  {
+    id: 'small-shrub',
+    name: 'Small Shrub',
+    color: [0.25, 0.4, 0.2],
+    atlasRef: null,
+    atlasRegionIndex: null,
+    minSize: [0.4, 0.3],
+    maxSize: [0.8, 0.6],
+    spawnProbability: 0.05,
+    biomeChannel: 'r',
+    biomeThreshold: 0.6,
+    clusterStrength: 0.3,
+    minSpacing: 1.0,
+    maxDistance: 300,
+    lodBias: 1.5,
+  },
+];
+
+/**
+ * Default forest edge plant presets.
+ */
+export const FOREST_PLANT_PRESETS: PlantType[] = [
+  {
+    id: 'fern',
+    name: 'Fern',
+    color: [0.2, 0.45, 0.15],
+    atlasRef: null,
+    atlasRegionIndex: null,
+    minSize: [0.3, 0.25],
+    maxSize: [0.6, 0.5],
+    spawnProbability: 0.5,
+    biomeChannel: 'b',
+    biomeThreshold: 0.3,
+    clusterStrength: 0.5,
+    minSpacing: 0.4,
+    maxDistance: 200,
+    lodBias: 1.0,
+  },
+  {
+    id: 'forest-grass',
+    name: 'Forest Grass',
+    color: [0.2, 0.4, 0.15],
+    atlasRef: null,
+    atlasRegionIndex: null,
+    minSize: [0.2, 0.3],
+    maxSize: [0.4, 0.6],
+    spawnProbability: 0.4,
+    biomeChannel: 'b',
+    biomeThreshold: 0.25,
+    clusterStrength: 0.3,
+    minSpacing: 0.2,
+    maxDistance: 150,
+    lodBias: 0.9,
+  },
+];
+
 /**
  * Parameters controlling biome mask generation from terrain data.
  * These determine how heightmap, slope, and water flow influence

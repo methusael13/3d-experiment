@@ -8,6 +8,7 @@ import { useComputed } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
 import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, type MaterialParams as TerrainMaterialParams, type DetailParams } from '../panels';
 import { BiomeMaskPanelBridge } from './BiomeMaskPanelBridge';
+import { VegetationPanelBridge } from './VegetationPanelBridge';
 import { isGPUTerrainObject, isTerrainObject, type GPUTerrainSceneObject, type TerrainObject } from '../../../../core/sceneObjects';
 import { debounce } from '../../../../core/utils/debounce';
 import { TerrainManager } from '@/core/terrain';
@@ -208,6 +209,9 @@ export function ConnectedTerrainPanel({
   
   // Biome mask editor visibility
   const [biomeMaskEditorVisible, setBiomeMaskEditorVisible] = useState(false);
+  
+  // Vegetation editor visibility
+  const [vegetationEditorVisible, setVegetationEditorVisible] = useState(false);
   
   // Refs to hold current values for debounced callbacks (avoids stale closures)
   const noiseParamsRef = useRef(noiseParams);
@@ -504,6 +508,14 @@ export function ConnectedTerrainPanel({
   const handleCloseBiomeMaskEditor = useCallback(() => {
     setBiomeMaskEditorVisible(false);
   }, []);
+  
+  const handleOpenVegetationEditor = useCallback(() => {
+    setVegetationEditorVisible(true);
+  }, []);
+  
+  const handleCloseVegetationEditor = useCallback(() => {
+    setVegetationEditorVisible(false);
+  }, []);
 
   // Only render if terrain is selected
   if (selectedTerrainInfo.value === null) {
@@ -536,6 +548,7 @@ export function ConnectedTerrainPanel({
       progress={progress}
       isWebGPU={store.isWebGPU.value}
       onOpenBiomeMaskEditor={handleOpenBiomeMaskEditor}
+      onOpenPlantRegistry={handleOpenVegetationEditor}
       isTerrainReady={isTerrainReady}
       hasFlowMap={hasFlowMap}
     />
@@ -545,6 +558,13 @@ export function ConnectedTerrainPanel({
       visible={biomeMaskEditorVisible}
       onClose={handleCloseBiomeMaskEditor}
       defaultPosition={{ x: 400, y: 100 }}
+    />
+    
+    {/* Vegetation Editor Dockable Window */}
+    <VegetationPanelBridge
+      visible={vegetationEditorVisible}
+      onClose={handleCloseVegetationEditor}
+      defaultPosition={{ x: 450, y: 100 }}
     />
     </>
   );

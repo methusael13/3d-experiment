@@ -1,0 +1,158 @@
+/**
+ * AssetPickerModal Styles
+ */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  backdrop-filter: blur(2px);
+}
+
+.modal {
+  background: var(--panel-bg, #1e1e1e);
+  border: 1px solid var(--border-color, #3c3c3c);
+  border-radius: 8px;
+  width: 800px;
+  max-width: 90vw;
+  height: 600px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color, #3c3c3c);
+  flex-shrink: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-color, #cccccc);
+}
+
+.headerActions {
+  display: flex;
+  gap: 8px;
+}
+
+.refreshButton,
+.closeButton {
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #808080);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.refreshButton:hover,
+.closeButton:hover {
+  background: var(--hover-bg, #2a2a2a);
+  color: var(--text-color, #cccccc);
+}
+
+/* Content */
+.content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.errorState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted, #808080);
+  gap: 12px;
+}
+
+.errorState p {
+  margin: 0;
+}
+
+.errorState button {
+  background: var(--accent-color, #0078d4);
+  color: white;
+  border: none;
+  padding: 6px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.errorState button:hover {
+  background: var(--accent-hover, #1a8deb);
+}
+
+/* Footer */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color, #3c3c3c);
+  flex-shrink: 0;
+}
+
+.footerInfo {
+  color: var(--text-muted, #808080);
+  font-size: 12px;
+}
+
+.footerActions {
+  display: flex;
+  gap: 8px;
+}
+
+.cancelButton,
+.selectButton {
+  padding: 6px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cancelButton {
+  background: transparent;
+  border: 1px solid var(--border-color, #3c3c3c);
+  color: var(--text-color, #cccccc);
+}
+
+.cancelButton:hover {
+  background: var(--hover-bg, #2a2a2a);
+}
+
+.selectButton {
+  background: var(--accent-color, #0078d4);
+  border: none;
+  color: white;
+}
+
+.selectButton:hover:not(:disabled) {
+  background: var(--accent-hover, #1a8deb);
+}
+
+.selectButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -20,7 +20,7 @@ import {
   createDefaultIslandMaskParams,
 } from './HeightmapGenerator';
 import { ErosionSimulator, HydraulicErosionParams, ThermalErosionParams } from './ErosionSimulator';
-import { BiomeMaskGenerator, BiomeParams, createDefaultBiomeParams } from '../vegetation';
+import { BiomeMaskGenerator, BiomeParams, createDefaultBiomeParams, PlantRegistry } from '../vegetation';
 import { CDLODRendererGPU, CDLODGPUConfig, CDLODRenderParams, TerrainMaterial } from './CDLODRendererGPU';
 import { QuadtreeConfig } from './TerrainQuadtree';
 
@@ -147,6 +147,7 @@ export class TerrainManager {
   
   // Vegetation system
   private biomeMaskGenerator: BiomeMaskGenerator | null = null;
+  private plantRegistry: PlantRegistry | null = null;
   
   // Generated textures
   private heightmap: UnifiedGPUTexture | null = null;
@@ -182,6 +183,10 @@ export class TerrainManager {
     
     // Create biome mask generator
     this.biomeMaskGenerator = new BiomeMaskGenerator(this.ctx);
+    
+    // Create plant registry with default presets
+    this.plantRegistry = new PlantRegistry();
+    this.plantRegistry.loadDefaultPresets();
     
     // Create renderer with quadtree and renderer configs
     const quadtreeConfig: Partial<QuadtreeConfig> = {
@@ -916,6 +921,22 @@ export class TerrainManager {
    */
   hasBiomeMask(): boolean {
     return this.biomeMask !== null;
+  }
+  
+  // ============ Plant Registry ============
+  
+  /**
+   * Get the plant registry for vegetation configuration
+   */
+  getPlantRegistry(): PlantRegistry | null {
+    return this.plantRegistry;
+  }
+  
+  /**
+   * Check if plant registry is initialized
+   */
+  hasPlantRegistry(): boolean {
+    return this.plantRegistry !== null;
   }
   
   // ============ Cleanup ============
