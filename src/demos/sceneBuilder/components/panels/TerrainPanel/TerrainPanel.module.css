@@ -272,3 +272,14 @@
   max-width: 200px;
   line-height: 1.4;
 }
+
+/* Hint text below controls */
+.hint {
+  font-size: 10px;
+  color: var(--sb-text-muted, #666);
+  line-height: 1.4;
+  margin-top: 4px;
+  margin-bottom: 8px;
+  padding-left: 4px;
+  font-style: italic;
+}

@@ -22,7 +22,7 @@ import { UnifiedGPUTexture } from '../GPUTexture';
 import { GridRendererGPU } from '../renderers/GridRendererGPU';
 import { SkyRendererGPU } from '../renderers/SkyRendererGPU';
 import { ObjectRendererGPU } from '../renderers/ObjectRendererGPU';
-import { ShadowRendererGPU } from '../renderers';
+import { ShadowRendererGPU, DebugTextureManager } from '../renderers';
 import { SceneEnvironment, type IBLResources } from '../renderers/shared';
 import { DynamicSkyIBL, type IBLTextures } from '../ibl';
 import { WebGPUShadowSettings } from '@/demos/sceneBuilder/componentPanels/RenderingPanel';
@@ -139,6 +139,9 @@ export class GPUForwardPipeline {
   // Shared environment (shadow + IBL) - Group 3 for all renderers
   private sceneEnvironment: SceneEnvironment;
   
+  // Debug texture manager
+  private debugTextureManager: DebugTextureManager;
+  
   // Render passes (ordered by priority)
   private passes: RenderPass[] = [];
   
@@ -187,6 +190,16 @@ export class GPUForwardPipeline {
     // Create shared SceneEnvironment for shadow + IBL (Group 3 bind group)
     this.sceneEnvironment = new SceneEnvironment(ctx);
     
+    // Create debug texture manager
+    this.debugTextureManager = new DebugTextureManager(ctx);
+    
+    // Register shadow map for debug visualization
+    this.debugTextureManager.register(
+      'shadow-map',
+      'depth',
+      () => this.shadowRenderer.getShadowMap()?.view ?? null
+    );
+    
     // Create render passes
     this.initializePasses();
     
@@ -219,6 +232,7 @@ export class GPUForwardPipeline {
     
     const debugPass = new DebugPass({
       shadowRenderer: this.shadowRenderer,
+      debugTextureManager: this.debugTextureManager,
     });
     
     // Store passes in priority order
@@ -696,6 +710,7 @@ export class GPUForwardPipeline {
     this.dynamicSkyIBL.destroy();
     // OceanManager is owned externally, not destroyed here
     this.postProcessPipeline?.destroy();
+    this.debugTextureManager.destroy();
     
     // Destroy render passes
     for (const pass of this.passes) {
@@ -739,5 +754,12 @@ export class GPUForwardPipeline {
    */
   getSceneEnvironment(): SceneEnvironment {
     return this.sceneEnvironment;
+  }
+  
+  /**
+   * Get the debug texture manager for registering/controlling debug visualizations
+   */
+  getDebugTextureManager(): DebugTextureManager {
+    return this.debugTextureManager;
   }
 }

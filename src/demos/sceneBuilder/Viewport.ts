@@ -693,6 +693,13 @@ export class Viewport {
   }
   
   /**
+   * Get the WebGPU debug texture manager (for registering debug textures)
+   */
+  getDebugTextureManager() {
+    return this.gpuPipeline?.getDebugTextureManager() ?? null;
+  }
+  
+  /**
    * Set WebGPU shadow settings (for RenderingPanel integration)
    */
   setWebGPUShadowSettings(settings: WebGPUShadowSettings): void {

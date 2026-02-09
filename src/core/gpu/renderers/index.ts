@@ -22,5 +22,15 @@ export {
 // Shadow receiver utilities
 export { ShadowReceiverUtils, type ShadowReceiverResources } from './ShadowReceiverUtils';
 
+// Debug texture visualization
+export { DepthTextureVisualizer } from './DepthTextureVisualizer';
+export { FloatTextureVisualizer, type FloatTextureColormap } from './FloatTextureVisualizer';
+export { 
+  DebugTextureManager,
+  type DebugTextureType,
+  type DebugTextureConfig,
+  type DebugLayoutConfig,
+} from './DebugTextureManager';
+
 // Types
 export type { BoundingBox, ShadowCaster, ShadowReceiver } from './types';

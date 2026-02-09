@@ -107,6 +107,12 @@ export class ErosionSimulator {
   // Storage buffer for hydraulic erosion (parallel writes)
   private erosionMapBuffer: UnifiedGPUBuffer | null = null;
   
+  // Flow accumulation for vegetation system
+  private flowAccumulationBuffer: UnifiedGPUBuffer | null = null;
+  private flowMapTexture: UnifiedGPUTexture | null = null;
+  private flowFinalizeBindGroupLayout: GPUBindGroupLayout | null = null;
+  private flowFinalizePipeline: ComputePipelineWrapper | null = null;
+  
   // Hydraulic erosion pipelines
   private hydraulicInitPipeline: ComputePipelineWrapper | null = null;
   private hydraulicSimulatePipeline: ComputePipelineWrapper | null = null;
@@ -175,21 +181,40 @@ export class ErosionSimulator {
       size: bufferSize,
     });
     
+    // Create flow accumulation buffer (atomic u32 per texel)
+    this.flowAccumulationBuffer = UnifiedGPUBuffer.createStorage(this.ctx, {
+      label: 'flow-accumulation-buffer',
+      size: bufferSize, // Same size: u32 per texel
+    });
+    
+    // Create flow map texture for vegetation system
+    this.flowMapTexture = UnifiedGPUTexture.create2D(this.ctx, {
+      label: 'flow-map',
+      width: this.resolution,
+      height: this.resolution,
+      format: 'r32float',
+      storage: true,
+      sampled: true,
+    });
+    
     // Initialize pipelines
     this.initializeHydraulicPipeline();
     this.initializeThermalPipeline();
+    this.initializeFlowFinalizePipeline();
   }
   
   /**
    * Initialize hydraulic erosion pipelines
    */
   private initializeHydraulicPipeline(): void {
-    // Bind group layout for hydraulic erosion
+    // Bind group layout for hydraulic erosion (6 bindings including flow accumulation)
     this.hydraulicBindGroupLayout = new BindGroupLayoutBuilder('hydraulic-erosion-layout')
       .uniformBuffer(0, 'compute')
       .texture(1, 'compute', 'unfilterable-float')
       .storageTexture(2, 'r32float', 'compute', 'write-only')
-      .storageBufferRW(3, 'compute')
+      .storageBufferRW(3, 'compute')  // erosionMap
+      .storageBufferRW(4, 'compute')  // flowAccumulation (atomic u32)
+      .storageTexture(5, 'r32float', 'compute', 'write-only')  // flowMapOut
       .build(this.ctx);
     
     // Create pipelines for each entry point
@@ -218,6 +243,19 @@ export class ErosionSimulator {
     this.hydraulicParamsBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'hydraulic-params-buffer',
       size: 64,
+    });
+  }
+  
+  /**
+   * Initialize flow map finalization pipeline
+   */
+  private initializeFlowFinalizePipeline(): void {
+    // Reuse hydraulic bind group layout - same bindings needed
+    this.flowFinalizePipeline = ComputePipelineWrapper.create(this.ctx, {
+      label: 'flow-finalize-pipeline',
+      shader: hydraulicErosionShader,
+      entryPoint: 'finalizeFlowMap',
+      bindGroupLayouts: [this.hydraulicBindGroupLayout!],
     });
   }
   
@@ -328,17 +366,26 @@ export class ErosionSimulator {
     const sourceHeightmap = this.currentTexture === 'A' ? this.heightmapA! : this.heightmapB!;
     const targetHeightmap = this.currentTexture === 'A' ? this.heightmapB! : this.heightmapA!;
     
+    // Clear flow accumulation buffer at start of erosion session
+    const clearEncoder = this.ctx.device.createCommandEncoder({
+      label: 'clear-flow-buffer-encoder',
+    });
+    clearEncoder.clearBuffer(this.flowAccumulationBuffer!.buffer);
+    this.ctx.queue.submit([clearEncoder.finish()]);
+    
     for (let i = 0; i < iterations; i++) {
       // Update seed for each iteration
       floatView[11] = this.hydraulicIterationCount + i;
       this.hydraulicParamsBuffer!.write(this.ctx, new Float32Array(combinedBuffer));
       
-      // Create bind group
+      // Create bind group with all 6 bindings
       const bindGroup = new BindGroupBuilder('hydraulic-bind-group')
         .buffer(0, this.hydraulicParamsBuffer!)
         .texture(1, sourceHeightmap)
         .texture(2, targetHeightmap)
         .buffer(3, this.erosionMapBuffer!)
+        .buffer(4, this.flowAccumulationBuffer!)
+        .texture(5, this.flowMapTexture!)
         .build(this.ctx, this.hydraulicBindGroupLayout);
       
       const encoder = this.ctx.device.createCommandEncoder({
@@ -375,6 +422,44 @@ export class ErosionSimulator {
     }
     
     this.hydraulicIterationCount += iterations;
+    
+    // Finalize flow map after all erosion iterations
+    this.finalizeFlowMap();
+  }
+  
+  /**
+   * Finalize the flow map by normalizing accumulated flow values
+   */
+  private finalizeFlowMap(): void {
+    if (!this.flowFinalizePipeline || !this.hydraulicBindGroupLayout) {
+      return;
+    }
+    
+    const sourceHeightmap = this.currentTexture === 'A' ? this.heightmapA! : this.heightmapB!;
+    const targetHeightmap = this.currentTexture === 'A' ? this.heightmapB! : this.heightmapA!;
+    
+    // Create bind group for flow finalization
+    const bindGroup = new BindGroupBuilder('flow-finalize-bind-group')
+      .buffer(0, this.hydraulicParamsBuffer!)
+      .texture(1, sourceHeightmap)
+      .texture(2, targetHeightmap)
+      .buffer(3, this.erosionMapBuffer!)
+      .buffer(4, this.flowAccumulationBuffer!)
+      .texture(5, this.flowMapTexture!)
+      .build(this.ctx, this.hydraulicBindGroupLayout);
+    
+    const encoder = this.ctx.device.createCommandEncoder({
+      label: 'flow-finalize-encoder',
+    });
+    
+    const pass = encoder.beginComputePass({ label: 'flow-finalize-pass' });
+    pass.setPipeline(this.flowFinalizePipeline.pipeline);
+    pass.setBindGroup(0, bindGroup);
+    const workgroups = calculateWorkgroupCount2D(this.resolution, this.resolution, 8, 8);
+    pass.dispatchWorkgroups(workgroups.x, workgroups.y);
+    pass.end();
+    
+    this.ctx.queue.submit([encoder.finish()]);
   }
   
   /**
@@ -453,6 +538,14 @@ export class ErosionSimulator {
   }
   
   /**
+   * Get the flow accumulation map for vegetation placement
+   * Returns a texture with normalized flow values (0-1, log-scaled)
+   */
+  getFlowMap(): UnifiedGPUTexture | null {
+    return this.flowMapTexture;
+  }
+  
+  /**
    * Get iteration counts
    */
   getIterationCounts(): { hydraulic: number; thermal: number } {
@@ -477,15 +570,20 @@ export class ErosionSimulator {
     this.heightmapA?.destroy();
     this.heightmapB?.destroy();
     this.erosionMapBuffer?.destroy();
+    this.flowAccumulationBuffer?.destroy();
+    this.flowMapTexture?.destroy();
     this.hydraulicParamsBuffer?.destroy();
     this.thermalParamsBuffer?.destroy();
     
     this.heightmapA = null;
     this.heightmapB = null;
     this.erosionMapBuffer = null;
+    this.flowAccumulationBuffer = null;
+    this.flowMapTexture = null;
     this.hydraulicInitPipeline = null;
     this.hydraulicSimulatePipeline = null;
     this.hydraulicFinalizePipeline = null;
+    this.flowFinalizePipeline = null;
     this.thermalPipeline = null;
     this.hydraulicParamsBuffer = null;
     this.thermalParamsBuffer = null;

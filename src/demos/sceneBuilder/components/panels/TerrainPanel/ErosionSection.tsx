@@ -14,6 +14,8 @@ export interface ErosionParams {
   thermalEnabled: boolean;
   thermalIterations: number;
   talusAngle: number;
+  // Debug visualization
+  showFlowMapDebug: boolean;
 }
 
 export interface ErosionSectionProps {
@@ -133,6 +135,19 @@ export function ErosionSection({ params, onParamsChange }: ErosionSectionProps) 
           onChange={(v) => handleChange('talusAngle', v)}
           disabled={!params.thermalEnabled}
         />
+      </div>
+
+      <div class={styles.divider} />
+      <div class={styles.sectionTitle}>Debug</div>
+      
+      <Checkbox
+        label="Show Flow Map (Water Paths)"
+        checked={params.showFlowMapDebug}
+        onChange={(v) => handleChange('showFlowMapDebug', v)}
+        disabled={!params.hydraulicEnabled}
+      />
+      <div class={styles.hint}>
+        Visualizes water flow accumulation from hydraulic erosion. Brighter areas indicate more water flow.
       </div>
     </div>
   );

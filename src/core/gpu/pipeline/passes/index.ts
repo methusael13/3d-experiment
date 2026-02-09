@@ -11,6 +11,7 @@ import type { SkyRendererGPU } from '../../renderers/SkyRendererGPU';
 import type { ObjectRendererGPU } from '../../renderers/ObjectRendererGPU';
 import type { GridRendererGPU } from '../../renderers/GridRendererGPU';
 import type { ShadowRendererGPU } from '../../renderers/ShadowRendererGPU';
+import type { DebugTextureManager } from '../../renderers/DebugTextureManager';
 
 // ============================================================================
 // SKY PASS
@@ -346,11 +347,18 @@ export class OverlayPass extends BaseRenderPass {
 
 export interface DebugPassDependencies {
   shadowRenderer: ShadowRendererGPU;
+  debugTextureManager: DebugTextureManager;
 }
 
 /**
- * DebugPass - Renders debug visualizations (shadow map thumbnail)
+ * DebugPass - Renders debug visualizations using DebugTextureManager
  * Category: viewport (renders AFTER post-processing)
+ * 
+ * Supports multiple debug textures stacked horizontally from bottom-left:
+ * - shadow-map: Shadow depth texture
+ * - flow-map: Water flow accumulation from erosion
+ * - heightmap: Terrain height data
+ * - etc.
  */
 export class DebugPass extends BaseRenderPass {
   readonly name = 'debug';
@@ -365,25 +373,19 @@ export class DebugPass extends BaseRenderPass {
   }
   
   execute(ctx: RenderContext): void {
+    // Sync shadow-map visibility with render options (backwards compatibility)
     const { showShadowThumbnail, shadowEnabled } = ctx.options;
+    this.deps.debugTextureManager.setEnabled('shadow-map', showShadowThumbnail && shadowEnabled);
     
-    // Skip if not enabled
-    if (!showShadowThumbnail || !shadowEnabled) return;
-    
-    // Viewport passes render directly to backbuffer
-    const thumbnailSize = 200;
-    const thumbnailX = 10;
-    const thumbnailY = 10;
-    
-    this.deps.shadowRenderer.renderDebugThumbnail(
-      ctx.encoder,
-      ctx.outputView,
-      thumbnailX,
-      thumbnailY,
-      thumbnailSize,
-      ctx.width,
-      ctx.height
-    );
+    // Render all enabled debug textures via the manager
+    if (this.deps.debugTextureManager.hasEnabledTextures()) {
+      this.deps.debugTextureManager.render(
+        ctx.encoder,
+        ctx.outputView,
+        ctx.width,
+        ctx.height
+      );
+    }
   }
 }
 

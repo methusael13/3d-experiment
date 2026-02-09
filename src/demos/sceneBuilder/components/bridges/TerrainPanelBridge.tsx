@@ -47,6 +47,7 @@ const DEFAULT_EROSION_PARAMS: ErosionParams = {
   thermalEnabled: true,
   thermalIterations: 50,
   talusAngle: 0.5,
+  showFlowMapDebug: false,
 };
 
 const DEFAULT_MATERIAL_PARAMS: TerrainMaterialParams = {
@@ -292,7 +293,44 @@ export function ConnectedTerrainPanel({
   }, [debouncedFullRegen, handleTerrainBoundsChange]);
   
   const handleErosionParamsChange = useCallback((changes: Partial<ErosionParams>) => {
-    setErosionParams(prev => ({ ...prev, ...changes }));
+    setErosionParams(prev => {
+      const updated = { ...prev, ...changes };
+      
+      // Handle flow map debug toggle
+      if ('showFlowMapDebug' in changes) {
+        const terrainInfo = selectedTerrainInfoRef.current.value;
+        if (terrainInfo?.type === 'webgpu' && terrainInfo.manager) {
+          const flowMap = terrainInfo.manager.getFlowMap();
+          
+          // Get debug texture manager from pipeline
+          const viewport = store.viewport;
+          const debugManager = viewport?.getDebugTextureManager?.();
+          
+          if (debugManager && flowMap) {
+            // Register flow map if not already registered
+            if (!debugManager.getRegisteredTextures().includes('flow-map')) {
+              debugManager.register(
+                'flow-map',
+                'float',
+                () => terrainInfo.manager?.getFlowMap()?.view ?? null,
+                { colormap: 'grayscale-inverted' }  // Black flow on white background
+              );
+            }
+            // Toggle visibility
+            debugManager.setEnabled('flow-map', changes.showFlowMapDebug ?? false);
+            
+            console.log(
+              `[TerrainPanel] Flow Map Debug ${changes.showFlowMapDebug ? 'enabled' : 'disabled'}`,
+              `- Texture: ${flowMap.width}x${flowMap.height}`
+            );
+          } else if (!flowMap) {
+            console.warn('[TerrainPanel] No flow map available - run hydraulic erosion first');
+          }
+        }
+      }
+      
+      return updated;
+    });
   }, []);
   
   const handleMaterialParamsChange = useCallback((changes: Partial<TerrainMaterialParams>) => {

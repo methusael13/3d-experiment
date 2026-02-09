@@ -148,6 +148,7 @@ export class TerrainManager {
   private heightmap: UnifiedGPUTexture | null = null;
   private normalMap: UnifiedGPUTexture | null = null;
   private islandMask: UnifiedGPUTexture | null = null;
+  private flowMap: UnifiedGPUTexture | null = null;
   
   // State
   private isInitialized = false;
@@ -298,6 +299,9 @@ export class TerrainManager {
           this.heightmap.destroy();
           this.heightmap = erodedHeightmap;
         }
+        
+        // Store flow map for vegetation system
+        this.flowMap = this.erosionSimulator!.getFlowMap();
       }
       
       progressCallback?.('Generating normal map...', 80);
@@ -582,6 +586,15 @@ export class TerrainManager {
   
   getNormalMap(): UnifiedGPUTexture | null {
     return this.normalMap;
+  }
+  
+  /**
+   * Get water flow accumulation map from hydraulic erosion
+   * Used for vegetation placement (riparian zones, erosion patterns)
+   * Values are normalized 0-1, log-scaled for better distribution
+   */
+  getFlowMap(): UnifiedGPUTexture | null {
+    return this.flowMap;
   }
   
   getIslandMask(): UnifiedGPUTexture | null {

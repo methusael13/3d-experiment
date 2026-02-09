@@ -32,6 +32,8 @@ struct ErosionParams {
 @group(0) @binding(1) var heightmapIn: texture_2d<f32>;
 @group(0) @binding(2) var heightmapOut: texture_storage_2d<r32float, write>;
 @group(0) @binding(3) var<storage, read_write> erosionMap: array<f32>;
+@group(0) @binding(4) var<storage, read_write> flowAccumulation: array<atomic<u32>>;
+@group(0) @binding(5) var flowMapOut: texture_storage_2d<r32float, write>;
 
 // ============================================================================
 // Random Number Generation
@@ -190,6 +192,10 @@ fn simulateDroplet(startPos: vec2f) {
       break;
     }
     
+    // Track droplet visit for flow accumulation map
+    let flowIdx = u32(nodeY) * params.mapSize + u32(nodeX);
+    atomicAdd(&flowAccumulation[flowIdx], 1u);
+    
     // Calculate offset within cell
     let cellOffset = droplet.pos - vec2f(f32(nodeX), f32(nodeY));
     
@@ -307,4 +313,25 @@ fn finalizeErosion(@builtin(global_invocation_id) globalId: vec3u) {
   let height = erosionMap[idx] / params.heightScale;
   
   textureStore(heightmapOut, vec2i(globalId.xy), vec4f(height, 0.0, 0.0, 1.0));
+}
+
+// Finalize flow map - normalize accumulated flow values and write to texture
+// Uses log scale for better distribution since flow values vary widely
+@compute @workgroup_size(8, 8, 1)
+fn finalizeFlowMap(@builtin(global_invocation_id) globalId: vec3u) {
+  let dims = textureDimensions(heightmapIn);
+  
+  if (globalId.x >= dims.x || globalId.y >= dims.y) {
+    return;
+  }
+  
+  let idx = globalId.y * dims.x + globalId.x;
+  let rawFlow = f32(atomicLoad(&flowAccumulation[idx]));
+  
+  // Normalize with log scale for better distribution
+  // More sensitive: even small values (1-10 visits) will show some color
+  // log(1 + x) / log(1000) gives good range for 0-1000+ visits
+  let normalizedFlow = saturate(log(1.0 + rawFlow) / log(1000.0));
+  
+  textureStore(flowMapOut, vec2i(globalId.xy), vec4f(normalizedFlow, 0.0, 0.0, 1.0));
 }
