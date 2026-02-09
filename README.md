@@ -71,8 +71,11 @@ npm install
 ## Development
 
 ```bash
-# Start development server
+# Start development server (frontend only)
 npm run dev
+
+# Start asset library server (required for Asset Library panel)
+npm run dev:server
 
 # Build for production
 npm run build
@@ -82,6 +85,88 @@ npm run preview
 
 # Run tests
 npm test
+```
+
+## Asset Library Server
+
+The Asset Library Server indexes and serves assets from the `public/` folder, providing a browsable library with thumbnail previews.
+
+### Running the Asset Server
+
+```bash
+# Start the asset server (port 3002)
+npm run dev:server
+```
+
+### Populating the Asset Library
+
+Before running the asset server, populate the `public/` folder with your assets:
+
+```
+public/
+├── models/
+│   ├── terrain/
+│   │   └── vegetation/       # Vegetation models (GLTF/GLB)
+│   │       └── ribbon_grass_xxx/
+│   │           ├── standard/
+│   │           │   └── xxx_nonUE.gltf
+│   │           ├── Textures/
+│   │           │   └── T_xxx_4K_B.png
+│   │           └── xxx.json  # Metadata manifest
+│   └── props/                # General 3D models
+├── textures/
+│   ├── atlas/
+│   │   └── vegetation/       # Texture atlases
+│   └── terrain/              # Terrain textures
+└── ibl/                      # HDR environment maps
+```
+
+### Supported Asset Sources
+
+| Source | URL | Asset Types |
+|--------|-----|-------------|
+| **Quixel Megascans** | [quixel.com](https://quixel.com/megascans) | Vegetation, surfaces, props |
+| **Poly Haven** | [polyhaven.com](https://polyhaven.com) | HDRIs, textures |
+| **Sketchfab** | [sketchfab.com](https://sketchfab.com) | 3D models (GLB/GLTF) |
+| **cgtrader** | [cgtrader.com](https://cgtrader.com) | Premium assets |
+
+### Asset Formats
+
+| Format | Extension | Use Case |
+|--------|-----------|----------|
+| GLTF/GLB | `.gltf`, `.glb` | 3D models with materials |
+| PNG/JPG | `.png`, `.jpg` | Textures |
+| HDR/EXR | `.hdr`, `.exr` | Environment maps |
+| JSON | `.json` | Asset metadata manifests |
+
+### Quixel Megascans Setup
+
+1. Download assets from [Quixel Bridge](https://quixel.com/bridge)
+2. Export as **Standard** format (not Unreal Engine format)
+3. Place in `public/models/terrain/vegetation/` or appropriate folder
+4. The indexer will detect and parse the `manifest.json` or `*.json` metadata
+
+### Asset Server API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/assets` | GET | List all assets (with query filters) |
+| `/api/assets/:id` | GET | Get asset details with files |
+| `/api/previews/:id.webp` | GET | Get thumbnail preview |
+| `/api/stats` | GET | Database statistics |
+
+**Query Parameters:**
+- `?type=vegetation` - Filter by asset type
+- `?category=model` - Filter by category
+- `?search=grass` - Full-text search
+
+### Clearing the Asset Database
+
+To re-index all assets from scratch:
+
+```bash
+rm -rf .asset-server/
+npm run server
 ```
 
 ## Keyboard Shortcuts
