@@ -3,16 +3,18 @@
  * Orchestrates the entire UI using signals-based state management
  */
 
-import { useEffect, useCallback, useMemo, useRef } from 'preact/hooks';
+import { useEffect, useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import { render } from 'preact';
 import { createSceneGraph, type SceneGraph } from '../../../../core/sceneGraph';
 import { createScene, type Scene } from '../../../../core/Scene';
 import { createLightingManager, type LightingManager } from '../../lightingManager';
 import { WindManager } from '../../wind';
-import { clearImportedModels } from '../../../../loaders';
+import { clearImportedModels, sceneSerializer } from '../../../../loaders';
+import type { Asset } from '../hooks/useAssetLibrary';
 import { getSceneBuilderStore, resetSceneBuilderStore } from '../state';
 import { ViewportContainer } from '../viewport';
 import { ObjectsPanel } from '../panels';
+import { AssetLibraryPanel } from '../panels/AssetLibraryPanel';
 import { ConnectedObjectPanel, ConnectedEnvironmentPanel, ConnectedRenderingPanel, ConnectedMaterialPanel, ConnectedTerrainPanel, ConnectedWaterPanel, ConnectedMenuBar, ShaderDebugPanelContainer } from '../bridges';
 import { useKeyboardShortcuts } from '../hooks';
 import { DockingManagerProvider } from '../ui';
@@ -109,6 +111,68 @@ export function SceneBuilderApp({
   // ==================== Keyboard Shortcuts ====================
   
   useKeyboardShortcuts();
+  
+  // ==================== Asset Library State ====================
+  
+  const [assetLibraryVisible, setAssetLibraryVisible] = useState(true);
+  
+  const handleToggleAssetLibrary = useCallback(() => {
+    setAssetLibraryVisible(prev => !prev);
+  }, []);
+
+  /**
+   * Handle adding an asset from the library to the scene
+   * Called when user double-clicks an asset in the Asset Library
+   */
+  const handleAddAssetToScene = useCallback(async (asset: Asset) => {
+    if (!store.scene) {
+      console.warn('[SceneBuilderApp] Cannot add asset: scene not initialized');
+      return;
+    }
+    
+    // Only handle model types for now (includes vegetation which is type='model' with category='vegetation')
+    if (asset.type !== 'model') {
+      console.log(`[SceneBuilderApp] Asset type "${asset.type}" not yet supported for scene import`);
+      return;
+    }
+    
+    // Find the main model file for this asset
+    // First try by fileType, then fallback to extension matching
+    let modelFile = asset.files.find(f => f.fileType === 'model' && (f.lodLevel === null || f.lodLevel === 0));
+    
+    // Fallback: find .gltf or .glb file by extension if fileType wasn't set
+    if (!modelFile) {
+      modelFile = asset.files.find(f => 
+        f.path.endsWith('.gltf') || f.path.endsWith('.glb')
+      );
+    }
+    
+    const filePath = modelFile?.path ?? asset.path;
+    
+    // Normalize path to include leading slash for Vite to serve from public/
+    const normalizedPath = filePath.startsWith('/') ? filePath : `/${filePath}`;
+    
+    // Add object to scene
+    const obj = await store.scene.addObject(normalizedPath, asset.name);
+    
+    if (obj) {
+      // Register the asset reference for save/load tracking
+      sceneSerializer.registerAssetRef(obj.id, {
+        assetId: asset.id,
+        assetName: asset.name,
+        assetType: asset.type,
+        assetSubtype: asset.subtype ?? undefined,
+      });
+      
+      // Select the newly added object
+      store.scene.select(obj.id);
+      store.syncFromScene();
+      
+      console.log(`[SceneBuilderApp] Added asset "${asset.name}" to scene (id: ${obj.id})`);
+    } else {
+      console.error(`[SceneBuilderApp] Failed to add asset "${asset.name}" to scene`);
+    }
+  }, [store]);
 
   const processWebGPUTestEnabled = useCallback(async () => {
     const success = await store.viewport?.enableWebGPUTest() ?? false;
@@ -151,8 +215,10 @@ export function SceneBuilderApp({
         {/* Menu Bar */}
         <ConnectedMenuBar />
       
-      {/* Main Content (sidebars + viewport) */}
-      <div class={styles.mainContent}>
+      {/* Main Area (sidebars + viewport + bottom panel) */}
+      <div class={styles.mainArea}>
+        {/* Main Content (sidebars + viewport) */}
+        <div class={styles.mainContent}>
         {/* Left Sidebar */}
         <div class={styles.sidebarLeft}>
           <ObjectsPanel
@@ -195,6 +261,16 @@ export function SceneBuilderApp({
           
           {/* Material Panel */}
           <ConnectedMaterialPanel />
+        </div>
+        </div>
+        
+        {/* Bottom Panel - Asset Library */}
+        <div class={styles.bottomPanel}>
+          <AssetLibraryPanel
+            isVisible={assetLibraryVisible}
+            onToggleVisibility={handleToggleAssetLibrary}
+            onAddAssetToScene={handleAddAssetToScene}
+          />
         </div>
       </div>
       

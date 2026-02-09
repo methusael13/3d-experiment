@@ -10,17 +10,32 @@
   font-size: var(--font-size-sm, 13px);
 }
 
-.mainContent {
+.mainArea {
   display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 
+.mainContent {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  margin: 16px;
+  margin-bottom: 0;
+}
+
+.bottomPanel {
+  flex-shrink: 0;
+  margin: 16px;
+}
+
 .sidebarLeft {
-  width: 240px;
-  min-width: 200px;
-  max-width: 320px;
+  width: 280px;
+  min-width: 240px;
+  max-width: 400px;
   min-height: 0;
   margin-right: 16px;
   display: flex;

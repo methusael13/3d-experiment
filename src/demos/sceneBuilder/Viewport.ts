@@ -1174,8 +1174,58 @@ export class Viewport {
     return this.transformGizmo?.isDragging || false;
   }
 
-  resize(): void {
-    // Could be implemented for dynamic canvas resizing
+  /**
+   * Resize the viewport to new dimensions
+   * Updates canvas size, WebGL viewport, and all renderers
+   */
+  resize(width: number, height: number): void {
+    // Update internal dimensions
+    const dpr = this.dpr;
+    const renderWidth = Math.floor(width * dpr);
+    const renderHeight = Math.floor(height * dpr);
+    
+    // Update canvas
+    this.canvas.width = renderWidth;
+    this.canvas.height = renderHeight;
+    this.canvas.style.width = width + 'px';
+    this.canvas.style.height = height + 'px';
+    
+    // Update WebGL viewport
+    if (this.gl) {
+      this.gl.viewport(0, 0, renderWidth, renderHeight);
+    }
+    
+    // Update camera projection by rebuilding it with new aspect ratio
+    if (this.cameraController) {
+      const camera = this.cameraController.getCamera();
+      // Update projection matrix with new dimensions
+      camera.setAspectRatio(width, height);
+    }
+    
+    // Update renderers that need dimensions
+    this.depthPrePassRenderer?.resize(renderWidth, renderHeight);
+    this.contactShadowRenderer?.resize(renderWidth, renderHeight);
+    this.pipeline?.resize(renderWidth, renderHeight);
+    
+    // Update gizmo canvas size
+    if (this.transformGizmo) {
+      this.transformGizmo.setCanvasSize(width, height);
+    }
+    
+    // Update WebGPU canvas if active
+    if (this.webgpuCanvas) {
+      this.webgpuCanvas.width = renderWidth;
+      this.webgpuCanvas.height = renderHeight;
+      this.webgpuCanvas.style.width = width + 'px';
+      this.webgpuCanvas.style.height = height + 'px';
+    }
+    
+    // Update WebGPU pipeline
+    if (this.gpuPipeline) {
+      this.gpuPipeline.resize(renderWidth, renderHeight);
+    }
+    
+    console.log(`[Viewport] Resized to ${width}x${height} (render: ${renderWidth}x${renderHeight})`);
   }
 }
 

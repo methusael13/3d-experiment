@@ -14,6 +14,7 @@ import type { TerrainBlendSettings } from '../../componentPanels';
 import { AnySceneObject, GPUTerrainSceneObject, ModelObject, TerrainObject, isModelObject, isPrimitiveObject } from '../../../../core/sceneObjects';
 import { PrimitiveObject } from '../../../../core/sceneObjects/PrimitiveObject';
 import { debounce } from '@/core/utils';
+import { sceneSerializer } from '../../../../loaders';
 
 // ==================== Types ====================
 
@@ -299,6 +300,9 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     
     // Hook into object removed callback
     scene.onObjectRemoved = (id) => {
+      // Unregister asset reference if this object was from the asset library
+      sceneSerializer.unregisterAssetRef(id);
+      
       syncFromScene();
       updateCameraFromSceneBounds();
     };

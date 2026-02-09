@@ -9,6 +9,7 @@ import { Viewport, type ViewportOptions } from '../../Viewport';
 import { getSceneBuilderStore } from '../state';
 import { ViewportToolbar } from '../layout';
 import { useFileDrop } from '../hooks';
+import { setCurrentFps } from '../bridges/MenuBarBridge';
 import type { Vec3 } from '../../../../core/types';
 import type { quat } from 'gl-matrix';
 import styles from './ViewportContainer.module.css';
@@ -40,15 +41,50 @@ export function ViewportContainer({
   const viewportRef = useRef<Viewport | null>(null);
   const store = getSceneBuilderStore();
   
+  // ==================== Resize Handling ====================
+  
+  useEffect(() => {
+    if (!containerRef.current) return;
+    
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0 && viewportRef.current && canvasRef.current) {
+          // Update canvas dimensions
+          canvasRef.current.width = Math.floor(width);
+          canvasRef.current.height = Math.floor(height);
+          
+          // Notify viewport of resize
+          viewportRef.current.resize(Math.floor(width), Math.floor(height));
+        }
+      }
+    });
+    
+    resizeObserver.observe(containerRef.current);
+    
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
+  
   // ==================== Viewport Lifecycle ====================
   
   useEffect(() => {
     if (!canvasRef.current) return;
     
+    // Get initial size from container
+    const containerWidth = containerRef.current?.clientWidth ?? width;
+    const containerHeight = containerRef.current?.clientHeight ?? height;
+    
     const viewportOptions: ViewportOptions = {
-      width,
-      height,
-      onFps,
+      width: containerWidth,
+      height: containerHeight,
+      onFps: (fps: number) => {
+        // Update the menu bar FPS display
+        setCurrentFps(fps);
+        // Also call the prop callback if provided
+        onFps?.(fps);
+      },
       onUpdate: (dt: number) => {
         // Wind update callback - will be connected when windManager is set
         const windManager = store.windManager;
@@ -212,8 +248,6 @@ export function ViewportContainer({
         ref={canvasRef}
         id="canvas"
         class={styles.canvas}
-        width={width}
-        height={height}
       />
       
       {/* Viewport Toolbar */}

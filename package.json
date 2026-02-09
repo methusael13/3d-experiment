@@ -4,14 +4,22 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:server": "tsx watch server/index.ts",
+    "dev:full": "concurrently \"npm:dev\" \"npm:dev:server\"",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "generate-ibl": "node scripts/generate-ibl-assets.js"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
     "@types/node": "^25.0.9",
+    "@types/ws": "^8.18.1",
     "@webgpu/types": "^0.1.69",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.4",
     "typescript": "^5.9.3",
     "vite": "^5.0.0",
     "vite-plugin-checker": "^0.12.0",
@@ -22,9 +30,15 @@
     "@codemirror/theme-one-dark": "^6.1.3",
     "@preact/preset-vite": "^2.10.3",
     "@preact/signals": "^2.6.2",
+    "better-sqlite3": "^11.9.1",
+    "chokidar": "^4.0.3",
     "codemirror": "^6.0.2",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
     "gl-matrix": "^3.4.4",
     "gltf-loader-ts": "^0.3.1",
-    "preact": "^10.28.3"
+    "preact": "^10.28.3",
+    "sharp": "^0.34.1",
+    "ws": "^8.18.2"
   }
 }

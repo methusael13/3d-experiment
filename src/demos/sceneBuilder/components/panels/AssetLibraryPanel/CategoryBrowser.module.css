@@ -1,0 +1,125 @@
+/* CategoryBrowser styles */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-secondary, #252525);
+  border-right: 1px solid var(--border-color, #3a3a3a);
+}
+
+.header {
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary, #9e9e9e);
+  background: var(--bg-tertiary, #1e1e1e);
+  border-bottom: 1px solid var(--border-color, #3a3a3a);
+}
+
+.tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.nodeContainer {
+  user-select: none;
+}
+
+.node {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.node:hover {
+  background: var(--hover-bg, rgba(255, 255, 255, 0.05));
+}
+
+.node.selected {
+  background: var(--accent-color, #4a90d9);
+  color: white;
+}
+
+.node.selected .count {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.toggleButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #9e9e9e);
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.toggleButton:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary, #e0e0e0);
+}
+
+.toggleSpacer {
+  width: 16px;
+  flex-shrink: 0;
+}
+
+.icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary, #9e9e9e);
+  flex-shrink: 0;
+}
+
+.node.selected .icon {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.count {
+  font-size: 11px;
+  color: var(--text-secondary, #9e9e9e);
+  flex-shrink: 0;
+}
+
+.children {
+  /* Children are indented via inline padding-left */
+}
+
+/* Scrollbar styling */
+.tree::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tree::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tree::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb, #4a4a4a);
+  border-radius: 3px;
+}
+
+.tree::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover, #5a5a5a);
+}

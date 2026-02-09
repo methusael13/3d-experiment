@@ -438,7 +438,12 @@ export class SceneBuilder implements SceneBuilderDemo {
         isExpanded = !isExpanded;
         this.container.querySelector('.scene-builder-container')?.classList.toggle('expanded', isExpanded);
         expandViewBtn.textContent = isExpanded ? 'Shrink View' : 'Expand View';
-        this.viewport?.resize();
+        // Get the current viewport container size for resize
+        const viewportContainer = this.container.querySelector('.viewport-container');
+        if (viewportContainer && this.viewport) {
+          const rect = viewportContainer.getBoundingClientRect();
+          this.viewport.resize(rect.width, rect.height);
+        }
         menuItems.forEach(item => item.classList.remove('open'));
       });
     }

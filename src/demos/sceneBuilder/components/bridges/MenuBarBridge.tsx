@@ -12,6 +12,14 @@ import { FPSCameraController } from '../../FPSCameraController';
 // Signal to track FPS mode state
 export const fpsModeActive = signal(false);
 
+// Signal to track current FPS
+export const currentFps = signal<number | undefined>(undefined);
+
+// Function to update FPS from external components (ViewportContainer)
+export function setCurrentFps(fps: number): void {
+  currentFps.value = fps;
+}
+
 export function ConnectedMenuBar() {
   const store = getSceneBuilderStore();
   
@@ -387,5 +395,5 @@ export function ConnectedMenuBar() {
     hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value, fpsModeActive.value,
   ]);
   
-  return <MenuBar menus={menus} />;
+  return <MenuBar menus={menus} fps={currentFps.value} />;
 }

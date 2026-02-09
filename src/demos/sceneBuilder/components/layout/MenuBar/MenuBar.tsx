@@ -20,6 +20,8 @@ export interface MenuDefinition {
 
 export interface MenuBarProps {
   menus: MenuDefinition[];
+  title?: string;
+  fps?: number;
 }
 
 interface SubmenuState {
@@ -27,7 +29,7 @@ interface SubmenuState {
   path: string[];
 }
 
-export function MenuBar({ menus }: MenuBarProps) {
+export function MenuBar({ menus, title = 'Pyro Engine', fps }: MenuBarProps) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [hoverPath, setHoverPath] = useState<string[]>([]);
   const menuBarRef = useRef<HTMLDivElement>(null);
@@ -99,17 +101,35 @@ export function MenuBar({ menus }: MenuBarProps) {
 
   return (
     <div class={styles.menuBar} ref={menuBarRef}>
-      {menus.map((menu) => (
-        <div
-          key={menu.id}
-          class={`${styles.menuButton} ${openMenu === menu.id ? styles.open : ''}`}
-        >
-          <button onClick={() => handleMenuClick(menu.id)}>{menu.label}</button>
-          {openMenu === menu.id && (
-            <div class={styles.dropdown}>{renderMenuItems(menu.items)}</div>
-          )}
-        </div>
-      ))}
+      {/* Left section: Menu buttons */}
+      <div class={styles.menuSection}>
+        {menus.map((menu) => (
+          <div
+            key={menu.id}
+            class={`${styles.menuButton} ${openMenu === menu.id ? styles.open : ''}`}
+          >
+            <button onClick={() => handleMenuClick(menu.id)}>{menu.label}</button>
+            {openMenu === menu.id && (
+              <div class={styles.dropdown}>{renderMenuItems(menu.items)}</div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Center section: Title (absolutely positioned) */}
+      <div class={styles.titleSection}>
+        <span class={styles.title}>{title}</span>
+      </div>
+
+      {/* Spacer to push FPS to the right */}
+      <div class={styles.spacer} />
+
+      {/* Right section: FPS display */}
+      <div class={styles.fpsSection}>
+        {fps !== undefined && (
+          <span class={styles.fps}>{fps} FPS</span>
+        )}
+      </div>
     </div>
   );
 }

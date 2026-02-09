@@ -15,6 +15,36 @@ import type {
   TerrainParams,
 } from '../core/sceneObjects/types';
 
+// ============ Asset Library Reference Types ============
+
+/**
+ * Reference to an asset in the asset library
+ * When saving a scene, objects linked from the asset library store this reference
+ * instead of embedding the asset data directly
+ */
+export interface AssetLibraryRef {
+  /** Asset ID from the asset library database */
+  assetId: string;
+  /** Asset name at time of import (for display when asset not found) */
+  assetName: string;
+  /** Asset type from library */
+  assetType: string;
+  /** Asset subtype from library (e.g., "Birch", "Palm" for trees) */
+  assetSubtype?: string;
+}
+
+/**
+ * Asset resolution result when loading a scene
+ */
+export interface ResolvedAssetRef {
+  /** Whether the asset was found in the library */
+  found: boolean;
+  /** The file path to load (from library or fallback) */
+  filePath: string | null;
+  /** Warning message if asset was not found */
+  warning?: string;
+}
+
 // ============ Types ============
 
 /**
@@ -110,17 +140,29 @@ export interface SerializedTerrainBlendSettings {
 }
 
 /**
+ * Serialized model object with asset library reference
+ */
+export interface SerializedModelObjectWithAssetRef extends SerializedModelObject {
+  /** Asset library reference (if imported from asset library) */
+  assetRef?: AssetLibraryRef;
+}
+
+/**
  * Full serialized scene data structure
  */
 export interface SerializedScene {
   name: string;
-  objects: (SerializedSceneObject | SerializedPrimitiveObject | SerializedModelObject | SerializedTerrainObject)[];
+  objects: (SerializedSceneObject | SerializedPrimitiveObject | SerializedModelObject | SerializedModelObjectWithAssetRef | SerializedTerrainObject)[];
   camera?: Partial<CameraState>;
   lighting?: SerializedLightingState;
   groups?: GroupState[];
   wind?: SerializedWindState;
   objectWindSettings?: Record<string, SerializedObjectWindSettings>;
   objectTerrainBlendSettings?: Record<string, SerializedTerrainBlendSettings>;
+  /** Scene version for future compatibility */
+  version?: number;
+  /** Asset dependencies - list of asset library IDs used in this scene */
+  assetDependencies?: string[];
 }
 
 /**
@@ -142,6 +184,8 @@ export interface SaveableSceneObject {
   rotation: [number, number, number] | Float32Array;
   scale: [number, number, number] | Float32Array;
   groupId?: string | null;
+  /** Asset library reference (if imported from asset library) */
+  assetRef?: AssetLibraryRef | null;
 }
 
 /**
@@ -185,11 +229,92 @@ const DEFAULT_CAMERA_STATE: CameraState = {
 // ============ SceneSerializer Class ============
 
 /**
+ * Asset resolver function type
+ * Used to resolve asset library references when loading scenes
+ */
+export type AssetResolverFn = (assetId: string) => Promise<ResolvedAssetRef>;
+
+/**
  * SceneSerializer class - manages scene save/load and imported model storage
  */
 export class SceneSerializer {
   /** Storage for imported models - maps model path to blob URL and data */
   private importedModels: Map<string, ImportedModelData> = new Map();
+  
+  /** Asset resolver function - set by the application to resolve asset library refs */
+  private assetResolver: AssetResolverFn | null = null;
+  
+  /** Tracks which assets from the library are used in the current scene */
+  private sceneAssetRefs: Map<string, AssetLibraryRef> = new Map();
+
+  /**
+   * Set the asset resolver function for resolving asset library references
+   * @param resolver - Function that takes an asset ID and returns the resolved asset info
+   */
+  setAssetResolver(resolver: AssetResolverFn): void {
+    this.assetResolver = resolver;
+  }
+
+  /**
+   * Register an asset reference when an asset is added to the scene from the library
+   * @param instanceId - The scene object instance ID
+   * @param assetRef - The asset library reference
+   */
+  registerAssetRef(instanceId: string, assetRef: AssetLibraryRef): void {
+    this.sceneAssetRefs.set(instanceId, assetRef);
+  }
+
+  /**
+   * Unregister an asset reference when an object is removed from the scene
+   * @param instanceId - The scene object instance ID
+   */
+  unregisterAssetRef(instanceId: string): void {
+    this.sceneAssetRefs.delete(instanceId);
+  }
+
+  /**
+   * Get the asset reference for a scene object
+   * @param instanceId - The scene object instance ID
+   * @returns The asset reference or undefined if not from asset library
+   */
+  getAssetRef(instanceId: string): AssetLibraryRef | undefined {
+    return this.sceneAssetRefs.get(instanceId);
+  }
+
+  /**
+   * Get all asset dependencies used in the current scene
+   * @returns Array of unique asset IDs
+   */
+  getSceneAssetDependencies(): string[] {
+    const assetIds = new Set<string>();
+    for (const ref of this.sceneAssetRefs.values()) {
+      assetIds.add(ref.assetId);
+    }
+    return Array.from(assetIds);
+  }
+
+  /**
+   * Clear all scene asset references (call when clearing the scene)
+   */
+  clearSceneAssetRefs(): void {
+    this.sceneAssetRefs.clear();
+  }
+
+  /**
+   * Resolve an asset library reference to get the file path
+   * @param assetRef - The asset library reference
+   * @returns The resolved asset info
+   */
+  async resolveAssetRef(assetRef: AssetLibraryRef): Promise<ResolvedAssetRef> {
+    if (!this.assetResolver) {
+      return {
+        found: false,
+        filePath: null,
+        warning: `No asset resolver configured. Cannot resolve asset: ${assetRef.assetName}`,
+      };
+    }
+    return this.assetResolver(assetRef.assetId);
+  }
 
   /**
    * Import a model file and store it in memory
@@ -244,18 +369,9 @@ export class SceneSerializer {
   }
 
   /**
-   * Clear imported models cache (call on scene cleanup)
+   * Clear all imported model data
    */
   clearImportedModels(): void {
-    for (const [, data] of this.importedModels) {
-      URL.revokeObjectURL(data.blobUrl);
-      // Also revoke resource blob URLs for glTF models
-      if (data.resourceBlobUrls) {
-        for (const resourceUrl of data.resourceBlobUrls.values()) {
-          URL.revokeObjectURL(resourceUrl);
-        }
-      }
-    }
     this.importedModels.clear();
   }
 
@@ -424,9 +540,11 @@ export class SceneSerializer {
     sceneName = sceneName.replace(/\.json$/i, '');
     
     const importedModelsUsed: string[] = [];
+    const assetDependencies = new Set<string>();
     
     const sceneData: SerializedScene = {
       name: sceneName,
+      version: 2, // Version 2 includes asset library references
       objects: sceneObjects.map(obj => {
         if (obj.modelPath && this.importedModels.has(obj.modelPath)) {
           importedModelsUsed.push(obj.modelPath);
@@ -475,6 +593,17 @@ export class SceneSerializer {
           } satisfies SerializedPrimitiveObject;
         }
         
+        // Include asset reference if present
+        if (obj.assetRef) {
+          assetDependencies.add(obj.assetRef.assetId);
+          return {
+            ...baseData,
+            type: 'model' as const,
+            modelPath: obj.modelPath || '',
+            assetRef: obj.assetRef,
+          } satisfies SerializedModelObjectWithAssetRef;
+        }
+        
         // Default to model type for backward compatibility
         return {
           ...baseData,
@@ -519,6 +648,11 @@ export class SceneSerializer {
     // Add per-object terrain blend settings if provided
     if (objectTerrainBlendSettings) {
       sceneData.objectTerrainBlendSettings = objectTerrainBlendSettings;
+    }
+    
+    // Add asset dependencies
+    if (assetDependencies.size > 0) {
+      sceneData.assetDependencies = Array.from(assetDependencies);
     }
     
     // Add lighting state if provided
@@ -675,6 +809,42 @@ export class SceneSerializer {
       return null;
     }
     return sceneData.objectTerrainBlendSettings;
+  }
+
+  /**
+   * Parse asset dependencies from scene data
+   * @returns Array of asset IDs used by the scene
+   */
+  static parseAssetDependencies(sceneData: Partial<SerializedScene>): string[] {
+    return sceneData.assetDependencies || [];
+  }
+
+  /**
+   * Check if scene data contains asset library references
+   * @param sceneData - The scene data to check
+   * @returns True if the scene uses asset library references
+   */
+  static hasAssetReferences(sceneData: Partial<SerializedScene>): boolean {
+    return (sceneData.version ?? 1) >= 2 && 
+           (sceneData.assetDependencies?.length ?? 0) > 0;
+  }
+
+  /**
+   * Extract all asset references from scene objects
+   * @param sceneData - The scene data
+   * @returns Map of object names to their asset references
+   */
+  static extractAssetRefs(sceneData: Partial<SerializedScene>): Map<string, AssetLibraryRef> {
+    const refs = new Map<string, AssetLibraryRef>();
+    if (!sceneData.objects) return refs;
+    
+    for (const obj of sceneData.objects) {
+      const modelObj = obj as SerializedModelObjectWithAssetRef;
+      if (modelObj.assetRef) {
+        refs.set(obj.name, modelObj.assetRef);
+      }
+    }
+    return refs;
   }
 }
 
