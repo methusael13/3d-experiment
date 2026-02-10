@@ -14,6 +14,8 @@ export {
   type ShadowResources,
   type EnvironmentParams,
   type CommonRenderParams,
+  type EnvironmentBindingMask,
   BIND_GROUP_SLOTS,
   ENVIRONMENT_BINDINGS,
+  ENV_BINDING_MASK,
 } from './types';

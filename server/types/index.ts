@@ -50,10 +50,31 @@ export interface AssetMetadata {
   rawJson: Record<string, unknown> | null;
 }
 
+export type TextureType = 'albedo' | 'ao' | 'bump' | 'cavity' | 'displacement'
+  | 'gloss' | 'normal' | 'opacity' | 'roughness' | 'specular' | 'translucency';
+
+/**
+ * Texture type values exported by Quixel MegaScans
+ */
+export const TextureTypeValues: { pattern: string, type: TextureType }[] = [
+  { pattern: 'basecolor', type: 'albedo' },
+  { pattern: 'ao', type: 'ao' },
+  { pattern: 'bump', type: 'bump' },
+  { pattern: 'cavity', type: 'cavity' },
+  { pattern: 'displacement', type: 'displacement' },
+  { pattern: 'gloss', type: 'gloss' },
+  { pattern: 'normal', type: 'normal' },
+  { pattern: 'opacity', type: 'opacity' },
+  { pattern: 'roughness', type: 'roughness' },
+  { pattern: 'specular', type: 'specular' },
+  { pattern: 'translucency', type: 'translucency' }
+]
+
 export interface AssetFile {
   id: number;
   assetId: string;
   fileType: 'model' | 'texture' | 'billboard' | 'preview';
+  fileSubType: TextureType | null;
   lodLevel: number | null;
   resolution: string | null;
   format: string;

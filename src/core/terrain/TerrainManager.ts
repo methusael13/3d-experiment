@@ -772,6 +772,57 @@ export class TerrainManager {
     return this.renderer?.getDetailConfig() ?? null;
   }
   
+  // ============ Biome Textures ============
+  
+  /**
+   * Set biome texture from URL path
+   * Loads the texture and updates GPU bind group
+   * 
+   * @param biome Biome type (grass, rock, snow, dirt, beach)
+   * @param textureType Type of texture (albedo or normal)
+   * @param url URL path to texture file
+   * @param tilingScale World-space tiling scale (meters per tile)
+   */
+  async setBiomeTexture(
+    biome: 'grass' | 'rock' | 'snow' | 'dirt' | 'beach',
+    textureType: 'albedo' | 'normal',
+    url: string,
+    tilingScale?: number
+  ): Promise<void> {
+    if (!this.renderer) {
+      console.warn('[TerrainManager] Cannot set biome texture - renderer not initialized');
+      return;
+    }
+    
+    await this.renderer.setBiomeTexture(biome, textureType, url, tilingScale);
+  }
+  
+  /**
+   * Clear biome texture (revert to procedural color)
+   * 
+   * @param biome Biome type to clear
+   * @param textureType Which texture to clear (albedo or normal)
+   */
+  clearBiomeTexture(
+    biome: 'grass' | 'rock' | 'snow' | 'dirt' | 'beach',
+    textureType: 'albedo' | 'normal'
+  ): void {
+    this.renderer?.clearBiomeTexture(biome, textureType);
+  }
+  
+  /**
+   * Set biome tiling scale (world-space meters per texture tile)
+   * 
+   * @param biome Biome type to update
+   * @param scale Tiling scale in world units
+   */
+  setBiomeTiling(
+    biome: 'grass' | 'rock' | 'snow' | 'dirt' | 'beach',
+    scale: number
+  ): void {
+    this.renderer?.setBiomeTiling(biome, scale);
+  }
+  
   // ============ Island Mode ============
   
   /**

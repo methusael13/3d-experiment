@@ -6,7 +6,8 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import { useComputed } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
-import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, type MaterialParams as TerrainMaterialParams, type DetailParams } from '../panels';
+import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, type MaterialParams as TerrainMaterialParams, type DetailParams, type BiomeType, type BiomeTextureConfig } from '../panels';
+import type { Asset } from '../hooks/useAssetLibrary';
 import { BiomeMaskPanelBridge } from './BiomeMaskPanelBridge';
 import { VegetationPanelBridge } from './VegetationPanelBridge';
 import { isGPUTerrainObject, isTerrainObject, type GPUTerrainSceneObject, type TerrainObject } from '../../../../core/sceneObjects';
@@ -206,6 +207,9 @@ export function ConnectedTerrainPanel({
   
   // Progress state
   const [progress, setProgress] = useState<TerrainProgress | undefined>(undefined);
+  
+  // Biome texture configurations (per biome) - initialized in MaterialParams already
+  // State is tracked via materialParams.{biome}Texture
   
   // Biome mask editor visibility
   const [biomeMaskEditorVisible, setBiomeMaskEditorVisible] = useState(false);
@@ -516,6 +520,59 @@ export function ConnectedTerrainPanel({
   const handleCloseVegetationEditor = useCallback(() => {
     setVegetationEditorVisible(false);
   }, []);
+  
+  // Handle biome texture selection from MaterialSection
+  const handleBiomeTextureSelect = useCallback(async (
+    biome: BiomeType,
+    asset: Asset | null,
+    tilingScale: number
+  ) => {
+    const terrainInfo = selectedTerrainInfo.value;
+    if (terrainInfo?.type !== 'webgpu' || !terrainInfo.manager) {
+      console.warn('[TerrainPanelBridge] Cannot set biome texture - no terrain manager');
+      return;
+    }
+    
+    const manager = terrainInfo.manager;
+    
+    if (asset) {
+      // Find the basecolor/albedo texture URL from asset
+      // Quixel assets have maps array with type: 'basecolor', 'normal', etc.
+      const assetFiles = asset.files;
+      
+      // Get base path from asset
+      const basePath = asset.path.substring(0, asset.path.lastIndexOf('/'));
+      
+      // Find basecolor/albedo map
+      const baseColorMap = assetFiles?.find(f => f.fileSubType === 'albedo');
+      const assetPreviewUrl = asset.previewPath;
+      if (baseColorMap?.path || assetPreviewUrl) {
+        const albedoUrl = baseColorMap?.path 
+          ? baseColorMap.path
+          : assetPreviewUrl;
+        
+        if (albedoUrl) {
+          console.log(`[TerrainPanelBridge] Loading ${biome} albedo from ${albedoUrl}`);
+          await manager.setBiomeTexture(biome, 'albedo', albedoUrl, tilingScale);
+        }
+      }
+      
+      // Find normal map
+      const normalMap = assetFiles?.find(f => f.fileSubType === 'normal');
+      if (normalMap?.path) {
+        const normalUrl = normalMap.path;
+        console.log(`[TerrainPanelBridge] Loading ${biome} normal from ${normalUrl}`);
+        await manager.setBiomeTexture(biome, 'normal', normalUrl, tilingScale);
+      }
+      
+      // Update tiling
+      manager.setBiomeTiling(biome, tilingScale);
+    } else {
+      // Clear the texture
+      manager.clearBiomeTexture(biome, 'albedo');
+      manager.clearBiomeTexture(biome, 'normal');
+    }
+  }, [selectedTerrainInfo]);
 
   // Only render if terrain is selected
   if (selectedTerrainInfo.value === null) {
@@ -551,6 +608,7 @@ export function ConnectedTerrainPanel({
       onOpenPlantRegistry={handleOpenVegetationEditor}
       isTerrainReady={isTerrainReady}
       hasFlowMap={hasFlowMap}
+      onBiomeTextureSelect={handleBiomeTextureSelect}
     />
     
     {/* Biome Mask Editor Dockable Window */}

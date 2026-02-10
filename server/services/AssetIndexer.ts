@@ -17,7 +17,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import type { AssetType, AssetCategory, AssetSubtype, AssetMetadata, IndexResult } from '../types/index.js';
+import { type AssetType, type AssetCategory, type AssetSubtype, type AssetMetadata, type IndexResult, type AssetFile, TextureTypeValues } from '../types/index.js';
 import { getDatabase, type AssetDatabase } from '../db/database.js';
 
 // File extension to asset type mapping
@@ -369,6 +369,7 @@ export class AssetIndexer {
         files: [{
           assetId: id,
           fileType: 'model',
+          fileSubType: null,
           lodLevel: this.extractLodLevel(fileName),
           resolution: null,
           format: 'glb',
@@ -636,6 +637,9 @@ export class AssetIndexer {
       subtype = dirHint.subtype || subtype;
     }
 
+    const fileType = this.getFileType(ext);
+    const fileSubType = fileType === 'texture' ? this.getFileSubType(name) : null;
+
     return {
       id,
       name: this.formatAssetName(name),
@@ -650,7 +654,8 @@ export class AssetIndexer {
       metadata: null,
       files: [{
         assetId: id,
-        fileType: this.getFileType(ext),
+        fileType,
+        fileSubType,
         lodLevel: this.extractLodLevel(name),
         resolution: this.extractResolution(name),
         format: ext.slice(1),
@@ -693,9 +698,15 @@ export class AssetIndexer {
             fileType = 'billboard';
           }
 
+          let fileSubType: AssetFile['fileSubType'] = null;
+          if (fileType === 'texture' || fileType === 'billboard') {
+            fileSubType = this.getFileSubType(nameLower);
+          }
+
           files.push({
             assetId,
             fileType,
+            fileSubType,
             lodLevel: this.extractLodLevel(entry.name),
             resolution: this.extractResolution(entry.name),
             format: ext.slice(1),
@@ -749,6 +760,11 @@ export class AssetIndexer {
   private getFileType(ext: string): 'model' | 'texture' | 'billboard' | 'preview' {
     if (['.glb', '.gltf', '.obj', '.fbx'].includes(ext)) return 'model';
     return 'texture';
+  }
+
+  private getFileSubType(name: string): AssetFile['fileSubType'] {
+    const value = TextureTypeValues.find((v) => name.toLowerCase().includes(v.pattern));
+    return value ? value.type : null;
   }
 
   private extractLodLevel(filename: string): number | null {

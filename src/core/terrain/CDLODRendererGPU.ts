@@ -18,8 +18,9 @@ import {
   BindGroupBuilder,
   ShaderSources,
   VertexBufferLayoutDesc,
+  loadTextureFromURL,
 } from '../gpu';
-import { SceneEnvironment } from '../gpu/renderers/shared';
+import { SceneEnvironment, ENV_BINDING_MASK } from '../gpu/renderers/shared';
 import cdlodShadowShader from '../gpu/shaders/terrain/cdlod-shadow.wgsl?raw';
 import {
   TerrainQuadtree,
@@ -27,6 +28,11 @@ import {
   type QuadtreeConfig,
   type SelectionResult,
 } from './TerrainQuadtree';
+import {
+  type BiomeTextureSet,
+  type TerrainMaterialParams,
+} from './types';
+import { TerrainBiomeTextureResources, type BiomeType, type TextureType } from './TerrainBiomeTextureResources';
 
 /**
  * CDLOD GPU Renderer configuration
@@ -74,6 +80,13 @@ export interface TerrainMaterial {
   maxGrassSlope: number;
   beachMaxHeight: number;  // Max normalized height for beach (0-1)
   beachMaxSlope: number;   // Max slope for beach (0-1)
+  
+  // Optional biome texture sets
+  grassTexture?: BiomeTextureSet;
+  rockTexture?: BiomeTextureSet;
+  snowTexture?: BiomeTextureSet;
+  dirtTexture?: BiomeTextureSet;
+  beachTexture?: BiomeTextureSet;
 }
 
 /**
@@ -241,6 +254,9 @@ export class CDLODRendererGPU {
   private defaultShadowMap: UnifiedGPUTexture | null = null;
   private defaultIslandMask: UnifiedGPUTexture | null = null;
   
+  // Biome texture splatting resources (Group 1)
+  private biomeResources: TerrainBiomeTextureResources | null = null;
+  
   // Last selection (for debugging)
   private lastSelection: SelectionResult | null = null;
   
@@ -294,6 +310,10 @@ export class CDLODRendererGPU {
     this.createBuffers();
     this.createSamplers();
     this.createDefaultTextures();
+    
+    // Create biome texture resources (Group 1)
+    this.biomeResources = new TerrainBiomeTextureResources(this.ctx);
+    
     this.createPipeline();
     this.createShadowPipeline();
   }
@@ -600,9 +620,14 @@ export class CDLODRendererGPU {
       .texture(7, 'all', 'unfilterable-float')     // Island mask (r32float, sampled in vertex + fragment for beach)
       .build(this.ctx);
     
-    // Get SceneEnvironment layout for Group 3 (IBL resources)
-    // If SceneEnvironment not provided, create an empty placeholder layout for Group 3
-    const envLayout = this.sceneEnvironment?.layout ?? this.createPlaceholderEnvironmentLayout();
+    // Get terrain-specific minimal environment layout from SceneEnvironment
+    // Uses only diffuse IBL + sampler (bindings 2, 5) to stay within 16 texture limit
+    const terrainEnvLayout = this.sceneEnvironment
+      ? this.sceneEnvironment.getLayoutForMask(CDLODRendererGPU.TERRAIN_ENV_MASK)
+      : this.ctx.device.createBindGroupLayout({
+          label: 'cdlod-terrain-env-layout-fallback',
+          entries: SceneEnvironment.getBindGroupLayoutEntriesForMask(CDLODRendererGPU.TERRAIN_ENV_MASK),
+        });
     
     // Create shader module
     const shaderModule = this.ctx.device.createShaderModule({
@@ -610,11 +635,19 @@ export class CDLODRendererGPU {
       code: ShaderSources.terrainCDLOD,
     });
     
-    // Create pipeline layout with Groups 0 and 3
-    // Groups 1 and 2 are unused (set to undefined/null)
+    // Create pipeline layout with Groups 0, 1, and 3
+    // Group 0: Terrain core resources
+    // Group 1: Biome textures (splatting)
+    // Group 2: unused
+    // Group 3: Terrain-specific minimal environment (diffuse IBL only)
     this.pipelineLayout = this.ctx.device.createPipelineLayout({
       label: 'cdlod-pipeline-layout',
-      bindGroupLayouts: [this.bindGroupLayout, undefined as any, undefined as any, envLayout],
+      bindGroupLayouts: [
+        this.bindGroupLayout, 
+        this.biomeResources!.bindGroupLayout!, 
+        undefined as any, 
+        terrainEnvLayout
+      ],
     });
     
     // Create solid render pipeline
@@ -674,17 +707,8 @@ export class CDLODRendererGPU {
     });
   }
   
-  /**
-   * Create a placeholder environment layout for Group 3 when SceneEnvironment is not provided
-   * This matches the SceneEnvironment layout structure for compatibility
-   * Uses raw WebGPU API since BindGroupLayoutBuilder doesn't support cube textures
-   */
-  private createPlaceholderEnvironmentLayout(): GPUBindGroupLayout {
-    return this.ctx.device.createBindGroupLayout({
-      label: 'cdlod-placeholder-env-layout',
-      entries: SceneEnvironment.getDefaultBindGroupLayoutEntries(),
-    });
-  }
+  /** Environment binding mask for terrain - only diffuse IBL (no specular, no shadow from Group 3) */
+  private static readonly TERRAIN_ENV_MASK = ENV_BINDING_MASK.DIFFUSE_IBL;
   
   /**
    * Update the bind group with current textures using BindGroupBuilder
@@ -768,14 +792,22 @@ export class CDLODRendererGPU {
     // Choose between solid and wireframe rendering
     const useWireframe = params.wireframe && this.wireframePipeline && this.wireframeIndexBuffer;
     
+    // Update biome params buffer if material has changed
+    this.updateBiomeParams();
+    
     if (useWireframe) {
       // Wireframe rendering - shows LOD grid density
       passEncoder.setPipeline(this.wireframePipeline!);
       passEncoder.setBindGroup(0, this.bindGroup);
       
-      // Set bind group 3 for IBL if SceneEnvironment is provided
+      // Set bind group 1 for biome textures
+      if (this.biomeResources?.bindGroup) {
+        passEncoder.setBindGroup(1, this.biomeResources.bindGroup);
+      }
+      
+      // Set bind group 3 for IBL using masked bind group (diffuse IBL only)
       if (params.sceneEnvironment) {
-        passEncoder.setBindGroup(3, params.sceneEnvironment.bindGroup);
+        passEncoder.setBindGroup(3, params.sceneEnvironment.getBindGroupForMask(CDLODRendererGPU.TERRAIN_ENV_MASK));
       }
       
       passEncoder.setVertexBuffer(0, this.gridVertexBuffer.buffer);
@@ -789,9 +821,14 @@ export class CDLODRendererGPU {
       passEncoder.setPipeline(this.pipeline.pipeline);
       passEncoder.setBindGroup(0, this.bindGroup);
       
-      // Set bind group 3 for IBL if SceneEnvironment is provided
+      // Set bind group 1 for biome textures
+      if (this.biomeResources?.bindGroup) {
+        passEncoder.setBindGroup(1, this.biomeResources.bindGroup);
+      }
+      
+      // Set bind group 3 for IBL using masked bind group (diffuse IBL only)
       if (params.sceneEnvironment) {
-        passEncoder.setBindGroup(3, params.sceneEnvironment.bindGroup);
+        passEncoder.setBindGroup(3, params.sceneEnvironment.getBindGroupForMask(CDLODRendererGPU.TERRAIN_ENV_MASK));
       }
       
       passEncoder.setVertexBuffer(0, this.gridVertexBuffer.buffer);
@@ -922,6 +959,93 @@ export class CDLODRendererGPU {
    */
   setMaterial(material: Partial<TerrainMaterial>): void {
     this.currentMaterial = { ...this.currentMaterial, ...material };
+  }
+  
+  /**
+   * Update biome params from current material state
+   */
+  private updateBiomeParams(): void {
+    if (!this.biomeResources) return;
+    
+    this.biomeResources.updateParams({ ...this.currentMaterial });
+    this.biomeResources.ensureBindGroup();
+  }
+  
+  /**
+   * Load and set a biome texture from a URL.
+   * Validates that source is 4096x4096, downsamples to current resolution.
+   * @param biome - Biome type ('grass', 'rock', 'snow', 'dirt', 'beach')
+   * @param type - Texture type ('albedo' or 'normal')
+   * @param url - URL path to texture file (must be 4096x4096)
+   * @param tilingScale - Optional world-space tiling scale (meters per tile)
+   * @returns true if loaded successfully, false if rejected (wrong size)
+   */
+  async setBiomeTexture(
+    biome: BiomeType,
+    type: TextureType,
+    url: string,
+    tilingScale?: number
+  ): Promise<boolean> {
+    if (!this.biomeResources) {
+      console.warn('[CDLODRendererGPU] Biome resources not initialized');
+      return false;
+    }
+    
+    // Update tiling scale if provided
+    if (tilingScale !== undefined) {
+      this.biomeResources.setTiling(biome, tilingScale);
+    }
+    
+    // Load texture via biome resources (handles validation, downsampling, caching)
+    const success = await this.biomeResources.loadTextureFromURL(url, biome, type);
+    return success;
+  }
+  
+  /**
+   * Clear a biome texture (revert to procedural color)
+   * @param biome - Biome type to clear
+   * @param type - Texture type to clear
+   */
+  clearBiomeTexture(biome: BiomeType, type: TextureType): void {
+    this.biomeResources?.clearTexture(biome, type);
+  }
+  
+  /**
+   * Set biome tiling scale (world-space meters per texture tile)
+   * @param biome - Biome type to update
+   * @param scale - Tiling scale in world units
+   */
+  setBiomeTiling(biome: BiomeType, scale: number): void {
+    this.biomeResources?.setTiling(biome, scale);
+  }
+  
+  /**
+   * Check if a biome texture is loaded
+   */
+  hasBiomeTexture(biome: BiomeType, type: TextureType): boolean {
+    return this.biomeResources?.hasTexture(biome, type) ?? false;
+  }
+  
+  /**
+   * Set the biome texture resolution.
+   * If changed, recreates arrays and re-downsamples all loaded textures.
+   */
+  async setBiomeResolution(resolution: 1024 | 2048 | 4096): Promise<void> {
+    await this.biomeResources?.setResolution(resolution);
+  }
+  
+  /**
+   * Get current biome texture resolution
+   */
+  getBiomeResolution(): 1024 | 2048 | 4096 {
+    return this.biomeResources?.resolution ?? 2048;
+  }
+  
+  /**
+   * Get the biome texture resources manager
+   */
+  getBiomeResources(): TerrainBiomeTextureResources | null {
+    return this.biomeResources;
   }
   
   /**
@@ -1340,6 +1464,7 @@ export class CDLODRendererGPU {
     this.defaultNormalMap?.destroy();
     this.defaultShadowMap?.destroy();
     this.defaultIslandMask?.destroy();
+    this.biomeResources?.destroy();
     
     this.gridVertexBuffer = null;
     this.gridIndexBuffer = null;
@@ -1353,6 +1478,7 @@ export class CDLODRendererGPU {
     this.defaultNormalMap = null;
     this.defaultShadowMap = null;
     this.defaultIslandMask = null;
+    this.biomeResources = null;
     this.pipeline = null;
     this.wireframePipeline = null;
     this.shadowPipeline = null;

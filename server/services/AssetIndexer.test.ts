@@ -198,7 +198,9 @@ describe('AssetIndexer', () => {
       const files = mockDb.insertedFiles.filter(f => 
         f.assetId === texturePack?.id
       );
+
       expect(files.length).toBeGreaterThanOrEqual(4);
+      expect(files[0].fileSubType).toBe('albedo');
     });
   });
 

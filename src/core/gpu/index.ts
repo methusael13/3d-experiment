@@ -20,6 +20,23 @@ export type {
   GPUSamplerOptions,
 } from './GPUTexture';
 
+// Texture loading utilities
+export {
+  TextureLoader,
+  loadTextureFromURL,
+  loadTextureFromBlob,
+  loadTextureFromImage,
+  loadTextureFromCanvas,
+  loadTextureFromImageBitmap,
+  generateMipmapsForTexture,
+  // CPU-side image utilities
+  downsampleBitmap,
+  loadBitmapFromURL,
+  // Texture array utilities
+  generateMipmapsForTextureArrayLayer,
+} from './TextureLoader';
+export type { TextureLoadOptions, TextureLoadResult } from './TextureLoader';
+
 // Shader module management
 export { ShaderModuleManager, WGSLBuilder } from './GPUShaderModule';
 export type { ShaderCompilationResult } from './GPUShaderModule';

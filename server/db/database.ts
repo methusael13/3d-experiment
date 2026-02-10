@@ -73,6 +73,7 @@ export class AssetDatabase {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         asset_id TEXT REFERENCES assets(id) ON DELETE CASCADE,
         file_type TEXT,
+        file_sub_type TEXT,
         lod_level INTEGER,
         resolution TEXT,
         format TEXT,
@@ -243,11 +244,11 @@ export class AssetDatabase {
 
   insertFile(file: Omit<AssetFile, 'id'>): number {
     const stmt = this.db.prepare(`
-      INSERT INTO asset_files (asset_id, file_type, lod_level, resolution, format, path, file_size)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO asset_files (asset_id, file_type, file_sub_type, lod_level, resolution, format, path, file_size)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
-      file.assetId, file.fileType, file.lodLevel,
+      file.assetId, file.fileType, file.fileSubType, file.lodLevel,
       file.resolution, file.format, file.path, file.fileSize
     );
     return Number(result.lastInsertRowid);
@@ -259,16 +260,7 @@ export class AssetDatabase {
 
   getFiles(assetId: string): AssetFile[] {
     const rows = this.db.prepare('SELECT * FROM asset_files WHERE asset_id = ? ORDER BY lod_level').all(assetId) as any[];
-    return rows.map(r => ({
-      id: r.id,
-      assetId: r.asset_id,
-      fileType: r.file_type,
-      lodLevel: r.lod_level,
-      resolution: r.resolution,
-      format: r.format,
-      path: r.path,
-      fileSize: r.file_size,
-    }));
+    return rows.map(r => this.rowToAssetFile(r));
   }
 
   // ========== Stats ==========
@@ -314,6 +306,7 @@ export class AssetDatabase {
       id: row.id,
       assetId: row.asset_id,
       fileType: row.file_type,
+      fileSubType: row.file_sub_type,
       lodLevel: row.lod_level,
       resolution: row.resolution,
       format: row.format,

@@ -109,3 +109,32 @@ export const ENVIRONMENT_BINDINGS = {
   IBL_CUBE_SAMPLER: 5,
   IBL_LUT_SAMPLER: 6,
 } as const;
+
+/**
+ * Bitmask for selecting which environment bindings to include
+ * Used by SceneEnvironment.getLayoutForMask() and getBindGroupForMask()
+ * to create partial bind groups for renderers that don't need all resources
+ */
+export const ENV_BINDING_MASK = {
+  SHADOW_MAP: 1 << ENVIRONMENT_BINDINGS.SHADOW_MAP,        // 1
+  SHADOW_SAMPLER: 1 << ENVIRONMENT_BINDINGS.SHADOW_SAMPLER, // 2
+  IBL_DIFFUSE: 1 << ENVIRONMENT_BINDINGS.IBL_DIFFUSE,       // 4
+  IBL_SPECULAR: 1 << ENVIRONMENT_BINDINGS.IBL_SPECULAR,     // 8
+  BRDF_LUT: 1 << ENVIRONMENT_BINDINGS.BRDF_LUT,             // 16
+  IBL_CUBE_SAMPLER: 1 << ENVIRONMENT_BINDINGS.IBL_CUBE_SAMPLER, // 32
+  IBL_LUT_SAMPLER: 1 << ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER,   // 64
+  
+  // Common presets
+  /** Shadow resources only (shadow map + comparison sampler) */
+  SHADOW: (1 << ENVIRONMENT_BINDINGS.SHADOW_MAP) | (1 << ENVIRONMENT_BINDINGS.SHADOW_SAMPLER),
+  /** Diffuse IBL only (diffuse cubemap + cube sampler) - for terrain */
+  DIFFUSE_IBL: (1 << ENVIRONMENT_BINDINGS.IBL_DIFFUSE) | (1 << ENVIRONMENT_BINDINGS.IBL_CUBE_SAMPLER),
+  /** Full IBL (diffuse + specular + BRDF LUT + samplers) - for PBR objects */
+  FULL_IBL: (1 << ENVIRONMENT_BINDINGS.IBL_DIFFUSE) | (1 << ENVIRONMENT_BINDINGS.IBL_SPECULAR) |
+            (1 << ENVIRONMENT_BINDINGS.BRDF_LUT) | (1 << ENVIRONMENT_BINDINGS.IBL_CUBE_SAMPLER) |
+            (1 << ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER),
+  /** All resources - default for most renderers */
+  ALL: 0x7F, // All 7 bindings
+} as const;
+
+export type EnvironmentBindingMask = number;

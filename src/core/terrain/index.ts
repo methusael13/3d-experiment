@@ -89,3 +89,19 @@ export {
   type HeightmapMipChain,
   type MipmapConfig,
 } from './HeightmapMipmapGenerator';
+
+// Biome texture splatting resources
+export {
+  TerrainBiomeTextureResources,
+  type BiomeType,
+  type TextureType,
+} from './TerrainBiomeTextureResources';
+
+// Terrain types
+export type {
+  BiomeTextureSet,
+  TerrainMaterialParams,
+  BiomeTextureUniformData,
+} from './types';
+
+export { createBiomeTextureUniform, biomeTextureUniformToFloat32Array } from './types';

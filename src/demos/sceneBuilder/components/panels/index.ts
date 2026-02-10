@@ -30,4 +30,6 @@ export type {
   MaterialParams,
   WaterParams,
   DetailParams,
+  BiomeType,
+  BiomeTextureConfig,
 } from './TerrainPanel';

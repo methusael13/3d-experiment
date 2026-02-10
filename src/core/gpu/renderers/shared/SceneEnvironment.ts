@@ -17,7 +17,7 @@
 
 import { GPUContext } from '../../GPUContext';
 import { PlaceholderTextures } from './PlaceholderTextures';
-import { IBLResources, ENVIRONMENT_BINDINGS } from './types';
+import { IBLResources, ENVIRONMENT_BINDINGS, ENV_BINDING_MASK, EnvironmentBindingMask } from './types';
 
 /**
  * Manages the shared environment bind group for all renderers
@@ -98,6 +98,7 @@ export class SceneEnvironment {
     if (this.currentShadowMapView !== view) {
       this.currentShadowMapView = view;
       this.needsRebuild = true;
+      this.invalidateMaskedBindGroups();
     }
   }
 
@@ -110,6 +111,7 @@ export class SceneEnvironment {
     if (this.currentIBL !== ibl) {
       this.currentIBL = ibl;
       this.needsRebuild = true;
+      this.invalidateMaskedBindGroups();
     }
   }
 
@@ -125,6 +127,7 @@ export class SceneEnvironment {
       this.currentShadowMapView = shadowMapView;
       this.currentIBL = ibl;
       this.needsRebuild = true;
+      this.invalidateMaskedBindGroups();
     }
   }
 
@@ -167,6 +170,7 @@ export class SceneEnvironment {
   forceRebuild(): void {
     this._bindGroup = this.createBindGroup(this.currentShadowMapView, this.currentIBL);
     this.needsRebuild = false;
+    this.invalidateMaskedBindGroups();
   }
 
   /**
@@ -176,47 +180,165 @@ export class SceneEnvironment {
     this.currentShadowMapView = null;
     this.currentIBL = null;
     this.needsRebuild = true;
+    this.invalidateMaskedBindGroups();
   }
 
   static getDefaultBindGroupLayoutEntries(): Iterable<GPUBindGroupLayoutEntry> {
-    return [
-      // Shadow resources
-      {
+    return SceneEnvironment.getBindGroupLayoutEntriesForMask(ENV_BINDING_MASK.ALL);
+  }
+  
+  /**
+   * Get bind group layout entries for the specified mask
+   * @param mask Bitmask of ENV_BINDING_MASK values
+   * @returns Array of GPUBindGroupLayoutEntry for the requested bindings
+   */
+  static getBindGroupLayoutEntriesForMask(mask: EnvironmentBindingMask): GPUBindGroupLayoutEntry[] {
+    const entries: GPUBindGroupLayoutEntry[] = [];
+    
+    // Shadow resources
+    if (mask & ENV_BINDING_MASK.SHADOW_MAP) {
+      entries.push({
         binding: ENVIRONMENT_BINDINGS.SHADOW_MAP,
         visibility: GPUShaderStage.FRAGMENT,
         texture: { sampleType: 'depth' },
-      },
-      {
+      });
+    }
+    if (mask & ENV_BINDING_MASK.SHADOW_SAMPLER) {
+      entries.push({
         binding: ENVIRONMENT_BINDINGS.SHADOW_SAMPLER,
         visibility: GPUShaderStage.FRAGMENT,
         sampler: { type: 'comparison' },
-      },
-      // IBL resources
-      {
+      });
+    }
+    
+    // IBL resources
+    if (mask & ENV_BINDING_MASK.IBL_DIFFUSE) {
+      entries.push({
         binding: ENVIRONMENT_BINDINGS.IBL_DIFFUSE,
         visibility: GPUShaderStage.FRAGMENT,
         texture: { sampleType: 'float', viewDimension: 'cube' },
-      },
-      {
+      });
+    }
+    if (mask & ENV_BINDING_MASK.IBL_SPECULAR) {
+      entries.push({
         binding: ENVIRONMENT_BINDINGS.IBL_SPECULAR,
         visibility: GPUShaderStage.FRAGMENT,
         texture: { sampleType: 'float', viewDimension: 'cube' },
-      },
-      {
+      });
+    }
+    if (mask & ENV_BINDING_MASK.BRDF_LUT) {
+      entries.push({
         binding: ENVIRONMENT_BINDINGS.BRDF_LUT,
         visibility: GPUShaderStage.FRAGMENT,
         texture: { sampleType: 'float' },
-      },
-      {
+      });
+    }
+    if (mask & ENV_BINDING_MASK.IBL_CUBE_SAMPLER) {
+      entries.push({
         binding: ENVIRONMENT_BINDINGS.IBL_CUBE_SAMPLER,
         visibility: GPUShaderStage.FRAGMENT,
         sampler: { type: 'filtering' },
-      },
-      {
+      });
+    }
+    if (mask & ENV_BINDING_MASK.IBL_LUT_SAMPLER) {
+      entries.push({
         binding: ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER,
         visibility: GPUShaderStage.FRAGMENT,
         sampler: { type: 'filtering' },
-      },
-    ];
+      });
+    }
+    
+    return entries;
+  }
+  
+  // Cache for masked layouts and bind groups
+  private maskedLayouts: Map<EnvironmentBindingMask, GPUBindGroupLayout> = new Map();
+  private maskedBindGroups: Map<EnvironmentBindingMask, GPUBindGroup> = new Map();
+  private maskedBindGroupsNeedRebuild: Set<EnvironmentBindingMask> = new Set();
+  
+  /**
+   * Get a bind group layout for the specified mask
+   * Layouts are cached per mask value
+   * @param mask Bitmask of ENV_BINDING_MASK values
+   */
+  getLayoutForMask(mask: EnvironmentBindingMask): GPUBindGroupLayout {
+    let layout = this.maskedLayouts.get(mask);
+    if (!layout) {
+      layout = this.ctx.device.createBindGroupLayout({
+        label: `environment-layout-mask-${mask.toString(16)}`,
+        entries: SceneEnvironment.getBindGroupLayoutEntriesForMask(mask),
+      });
+      this.maskedLayouts.set(mask, layout);
+    }
+    return layout;
+  }
+  
+  /**
+   * Get a bind group for the specified mask
+   * Automatically rebuilds if resources have changed
+   * @param mask Bitmask of ENV_BINDING_MASK values
+   */
+  getBindGroupForMask(mask: EnvironmentBindingMask): GPUBindGroup {
+    // Check if needs rebuild (either flagged or never created)
+    if (this.maskedBindGroupsNeedRebuild.has(mask) || !this.maskedBindGroups.has(mask)) {
+      const layout = this.getLayoutForMask(mask);
+      const bindGroup = this.createBindGroupForMask(layout, mask);
+      this.maskedBindGroups.set(mask, bindGroup);
+      this.maskedBindGroupsNeedRebuild.delete(mask);
+    }
+    return this.maskedBindGroups.get(mask)!;
+  }
+  
+  /**
+   * Create a bind group for the specified mask
+   */
+  private createBindGroupForMask(layout: GPUBindGroupLayout, mask: EnvironmentBindingMask): GPUBindGroup {
+    const shadow = this.currentShadowMapView ?? this.placeholders.shadowMapView;
+    const ibl = this.currentIBL;
+    const diffuse = ibl?.diffuseCubemap ?? this.placeholders.cubemapView;
+    const specular = ibl?.specularCubemap ?? this.placeholders.cubemapView;
+    const brdf = ibl?.brdfLut ?? this.placeholders.brdfLutView;
+    const cubeSampler = ibl?.cubemapSampler ?? this.placeholders.cubemapSampler;
+    const lutSampler = ibl?.lutSampler ?? this.placeholders.lutSampler;
+    
+    const entries: GPUBindGroupEntry[] = [];
+    
+    if (mask & ENV_BINDING_MASK.SHADOW_MAP) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.SHADOW_MAP, resource: shadow });
+    }
+    if (mask & ENV_BINDING_MASK.SHADOW_SAMPLER) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.SHADOW_SAMPLER, resource: this.placeholders.shadowSampler });
+    }
+    if (mask & ENV_BINDING_MASK.IBL_DIFFUSE) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.IBL_DIFFUSE, resource: diffuse });
+    }
+    if (mask & ENV_BINDING_MASK.IBL_SPECULAR) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.IBL_SPECULAR, resource: specular });
+    }
+    if (mask & ENV_BINDING_MASK.BRDF_LUT) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.BRDF_LUT, resource: brdf });
+    }
+    if (mask & ENV_BINDING_MASK.IBL_CUBE_SAMPLER) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.IBL_CUBE_SAMPLER, resource: cubeSampler });
+    }
+    if (mask & ENV_BINDING_MASK.IBL_LUT_SAMPLER) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER, resource: lutSampler });
+    }
+    
+    return this.ctx.device.createBindGroup({
+      label: `environment-bindgroup-mask-${mask.toString(16)}`,
+      layout,
+      entries,
+    });
+  }
+  
+  /**
+   * Mark all masked bind groups as needing rebuild
+   * Called when shadow map or IBL resources change
+   */
+  private invalidateMaskedBindGroups(): void {
+    for (const mask of this.maskedBindGroups.keys()) {
+      this.maskedBindGroupsNeedRebuild.add(mask);
+    }
   }
 }

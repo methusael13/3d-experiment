@@ -72,18 +72,49 @@ struct Material {
 @group(0) @binding(7) var islandMask: texture_2d<f32>;
 
 // ============================================================================
-// Environment Bindings (Group 3) - IBL for ambient lighting
+// Biome Texture Bindings (Group 1) - Texture Arrays
 // ============================================================================
 
-// Note: Shadow resources (bindings 0-1) are in Group 3 but terrain uses its own
-// Group 0 shadow implementation for LOD-aware shadow sampling
-@group(3) @binding(0) var env_shadowMap: texture_depth_2d;
-@group(3) @binding(1) var env_shadowSampler: sampler_comparison;
+// Biome layer indices (used to index into texture arrays)
+const BIOME_GRASS: i32 = 0;
+const BIOME_ROCK: i32 = 1;
+const BIOME_SNOW: i32 = 2;
+const BIOME_DIRT: i32 = 3;
+const BIOME_BEACH: i32 = 4;
+
+// Biome texture parameters uniform (matches BiomeTextureUniformData in types.ts)
+struct BiomeTextureParams {
+  // Enable flags (1.0 = enabled, 0.0 = disabled) - vec4f aligned
+  // Array indexed by biome layer index
+  albedoEnabled: vec4f,     // [grass, rock, snow, dirt]
+  normalEnabled: vec4f,     // [grass, rock, snow, dirt]
+  beachFlags: vec4f,        // [albedoEnabled, normalEnabled, pad, pad]
+  
+  // Tiling scales (world units per texture tile) - vec4f aligned
+  tilingScales: vec4f,      // [grass, rock, snow, dirt]
+  beachTiling: vec4f,       // [beach, pad, pad, pad]
+}
+
+// Biome texture arrays (5 layers each: grass=0, rock=1, snow=2, dirt=3, beach=4)
+@group(1) @binding(0) var biomeAlbedoArray: texture_2d_array<f32>;
+@group(1) @binding(1) var biomeNormalArray: texture_2d_array<f32>;
+
+// Sampler for biome textures
+@group(1) @binding(2) var biomeSampler: sampler;
+
+// Biome parameters uniform
+@group(1) @binding(3) var<uniform> biomeParams: BiomeTextureParams;
+
+// ============================================================================
+// Environment Bindings (Group 3) - IBL for ambient lighting  
+// ============================================================================
+
+// Terrain only uses diffuse IBL from SceneEnvironment (non-metallic surface)
+// Shadow resources from Group 3 are not used - terrain has its own in Group 0
+// Specular IBL (env_iblSpecular, env_brdfLut) not needed for diffuse terrain
+// NOTE: Other bindings (0,1,3,4,6) exist in SceneEnvironment but are unused here
 @group(3) @binding(2) var env_iblDiffuse: texture_cube<f32>;
-@group(3) @binding(3) var env_iblSpecular: texture_cube<f32>;
-@group(3) @binding(4) var env_brdfLut: texture_2d<f32>;
 @group(3) @binding(5) var env_cubeSampler: sampler;
-@group(3) @binding(6) var env_lutSampler: sampler;
 
 // ============================================================================
 // IBL Functions
@@ -95,13 +126,103 @@ fn sampleIBLDiffuse(worldNormal: vec3f) -> vec3f {
   return textureSample(env_iblDiffuse, env_cubeSampler, worldNormal).rgb;
 }
 
+// ============================================================================
+// Biome Texture Sampling Functions (Texture Array Version)
+// ============================================================================
+
+// Helper: Get albedo enabled flag for a biome layer
+fn getBiomeAlbedoEnabled(layer: i32) -> f32 {
+  if (layer < 4) {
+    return biomeParams.albedoEnabled[layer];
+  } else {
+    return biomeParams.beachFlags.x;  // beach albedo enabled
+  }
+}
+
+// Helper: Get normal enabled flag for a biome layer
+fn getBiomeNormalEnabled(layer: i32) -> f32 {
+  if (layer < 4) {
+    return biomeParams.normalEnabled[layer];
+  } else {
+    return biomeParams.beachFlags.y;  // beach normal enabled
+  }
+}
+
+// Helper: Get tiling scale for a biome layer
+fn getBiomeTiling(layer: i32) -> f32 {
+  if (layer < 4) {
+    return biomeParams.tilingScales[layer];
+  } else {
+    return biomeParams.beachTiling.x;  // beach tiling
+  }
+}
+
+// Sample biome albedo from texture array with fallback to solid color
+// layer: biome layer index (0-4)
+// worldXZ: world position for UV calculation
+// fallbackColor: solid color to use when texture not enabled
+fn sampleBiomeAlbedoArray(
+  layer: i32,
+  worldXZ: vec2f,
+  fallbackColor: vec3f
+) -> vec3f {
+  let tiling = getBiomeTiling(layer);
+  let worldUV = worldXZ / tiling;
+  let enabled = getBiomeAlbedoEnabled(layer);
+  
+  // Sample texture array (always sample to maintain uniform control flow)
+  let texColor = textureSample(biomeAlbedoArray, biomeSampler, worldUV, layer).rgb;
+  // Select between texture and fallback based on enabled flag
+  return select(fallbackColor, texColor, enabled > 0.5);
+}
+
+// Sample biome normal from texture array and unpack from [0,1] to [-1,1]
+// Returns Y-up tangent space normal, or (0,1,0) if not enabled
+// layer: biome layer index (0-4)
+// worldXZ: world position for UV calculation
+fn sampleBiomeNormalArray(
+  layer: i32,
+  worldXZ: vec2f
+) -> vec3f {
+  let tiling = getBiomeTiling(layer);
+  let worldUV = worldXZ / tiling;
+  let enabled = getBiomeNormalEnabled(layer);
+  
+  // Sample normal map array (always sample for uniform control flow)
+  let texNormal = textureSample(biomeNormalArray, biomeSampler, worldUV, layer).rgb;
+  // Unpack from [0,1] to [-1,1] (standard normal map encoding)
+  let unpacked = texNormal * 2.0 - 1.0;
+  // Ensure Y-up convention (some normal maps have Y inverted)
+  let normalTangent = vec3f(unpacked.x, unpacked.z, unpacked.y);
+  // Return flat normal if not enabled
+  return select(vec3f(0.0, 1.0, 0.0), normalize(normalTangent), enabled > 0.5);
+}
+
+// Blend multiple biome normals weighted by biome weights
+// Uses simple weighted average for terrain blending
+fn blendBiomeNormals(
+  grassNormal: vec3f, grassWeight: f32,
+  rockNormal: vec3f, rockWeight: f32,
+  snowNormal: vec3f, snowWeight: f32,
+  dirtNormal: vec3f, dirtWeight: f32,
+  beachNormal: vec3f, beachWeight: f32
+) -> vec3f {
+  let blended = grassNormal * grassWeight
+              + rockNormal * rockWeight
+              + snowNormal * snowWeight
+              + dirtNormal * dirtWeight
+              + beachNormal * beachWeight;
+  return normalize(blended);
+}
+
 // Simplified IBL for terrain - diffuse only (terrain is non-metallic)
 // Uses diffuse cubemap to replace flat ambient color
 fn calculateTerrainIBL(worldNormal: vec3f, albedo: vec3f) -> vec3f {
   // Sample diffuse irradiance (already convolved for hemisphere)
   let irradiance = sampleIBLDiffuse(worldNormal);
-  // Scale down IBL intensity for terrain (full intensity can be too bright)
-  return irradiance * albedo * 0.3;
+  // Apply moderate intensity for natural outdoor lighting
+  // Higher values work better with overhead sun (0.6 instead of 0.3)
+  return irradiance * albedo * 0.6;
 }
 
 // ============================================================================
@@ -777,9 +898,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   // For terrain with mostly vertical-ish normals, this works well
   let blendedNormal = blendNormalsUDN(baseNormal, detailNormal);
   
-  // Use blended normal for lighting
-  let normal = blendedNormal;
-  
   // Normal terrain rendering
   // Heights are in range [-heightScale/2, +heightScale/2] (centered at Y=0)
   // Divide by heightScale to get [-0.5, +0.5], then add 0.5 to normalize to [0, 1]
@@ -831,13 +949,58 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   rockWeight /= totalWeight;
   grassWeight /= totalWeight;
   let normalizedBeachWeight = beachWeight / totalWeight;
+  let normalizedDirtWeight = dirtWeight / totalWeight;
   
-  // Blend albedo from material colors
-  var albedo = material.grassColor.rgb * grassWeight
-             + material.rockColor.rgb * rockWeight
-             + material.snowColor.rgb * snowWeight
-             + material.dirtColor.rgb * dirtWeight
-             + material.beachColor.rgb * normalizedBeachWeight;
+  // ===== Sample Biome Textures (Albedo) from Texture Arrays =====
+  // Sample albedo textures with fallback to material colors
+  let grassAlbedoColor = sampleBiomeAlbedoArray(BIOME_GRASS, worldXZ, material.grassColor.rgb);
+  let rockAlbedoColor = sampleBiomeAlbedoArray(BIOME_ROCK, worldXZ, material.rockColor.rgb);
+  let snowAlbedoColor = sampleBiomeAlbedoArray(BIOME_SNOW, worldXZ, material.snowColor.rgb);
+  let dirtAlbedoColor = sampleBiomeAlbedoArray(BIOME_DIRT, worldXZ, material.dirtColor.rgb);
+  let beachAlbedoColor = sampleBiomeAlbedoArray(BIOME_BEACH, worldXZ, material.beachColor.rgb);
+  
+  // Blend albedo from sampled textures (or fallback colors)
+  var albedo = grassAlbedoColor * grassWeight
+             + rockAlbedoColor * rockWeight
+             + snowAlbedoColor * snowWeight
+             + dirtAlbedoColor * normalizedDirtWeight
+             + beachAlbedoColor * normalizedBeachWeight;
+  
+  // ===== Sample Biome Normal Maps from Texture Arrays =====
+  // Sample normal textures for each biome
+  let grassBiomeNormal = sampleBiomeNormalArray(BIOME_GRASS, worldXZ);
+  let rockBiomeNormal = sampleBiomeNormalArray(BIOME_ROCK, worldXZ);
+  let snowBiomeNormal = sampleBiomeNormalArray(BIOME_SNOW, worldXZ);
+  let dirtBiomeNormal = sampleBiomeNormalArray(BIOME_DIRT, worldXZ);
+  let beachBiomeNormal = sampleBiomeNormalArray(BIOME_BEACH, worldXZ);
+  
+  // Blend biome normals weighted by biome presence
+  let biomeDetailNormal = blendBiomeNormals(
+    grassBiomeNormal, grassWeight,
+    rockBiomeNormal, rockWeight,
+    snowBiomeNormal, snowWeight,
+    dirtBiomeNormal, normalizedDirtWeight,
+    beachBiomeNormal, normalizedBeachWeight
+  );
+  
+  // ===== Blend Base Normal with Biome Detail Normals =====
+  // First blend base heightmap normal with procedural detail normal (existing)
+  // Then blend with biome texture normals for additional detail
+  // Sum all normal enable flags to check if any biome normal is active
+  let hasAnyBiomeNormal = getBiomeNormalEnabled(BIOME_GRASS) + getBiomeNormalEnabled(BIOME_ROCK) 
+                        + getBiomeNormalEnabled(BIOME_SNOW) + getBiomeNormalEnabled(BIOME_DIRT) 
+                        + getBiomeNormalEnabled(BIOME_BEACH);
+  
+  // If any biome normal maps are enabled, blend them with the base normal
+  var finalBlendedNormal = blendedNormal;
+  if (hasAnyBiomeNormal > 0.0) {
+    // Blend biome detail normals onto the base normal using RNM
+    // This adds texture detail on top of the terrain shape
+    finalBlendedNormal = blendNormalsRNM(blendedNormal, biomeDetailNormal);
+  }
+  
+  // Use final blended normal for lighting
+  let normal = finalBlendedNormal;
   
   // Simple directional lighting with shadows
   let lightDir = normalize(material.lightDir);

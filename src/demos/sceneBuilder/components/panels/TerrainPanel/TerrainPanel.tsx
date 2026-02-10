@@ -3,8 +3,9 @@ import { Panel, Slider, Select, Checkbox } from '../../ui';
 import { NoiseSection, type NoiseParams } from './NoiseSection';
 import { ErosionSection, type ErosionParams } from './ErosionSection';
 import { VegetationSection } from './VegetationSection';
-import { MaterialSection, type MaterialParams } from './MaterialSection';
+import { MaterialSection, type MaterialParams, type BiomeType } from './MaterialSection';
 import { DetailSection, type DetailParams } from './DetailSection';
+import type { Asset } from '../../hooks/useAssetLibrary';
 import styles from './TerrainPanel.module.css';
 
 // Preset definition
@@ -84,6 +85,9 @@ export interface TerrainPanelProps {
   onOpenPlantRegistry?: () => void;
   isTerrainReady?: boolean;
   hasFlowMap?: boolean;
+  
+  // Biome texture callback
+  onBiomeTextureSelect?: (biome: BiomeType, asset: Asset | null, tilingScale: number) => void;
 }
 
 export function TerrainPanel({
@@ -113,6 +117,7 @@ export function TerrainPanel({
   onOpenPlantRegistry,
   isTerrainReady,
   hasFlowMap,
+  onBiomeTextureSelect,
 }: TerrainPanelProps) {
   const [isUpdating, setIsUpdating] = useState(false);
 
@@ -241,6 +246,7 @@ export function TerrainPanel({
           params={materialParams} 
           onParamsChange={onMaterialParamsChange} 
           islandEnabled={noiseParams.islandEnabled}
+          onBiomeTextureSelect={onBiomeTextureSelect}
         />
 
         {/* Detail Section (WebGPU only) */}

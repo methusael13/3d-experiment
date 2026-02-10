@@ -337,24 +337,23 @@ export function VegetationContent({ registry }: VegetationContentProps) {
   const handleAtlasSelected = useCallback(async (asset: Asset) => {
     if (!selectedPlantId) return;
     
-    // Find opacity map in asset files or derive from base path
-    // Atlas textures typically have an opacity map in a sibling file
-    const rawJson = asset.metadata?.rawJson as Record<string, unknown> | null;
-    const maps = rawJson?.maps as Record<string, string> | undefined;
-    const opacityPath = maps?.opacity || 
-                        maps?.alpha ||
-                        asset.path.replace('_albedo', '_opacity').replace('_basecolor', '_opacity');
-    const baseColorPath = asset.path;
-    
+    const opacityMap = asset.files.find(f => f.fileSubType === 'opacity');
+    const baseColorMap = asset.files.find(f => f.fileSubType === 'albedo');
+
+    if (!baseColorMap || !opacityMap) {
+      console.error('Could not find opacity or albedo map from the provided texture path:', asset.path);
+      return;
+    }
+
     try {
       // Detect regions from opacity map
-      const result = await detectAtlasRegions(opacityPath);
+      const result = await detectAtlasRegions(opacityMap!.path);
       
       const atlasRef: AtlasReference = {
         assetId: asset.id,
         assetName: asset.name,
-        opacityPath,
-        baseColorPath,
+        opacityPath: opacityMap!.path,
+        baseColorPath: baseColorMap!.path,
         atlasSize: result.atlasSize,
         regions: result.regions,
       };
@@ -367,8 +366,8 @@ export function VegetationContent({ registry }: VegetationContentProps) {
       const atlasRef: AtlasReference = {
         assetId: asset.id,
         assetName: asset.name,
-        opacityPath,
-        baseColorPath,
+        opacityPath: opacityMap!.path,
+        baseColorPath: baseColorMap!.path,
         atlasSize: [1024, 1024], // Fallback
         regions: [],
       };
