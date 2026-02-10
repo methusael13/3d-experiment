@@ -6,11 +6,10 @@ import type { GeometryData, AABB, PrimitiveConfig, SerializedPrimitiveObject } f
  */
 export class Cube extends PrimitiveObject {
   constructor(
-    gl: WebGL2RenderingContext,
     name?: string,
     config: PrimitiveConfig = {}
   ) {
-    super(gl, name ?? 'Cube', config);
+    super(name ?? 'Cube', config);
   }
   
   get primitiveType(): string {
@@ -108,8 +107,8 @@ export class Cube extends PrimitiveObject {
   /**
    * Create a duplicate of this cube
    */
-  clone(gl: WebGL2RenderingContext): Cube {
-    const cloned = new Cube(gl, `${this.name} (copy)`, this._primitiveConfig);
+  clone(): Cube {
+    const cloned = new Cube(`${this.name} (copy)`, this._primitiveConfig);
     cloned.copyTransformFrom(this);
     cloned.setMaterial(this.getMaterial());
     cloned.position[0] += 0.5;
@@ -120,8 +119,8 @@ export class Cube extends PrimitiveObject {
   /**
    * Create from serialized data
    */
-  static fromSerialized(gl: WebGL2RenderingContext, data: SerializedPrimitiveObject): Cube {
-    const cube = new Cube(gl, data.name, data.primitiveConfig);
+  static fromSerialized(data: SerializedPrimitiveObject): Cube {
+    const cube = new Cube(data.name, data.primitiveConfig);
     cube.deserialize(data);
     return cube;
   }

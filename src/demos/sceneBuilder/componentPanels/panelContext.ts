@@ -11,7 +11,7 @@ import type { CameraController } from '../CameraController';
 import type { GizmoMode } from '../gizmos';
 import type { GizmoOrientation } from '../gizmos/BaseGizmo';
 import type { ShadowRenderer, ContactShadowSettings } from '../../../core/renderers';
-import type { WebGPUShadowSettings } from './RenderingPanel';
+import type { WebGPUShadowSettings } from '../components/panels/RenderingPanel';
 
 // ==================== Types ====================
 
@@ -30,7 +30,6 @@ export interface PanelContext {
   // Core references
   container: HTMLElement;
   scene: Scene;
-  gl: WebGL2RenderingContext;
   windManager: WindManager;
   lightingManager: LightingManager;
   shadowRenderer: ShadowRenderer | null;
@@ -39,10 +38,6 @@ export interface PanelContext {
   // Object wind settings accessors
   getObjectWindSettings(objectId: string): ObjectWindSettings;
   setObjectWindSettings(objectId: string, settings: ObjectWindSettings): void;
-
-  // Object terrain blend settings accessors
-  getObjectTerrainBlend(objectId: string): TerrainBlendSettings;
-  setObjectTerrainBlend(objectId: string, settings: TerrainBlendSettings): void;
 
   // Callbacks
   onGizmoModeChange(mode: GizmoMode): void;
@@ -90,7 +85,6 @@ export interface PanelContext {
 export interface PanelContextConfig {
   container: HTMLElement;
   scene: Scene;
-  gl: WebGL2RenderingContext;
   windManager: WindManager;
   lightingManager: LightingManager;
   shadowRenderer: ShadowRenderer | null;
@@ -98,7 +92,6 @@ export interface PanelContextConfig {
 
   // Per-object settings storage (Maps)
   objectWindSettings: Map<string, ObjectWindSettings>;
-  objectTerrainBlendSettings: Map<string, TerrainBlendSettings>;
 
   // Callbacks (all optional)
   onGizmoModeChange?: (mode: GizmoMode) => void;
@@ -157,13 +150,11 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
   const {
     container,
     scene,
-    gl,
     windManager,
     lightingManager,
     shadowRenderer,
     cameraController,
     objectWindSettings,
-    objectTerrainBlendSettings,
     onGizmoModeChange,
     onGizmoOrientationChange,
     onTransformUpdate,
@@ -184,7 +175,6 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     // Core references
     container,
     scene,
-    gl,
     windManager,
     lightingManager,
     shadowRenderer,
@@ -200,18 +190,6 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
 
     setObjectWindSettings: (objectId: string, settings: ObjectWindSettings) => {
       objectWindSettings.set(objectId, settings);
-    },
-
-    // Object terrain blend settings accessors
-    getObjectTerrainBlend: (objectId: string) => {
-      if (!objectTerrainBlendSettings.has(objectId)) {
-        objectTerrainBlendSettings.set(objectId, { enabled: false, blendDistance: 0.5 });
-      }
-      return objectTerrainBlendSettings.get(objectId)!;
-    },
-
-    setObjectTerrainBlend: (objectId: string, settings: TerrainBlendSettings) => {
-      objectTerrainBlendSettings.set(objectId, settings);
     },
 
     // Callbacks with no-op defaults

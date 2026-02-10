@@ -1,13 +1,7 @@
 import { mat4 } from 'gl-matrix';
 import { SceneObject } from './SceneObject';
 import type {
-  AABB,
-  IRenderer,
-  LightParams,
-  WindParams,
-  ObjectWindSettings,
-  TerrainBlendParams,
-  GPUMesh,
+  AABB
 } from './types';
 
 /**
@@ -15,28 +9,13 @@ import type {
  * Extends SceneObject with rendering capabilities and bounding box support.
  */
 export abstract class RenderableObject extends SceneObject {
-  /** The renderer responsible for GPU rendering */
-  protected renderer: IRenderer | null = null;
-  
+  // Note to be migrated to be better aligned with WebGPU's command buffer based rendering
+
   /** Cached local-space bounding box */
   protected localBounds: AABB | null = null;
   
   constructor(name: string = 'Renderable') {
     super(name);
-  }
-  
-  /**
-   * Check if the renderer has been destroyed
-   */
-  get isDestroyed(): boolean {
-    return this.renderer?.isDestroyed ?? true;
-  }
-  
-  /**
-   * Get GPU mesh data for shadow/depth passes
-   */
-  get gpuMeshes(): GPUMesh[] {
-    return this.renderer?.gpuMeshes ?? [];
   }
   
   /**
@@ -76,58 +55,10 @@ export abstract class RenderableObject extends SceneObject {
   }
   
   /**
-   * Render the object
-   * @param vpMatrix - View-projection matrix
-   * @param isSelected - Whether the object is selected (for highlighting)
-   * @param wireframeMode - Whether to render in wireframe mode
-   * @param lightParams - Lighting parameters
-   * @param windParams - Global wind parameters
-   * @param objectWindSettings - Per-object wind settings
-   * @param terrainBlendParams - Terrain blending parameters
-   */
-  render(
-    vpMatrix: mat4,
-    isSelected: boolean = false,
-    wireframeMode: boolean = false,
-    lightParams?: LightParams | null,
-    windParams?: WindParams | null,
-    objectWindSettings?: ObjectWindSettings | null,
-    terrainBlendParams?: TerrainBlendParams | null
-  ): void {
-    if (!this.renderer || this.renderer.isDestroyed || !this.visible) {
-      return;
-    }
-    
-    const modelMatrix = this.getModelMatrix();
-    
-    this.renderer.render(
-      vpMatrix,
-      modelMatrix,
-      isSelected,
-      wireframeMode,
-      lightParams,
-      windParams,
-      objectWindSettings,
-      terrainBlendParams
-    );
-  }
-  
-  /**
    * Clean up the renderer and release GPU resources
    */
   destroy(): void {
-    if (this.renderer && !this.renderer.isDestroyed) {
-      this.renderer.destroy();
-    }
-    this.renderer = null;
     this.localBounds = null;
-  }
-  
-  /**
-   * Check if the object has a valid renderer
-   */
-  hasRenderer(): boolean {
-    return this.renderer !== null && !this.renderer.isDestroyed;
   }
   
   /**

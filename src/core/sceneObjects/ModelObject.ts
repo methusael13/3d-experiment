@@ -59,13 +59,11 @@ export class ModelObject extends RenderableObject {
     modelPath: string,
     name: string,
     model: GLBModel,
-    renderer: IRenderer,
     bounds: AABB
   ) {
     super(name);
     this.modelPath = modelPath;
     this.model = model;
-    this.renderer = renderer;
     this.localBounds = bounds;
   }
   
@@ -334,7 +332,6 @@ export class ModelObject extends RenderableObject {
    * Create a ModelObject by loading from a file path (async)
    */
   static async create(
-    gl: WebGL2RenderingContext,
     modelPath: string,
     name?: string,
     getModelUrl?: (path: string) => string
@@ -348,9 +345,6 @@ export class ModelObject extends RenderableObject {
     // Compute bounding box
     const bounds = computeBoundsFromGLB(model) as AABB;
     
-    // Create renderer (cast via unknown since JS renderer matches IRenderer interface at runtime)
-    const renderer = createObjectRenderer(gl, model) as unknown as IRenderer;
-    
     // Derive name from path if not provided
     const displayName = name ?? modelPath
       .split('/')
@@ -358,18 +352,16 @@ export class ModelObject extends RenderableObject {
       ?.replace('.glb', '')
       .replace('.gltf', '') ?? 'Model';
     
-    return new ModelObject(modelPath, displayName, model, renderer, bounds);
+    return new ModelObject(modelPath, displayName, model, bounds);
   }
   
   /**
    * Create a duplicate of this model (async - must reload)
    */
   async clone(
-    gl: WebGL2RenderingContext,
     getModelUrl?: (path: string) => string
   ): Promise<ModelObject> {
     const cloned = await ModelObject.create(
-      gl,
       this.modelPath,
       `${this.name} (copy)`,
       getModelUrl
@@ -396,12 +388,10 @@ export class ModelObject extends RenderableObject {
    * Create a ModelObject from serialized data (async)
    */
   static async fromSerialized(
-    gl: WebGL2RenderingContext,
     data: SerializedModelObject,
     getModelUrl?: (path: string) => string
   ): Promise<ModelObject> {
     const model = await ModelObject.create(
-      gl,
       data.modelPath,
       data.name,
       getModelUrl

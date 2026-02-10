@@ -31,7 +31,6 @@ export interface ObjectPanelProps {
 
   // Modifier settings
   windSettings: WindSettings;
-  terrainBlendSettings: TerrainBlendSettings;
   materials: MaterialInfo[];
 
   // Callbacks
@@ -49,7 +48,6 @@ export interface ObjectPanelProps {
 
   // Modifier callbacks
   onWindSettingsChange: (settings: Partial<WindSettings>) => void;
-  onTerrainBlendChange: (settings: Partial<TerrainBlendSettings>) => void;
   onToggleLeafMaterial: (index: number) => void;
   onToggleBranchMaterial: (index: number) => void;
 }
@@ -66,7 +64,6 @@ export function ObjectPanel({
   gizmoMode,
   gizmoOrientation,
   windSettings,
-  terrainBlendSettings,
   materials,
   onNameChange,
   onPositionChange,
@@ -78,7 +75,6 @@ export function ObjectPanel({
   onPrimitiveConfigChange,
   onShowNormalsChange,
   onWindSettingsChange,
-  onTerrainBlendChange,
   onToggleLeafMaterial,
   onToggleBranchMaterial,
 }: ObjectPanelProps) {
@@ -126,10 +122,8 @@ export function ObjectPanel({
         content: (
           <ModifiersTab
             windSettings={windSettings}
-            terrainBlendSettings={terrainBlendSettings}
             materials={materials}
             onWindSettingsChange={onWindSettingsChange}
-            onTerrainBlendChange={onTerrainBlendChange}
             onToggleLeafMaterial={onToggleLeafMaterial}
             onToggleBranchMaterial={onToggleBranchMaterial}
           />
@@ -147,7 +141,6 @@ export function ObjectPanel({
       primitiveConfig,
       showNormals,
       windSettings,
-      terrainBlendSettings,
       materials,
     ]
   );

@@ -58,9 +58,8 @@ export function useFileDrop(containerRef: { current: HTMLElement | null }) {
     setState(s => ({ ...s, isDragging: false, isProcessing: true, lastError: null }));
     
     const scene = store.scene;
-    const gl = store.gl;
     
-    if (!scene || !gl) {
+    if (!scene) {
       setState(s => ({ ...s, isProcessing: false, lastError: 'Scene not initialized' }));
       return;
     }
@@ -153,10 +152,9 @@ export function useFileDrop(containerRef: { current: HTMLElement | null }) {
  * Handle HDR file import for environment lighting
  */
 async function handleHDRImport(file: File, store: ReturnType<typeof getSceneBuilderStore>): Promise<void> {
-  const gl = store.gl;
   const lightingManager = store.lightingManager;
   
-  if (!gl || !lightingManager) {
+  if (!lightingManager) {
     throw new Error('GL context or lighting manager not initialized');
   }
   
@@ -165,10 +163,11 @@ async function handleHDRImport(file: File, store: ReturnType<typeof getSceneBuil
   
   const arrayBuffer = await file.arrayBuffer();
   const hdrData = HDRLoader.parse(arrayBuffer);
-  const hdrTexture = HDRLoader.createPrefilteredTexture(gl, hdrData).texture;
+  // Note: HDRLoader needs to be migrated to create WebGPU textures
+  // const hdrTexture = HDRLoader.createPrefilteredTexture(, hdrData).texture;
   
   // Set HDR texture on lighting manager
-  lightingManager.hdrLight.setTexture(hdrTexture);
+  // lightingManager.hdrLight.setTexture(hdrTexture);
   lightingManager.hdrLight.filename = file.name;
   
   // Set mode to HDR
@@ -177,7 +176,7 @@ async function handleHDRImport(file: File, store: ReturnType<typeof getSceneBuil
   // Update viewport
   const viewport = store.viewport;
   if (viewport) {
-    viewport.setHDRTexture(hdrTexture);
+    // Todo: viewport.setHDRTexture
   }
 }
 

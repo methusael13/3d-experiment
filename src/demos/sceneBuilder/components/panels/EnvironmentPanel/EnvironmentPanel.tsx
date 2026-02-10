@@ -41,21 +41,14 @@ export function EnvironmentPanel({
       const response = await fetch(hdrPath);
       if (!response.ok) throw new Error(`Failed to fetch ${hdrPath}`);
 
+      // Todo: Need support for HDR loader with WebGPU textures
       const buffer = await response.arrayBuffer();
       const hdrData = HDRLoader.parse(buffer);
 
-      const result = HDRLoader.createPrefilteredTextureWithMIS(
-        context.gl,
-        hdrData,
-        (progress) => {
-          store.setHdrProgress(0.1 + progress * 0.9);
-        }
-      );
-
-      lightingManager.hdrLight.setTexture(result.texture, `${selectedHdrName}.hdr`);
+      lightingManager.hdrLight.setTexture(null, `${selectedHdrName}.hdr`);
       store.setHdrFilename(selectedHdrName);
 
-      context.setHDRTexture(result.texture);
+      context.setHDRTexture(null);
       store.setLightMode('hdr');
     } catch (err) {
       console.error('Failed to load HDR:', err);
@@ -76,20 +69,14 @@ export function EnvironmentPanel({
       store.setHdrFilename('Loading...');
 
       const buffer = await file.arrayBuffer();
+
+      // Todo: Need support for HDR loader with WebGPU textures
       const hdrData = HDRLoader.parse(buffer);
 
-      const result = HDRLoader.createPrefilteredTextureWithMIS(
-        context.gl,
-        hdrData,
-        (progress) => {
-          store.setHdrProgress(progress);
-        }
-      );
-
-      lightingManager.hdrLight.setTexture(result.texture, file.name);
+      lightingManager.hdrLight.setTexture(null, file.name);
       store.setHdrFilename(file.name);
 
-      context.setHDRTexture(result.texture);
+      context.setHDRTexture(null);
       store.setLightMode('hdr');
     } catch (err) {
       console.error('Failed to load HDR:', err);

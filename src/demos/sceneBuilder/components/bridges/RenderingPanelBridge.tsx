@@ -3,7 +3,6 @@
  */
 
 import { useState, useCallback } from 'preact/hooks';
-import { signal } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
 import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings } from '../panels';
 import type { CompositeEffectConfig } from '@/core/gpu/postprocess';
@@ -13,7 +12,6 @@ import type { CompositeEffectConfig } from '@/core/gpu/postprocess';
 
 interface RenderingState {
   shadowSettings: WebGPUShadowSettings;
-  showShadowThumbnail: boolean;
   ssaoSettings: SSAOSettings;
   compositeSettings: Required<CompositeEffectConfig>;
   webgpuEnabled: boolean;
@@ -27,7 +25,6 @@ const defaultRenderingState: RenderingState = {
     shadowRadius: 200,
     softShadows: true,
   },
-  showShadowThumbnail: false,
   ssaoSettings: {
     enabled: false,
     radius: 0.4,
@@ -48,14 +45,12 @@ const defaultRenderingState: RenderingState = {
 // ==================== Types ====================
 
 export interface ConnectedRenderingPanelProps {
-  onToggleWebGPU?: (enabled: boolean) => void;
   onShadowSettingsChange?: (settings: WebGPUShadowSettings) => void;
 }
 
 // ==================== Connected Component ====================
 
 export function ConnectedRenderingPanel({
-  onToggleWebGPU,
   onShadowSettingsChange: externalShadowChange,
 }: ConnectedRenderingPanelProps) {
   const store = getSceneBuilderStore();
@@ -87,13 +82,13 @@ export function ConnectedRenderingPanel({
       return updated;
     });
   }, [store, externalShadowChange]);
-  
-  const handleShowShadowThumbnailChange = useCallback((show: boolean) => {
-    setShowShadowThumbnail(show);
-    const viewport = store.viewport;
-    if (viewport) {
-      viewport.setShowShadowThumbnail(show);
+
+  const handleShadowDebugToggle = useCallback((enabled: boolean) => {
+    const debugManager = store.viewport?.getDebugTextureManager?.();
+    if (debugManager) {
+      debugManager.setEnabled('shadow-map', enabled);
     }
+    setShowShadowThumbnail(enabled);
   }, [store]);
   
   const handleSSAOSettingsChange = useCallback((settings: Partial<SSAOSettings>) => {
@@ -124,15 +119,12 @@ export function ConnectedRenderingPanel({
     <RenderingPanel
       shadowSettings={shadowSettings}
       showShadowThumbnail={showShadowThumbnail}
+      onShadowDebugToggle={handleShadowDebugToggle}
       onShadowSettingsChange={handleShadowSettingsChange}
-      onShowShadowThumbnailChange={handleShowShadowThumbnailChange}
       ssaoSettings={ssaoSettings}
       onSSAOSettingsChange={handleSSAOSettingsChange}
       compositeSettings={compositeSettings}
       onCompositeSettingsChange={handleCompositeSettingsChange}
-      webgpuEnabled={store.isWebGPU.value}
-      webgpuStatus={store.isWebGPU.value ? 'Initialized' : 'Not initialized'}
-      onToggleWebGPU={onToggleWebGPU ?? (() => {})}
     />
   );
 }

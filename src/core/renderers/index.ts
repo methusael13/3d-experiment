@@ -22,8 +22,6 @@ export { DepthPrePassRenderer, createDepthPrePassRenderer } from './DepthPrePass
 export { ContactShadowRenderer } from './ContactShadowRenderer';
 export type { ContactShadowSettings } from './ContactShadowRenderer';
 
-export { TerrainRenderer, createTerrainRenderer, TerrainShadowRenderer } from './TerrainRenderer';
-
 export { ClipmapGeometry, snapToGrid, type ClipmapConfig, type ClipmapRing } from './ClipmapGeometry';
 
 // Render Pipeline

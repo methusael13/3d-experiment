@@ -66,7 +66,7 @@ export function ConnectedMenuBar() {
     input.accept = '.json';
     input.onchange = async (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file || !store.scene || !store.gl) return;
+      if (!file || !store.scene) return;
       
       const text = await file.text();
       const data = JSON.parse(text);

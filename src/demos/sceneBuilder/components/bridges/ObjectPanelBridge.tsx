@@ -56,13 +56,6 @@ export function ConnectedObjectPanel() {
     };
   });
   
-  const terrainBlendSettings = useComputed<TerrainBlendSettings>(() => {
-    const obj = selectedObject.value;
-    if (!obj) return getDefaultTerrainBlendSettings();
-    const settings = store.objectTerrainBlendSettings.value.get(obj.id);
-    return settings ?? getDefaultTerrainBlendSettings();
-  });
-  
   // Primitive-specific computed values (for Edit tab)
   const primitiveType = useComputed<'cube' | 'plane' | 'sphere' | undefined>(() => {
     // Read transformVersion to force re-computation when scene state changes
@@ -171,17 +164,6 @@ export function ConnectedObjectPanel() {
     store.objectWindSettings.value = newMap;
   };
   
-  const handleTerrainBlendChange = (settings: Partial<TerrainBlendSettings>) => {
-    const obj = selectedObject.value;
-    if (!obj) return;
-    
-    const current = store.objectTerrainBlendSettings.value.get(obj.id) ?? getDefaultTerrainBlendSettings();
-    const updated = { ...current, ...settings };
-    const newMap = new Map(store.objectTerrainBlendSettings.value);
-    newMap.set(obj.id, updated);
-    store.objectTerrainBlendSettings.value = newMap;
-  };
-  
   const handlePrimitiveConfigChange = (config: Partial<PrimitiveConfig>) => {
     const scene = store.scene;
     const obj = selectedObject.value;
@@ -263,7 +245,6 @@ export function ConnectedObjectPanel() {
       gizmoMode={gizmoMode.value}
       gizmoOrientation={gizmoOrientation.value}
       windSettings={windSettings.value}
-      terrainBlendSettings={terrainBlendSettings.value}
       materials={materials.value}
       onNameChange={handleNameChange}
       onPositionChange={handlePositionChange}
@@ -275,7 +256,6 @@ export function ConnectedObjectPanel() {
       onPrimitiveConfigChange={handlePrimitiveConfigChange}
       onShowNormalsChange={handleShowNormalsChange}
       onWindSettingsChange={handleWindSettingsChange}
-      onTerrainBlendChange={handleTerrainBlendChange}
       onToggleLeafMaterial={handleToggleLeafMaterial}
       onToggleBranchMaterial={handleToggleBranchMaterial}
     />

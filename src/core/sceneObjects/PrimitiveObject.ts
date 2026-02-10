@@ -12,10 +12,6 @@ import type {
 // GPUContext is only used as a type parameter, not constructed here
 import type { GPUContext } from '../gpu/GPUContext';
 
-// Import the factory function from the existing renderer
-// @ts-ignore - JavaScript module
-import { createPrimitiveRendererFromGeometry } from '../renderers/PrimitiveRenderer';
-
 /**
  * Default configuration for primitives
  */
@@ -44,9 +40,6 @@ export abstract class PrimitiveObject extends RenderableObject {
   /** The typed renderer (more specific than base IRenderer) */
   protected declare renderer: IPrimitiveRenderer | null;
   
-  /** WebGL context reference (needed for creating renderer) */
-  protected gl: WebGL2RenderingContext | null = null;
-  
   /** WebGPU mesh ID (assigned when initWebGPU is called) */
   protected gpuMeshId: number | null = null;
   
@@ -54,14 +47,12 @@ export abstract class PrimitiveObject extends RenderableObject {
   protected gpuContext: GPUContext | null = null;
   
   constructor(
-    gl: WebGL2RenderingContext,
     name?: string,
     config: PrimitiveConfig = {}
   ) {
     super(name ?? 'Primitive');
     
     this._primitiveConfig = { ...DEFAULT_CONFIG, ...config };
-    this.gl = gl;
     
     // Generate geometry and create renderer
     this.initializeRenderer();
@@ -101,10 +92,6 @@ export abstract class PrimitiveObject extends RenderableObject {
    * Initialize the renderer with generated geometry
    */
   protected initializeRenderer(): void {
-    if (!this.gl) return;
-    
-    const geometry = this.generateGeometry();
-    this.renderer = createPrimitiveRendererFromGeometry(this.gl, geometry) as IPrimitiveRenderer;
     this.localBounds = this.computeLocalBounds();
   }
   
@@ -112,8 +99,6 @@ export abstract class PrimitiveObject extends RenderableObject {
    * Update the primitive geometry configuration
    */
   updateGeometry(config: PrimitiveConfig): void {
-    if (!this.gl) return;
-    
     this._primitiveConfig = { ...this._primitiveConfig, ...config };
     
     // Regenerate geometry with new config

@@ -6,11 +6,10 @@ import type { GeometryData, AABB, PrimitiveConfig, SerializedPrimitiveObject } f
  */
 export class Plane extends PrimitiveObject {
   constructor(
-    gl: WebGL2RenderingContext,
     name?: string,
     config: PrimitiveConfig = {}
   ) {
-    super(gl, name ?? 'Plane', config);
+    super(name ?? 'Plane', config);
   }
   
   get primitiveType(): string {
@@ -74,8 +73,8 @@ export class Plane extends PrimitiveObject {
   /**
    * Create a duplicate of this plane
    */
-  clone(gl: WebGL2RenderingContext): Plane {
-    const cloned = new Plane(gl, `${this.name} (copy)`, this._primitiveConfig);
+  clone(): Plane {
+    const cloned = new Plane(`${this.name} (copy)`, this._primitiveConfig);
     cloned.copyTransformFrom(this);
     cloned.setMaterial(this.getMaterial());
     cloned.position[0] += 0.5;
@@ -86,8 +85,8 @@ export class Plane extends PrimitiveObject {
   /**
    * Create from serialized data
    */
-  static fromSerialized(gl: WebGL2RenderingContext, data: SerializedPrimitiveObject): Plane {
-    const plane = new Plane(gl, data.name, data.primitiveConfig);
+  static fromSerialized(data: SerializedPrimitiveObject): Plane {
+    const plane = new Plane(data.name, data.primitiveConfig);
     plane.deserialize(data);
     return plane;
   }

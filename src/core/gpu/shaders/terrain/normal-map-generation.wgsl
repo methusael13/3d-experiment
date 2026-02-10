@@ -31,8 +31,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let dy = (up - down) * params.heightScale / (2.0 * params.texelSize.y);
   
   // Compute normal from gradients
-  // Note: +dx (not -dx) to match world coordinate system where +X is right
-  let normal = normalize(vec3<f32>(dx, 1.0, -dy));
+  let normal = normalize(vec3<f32>(-dx, 1.0, -dy));
   
   // Store directly - rgba8snorm format stores [-1,1] range natively
   textureStore(outputNormals, coord, vec4<f32>(normal, 1.0));

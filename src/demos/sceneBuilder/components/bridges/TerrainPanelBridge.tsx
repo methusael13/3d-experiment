@@ -10,7 +10,7 @@ import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, ty
 import type { Asset } from '../hooks/useAssetLibrary';
 import { BiomeMaskPanelBridge } from './BiomeMaskPanelBridge';
 import { VegetationPanelBridge } from './VegetationPanelBridge';
-import { isGPUTerrainObject, isTerrainObject, type GPUTerrainSceneObject, type TerrainObject } from '../../../../core/sceneObjects';
+import { isGPUTerrainObject, type GPUTerrainSceneObject } from '../../../../core/sceneObjects';
 import { debounce } from '../../../../core/utils/debounce';
 import { TerrainManager } from '@/core/terrain';
 
@@ -151,11 +151,7 @@ type GPUTerrainInfo = {
   type: 'webgpu',
   manager?: TerrainManager
 };
-type TerrainInfo = {
-  type: 'webgl',
-  terrainObject: TerrainObject
-};
-type SelectedTerrainInfo = GPUTerrainInfo | TerrainInfo | null;
+type SelectedTerrainInfo = GPUTerrainInfo | null;
 
 export function ConnectedTerrainPanel({ 
   onTerrainUpdate,
@@ -188,10 +184,6 @@ export function ConnectedTerrainPanel({
   const [erosionParams, setErosionParams] = useState<ErosionParams>(DEFAULT_EROSION_PARAMS);
   const [materialParams, setMaterialParams] = useState<TerrainMaterialParams>(DEFAULT_MATERIAL_PARAMS);
   const [detailParams, setDetailParams] = useState<DetailParams>(DEFAULT_DETAIL_PARAMS);
-  
-  // Rendering mode (WebGL only)
-  const [cdlodEnabled, setCdlodEnabled] = useState(false);
-  const [clipmapEnabled, setClipmapEnabled] = useState(false);
   
   // Progress state
   const [progress, setProgress] = useState<TerrainProgress | undefined>(undefined);
@@ -419,60 +411,10 @@ export function ConnectedTerrainPanel({
         
         // Update material
         manager.setMaterial(buildMaterialConfig(materialParams));
-      }
-      // WebGL mode - use terrain object from selected TerrainObject
-      else if (terrainInfo?.type === 'webgl' && terrainInfo.terrainObject) {
-        const terrain = terrainInfo.terrainObject;
-        const progressCallback = (info: { progress: number; stage: string }) => {
-          setProgress({ stage: info.stage, percent: Math.round(info.progress * 100) });
-        };
-        
-        // Update terrain params
-        const params = terrain.params;
-        params.resolution = resolution;
-        params.worldSize = worldSize;
-        params.noise.seed = noiseParams.seed;
-        params.noise.scale = noiseParams.scale;
-        params.noise.octaves = noiseParams.octaves;
-        params.noise.lacunarity = noiseParams.lacunarity;
-        params.noise.persistence = noiseParams.persistence;
-        params.noise.heightScale = noiseParams.heightScale;
-        params.noise.ridgeWeight = noiseParams.ridgeWeight;
-        params.noise.warpStrength = noiseParams.warpStrength;
-        params.noise.warpScale = noiseParams.warpScale;
-        params.noise.warpOctaves = noiseParams.warpOctaves;
-        params.noise.rotateOctaves = noiseParams.rotateOctaves;
-        params.noise.octaveRotation = noiseParams.octaveRotation;
-        
-        params.erosion.enabled = erosionParams.hydraulicEnabled;
-        params.erosion.iterations = erosionParams.hydraulicIterations;
-        params.erosion.inertia = erosionParams.inertia;
-        params.erosion.sedimentCapacity = erosionParams.sedimentCapacity;
-        params.erosion.depositSpeed = erosionParams.depositSpeed;
-        params.erosion.erodeSpeed = erosionParams.erodeSpeed;
-        params.erosion.thermalEnabled = erosionParams.thermalEnabled;
-        params.erosion.thermalIterations = erosionParams.thermalIterations;
-        params.erosion.talusAngle = erosionParams.talusAngle;
-        
-        // Legacy params
-        params.material.snowLine = 0;
-        params.material.rockLine = 0;
-        params.material.maxGrassSlope = 0;
-        params.material.grassColor = materialParams.grassColor;
-        params.material.rockColor = materialParams.rockColor;
-        params.material.snowColor = [0.95, 0.95, 0.97];
-        params.material.dirtColor = [0.35, 0.28, 0.18];
-        
-        // Set rendering modes
-        terrain.cdlodEnabled = cdlodEnabled;
-        terrain.clipmapEnabled = clipmapEnabled;
-        
-        await terrain.regenerate(progressCallback);
-      }
-      else {
+      } else {
         console.warn('[TerrainPanel] No terrain selected - select a terrain object first');
       }
-      
+
       setProgress({ stage: 'Complete', percent: 100 });
     } catch (error) {
       console.error('[TerrainPanel] Update failed:', error);
@@ -481,7 +423,7 @@ export function ConnectedTerrainPanel({
     
     // Clear progress after a delay
     setTimeout(() => setProgress(undefined), 2000);
-  }, [onTerrainUpdate, selectedTerrainInfo, resolution, worldSize, noiseParams, erosionParams, materialParams, detailParams, store.isWebGPU, cdlodEnabled, clipmapEnabled]);
+  }, [onTerrainUpdate, selectedTerrainInfo, resolution, worldSize, noiseParams, erosionParams, materialParams, detailParams, store.isWebGPU]);
 
   // Compute terrain state for VegetationSection
   const isTerrainReady = useMemo(() => {
@@ -583,16 +525,12 @@ export function ConnectedTerrainPanel({
       onMaterialParamsChange={handleMaterialParamsChange}
       detailParams={store.isWebGPU.value ? detailParams : undefined}
       onDetailParamsChange={store.isWebGPU.value ? handleDetailParamsChange : undefined}
-      cdlodEnabled={cdlodEnabled}
-      onCdlodEnabledChange={setCdlodEnabled}
-      clipmapEnabled={clipmapEnabled}
-      onClipmapEnabledChange={setClipmapEnabled}
       currentPreset={currentPreset}
       onPresetChange={handlePresetChange}
       onResetToPreset={handleResetToPreset}
       onUpdate={handleUpdate}
       progress={progress}
-      isWebGPU={store.isWebGPU.value}
+      isWebGPU={true}
       onOpenBiomeMaskEditor={handleOpenBiomeMaskEditor}
       onOpenPlantRegistry={handleOpenVegetationEditor}
       isTerrainReady={isTerrainReady}

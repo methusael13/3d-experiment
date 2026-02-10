@@ -48,17 +48,16 @@ export function SceneBuilderApp({
   
   // ==================== Initialize Core Systems ====================
   
-  const handleViewportInitialized = useCallback((viewport: Viewport, gl: WebGL2RenderingContext) => {
+  const handleViewportInitialized = useCallback((viewport: Viewport) => {
     // Create core systems
     const sceneGraph = createSceneGraph();
     sceneGraphRef.current = sceneGraph;
-    const scene = createScene(gl, sceneGraph);
+    const scene = createScene(sceneGraph);
     const lightingManager = createLightingManager();
     const windManager = new WindManager();
     
     // Store references
     store.scene = scene;
-    store.gl = gl;
     store.viewport = viewport;
     store.lightingManager = lightingManager;
     store.windManager = windManager;
@@ -133,39 +132,6 @@ export function SceneBuilderApp({
     await importAsset(asset);
   }, [importAsset]);
 
-  const processWebGPUTestEnabled = useCallback(async () => {
-    const success = await store.viewport?.enableWebGPUTest() ?? false;
-    if (success && store.scene && store.viewport) {
-      store.setIsWebGPU(true);
-      // Refresh panels
-      store.syncFromScene();
-      console.log('[SceneBuilderApp] WebGPU mode enabled. Use Add > Terrain to add terrain.');
-    }
-  }, [store]);
-
-  const processWebGPUTestDisabled = useCallback(() => {
-    // Remove GPU terrain and ocean from scene when disabling WebGPU
-    if (store.scene) {
-      if (store.scene.hasWebGPUTerrain()) {
-        store.scene.removeWebGPUTerrain();
-      }
-      if (store.scene.hasOcean()) {
-        store.scene.removeOcean();
-      }
-      store.syncFromScene();
-    }
-    store.setIsWebGPU(false);
-    store.viewport?.disableWebGPUTest();
-  }, [store]);
-
-  const handleWebGPUTestToggle = useCallback((enabled: boolean) => {
-    if (enabled) {
-      processWebGPUTestEnabled();
-    } else {
-      processWebGPUTestDisabled();
-    }
-  }, [processWebGPUTestDisabled, processWebGPUTestEnabled]);
-
   // ==================== Render ====================
   
   return (
@@ -216,7 +182,7 @@ export function SceneBuilderApp({
           <ConnectedEnvironmentPanel />
           
           {/* Rendering Panel */}
-          <ConnectedRenderingPanel onToggleWebGPU={handleWebGPUTestToggle} />
+          <ConnectedRenderingPanel />
           
           {/* Material Panel */}
           <ConnectedMaterialPanel />

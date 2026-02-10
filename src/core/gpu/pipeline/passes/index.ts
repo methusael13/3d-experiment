@@ -373,10 +373,6 @@ export class DebugPass extends BaseRenderPass {
   }
   
   execute(ctx: RenderContext): void {
-    // Sync shadow-map visibility with render options (backwards compatibility)
-    const { showShadowThumbnail, shadowEnabled } = ctx.options;
-    this.deps.debugTextureManager.setEnabled('shadow-map', showShadowThumbnail && shadowEnabled);
-    
     // Render all enabled debug textures via the manager
     if (this.deps.debugTextureManager.hasEnabledTextures()) {
       this.deps.debugTextureManager.render(

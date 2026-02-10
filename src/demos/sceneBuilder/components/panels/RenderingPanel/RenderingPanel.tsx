@@ -25,9 +25,7 @@ export interface SSAOSettings extends Required<SSAOEffectConfig> {
 export interface RenderingPanelProps {
   // Shadow settings
   shadowSettings: WebGPUShadowSettings;
-  showShadowThumbnail: boolean;
   onShadowSettingsChange: (settings: Partial<WebGPUShadowSettings>) => void;
-  onShowShadowThumbnailChange: (show: boolean) => void;
 
   // SSAO settings
   ssaoSettings: SSAOSettings;
@@ -37,10 +35,8 @@ export interface RenderingPanelProps {
   compositeSettings: Required<CompositeEffectConfig>;
   onCompositeSettingsChange: (settings: Partial<CompositeEffectConfig>) => void;
 
-  // WebGPU mode
-  webgpuEnabled: boolean;
-  webgpuStatus: string;
-  onToggleWebGPU: (enabled: boolean) => void;
+  showShadowThumbnail: boolean;
+  onShadowDebugToggle: (enabled: boolean) => void;
 }
 
 const resolutionOptions = [
@@ -67,15 +63,12 @@ const tonemappingOptions = [
 export function RenderingPanel({
   shadowSettings,
   showShadowThumbnail,
+  onShadowDebugToggle,
   onShadowSettingsChange,
-  onShowShadowThumbnailChange,
   ssaoSettings,
   onSSAOSettingsChange,
   compositeSettings,
   onCompositeSettingsChange,
-  webgpuEnabled,
-  webgpuStatus,
-  onToggleWebGPU,
 }: RenderingPanelProps) {
   // Shadow enabled toggle
   const handleShadowEnabled = useCallback(
@@ -107,14 +100,6 @@ export function RenderingPanel({
       onShadowSettingsChange({ softShadows: enabled });
     },
     [onShadowSettingsChange]
-  );
-
-  // WebGPU toggle
-  const handleWebGPUToggle = useCallback(
-    async (enabled: boolean) => {
-      await onToggleWebGPU(enabled);
-    },
-    [onToggleWebGPU]
   );
 
   // SSAO handlers
@@ -227,20 +212,10 @@ export function RenderingPanel({
           <Checkbox
             label="Show Debug Thumbnail"
             checked={showShadowThumbnail}
-            onChange={onShowShadowThumbnailChange}
+            onChange={onShadowDebugToggle}
             disabled={controlsDisabled}
           />
         </div>
-      </Section>
-
-      {/* WebGPU Mode Section */}
-      <Section title="WebGPU Mode" defaultCollapsed={false}>
-        <Checkbox
-          label="Enable WebGPU"
-          checked={webgpuEnabled}
-          onChange={handleWebGPUToggle}
-        />
-        <div class={styles.webgpuStatus}>{webgpuStatus}</div>
       </Section>
 
       {/* Tonemapping Section */}

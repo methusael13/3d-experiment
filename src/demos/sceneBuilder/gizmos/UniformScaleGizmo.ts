@@ -21,8 +21,8 @@ export class UniformScaleGizmo extends BaseGizmo {
   
   private onUniformScaleChange: ((newScale: [number, number, number]) => void) | null = null;
 
-  constructor(gl: WebGL2RenderingContext, camera: GizmoCamera) {
-    super(gl, camera);
+  constructor(camera: GizmoCamera) {
+    super(camera);
   }
   
   private ensureOverlayCanvas(): void {

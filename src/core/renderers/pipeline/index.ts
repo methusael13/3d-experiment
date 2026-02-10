@@ -22,7 +22,3 @@ export type { IRenderPass } from './RenderPass';
 
 // Base Pipeline
 export { RenderPipeline } from './RenderPipeline';
-
-// Forward Pipeline
-export { ForwardPipeline } from './ForwardPipeline';
-export type { ForwardPipelineConfig } from './ForwardPipeline';

@@ -21,7 +21,7 @@ export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironm
   const store = getSceneBuilderStore();
   
   // Check if managers are available
-  if (!store.lightingManager || !store.windManager || !store.gl || !store.scene) {
+  if (!store.lightingManager || !store.windManager || !store.scene) {
     return <div style={{ padding: '8px', color: 'var(--text-secondary)' }}>Loading...</div>;
   }
   
@@ -35,13 +35,11 @@ export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironm
     return createPanelContext({
       container,
       scene: store.scene!,
-      gl: store.gl!,
       windManager: store.windManager!,
       lightingManager: store.lightingManager!,
       shadowRenderer: null,
       cameraController: null,
       objectWindSettings: store.objectWindSettings.value,
-      objectTerrainBlendSettings: store.objectTerrainBlendSettings.value,
       
       // Wire up callbacks
       onLightingChanged: () => {
@@ -51,7 +49,7 @@ export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironm
         }
       },
       setHDRTexture: (texture) => {
-        store.viewport?.setHDRTexture?.(texture);
+        // Todo
       },
       onWindChanged: () => {
         if (store.windManager && store.viewport) {
@@ -63,7 +61,7 @@ export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironm
         store.viewport?.setDynamicIBL?.(enabled);
       } : undefined,
     });
-  }, [store.scene, store.gl, store.windManager, store.lightingManager, store.isWebGPU.value, externalContext]);
+  }, [store.scene, store.windManager, store.lightingManager, store.isWebGPU.value, externalContext]);
   
   return (
     <EnvironmentPanel

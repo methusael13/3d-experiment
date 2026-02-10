@@ -28,18 +28,17 @@ export type { PrimitiveConfig, PrimitiveType, SerializedPrimitiveObject, Geometr
  * Used for deserialization and backward compatibility
  */
 export function createPrimitive(
-  gl: WebGL2RenderingContext,
   primitiveType: string,
   name?: string,
   config?: { size?: number; subdivision?: number }
 ): Cube | Plane | UVSphere {
   switch (primitiveType) {
     case 'cube':
-      return new Cube(gl, name, config);
+      return new Cube(name, config);
     case 'plane':
-      return new Plane(gl, name, config);
+      return new Plane(name, config);
     case 'sphere':
-      return new UVSphere(gl, name, config);
+      return new UVSphere(name, config);
     default:
       throw new Error(`Unknown primitive type: ${primitiveType}`);
   }
@@ -54,11 +53,11 @@ export function createPrimitiveFromSerialized(
 ): Cube | Plane | UVSphere {
   switch (data.primitiveType) {
     case 'cube':
-      return Cube.fromSerialized(gl, data as any);
+      return Cube.fromSerialized(data as any);
     case 'plane':
-      return Plane.fromSerialized(gl, data as any);
+      return Plane.fromSerialized(data as any);
     case 'sphere':
-      return UVSphere.fromSerialized(gl, data as any);
+      return UVSphere.fromSerialized(data as any);
     default:
       throw new Error(`Unknown primitive type: ${data.primitiveType}`);
   }

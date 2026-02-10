@@ -64,13 +64,7 @@ export interface GizmoShaderLocations {
  * Abstract base class for transform gizmos
  */
 export abstract class BaseGizmo {
-  protected readonly gl: WebGL2RenderingContext;
   protected readonly camera: GizmoCamera;
-  
-  // Shared shader (static, created once)
-  protected static shaderProgram: WebGLProgram | null = null;
-  protected static shaderLocations: GizmoShaderLocations | null = null;
-  protected static shaderRefCount = 0;
   
   // Target transform
   protected targetPosition: Vec3 = [0, 0, 0];
@@ -98,84 +92,8 @@ export abstract class BaseGizmo {
   protected static readonly BASE_SCREEN_SIZE = 100; // Base size in pixels
   protected static readonly DEFAULT_FOV = Math.PI / 4; // 45 degrees
   
-  constructor(gl: WebGL2RenderingContext, camera: GizmoCamera) {
-    this.gl = gl;
+  constructor(camera: GizmoCamera) {
     this.camera = camera;
-    
-    // Initialize shared shader
-    BaseGizmo.shaderRefCount++;
-    if (!BaseGizmo.shaderProgram) {
-      this.createSharedShader();
-    }
-  }
-  
-  /**
-   * Create the shared shader program
-   */
-  private createSharedShader(): void {
-    const gl = this.gl;
-    
-    const vsSource = `#version 300 es
-      precision highp float;
-      in vec3 aPosition;
-      uniform mat4 uViewProjection;
-      uniform mat4 uModel;
-      uniform vec3 uColor;
-      out vec3 vColor;
-      void main() {
-        gl_Position = uViewProjection * uModel * vec4(aPosition, 1.0);
-        vColor = uColor;
-      }
-    `;
-    
-    const fsSource = `#version 300 es
-      precision mediump float;
-      in vec3 vColor;
-      out vec4 fragColor;
-      void main() {
-        fragColor = vec4(vColor, 1.0);
-      }
-    `;
-    
-    const vs = this.compileShader(gl.VERTEX_SHADER, vsSource);
-    const fs = this.compileShader(gl.FRAGMENT_SHADER, fsSource);
-    
-    const program = gl.createProgram()!;
-    gl.attachShader(program, vs);
-    gl.attachShader(program, fs);
-    gl.linkProgram(program);
-    
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.error('Gizmo shader link error:', gl.getProgramInfoLog(program));
-    }
-    
-    // Clean up individual shaders
-    gl.deleteShader(vs);
-    gl.deleteShader(fs);
-    
-    BaseGizmo.shaderProgram = program;
-    BaseGizmo.shaderLocations = {
-      aPosition: gl.getAttribLocation(program, 'aPosition'),
-      uViewProjection: gl.getUniformLocation(program, 'uViewProjection'),
-      uModel: gl.getUniformLocation(program, 'uModel'),
-      uColor: gl.getUniformLocation(program, 'uColor'),
-    };
-  }
-  
-  /**
-   * Compile a shader
-   */
-  protected compileShader(type: number, source: string): WebGLShader {
-    const gl = this.gl;
-    const shader = gl.createShader(type)!;
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      console.error('Gizmo shader error:', gl.getShaderInfoLog(shader));
-    }
-    
-    return shader;
   }
   
   /**
@@ -205,41 +123,6 @@ export abstract class BaseGizmo {
     
     const scale = this.getScreenSpaceScale();
     mat4.scale(this.modelMatrix, this.modelMatrix, [scale, scale, scale]);
-  }
-  
-  /**
-   * Begin rendering - use shader and set common uniforms
-   */
-  protected beginRender(vpMatrix: mat4): void {
-    const gl = this.gl;
-    const loc = BaseGizmo.shaderLocations!;
-    
-    gl.useProgram(BaseGizmo.shaderProgram);
-    gl.uniformMatrix4fv(loc.uViewProjection, false, vpMatrix);
-    
-    this.setupModelMatrix();
-    gl.uniformMatrix4fv(loc.uModel, false, this.modelMatrix);
-    
-    // Disable depth test so gizmo is always visible
-    gl.disable(gl.DEPTH_TEST);
-    gl.disable(gl.CULL_FACE);
-  }
-  
-  /**
-   * End rendering - restore GL state
-   */
-  protected endRender(): void {
-    const gl = this.gl;
-    gl.enable(gl.DEPTH_TEST);
-    gl.enable(gl.CULL_FACE);
-  }
-  
-  /**
-   * Set color uniform
-   */
-  protected setColor(color: RGB): void {
-    const loc = BaseGizmo.shaderLocations!;
-    this.gl.uniform3fv(loc.uColor, color);
   }
   
   /**
@@ -536,11 +419,6 @@ export abstract class BaseGizmo {
   // ==================== Abstract Methods ====================
   
   /**
-   * Render the gizmo (WebGL2)
-   */
-  abstract render(vpMatrix: mat4): void;
-  
-  /**
    * Render the gizmo using WebGPU
    * @param passEncoder - Active WebGPU render pass encoder
    * @param vpMatrix - View-projection matrix
@@ -570,14 +448,5 @@ export abstract class BaseGizmo {
   /**
    * Clean up GPU resources
    */
-  destroy(): void {
-    BaseGizmo.shaderRefCount--;
-    
-    // Only delete shared shader when last gizmo is destroyed
-    if (BaseGizmo.shaderRefCount === 0 && BaseGizmo.shaderProgram) {
-      this.gl.deleteProgram(BaseGizmo.shaderProgram);
-      BaseGizmo.shaderProgram = null;
-      BaseGizmo.shaderLocations = null;
-    }
-  }
+  destroy(): void {}
 }

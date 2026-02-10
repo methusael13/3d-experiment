@@ -54,14 +54,6 @@ export {
 // Primitive classes
 export { Cube, Plane, UVSphere, createPrimitive, createPrimitiveFromSerialized } from './primitives';
 
-// Terrain
-export { 
-  TerrainObject, 
-  type TerrainGenerationProgress, 
-  type TerrainProgressCallback,
-  type TerrainMeshData,
-} from './TerrainObject';
-
 // GPU Terrain (WebGPU mode)
 export { GPUTerrainSceneObject, isGPUTerrainObject } from './GPUTerrainSceneObject';
 
@@ -76,7 +68,6 @@ import type { UVSphere } from './primitives/UVSphere';
 import type { ModelObject } from './ModelObject';
 import type { PrimitiveObject } from './PrimitiveObject';
 import type { SceneObject } from './SceneObject';
-import type { TerrainObject } from './TerrainObject';
 import type { GPUTerrainSceneObject } from './GPUTerrainSceneObject';
 import type { OceanSceneObject } from './OceanSceneObject';
 
@@ -92,12 +83,12 @@ export type AnyPrimitive = Cube | Plane | UVSphere;
 /**
  * Union of all renderable scene objects (objects that can be rendered)
  */
-export type RenderableSceneObject = AnyPrimitive | ModelObject | TerrainObject;
+export type RenderableSceneObject = AnyPrimitive | ModelObject;
 
 /**
  * Union of all terrain object types
  */
-export type AnyTerrainObject = TerrainObject | GPUTerrainSceneObject;
+export type AnyTerrainObject = GPUTerrainSceneObject;
 
 /**
  * Union of ALL scene object types that can be stored in a Scene
@@ -149,13 +140,6 @@ export function isPlane(obj: SceneObject): obj is Plane {
  */
 export function isUVSphere(obj: SceneObject): obj is UVSphere {
   return obj.objectType === 'primitive' && (obj as PrimitiveObject).primitiveType === 'sphere';
-}
-
-/**
- * Check if object is a TerrainObject (WebGL)
- */
-export function isTerrainObject(obj: SceneObject): obj is TerrainObject {
-  return obj.objectType === 'terrain';
 }
 
 /**

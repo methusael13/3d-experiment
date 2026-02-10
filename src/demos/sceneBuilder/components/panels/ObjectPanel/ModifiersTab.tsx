@@ -23,20 +23,16 @@ export interface MaterialInfo {
 
 export interface ModifiersTabProps {
   windSettings: WindSettings;
-  terrainBlendSettings: TerrainBlendSettings;
   materials: MaterialInfo[];
   onWindSettingsChange: (settings: Partial<WindSettings>) => void;
-  onTerrainBlendChange: (settings: Partial<TerrainBlendSettings>) => void;
   onToggleLeafMaterial: (index: number) => void;
   onToggleBranchMaterial: (index: number) => void;
 }
 
 export function ModifiersTab({
   windSettings,
-  terrainBlendSettings,
   materials,
   onWindSettingsChange,
-  onTerrainBlendChange,
   onToggleLeafMaterial,
   onToggleBranchMaterial,
 }: ModifiersTabProps) {
@@ -67,21 +63,6 @@ export function ModifiersTab({
       onWindSettingsChange({ anchorHeight: value });
     },
     [onWindSettingsChange]
-  );
-
-  // Terrain blend controls
-  const handleTerrainBlendEnabled = useCallback(
-    (enabled: boolean) => {
-      onTerrainBlendChange({ enabled });
-    },
-    [onTerrainBlendChange]
-  );
-
-  const handleBlendDistance = useCallback(
-    (value: number) => {
-      onTerrainBlendChange({ blendDistance: value });
-    },
-    [onTerrainBlendChange]
   );
 
   // Helper to get color string from material
@@ -197,35 +178,6 @@ export function ModifiersTab({
               )}
             </div>
           </div>
-        </div>
-      </div>
-
-      <div class={styles.modifierDivider} />
-
-      {/* Terrain Blend Section */}
-      <div class={styles.modifierSection}>
-        <Checkbox
-          label="Terrain Blend"
-          checked={terrainBlendSettings.enabled}
-          onChange={handleTerrainBlendEnabled}
-        />
-
-        <div
-          class={`${styles.modifierSettings} ${!terrainBlendSettings.enabled ? styles.disabled : ''}`}
-        >
-          <Slider
-            label="Blend Distance"
-            value={terrainBlendSettings.blendDistance}
-            min={0.1}
-            max={2}
-            step={0.1}
-            format={(v) => v.toFixed(1)}
-            onChange={handleBlendDistance}
-            disabled={!terrainBlendSettings.enabled}
-          />
-          <p class={styles.helpText}>
-            Fades object edges at intersections with other geometry
-          </p>
         </div>
       </div>
     </div>

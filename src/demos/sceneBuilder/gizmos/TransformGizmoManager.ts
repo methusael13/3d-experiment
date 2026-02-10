@@ -22,8 +22,6 @@ export type { GizmoOrientation } from './BaseGizmo';
  * Manager that holds all gizmo types and delegates to the active one
  */
 export class TransformGizmoManager {
-  // Note: gl and camera stored for potential future use / debugging
-  private readonly _gl: WebGL2RenderingContext;
   private readonly _camera: GizmoCamera;
   
   private readonly translateGizmo: TranslateGizmo;
@@ -56,15 +54,14 @@ export class TransformGizmoManager {
   // Callbacks
   private onTransformChange: TransformChangeCallback | null = null;
 
-  constructor(gl: WebGL2RenderingContext, camera: GizmoCamera) {
-    this._gl = gl;
+  constructor(camera: GizmoCamera) {
     this._camera = camera;
     
     // Create all gizmo instances
-    this.translateGizmo = new TranslateGizmo(gl, camera);
-    this.rotateGizmo = new RotateGizmo(gl, camera);
-    this.scaleGizmo = new ScaleGizmo(gl, camera);
-    this.uniformScaleGizmo = new UniformScaleGizmo(gl, camera);
+    this.translateGizmo = new TranslateGizmo(camera);
+    this.rotateGizmo = new RotateGizmo(camera);
+    this.scaleGizmo = new ScaleGizmo(camera);
+    this.uniformScaleGizmo = new UniformScaleGizmo(camera);
     
     // Wire up callbacks
     this.translateGizmo.setOnChange((type, value) => this.handleChange(type, value));
@@ -97,17 +94,6 @@ export class TransformGizmoManager {
       case 'rotate': return this.rotateGizmo;
       case 'scale': return this.scaleGizmo;
     }
-  }
-  
-  // ==================== Public API (matches old createTransformGizmo) ====================
-  
-  render(vpMatrix: mat4): void {
-    if (!this.enabled) return;
-    
-    this.getActiveGizmo().render(vpMatrix);
-    
-    // Always render uniform scale overlay if active
-    this.uniformScaleGizmo.render(vpMatrix);
   }
   
   // ==================== WebGPU Rendering ====================
@@ -357,36 +343,4 @@ export class TransformGizmoManager {
     this.gizmoRendererGPU = null;
     this.gpuContext = null;
   }
-}
-
-/**
- * Factory function for backward compatibility with existing code
- */
-export function createTransformGizmo(gl: WebGL2RenderingContext, camera: GizmoCamera) {
-  const manager = new TransformGizmoManager(gl, camera);
-  
-  // Return object with same interface as old createTransformGizmo
-  return {
-    render: (vpMatrix: mat4) => manager.render(vpMatrix),
-    setMode: (mode: GizmoMode) => manager.setMode(mode),
-    setOrientation: (orientation: GizmoOrientation) => manager.setOrientation(orientation),
-    setTarget: (position: [number, number, number], rotation: [number, number, number], scale: [number, number, number]) => 
-      manager.setTarget(position, rotation, scale),
-    setEnabled: (value: boolean) => manager.setEnabled(value),
-    setOnChange: (callback: TransformChangeCallback | null) => manager.setOnChange(callback),
-    setCanvasSize: (width: number, height: number) => manager.setCanvasSize(width, height),
-    setOverlayContainer: (container: HTMLElement) => manager.setOverlayContainer(container),
-    handleMouseDown: (x: number, y: number, cw: number, ch: number) => manager.handleMouseDown(x, y, cw, ch),
-    handleMouseMove: (x: number, y: number) => manager.handleMouseMove(x, y),
-    handleMouseUp: () => manager.handleMouseUp(),
-    startUniformScale: (startScale: number[], objectScreenPos: number[], mousePos: number[]) => 
-      manager.startUniformScale(startScale as [number, number, number], objectScreenPos as [number, number], mousePos as [number, number]),
-    updateUniformScale: (x: number, y: number) => manager.updateUniformScale(x, y),
-    commitUniformScale: () => manager.commitUniformScale(),
-    cancelUniformScale: () => manager.cancelUniformScale(),
-    destroy: () => manager.destroy(),
-    get isDragging() { return manager.isDragging; },
-    get mode() { return manager.currentMode; },
-    get isUniformScaleActive() { return manager.isUniformScaleActive; },
-  };
 }

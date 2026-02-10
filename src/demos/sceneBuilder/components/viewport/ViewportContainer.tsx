@@ -20,7 +20,7 @@ export interface ViewportContainerProps {
   width?: number;
   height?: number;
   onFps?: (fps: number) => void;
-  onInitialized?: (viewport: Viewport, gl: WebGL2RenderingContext) => void;
+  onInitialized?: (viewport: Viewport) => void;
 }
 
 export interface ViewportContainerHandle {
@@ -149,10 +149,8 @@ export function ViewportContainer({
     }
     
     // Get GL context and notify
-    const gl = viewport.getGL();
-    if (gl && onInitialized) {
-      store.gl = gl;
-      onInitialized(viewport, gl);
+    if (onInitialized) {
+      onInitialized(viewport);
     }
     
     return () => {
@@ -178,20 +176,6 @@ export function ViewportContainer({
     scene.resetTransformTracking();
   }, []);
   
-  const updateRenderData = useCallback(() => {
-    const scene = store.scene;
-    const viewport = viewportRef.current;
-    if (!scene || !viewport) return;
-    
-    viewport.setRenderData({
-      objects: scene.getAllObjects() as any,
-      objectWindSettings: store.objectWindSettings.value,
-      objectTerrainBlendSettings: store.objectTerrainBlendSettings.value,
-      selectedIds: scene.getSelectedIds(),
-      getModelMatrix: (obj: any) => scene.getModelMatrix(obj),
-    });
-  }, []);
-  
   // Sync gizmo mode changes
   useSignalEffect(() => {
     const mode = store.gizmoMode.value;
@@ -210,19 +194,6 @@ export function ViewportContainer({
     viewportRef.current?.setViewportMode(state.mode);
     viewportRef.current?.setShowGrid(state.showGrid);
     viewportRef.current?.setShowAxes(state.showAxes);
-  });
-  
-  // Sync selection changes to update gizmo target and render data
-  useSignalEffect(() => {
-    const _ = store.selectedIds.value; // Subscribe to changes
-    updateGizmoTarget();
-    updateRenderData();
-  });
-  
-  // Sync objects changes to update render data
-  useSignalEffect(() => {
-    const _ = store.objects.value; // Subscribe to changes
-    updateRenderData();
   });
   
   // ==================== File Drop ====================

@@ -12,12 +12,10 @@ import {
   Cube,
   Plane,
   UVSphere,
-  TerrainObject,
   createPrimitive,
   createPrimitiveFromSerialized,
   isPrimitiveObject,
   isModelObject,
-  isTerrainObject,
   type PrimitiveType,
   type PrimitiveConfig,
   type PBRMaterial,
@@ -100,7 +98,6 @@ export interface SceneCallbacks {
  * Scene Manager - handles objects, selection, and grouping
  */
 export class Scene {
-  private gl: WebGL2RenderingContext;
   private sceneGraph: SceneGraph;
   
   /** Map of object ID -> SceneObject */
@@ -126,8 +123,7 @@ export class Scene {
   // Event callbacks
   private callbacks: SceneCallbacks = {};
   
-  constructor(gl: WebGL2RenderingContext, sceneGraph?: SceneGraph) {
-    this.gl = gl;
+  constructor(sceneGraph?: SceneGraph) {
     this.sceneGraph = sceneGraph ?? new SceneGraph();
   }
   
@@ -178,7 +174,7 @@ export class Scene {
     };
     
     // Create primitive using factory
-    const primitive = createPrimitive(this.gl, primitiveType, displayName, defaultConfig);
+    const primitive = createPrimitive(primitiveType, displayName, defaultConfig);
     
     // Override the auto-generated ID with our sequential ID
     (primitive as any).id = id;
@@ -242,7 +238,6 @@ export class Scene {
       
       // Create ModelObject using static factory
       const model = await ModelObject.create(
-        this.gl,
         modelPath,
         displayName,
         getModelUrl
@@ -344,47 +339,6 @@ export class Scene {
     } catch (error) {
       console.error('[Scene] Error while adding the GPU terrain', error);
       this.removeWebGPUTerrain();
-      return null;
-    }
-  }
-  
-  /**
-   * Add a terrain object to the scene (async - generates terrain)
-   */
-  async addTerrain(name?: string | null, params?: Partial<TerrainParams>): Promise<TerrainObject | null> {
-    try {
-      const id = `object-${this.nextObjectId++}`;
-      const displayName = name ?? 'Terrain';
-      
-      // Create TerrainObject
-      const terrain = new TerrainObject(displayName, params, this.gl);
-      
-      // Override the auto-generated ID
-      (terrain as any).id = id;
-      
-      // Generate terrain with default params
-      await terrain.regenerate((progress) => {
-        console.log(`[Terrain] ${progress.message} (${Math.round(progress.progress * 100)}%)`);
-      });
-      
-      // Add to internal map
-      this.objects.set(id, terrain);
-      
-      // Add to scene graph
-      const bounds = terrain.getBounds();
-      this.sceneGraph.add(id, {
-        position: [terrain.position[0], terrain.position[1], terrain.position[2]],
-        rotation: [terrain.rotation[0], terrain.rotation[1], terrain.rotation[2]],
-        scale: [terrain.scale[0], terrain.scale[1], terrain.scale[2]],
-        localBounds: bounds ?? undefined,
-        userData: { name: displayName, objectType: 'terrain' },
-      });
-      
-      this.callbacks.onObjectAdded?.(terrain);
-      
-      return terrain;
-    } catch (error) {
-      console.error('Failed to create terrain:', error);
       return null;
     }
   }
@@ -1125,13 +1079,6 @@ export class Scene {
             roughness: material.roughness,
           },
         });
-      } else if (isTerrainObject(obj)) {
-        // Use terrain's built-in serialize method
-        const terrainData = obj.serialize();
-        serializedObjects.push({
-          ...base,
-          ...terrainData,
-        });
       } else if (isModelObject(obj)) {
         serializedObjects.push({
           ...base,
@@ -1181,10 +1128,6 @@ export class Scene {
         if (obj && isPrimitiveObject(obj) && primData.material) {
           obj.setMaterial(primData.material);
         }
-      } else if (objData.type === 'terrain') {
-        // Load terrain object
-        const terrainData = objData as SerializedTerrainObject;
-        obj = await this.addTerrain(terrainData.name, terrainData.terrainParams);
       } else {
         const modelData = objData as SerializedModelObject;
         obj = await this.addObject(modelData.modelPath, modelData.name);
@@ -1273,6 +1216,6 @@ export class Scene {
  * Create a Scene instance (backward-compatible factory)
  * @deprecated Use `new Scene(gl, sceneGraph)` instead
  */
-export function createScene(gl: WebGL2RenderingContext, sceneGraph?: SceneGraph): Scene {
-  return new Scene(gl, sceneGraph);
+export function createScene(sceneGraph?: SceneGraph): Scene {
+  return new Scene(sceneGraph);
 }

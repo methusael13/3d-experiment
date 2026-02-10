@@ -6,11 +6,10 @@ import type { GeometryData, AABB, PrimitiveConfig, SerializedPrimitiveObject } f
  */
 export class UVSphere extends PrimitiveObject {
   constructor(
-    gl: WebGL2RenderingContext,
     name?: string,
     config: PrimitiveConfig = {}
   ) {
-    super(gl, name ?? 'UV Sphere', config);
+    super(name ?? 'UV Sphere', config);
   }
   
   get primitiveType(): string {
@@ -105,8 +104,8 @@ export class UVSphere extends PrimitiveObject {
   /**
    * Create a duplicate of this sphere
    */
-  clone(gl: WebGL2RenderingContext): UVSphere {
-    const cloned = new UVSphere(gl, `${this.name} (copy)`, this._primitiveConfig);
+  clone(): UVSphere {
+    const cloned = new UVSphere(`${this.name} (copy)`, this._primitiveConfig);
     cloned.copyTransformFrom(this);
     cloned.setMaterial(this.getMaterial());
     cloned.position[0] += 0.5;
@@ -117,8 +116,8 @@ export class UVSphere extends PrimitiveObject {
   /**
    * Create from serialized data
    */
-  static fromSerialized(gl: WebGL2RenderingContext, data: SerializedPrimitiveObject): UVSphere {
-    const sphere = new UVSphere(gl, data.name, data.primitiveConfig);
+  static fromSerialized(data: SerializedPrimitiveObject): UVSphere {
+    const sphere = new UVSphere(data.name, data.primitiveConfig);
     sphere.deserialize(data);
     return sphere;
   }

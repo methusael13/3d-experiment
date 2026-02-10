@@ -10,8 +10,7 @@ import type { LightingManager } from '../../lightingManager';
 import type { WindManager, ObjectWindSettings } from '../../wind';
 import type { GizmoMode, GizmoOrientation } from '../../gizmos';
 import type { Vec3 } from '../../../../core/types';
-import type { TerrainBlendSettings } from '../../componentPanels';
-import { AnySceneObject, GPUTerrainSceneObject, ModelObject, TerrainObject, isModelObject, isPrimitiveObject } from '../../../../core/sceneObjects';
+import { AnySceneObject, ModelObject, isModelObject, isPrimitiveObject } from '../../../../core/sceneObjects';
 import { PrimitiveObject } from '../../../../core/sceneObjects/PrimitiveObject';
 import { debounce } from '@/core/utils';
 import { sceneSerializer } from '../../../../loaders';
@@ -55,7 +54,6 @@ export interface SceneBuilderStore {
   
   // Per-object settings
   objectWindSettings: Signal<Map<string, ObjectWindSettings>>;
-  objectTerrainBlendSettings: Signal<Map<string, TerrainBlendSettings>>;
   
   // Computed
   selectedObjects: Signal<AnySceneObject[]>;
@@ -67,10 +65,8 @@ export interface SceneBuilderStore {
   viewport: Viewport | null;
   lightingManager: LightingManager | null;
   windManager: WindManager | null;
-  gl: WebGL2RenderingContext | null;
   
   // Terrain references (WebGL vs WebGPU mode)
-  terrainObject: TerrainObject | null;
   isWebGPU: Signal<boolean>;
   
   // Actions
@@ -111,8 +107,7 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   const gizmoOrientation = signal<GizmoOrientation>('world');
   
   const objectWindSettings = signal<Map<string, ObjectWindSettings>>(new Map());
-  const objectTerrainBlendSettings = signal<Map<string, TerrainBlendSettings>>(new Map());
-  const isWebGPU = signal<boolean>(false);
+  const isWebGPU = signal<boolean>(true);
   const sceneBoundsVersion = signal<number>(0);
   const transformVersion = signal<number>(0);  // Incremented when object transforms change
   
@@ -161,9 +156,6 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   let viewport: Viewport | null = null;
   let lightingManager: LightingManager | null = null;
   let windManager: WindManager | null = null;
-  let gl: WebGL2RenderingContext | null = null;
-  let terrainObject: TerrainObject | null = null;
-  let gpuTerrainObject: GPUTerrainSceneObject | null = null;
   
   // ==================== Actions ====================
   
@@ -194,14 +186,6 @@ export function createSceneBuilderStore(): SceneBuilderStore {
       
       // Increment transform version to force computed values to re-run
       transformVersion.value++;
-
-      viewport?.setRenderData({
-        objects: allObjects as any,
-        objectWindSettings: objectWindSettings.value,
-        objectTerrainBlendSettings: objectTerrainBlendSettings.value,
-        selectedIds: selectedIdsList,
-        getModelMatrix: (obj: any) => scene!.getModelMatrix(obj)
-      });
     });
   }
 
@@ -388,7 +372,6 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     gizmoMode,
     gizmoOrientation,
     objectWindSettings,
-    objectTerrainBlendSettings,
     isWebGPU,
     sceneBoundsVersion,
     transformVersion,
@@ -407,10 +390,6 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     set lightingManager(l) { lightingManager = l; },
     get windManager() { return windManager; },
     set windManager(w) { windManager = w; },
-    get gl() { return gl; },
-    set gl(g) { gl = g; },
-    get terrainObject() { return terrainObject; },
-    set terrainObject(t) { terrainObject = t; },
     
     // Actions
     syncFromScene,

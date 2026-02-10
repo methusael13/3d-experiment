@@ -4,23 +4,6 @@ import { createAnimationLoop, AnimationLoop } from '../../core/animationLoop';
 import { GPUContext } from '../../core/gpu/GPUContext';
 import { GPUCamera, GPUForwardPipeline, type RenderOptions as GPURenderOptions } from '../../core/gpu/pipeline/GPUForwardPipeline';
 import type { TerrainManager } from '../../core/terrain/TerrainManager';
-import {
-  createGridRenderer,
-  createOriginMarkerRenderer,
-  createSkyRenderer,
-  createShadowRenderer,
-  createDepthPrePassRenderer,
-  GridRenderer,
-  OriginMarkerRenderer,
-  SkyRenderer,
-  ShadowRenderer,
-  DepthPrePassRenderer,
-  ContactShadowRenderer,
-  type ContactShadowSettings,
-  ForwardPipeline,
-  type RenderObject,
-  type PipelineCamera,
-} from '../../core/renderers';
 import { TransformGizmoManager, GizmoMode } from './gizmos';
 import type { GizmoOrientation } from './gizmos/BaseGizmo';
 import { CameraController, type CameraState } from './CameraController';
@@ -30,15 +13,12 @@ import type { SceneLightingParams } from '../../core/sceneObjects/lights';
 import type {
   WindParams,
   ObjectWindSettings,
-  TerrainBlendParams,
   IRenderer,
 } from '../../core/sceneObjects/types';
-import { isTerrainObject, type TerrainObject } from '../../core/sceneObjects';
 import type { FPSCameraController } from './FPSCameraController';
-import { WebGPUShadowSettings } from './componentPanels/RenderingPanel';
+import { WebGPUShadowSettings } from './components/panels/RenderingPanel';
 import type { SSAOSettings } from './components/panels/RenderingPanel';
 import type { CompositeEffectConfig } from '../../core/gpu/postprocess';
-import { WaterParams } from './components';
 import type { Scene } from '../../core/Scene';
 
 // ==================== Type Definitions ====================
@@ -132,20 +112,6 @@ export class Viewport {
   private readonly renderHeight: number;
   private readonly dpr: number;
 
-  // WebGL context
-  private gl: WebGL2RenderingContext | null = null;
-
-  // Renderers (GPU resources)
-  private gridRenderer: GridRenderer | null = null;
-  private originMarkerRenderer: OriginMarkerRenderer | null = null;
-  private skyRenderer: SkyRenderer | null = null;
-  private shadowRenderer: ShadowRenderer | null = null;
-  private depthPrePassRenderer: DepthPrePassRenderer | null = null;
-  private contactShadowRenderer: ContactShadowRenderer | null = null;
-  
-  // Render pipeline (manages all passes)
-  private pipeline: ForwardPipeline | null = null;
-
   // Transform gizmo
   private transformGizmo: TransformGizmoManager | null = null;
 
@@ -167,15 +133,6 @@ export class Viewport {
   // Scene reference (for WebGPU pipeline rendering)
   private scene: Scene | null = null;
 
-  // Render data (reference from controller)
-  private renderData: RenderData = {
-    objects: [],
-    objectWindSettings: new Map(),
-    objectTerrainBlendSettings: new Map(),
-    selectedIds: new Set(),
-    getModelMatrix: () => null,
-  };
-
   // Light params (reference from LightingManager via controller)
   private lightParams: SceneLightingParams | null = null;
 
@@ -188,23 +145,8 @@ export class Viewport {
     turbulence: 0.5,
   };
 
-  // GPU Resources (owned by viewport)
-  private hdrTexture: WebGLTexture | null = null;
-  private hdrMaxMipLevel = 6.0;
-  private shadowResolution = 2048;
-
-  private shadowEnabled = true;
-  private contactShadowSettings: ContactShadowSettings = {
-    enabled: true,
-    maxDistance: 1.0,
-    thickness: 0.1,
-    steps: 16,
-    intensity: 0.8,
-  };
-
   // Pure view settings (not duplicated elsewhere)
   private viewportMode: 'solid' | 'wireframe' = 'solid';
-  private showShadowThumbnail = false;
   private showGrid = true;
   private showAxes = true;
 
@@ -214,12 +156,9 @@ export class Viewport {
   // FPS Camera mode
   private fpsMode = false;
   private fpsController: FPSCameraController | null = null;
-  
-  // WebGPU Test Mode
-  private webgpuTestMode = false;
+
   private gpuContext: GPUContext | null = null;
   private gpuPipeline: GPUForwardPipeline | null = null;
-  private webgpuCanvas: HTMLCanvasElement | null = null;
   
   // Dynamic IBL (Image-Based Lighting) setting for WebGPU mode
   private dynamicIBLEnabled = true;  // Enabled by default
@@ -271,11 +210,37 @@ export class Viewport {
     this.canvas.style.width = this.logicalWidth + 'px';
     this.canvas.style.height = this.logicalHeight + 'px';
 
-    if (!this.initGL()) return false;
+    this.initWebGPU();
     this.initCamera();
     this.initGizmo();
     this.startRendering();
     return true;
+  }
+
+
+  /**
+   * Enable WebGPU test mode - renders a simple triangle using WebGPU
+   * This is for testing the WebGPU pipeline before full migration
+   */
+  async initWebGPU(): Promise<boolean> {
+    try {
+      console.log('[Viewport] Enabling WebGPU');
+
+      // Initialize WebGPU context on the separate canvas
+      this.gpuContext = await GPUContext.getInstance(this.canvas);
+      console.log('[Viewport] WebGPU context initialized');
+      
+      // Create full WebGPU forward pipeline with grid and sky
+      this.gpuPipeline = new GPUForwardPipeline(this.gpuContext, {
+        width: this.renderWidth,
+        height: this.renderHeight,
+      });
+      console.log('[Viewport] WebGPU Forward Pipeline created');
+      return true;
+    } catch (error) {
+      console.error('[Viewport] ❌ Failed to enable WebGPU test mode:', error);
+      return false;
+    }
   }
 
   /**
@@ -286,59 +251,11 @@ export class Viewport {
     this.animationLoop = null;
 
     // Pipeline handles cleanup of its own passes
-    this.pipeline?.destroy();
-    this.pipeline = null;
-    
-    this.gridRenderer = null;
-    this.originMarkerRenderer = null;
-    this.skyRenderer = null;
-    this.shadowRenderer = null;
-    this.depthPrePassRenderer = null;
-    this.contactShadowRenderer = null;
+    this.gpuPipeline?.destroy();
+    this.gpuPipeline = null;
 
     this.transformGizmo?.destroy();
     this.transformGizmo = null;
-
-    if (this.hdrTexture && this.gl) {
-      this.gl.deleteTexture(this.hdrTexture);
-      this.hdrTexture = null;
-    }
-  }
-
-  // ==================== GL Initialization ====================
-
-  private initGL(): boolean {
-    this.gl = this.canvas.getContext('webgl2', { antialias: true });
-    if (!this.gl) {
-      console.error('WebGL 2 not supported');
-      return false;
-    }
-
-    const gl = this.gl;
-    gl.enable(gl.DEPTH_TEST);
-    gl.enable(gl.CULL_FACE);
-    gl.clearColor(0.15, 0.17, 0.22, 1.0);
-
-    this.gridRenderer = createGridRenderer(gl);
-    this.originMarkerRenderer = createOriginMarkerRenderer(gl);
-    this.skyRenderer = createSkyRenderer(gl);
-    this.shadowRenderer = createShadowRenderer(gl, this.shadowResolution);
-    this.depthPrePassRenderer = createDepthPrePassRenderer(gl, this.renderWidth, this.renderHeight);
-    this.contactShadowRenderer = new ContactShadowRenderer(gl, this.contactShadowSettings);
-    this.contactShadowRenderer.resize(this.renderWidth, this.renderHeight);
-    
-    // Initialize ForwardPipeline
-    this.pipeline = new ForwardPipeline(gl, {
-      width: this.renderWidth,
-      height: this.renderHeight,
-      shadowRenderer: this.shadowRenderer!,
-      depthPrePassRenderer: this.depthPrePassRenderer!,
-      skyRenderer: this.skyRenderer!,
-      gridRenderer: this.gridRenderer!,
-      originMarkerRenderer: this.originMarkerRenderer!,
-    });
-
-    return true;
   }
 
   // ==================== Camera ====================
@@ -391,9 +308,10 @@ export class Viewport {
   // ==================== Gizmo ====================
 
   private initGizmo(): void {
-    if (!this.gl || !this.cameraController) return;
+    if (!this.gpuContext || !this.cameraController) return;
 
-    this.transformGizmo = new TransformGizmoManager(this.gl, this.cameraController.getCamera() as any);
+    this.transformGizmo = new TransformGizmoManager(this.cameraController.getCamera() as any);
+    this.transformGizmo.initGPURenderer(this.gpuContext);
     this.transformGizmo.setOnChange((type, value) => {
       this.onGizmoTransform(type, value);
     });
@@ -440,244 +358,13 @@ export class Viewport {
     this.onUniformScaleCommit();
   }
 
-  // ==================== Lighting Helpers ====================
-
-  /**
-   * Get complete light params for rendering.
-   * No duplication - reads from stored lightParams reference.
-   */
-  private getCompleteLightParams(): SceneLightingParams & { cameraPos: Vec3 } {
-    const cameraPos = this.cameraController!.getCamera().getPosition();
-
-    if (!this.lightParams) {
-      // Fallback if no light params set yet
-      return {
-        type: 'directional',
-        direction: [0.5, 0.707, 0.5],
-        effectiveColor: [1, 1, 1],
-        ambient: 0.3,
-        castsShadow: true,
-        shadowEnabled: true,
-        shadowDebug: 0,
-        lightSpaceMatrix: this.shadowRenderer?.getLightSpaceMatrix() ?? undefined,
-        shadowMap: this.shadowRenderer?.getTexture() ?? undefined,
-        toneMapping: 3, // ACES
-        pointLights: [],
-        cameraPos,
-      } as any;
-    }
-
-    // Merge lightParams with viewport's GPU resources
-    return {
-      ...this.lightParams,
-      // Override shadow map/matrix from viewport's shadow renderer
-      lightSpaceMatrix: this.shadowRenderer?.getLightSpaceMatrix() ?? this.lightParams.lightSpaceMatrix,
-      shadowMap: this.shadowRenderer?.getTexture() ?? this.lightParams.shadowMap,
-      // Override HDR texture from viewport if in HDR mode
-      hdrTexture: this.lightParams.type === 'hdr' ? this.hdrTexture : undefined,
-      // Add camera position
-      cameraPos,
-    } as any;
-  }
-
-  /**
-   * Check if shadows are enabled (from local state + lightParams)
-   */
-  private isShadowEnabled(): boolean {
-    return this.shadowEnabled && (this.lightParams?.shadowEnabled ?? true);
-  }
-
-  /**
-   * Get HDR exposure from lightParams
-   */
-  private getHDRExposure(): number {
-    if (this.lightParams && this.lightParams.type === 'hdr' && 'hdrExposure' in this.lightParams) {
-      return (this.lightParams as any).hdrExposure;
-    }
-    return 1.0;
-  }
-
-  // ==================== Render Objects Helper ====================
-  
-  /**
-   * Build RenderObject array from current RenderData
-   */
-  private buildRenderObjects(): RenderObject[] {
-    return this.renderData.objects
-      .map(obj => {
-        const modelMatrix = this.renderData.getModelMatrix(obj);
-        if (!modelMatrix) return null;
-        
-        // Check if this is a terrain object
-        if (obj.objectType === 'terrain' || isTerrainObject(obj as any)) {
-          return {
-            id: obj.id,
-            modelMatrix,
-            renderer: null,
-            gpuMeshes: [],
-            isSelected: this.renderData.selectedIds.has(obj.id),
-            windSettings: null,
-            terrainBlendSettings: null,
-            showNormals: false,
-            terrain: obj as unknown as TerrainObject,
-          } as RenderObject;
-        }
-        
-        // Regular objects need a renderer
-        if (!obj.renderer) return null;
-        
-        return {
-          id: obj.id,
-          modelMatrix,
-          renderer: obj.renderer,
-          gpuMeshes: obj.renderer.gpuMeshes || [],
-          isSelected: this.renderData.selectedIds.has(obj.id),
-          windSettings: this.renderData.objectWindSettings.get(obj.id) || null,
-          terrainBlendSettings: this.renderData.objectTerrainBlendSettings.get(obj.id) || null,
-          showNormals: obj.showNormals || false,
-        } as RenderObject;
-      })
-      .filter((o): o is RenderObject => o !== null);
-  }
-  
-  /**
-   * Create a PipelineCamera adapter from CameraController or FPSController
-   */
-  private getPipelineCamera(): PipelineCamera {
-    // Use FPS camera when in FPS mode
-    if (this.fpsMode && this.fpsController) {
-      return {
-        getViewProjectionMatrix: () => this.fpsController!.getViewProjectionMatrix(),
-        getViewMatrix: () => this.fpsController!.getViewMatrix(),
-        getProjectionMatrix: () => this.fpsController!.getProjectionMatrix(),
-        getPosition: () => this.fpsController!.getPosition(),
-        near: this.fpsController!.near,
-        far: this.fpsController!.far,
-      };
-    }
-    
-    // Default to orbit camera
-    const camera = this.cameraController!.getCamera();
-    return {
-      getViewProjectionMatrix: () => camera.getViewProjectionMatrix(),
-      getViewMatrix: () => camera.getViewMatrix(),
-      getProjectionMatrix: () => camera.getProjectionMatrix(),
-      getPosition: () => camera.getPosition(),
-      near: camera.near,
-      far: camera.far,
-    };
-  }
-
-  // ==================== WebGPU Test Mode ====================
-  
-  /**
-   * Create a WebGPU canvas overlaid on the WebGL2 canvas
-   */
-  private createWebGPUCanvas(): HTMLCanvasElement {
-    // Create a new canvas for WebGPU
-    const canvas = document.createElement('canvas');
-    canvas.id = 'webgpu-canvas';
-    canvas.width = this.renderWidth;
-    canvas.height = this.renderHeight;
-    canvas.style.width = this.logicalWidth + 'px';
-    canvas.style.height = this.logicalHeight + 'px';
-    canvas.style.position = 'absolute';
-    canvas.style.top = '0';
-    canvas.style.left = '0';
-    canvas.style.pointerEvents = 'auto'; // Enable mouse events for camera control
-    canvas.style.display = 'none'; // Hidden initially
-    
-    // Insert after the WebGL canvas
-    this.canvas.parentElement?.appendChild(canvas);
-    
-    return canvas;
-  }
-  
-  /**
-   * Enable WebGPU test mode - renders a simple triangle using WebGPU
-   * This is for testing the WebGPU pipeline before full migration
-   */
-  async enableWebGPUTest(): Promise<boolean> {
-    try {
-      console.log('[Viewport] Enabling WebGPU test mode...');
-      
-      // Create separate WebGPU canvas if not already created
-      if (!this.webgpuCanvas) {
-        this.webgpuCanvas = this.createWebGPUCanvas();
-        console.log('[Viewport] Created WebGPU canvas');
-      }
-      
-      // Initialize WebGPU context on the separate canvas
-      this.gpuContext = await GPUContext.getInstance(this.webgpuCanvas);
-      console.log('[Viewport] WebGPU context initialized');
-      
-      // Create full WebGPU forward pipeline with grid and sky
-      this.gpuPipeline = new GPUForwardPipeline(this.gpuContext, {
-        width: this.renderWidth,
-        height: this.renderHeight,
-      });
-      console.log('[Viewport] WebGPU Forward Pipeline created');
-      
-      // Initialize WebGPU gizmo renderer on TransformGizmoManager
-      if (this.transformGizmo && this.gpuContext) {
-        this.transformGizmo.initGPURenderer(this.gpuContext);
-        console.log('[Viewport] WebGPU gizmo renderer initialized');
-      }
-      
-      // Show WebGPU canvas, hide WebGL canvas
-      this.webgpuCanvas.style.display = 'block';
-      this.canvas.style.visibility = 'hidden';
-      
-      // Attach InputManager to WebGPU canvas for camera control
-      if (this.inputManager) {
-        this.inputManager.attachToCanvas(this.webgpuCanvas);
-      }
-      
-      this.webgpuTestMode = true;
-      console.log('[Viewport] ✅ WebGPU test mode enabled');
-      return true;
-    } catch (error) {
-      console.error('[Viewport] ❌ Failed to enable WebGPU test mode:', error);
-      this.webgpuTestMode = false;
-      
-      // Restore WebGL canvas on failure
-      if (this.webgpuCanvas) {
-        this.webgpuCanvas.style.display = 'none';
-      }
-      this.canvas.style.visibility = 'visible';
-      
-      return false;
-    }
-  }
-  
-  /**
-   * Disable WebGPU test mode and return to WebGL2 rendering
-   */
-  disableWebGPUTest(): void {
-    this.webgpuTestMode = false;
-    this.gpuPipeline?.destroy();
-    this.gpuPipeline = null;
-    
-    // Hide WebGPU canvas, show WebGL canvas
-    if (this.webgpuCanvas) {
-      this.webgpuCanvas.style.display = 'none';
-    }
-    this.canvas.style.visibility = 'visible';
-    
-    // Re-attach InputManager to WebGL canvas
-    if (this.inputManager) {
-      this.inputManager.attachToCanvas(this.canvas);
-    }
-    
-    console.log('[Viewport] WebGPU test mode disabled');
-  }
-
+  // ==================== WebGPU Mode ====================
   
   /**
    * Check if WebGPU test mode is active
    */
   isWebGPUTestMode(): boolean {
-    return this.webgpuTestMode;
+    return true;
   }
   
   /**
@@ -741,7 +428,7 @@ export class Viewport {
   /**
    * Render using WebGPU (full pipeline with grid/sky)
    */
-  private renderWebGPUTest(): void {
+  private renderWebGPU(): void {
     if (!this.gpuContext || !this.gpuPipeline || !this.cameraController) return;
     
     // Create camera adapter for WebGPU pipeline (use FPS camera if active)
@@ -856,63 +543,6 @@ export class Viewport {
       this.render(deltaTime);
     });
   }
-  
-  /**
-   * Pipeline-based render method
-   */
-  private renderWithPipeline(dt: number): void {
-    if (!this.pipeline || !this.cameraController) return;
-    
-    // Build render objects from RenderData
-    const objects = this.buildRenderObjects();
-    
-    // Get pipeline camera adapter
-    const camera = this.getPipelineCamera();
-    
-    // Get complete light params
-    const lightParams = this.getCompleteLightParams();
-    
-    // Update pipeline context
-    this.pipeline.updateContext(camera, lightParams, this.windParams, dt);
-    this.pipeline.setOriginPosition(this.cameraController.getOriginPosition() as Vec3);
-    
-    // Update pipeline settings
-    this.pipeline.updateSettings({
-      shadowEnabled: this.isShadowEnabled(),
-      contactShadowEnabled: this.contactShadowSettings.enabled,
-      contactShadowSettings: this.contactShadowSettings,
-      wireframeMode: this.viewportMode === 'wireframe',
-      showGrid: this.showGrid,
-      showAxes: this.showAxes,
-      fpsMode: this.fpsMode
-    });
-    
-    // Set HDR texture if in HDR mode
-    if (this.lightParams?.type === 'hdr' && this.hdrTexture) {
-      this.pipeline.setTexture('hdr', this.hdrTexture);
-    }
-    
-    // Render through pipeline
-    this.pipeline.render(objects);
-    
-    // Gizmo (skip in FPS mode)
-    if (!this.fpsMode) {
-      this.transformGizmo?.render(this.cameraController.getViewProjectionMatrix());
-    }
-    
-    // Shadow debug thumbnail (rendered after pipeline)
-    const shadowEnabled = this.isShadowEnabled();
-    const isDirectionalMode = !this.lightParams || this.lightParams.type === 'directional';
-    if (this.showShadowThumbnail && shadowEnabled && isDirectionalMode && this.shadowRenderer) {
-      this.shadowRenderer.renderDebugThumbnail(
-        10 * this.dpr,
-        10 * this.dpr,
-        150 * this.dpr,
-        this.renderWidth,
-        this.renderHeight
-      );
-    }
-  }
 
   private render(deltaTime: number): void {
     const dt = deltaTime / 1000;
@@ -922,20 +552,7 @@ export class Viewport {
       this.fpsController.update(dt);
     }
     
-    // WebGPU test mode - bypass WebGL2 entirely
-    if (this.webgpuTestMode) {
-      this.renderWebGPUTest();
-      return;
-    }
-    
-    if (!this.gl || !this.cameraController) return;
-    
-    // Let controller update wind physics
-    this.onUpdate(dt);
-
-    // Update wind time
-    this.windParams.time += dt;
-    this.renderWithPipeline(dt);
+    this.renderWebGPU();
   }
 
   // ==================== Public API ====================
@@ -951,16 +568,6 @@ export class Viewport {
   
   setScene(scene: Scene): void {
     this.scene = scene;
-  }
-
-  setRenderData(data: Partial<RenderData>): void {
-    this.renderData = {
-      objects: data.objects || [],
-      objectWindSettings: data.objectWindSettings || new Map(),
-      objectTerrainBlendSettings: data.objectTerrainBlendSettings || new Map(),
-      selectedIds: data.selectedIds || new Set(),
-      getModelMatrix: data.getModelMatrix || (() => null),
-    };
   }
 
   // ==================== Gizmo Control ====================
@@ -1047,55 +654,12 @@ export class Viewport {
     this.windParams.time = currentTime;
   }
 
-  setShowShadowThumbnail(show: boolean): void {
-    this.showShadowThumbnail = show;
-    // Also update WebGPU pipeline if active
-    if (this.gpuPipeline) {
-      this.gpuPipeline.setShowShadowThumbnail(show);
-    }
-  }
-
   setShowGrid(show: boolean): void {
     this.showGrid = show;
   }
 
   setShowAxes(show: boolean): void {
     this.showAxes = show;
-  }
-
-  setShadowResolution(res: number): void {
-    this.shadowResolution = res;
-    this.shadowRenderer?.setResolution(res);
-  }
-
-  setShadowEnabled(enabled: boolean): void {
-    this.shadowEnabled = enabled;
-  }
-
-  setContactShadowSettings(settings: ContactShadowSettings): void {
-    this.contactShadowSettings = { ...settings };
-    this.contactShadowRenderer?.setSettings(settings);
-  }
-
-  getContactShadowSettings(): ContactShadowSettings {
-    return { ...this.contactShadowSettings };
-  }
-
-  setHDRTexture(texture: WebGLTexture | null, maxMipLevel = 6): void {
-    if (this.hdrTexture && this.gl) {
-      this.gl.deleteTexture(this.hdrTexture);
-    }
-    this.hdrTexture = texture;
-    this.hdrMaxMipLevel = maxMipLevel;
-  }
-
-  /**
-   * @deprecated Use setLightParams instead
-   */
-  setLightingState(state: { shadowResolution?: number }): void {
-    if (state.shadowResolution) {
-      this.setShadowResolution(state.shadowResolution);
-    }
   }
 
   // ==================== Uniform Scale ====================
@@ -1162,10 +726,6 @@ export class Viewport {
   getLastMousePos(): Vec2 {
     return [...this.lastMousePos];
   }
-
-  getGL(): WebGL2RenderingContext | null {
-    return this.gl;
-  }
   
   getInputManager(): InputManager | null {
     return this.inputManager;
@@ -1196,12 +756,7 @@ export class Viewport {
     this.canvas.height = renderHeight;
     this.canvas.style.width = width + 'px';
     this.canvas.style.height = height + 'px';
-    
-    // Update WebGL viewport
-    if (this.gl) {
-      this.gl.viewport(0, 0, renderWidth, renderHeight);
-    }
-    
+
     // Update camera projection by rebuilding it with new aspect ratio
     if (this.cameraController) {
       const camera = this.cameraController.getCamera();
@@ -1209,24 +764,11 @@ export class Viewport {
       camera.setAspectRatio(width, height);
     }
     
-    // Update renderers that need dimensions
-    this.depthPrePassRenderer?.resize(renderWidth, renderHeight);
-    this.contactShadowRenderer?.resize(renderWidth, renderHeight);
-    this.pipeline?.resize(renderWidth, renderHeight);
-    
     // Update gizmo canvas size
     if (this.transformGizmo) {
       this.transformGizmo.setCanvasSize(width, height);
     }
-    
-    // Update WebGPU canvas if active
-    if (this.webgpuCanvas) {
-      this.webgpuCanvas.width = renderWidth;
-      this.webgpuCanvas.height = renderHeight;
-      this.webgpuCanvas.style.width = width + 'px';
-      this.webgpuCanvas.style.height = height + 'px';
-    }
-    
+
     // Update WebGPU pipeline
     if (this.gpuPipeline) {
       this.gpuPipeline.resize(renderWidth, renderHeight);

@@ -25,7 +25,7 @@ import { ObjectRendererGPU } from '../renderers/ObjectRendererGPU';
 import { ShadowRendererGPU, DebugTextureManager } from '../renderers';
 import { SceneEnvironment, type IBLResources } from '../renderers/shared';
 import { DynamicSkyIBL, type IBLTextures } from '../ibl';
-import { WebGPUShadowSettings } from '@/demos/sceneBuilder/componentPanels/RenderingPanel';
+import { WebGPUShadowSettings } from '@/demos/sceneBuilder/components/panels/RenderingPanel';
 import { 
   PostProcessPipeline, 
   SSAOEffect, 
@@ -149,7 +149,6 @@ export class GPUForwardPipeline {
   private shadowEnabled = true;
   private shadowSoftShadows = true;
   private shadowRadius = 200;
-  private showShadowThumbnail = false;
   
   // Animation time
   private time = 0;
@@ -261,14 +260,6 @@ export class GPUForwardPipeline {
       this.shadowRenderer.setResolution(config.resolution);
     }
   }
-  
-  /**
-   * Show/hide shadow map debug thumbnail
-   */
-  setShowShadowThumbnail(show: boolean): void {
-    this.showShadowThumbnail = show;
-  }
-  
   
   /**
    * Create depth texture copy for shader sampling
@@ -459,7 +450,6 @@ export class GPUForwardPipeline {
       shadowEnabled: this.shadowEnabled,
       shadowSoftShadows: this.shadowSoftShadows,
       shadowRadius: this.shadowRadius,
-      showShadowThumbnail: this.showShadowThumbnail,
       ...options,
     };
     
