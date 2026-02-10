@@ -398,9 +398,29 @@ export function VegetationContent({ registry }: VegetationContentProps) {
   const stats = registry.getStats();
   
   return (
-    <div class={styles.container}>
-      {/* Global Config Section */}
-      <Section title="Global Settings" defaultCollapsed={true}>
+    <div class={styles.content}>
+      {/* Biome Tabs */}
+      <div class={styles.biomeTabs}>
+        {BIOME_TABS.map(tab => (
+          <button
+            key={tab.channel}
+            class={`${styles.biomeTab} ${selectedBiome === tab.channel ? styles.active : ''}`}
+            onClick={() => setSelectedBiome(tab.channel)}
+            style={{ '--tab-color': tab.color } as any}
+          >
+            <span class={styles.tabIndicator} />
+            {tab.name}
+            <span class={styles.tabCount}>
+              ({stats.plantsByBiome[tab.channel]})
+            </span>
+          </button>
+        ))}
+      </div>
+      
+      {/* Scrollable Controls Area */}
+      <div class={styles.controls}>
+        {/* Global Config Section */}
+        <Section title="Global Settings" defaultCollapsed={true}>
         <div class={styles.globalConfig}>
           <div class={styles.configRow}>
             <label>
@@ -478,25 +498,7 @@ export function VegetationContent({ registry }: VegetationContentProps) {
         </div>
       </Section>
       
-      {/* Biome Tabs */}
-      <div class={styles.biomeTabs}>
-        {BIOME_TABS.map(tab => (
-          <button
-            key={tab.channel}
-            class={`${styles.biomeTab} ${selectedBiome === tab.channel ? styles.active : ''}`}
-            onClick={() => setSelectedBiome(tab.channel)}
-            style={{ '--tab-color': tab.color } as any}
-          >
-            <span class={styles.tabIndicator} />
-            {tab.name}
-            <span class={styles.tabCount}>
-              ({stats.plantsByBiome[tab.channel]})
-            </span>
-          </button>
-        ))}
-      </div>
-      
-      {/* Plant List */}
+        {/* Plant List */}
       <div class={styles.plantList}>
         {plants.length === 0 ? (
           <div class={styles.emptyState}>
@@ -518,12 +520,13 @@ export function VegetationContent({ registry }: VegetationContentProps) {
         )}
       </div>
       
-      {/* Add Plant Button */}
-      {plants.length > 0 && (
-        <button class={styles.addButton} onClick={handleAddPlant}>
-          <AddIcon /> Add Plant Type
-        </button>
-      )}
+        {/* Add Plant Button */}
+        {plants.length > 0 && (
+          <button class={styles.addButton} onClick={handleAddPlant}>
+            <AddIcon /> Add Plant Type
+          </button>
+        )}
+      </div>
       
       {/* Atlas Picker Modal */}
       <AssetPickerModal

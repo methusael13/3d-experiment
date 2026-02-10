@@ -1,92 +1,32 @@
 /**
- * VegetationContent Styles
+ * VegetationContent styles - Matches BiomeMaskContent styling
  */
 
-.container {
+.content {
   display: flex;
   flex-direction: column;
   height: 100%;
+  background: var(--panel-bg, #1e1e1e);
+  color: var(--panel-text, #ccc);
+  font-size: 12px;
   overflow: hidden;
-}
-
-/* Global Config */
-.globalConfig {
-  padding: 8px 0;
-}
-
-.configRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.configRow label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-color, #cccccc);
-  font-size: 12px;
-  min-width: 100px;
-}
-
-.configRow input[type="range"] {
-  flex: 1;
-  height: 4px;
-  cursor: pointer;
-}
-
-.configRow input[type="checkbox"] {
-  cursor: pointer;
-}
-
-.configRow span {
-  min-width: 40px;
-  text-align: right;
-  font-size: 11px;
-  color: var(--text-muted, #808080);
-}
-
-.statsRow {
-  display: flex;
-  gap: 16px;
-  padding: 8px 0;
-  border-top: 1px solid var(--border-color, #3c3c3c);
-  margin-top: 8px;
-  color: var(--text-muted, #808080);
-  font-size: 11px;
-}
-
-.presetButton {
-  margin-top: 8px;
-  padding: 6px 12px;
-  background: transparent;
-  border: 1px solid var(--border-color, #3c3c3c);
-  color: var(--text-color, #cccccc);
-  font-size: 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  width: 100%;
-}
-
-.presetButton:hover {
-  background: var(--hover-bg, #2a2a2a);
 }
 
 /* Biome Tabs */
 .biomeTabs {
   display: flex;
-  border-bottom: 1px solid var(--border-color, #3c3c3c);
   flex-shrink: 0;
+  border-bottom: 1px solid var(--border-color, #333);
+  background: var(--section-bg, #252525);
 }
 
 .biomeTab {
   flex: 1;
-  padding: 8px 12px;
+  padding: 8px 10px;
   background: transparent;
   border: none;
-  color: var(--text-muted, #808080);
-  font-size: 12px;
+  color: var(--panel-text-dim, #888);
+  font-size: 11px;
   cursor: pointer;
   position: relative;
   display: flex;
@@ -97,16 +37,17 @@
 }
 
 .biomeTab:hover {
-  background: var(--hover-bg, #2a2a2a);
-  color: var(--text-color, #cccccc);
+  background: var(--section-hover, #2a2a2a);
+  color: var(--panel-text, #ccc);
 }
 
 .biomeTab.active {
-  color: var(--text-color, #cccccc);
+  color: var(--panel-text-bright, #ddd);
+  background: var(--panel-bg, #1e1e1e);
 }
 
 .biomeTab.active .tabIndicator {
-  background: var(--tab-color, #4caf50);
+  background: var(--tab-color, #4a7);
 }
 
 .tabIndicator {
@@ -120,15 +61,149 @@
 }
 
 .tabCount {
-  color: var(--text-muted, #808080);
+  color: var(--panel-text-dim, #888);
   font-size: 10px;
+}
+
+/* Controls Area - Scrollable */
+.controls {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Global Config */
+.globalConfig {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.configRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.configRow label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--panel-text, #ccc);
+  font-size: 11px;
+  min-width: 100px;
+}
+
+.configRow input[type="range"] {
+  flex: 1;
+  height: 4px;
+  cursor: pointer;
+}
+
+.configRow input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--accent-color, #4a7);
+}
+
+.configRow span {
+  min-width: 36px;
+  text-align: right;
+  font-size: 10px;
+  color: var(--panel-text-dim, #888);
+}
+
+.statsRow {
+  display: flex;
+  gap: 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border-color, #333);
+  margin-top: 4px;
+  color: var(--panel-text-dim, #888);
+  font-size: 10px;
+}
+
+.presetButton {
+  margin-top: 4px;
+  padding: 6px 10px;
+  background: var(--section-bg, #252525);
+  border: 1px solid var(--border-color, #333);
+  color: var(--panel-text, #ccc);
+  font-size: 11px;
+  border-radius: 4px;
+  cursor: pointer;
+  width: 100%;
+  transition: background 0.15s ease;
+}
+
+.presetButton:hover {
+  background: var(--section-hover, #2a2a2a);
+}
+
+/* Sections */
+.section {
+  background: var(--section-bg, #252525);
+  border-radius: 4px;
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sectionHeader:hover {
+  background: var(--section-hover, #2a2a2a);
+}
+
+.sectionTitleGroup {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sectionColorDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.sectionTitle {
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--panel-text-bright, #ddd);
+}
+
+.expandIcon {
+  font-size: 9px;
+  color: var(--panel-text-dim, #888);
+  display: flex;
+  align-items: center;
+}
+
+.sectionContent {
+  padding: 6px 8px;
+  padding-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 /* Plant List */
 .plantList {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .emptyState {
@@ -136,76 +211,70 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 32px 16px;
+  padding: 24px 12px;
   text-align: center;
-  color: var(--text-muted, #808080);
+  color: var(--panel-text-dim, #888);
 }
 
 .emptyState p {
-  margin: 0 0 12px;
-  font-size: 12px;
+  margin: 0 0 10px;
+  font-size: 11px;
 }
 
 .emptyState button {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
-  background: var(--accent-color, #0078d4);
+  padding: 6px 14px;
+  background: var(--accent-color, #4a7);
   border: none;
-  color: white;
+  color: #fff;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  transition: background 0.15s ease;
 }
 
 .emptyState button:hover {
-  background: var(--accent-hover, #1a8deb);
+  background: var(--accent-hover, #5b8);
 }
 
 /* Plant Item */
 .plantItem {
-  border: 1px solid var(--border-color, #3c3c3c);
+  background: var(--section-bg, #252525);
   border-radius: 4px;
-  margin-bottom: 8px;
-  background: var(--panel-bg, #1e1e1e);
 }
 
 .plantHeader {
   display: flex;
   align-items: center;
-  padding: 8px 12px;
+  padding: 6px 8px;
   cursor: pointer;
   transition: background 0.15s ease;
 }
 
 .plantHeader:hover {
-  background: var(--hover-bg, #2a2a2a);
-}
-
-.expandIcon {
-  display: flex;
-  align-items: center;
-  margin-right: 8px;
-  color: var(--text-muted, #808080);
+  background: var(--section-hover, #2a2a2a);
 }
 
 .plantColorSwatch {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 2px;
   margin-right: 8px;
 }
 
 .plantName {
   flex: 1;
-  font-size: 12px;
-  color: var(--text-color, #cccccc);
+  font-size: 11px;
+  color: var(--panel-text-bright, #ddd);
+  font-weight: 500;
 }
 
 .plantActions {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   opacity: 0;
   transition: opacity 0.15s ease;
 }
@@ -217,82 +286,85 @@
 .iconButton {
   background: transparent;
   border: none;
-  color: var(--text-muted, #808080);
+  color: var(--panel-text-dim, #888);
   cursor: pointer;
   padding: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 .iconButton:hover {
-  background: var(--hover-bg, #3a3a3a);
-  color: var(--text-color, #cccccc);
+  background: var(--section-hover, #333);
+  color: var(--panel-text, #ccc);
 }
 
 /* Plant Properties */
 .plantProperties {
-  padding: 12px;
-  border-top: 1px solid var(--border-color, #3c3c3c);
-  background: rgba(0, 0, 0, 0.2);
+  padding: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-color, #333);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .propertyRow {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
 }
 
 .propertyRow label {
-  min-width: 110px;
-  color: var(--text-muted, #808080);
-  font-size: 11px;
+  min-width: 100px;
+  color: var(--panel-text-dim, #888);
+  font-size: 10px;
 }
 
 .propertyRow input[type="text"],
 .propertyRow input[type="number"] {
   flex: 1;
-  padding: 4px 8px;
-  background: var(--input-bg, #2a2a2a);
-  border: 1px solid var(--border-color, #3c3c3c);
-  border-radius: 4px;
-  color: var(--text-color, #cccccc);
-  font-size: 11px;
+  padding: 4px 6px;
+  background: var(--panel-bg, #1e1e1e);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 3px;
+  color: var(--panel-text, #ccc);
+  font-size: 10px;
 }
 
 .propertyRow input[type="range"] {
   flex: 1;
   height: 4px;
   cursor: pointer;
+  accent-color: var(--accent-color, #4a7);
 }
 
 .propertyRow input[type="color"] {
-  width: 40px;
-  height: 24px;
+  width: 32px;
+  height: 20px;
   padding: 0;
-  border: 1px solid var(--border-color, #3c3c3c);
-  border-radius: 4px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 3px;
   cursor: pointer;
 }
 
 .propertyValue {
-  min-width: 40px;
+  min-width: 36px;
   text-align: right;
   font-size: 10px;
-  color: var(--text-muted, #808080);
+  color: var(--panel-text-dim, #888);
 }
 
 .propertyGroup {
-  margin-bottom: 12px;
+  margin-bottom: 4px;
 }
 
 .propertyGroup > label {
   display: block;
-  color: var(--text-muted, #808080);
-  font-size: 11px;
-  margin-bottom: 6px;
+  color: var(--panel-text-dim, #888);
+  font-size: 10px;
+  margin-bottom: 4px;
 }
 
 .sizeInputs {
@@ -308,16 +380,16 @@
 }
 
 .sizeInputs span {
-  font-size: 10px;
-  color: var(--text-muted, #808080);
+  font-size: 9px;
+  color: var(--panel-text-dim, #888);
 }
 
 .sizeInputs input {
-  padding: 4px;
-  background: var(--input-bg, #2a2a2a);
-  border: 1px solid var(--border-color, #3c3c3c);
-  border-radius: 4px;
-  color: var(--text-color, #cccccc);
+  padding: 3px 4px;
+  background: var(--panel-bg, #1e1e1e);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 3px;
+  color: var(--panel-text, #ccc);
   font-size: 10px;
   width: 100%;
 }
@@ -327,29 +399,28 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px;
-  background: var(--input-bg, #2a2a2a);
-  border-radius: 4px;
-  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: var(--panel-bg, #1e1e1e);
+  border-radius: 3px;
 }
 
 .atlasLabel {
-  color: var(--text-muted, #808080);
+  color: var(--panel-text-dim, #888);
   font-size: 10px;
 }
 
 .atlasName {
   flex: 1;
-  color: var(--text-color, #cccccc);
-  font-size: 11px;
+  color: var(--panel-text-bright, #ddd);
+  font-size: 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .atlasRegions {
-  color: var(--text-muted, #808080);
-  font-size: 10px;
+  color: var(--panel-text-dim, #888);
+  font-size: 9px;
 }
 
 /* Add Button */
@@ -358,21 +429,21 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  width: 100%;
-  padding: 8px;
-  margin-top: 8px;
+  width: calc(100% - 16px);
+  margin: 8px;
+  padding: 6px;
   background: transparent;
-  border: 1px dashed var(--border-color, #3c3c3c);
-  color: var(--text-muted, #808080);
+  border: 1px dashed var(--border-color, #333);
+  color: var(--panel-text-dim, #888);
   border-radius: 4px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   transition: all 0.15s ease;
   flex-shrink: 0;
 }
 
 .addButton:hover {
-  border-color: var(--accent-color, #0078d4);
-  color: var(--text-color, #cccccc);
-  background: var(--hover-bg, #2a2a2a);
+  border-color: var(--accent-color, #4a7);
+  color: var(--panel-text, #ccc);
+  background: var(--section-hover, #2a2a2a);
 }
