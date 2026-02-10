@@ -36,26 +36,20 @@ struct Uniforms {
 struct Material {
   grassColor: vec4f,              // 0-3
   rockColor: vec4f,               // 4-7
-  snowColor: vec4f,               // 8-11
-  dirtColor: vec4f,               // 12-15
-  beachColor: vec4f,              // 16-19 - Sand/beach color for coastlines
-  snowLine: f32,                  // 20
-  rockLine: f32,                  // 21
-  maxGrassSlope: f32,             // 22
-  beachMaxHeight: f32,            // 23 - Max normalized height for beach (e.g., 0.1)
-  lightDir: vec3f,                // 24-26
-  beachMaxSlope: f32,             // 27 - Max slope for beach (e.g., 0.3)
-  lightColor: vec3f,              // 28-30
-  _pad3: f32,                     // 31
-  ambientIntensity: f32,          // 32
-  isSelected: f32,                // 33
-  shadowEnabled: f32,             // 34 - Enable/disable shadows
-  shadowSoftness: f32,            // 35 - 0 = hard, 1 = soft PCF
-  shadowRadius: f32,              // 36 - Shadow coverage radius
-  shadowFadeStart: f32,           // 37 - Distance where shadow starts fading
-  _pad4: f32,                     // 38
-  _pad5: f32,                     // 39
-  lightSpaceMatrix: mat4x4f,      // 40-55 - Shadow projection matrix
+  forestColor: vec4f,             // 8-11
+  lightDir: vec3f,                // 12-14
+  _pad1: f32,                     // 15
+  lightColor: vec3f,              // 16-18
+  _pad2: f32,                     // 19
+  ambientIntensity: f32,          // 20
+  isSelected: f32,                // 21
+  shadowEnabled: f32,             // 22 - Enable/disable shadows
+  shadowSoftness: f32,            // 23 - 0 = hard, 1 = soft PCF
+  shadowRadius: f32,              // 24 - Shadow coverage radius
+  shadowFadeStart: f32,           // 25 - Distance where shadow starts fading
+  _pad3: f32,                     // 26
+  _pad4: f32,                     // 27
+  lightSpaceMatrix: mat4x4f,      // 28-43 - Shadow projection matrix
 }
 
 // ============================================================================
@@ -70,32 +64,32 @@ struct Material {
 @group(0) @binding(5) var shadowMap: texture_depth_2d;
 @group(0) @binding(6) var shadowSampler: sampler_comparison;
 @group(0) @binding(7) var islandMask: texture_2d<f32>;
+@group(0) @binding(8) var biomeMask: texture_2d<f32>;  // Biome weights: R=grass, G=rock, B=forest
 
 // ============================================================================
 // Biome Texture Bindings (Group 1) - Texture Arrays
 // ============================================================================
 
 // Biome layer indices (used to index into texture arrays)
+// 3 biomes sourced from biome mask: R=grass, G=rock, B=forest
 const BIOME_GRASS: i32 = 0;
 const BIOME_ROCK: i32 = 1;
-const BIOME_SNOW: i32 = 2;
-const BIOME_DIRT: i32 = 3;
-const BIOME_BEACH: i32 = 4;
+const BIOME_FOREST: i32 = 2;
 
 // Biome texture parameters uniform (matches BiomeTextureUniformData in types.ts)
+// Simplified for 3 biomes (grass, rock, forest)
 struct BiomeTextureParams {
   // Enable flags (1.0 = enabled, 0.0 = disabled) - vec4f aligned
-  // Array indexed by biome layer index
-  albedoEnabled: vec4f,     // [grass, rock, snow, dirt]
-  normalEnabled: vec4f,     // [grass, rock, snow, dirt]
-  beachFlags: vec4f,        // [albedoEnabled, normalEnabled, pad, pad]
+  // [grass, rock, forest, unused]
+  albedoEnabled: vec4f,
+  normalEnabled: vec4f,
   
   // Tiling scales (world units per texture tile) - vec4f aligned
-  tilingScales: vec4f,      // [grass, rock, snow, dirt]
-  beachTiling: vec4f,       // [beach, pad, pad, pad]
+  // [grass, rock, forest, unused]
+  tilingScales: vec4f,
 }
 
-// Biome texture arrays (5 layers each: grass=0, rock=1, snow=2, dirt=3, beach=4)
+// Biome texture arrays (3 layers: grass=0, rock=1, forest=2)
 @group(1) @binding(0) var biomeAlbedoArray: texture_2d_array<f32>;
 @group(1) @binding(1) var biomeNormalArray: texture_2d_array<f32>;
 
@@ -130,35 +124,23 @@ fn sampleIBLDiffuse(worldNormal: vec3f) -> vec3f {
 // Biome Texture Sampling Functions (Texture Array Version)
 // ============================================================================
 
-// Helper: Get albedo enabled flag for a biome layer
+// Helper: Get albedo enabled flag for a biome layer (0-2: grass, rock, forest)
 fn getBiomeAlbedoEnabled(layer: i32) -> f32 {
-  if (layer < 4) {
-    return biomeParams.albedoEnabled[layer];
-  } else {
-    return biomeParams.beachFlags.x;  // beach albedo enabled
-  }
+  return biomeParams.albedoEnabled[layer];
 }
 
-// Helper: Get normal enabled flag for a biome layer
+// Helper: Get normal enabled flag for a biome layer (0-2: grass, rock, forest)
 fn getBiomeNormalEnabled(layer: i32) -> f32 {
-  if (layer < 4) {
-    return biomeParams.normalEnabled[layer];
-  } else {
-    return biomeParams.beachFlags.y;  // beach normal enabled
-  }
+  return biomeParams.normalEnabled[layer];
 }
 
-// Helper: Get tiling scale for a biome layer
+// Helper: Get tiling scale for a biome layer (0-2: grass, rock, forest)
 fn getBiomeTiling(layer: i32) -> f32 {
-  if (layer < 4) {
-    return biomeParams.tilingScales[layer];
-  } else {
-    return biomeParams.beachTiling.x;  // beach tiling
-  }
+  return biomeParams.tilingScales[layer];
 }
 
 // Sample biome albedo from texture array with fallback to solid color
-// layer: biome layer index (0-4)
+// layer: biome layer index (0-2: grass, rock, forest)
 // worldXZ: world position for UV calculation
 // fallbackColor: solid color to use when texture not enabled
 fn sampleBiomeAlbedoArray(
@@ -198,21 +180,30 @@ fn sampleBiomeNormalArray(
   return select(vec3f(0.0, 1.0, 0.0), normalize(normalTangent), enabled > 0.5);
 }
 
-// Blend multiple biome normals weighted by biome weights
+// Blend 3 biome normals weighted by biome weights (grass, rock, forest)
 // Uses simple weighted average for terrain blending
 fn blendBiomeNormals(
   grassNormal: vec3f, grassWeight: f32,
   rockNormal: vec3f, rockWeight: f32,
-  snowNormal: vec3f, snowWeight: f32,
-  dirtNormal: vec3f, dirtWeight: f32,
-  beachNormal: vec3f, beachWeight: f32
+  forestNormal: vec3f, forestWeight: f32
 ) -> vec3f {
   let blended = grassNormal * grassWeight
               + rockNormal * rockWeight
-              + snowNormal * snowWeight
-              + dirtNormal * dirtWeight
-              + beachNormal * beachWeight;
+              + forestNormal * forestWeight;
   return normalize(blended);
+}
+
+// ============================================================================
+// Biome Mask Sampling
+// ============================================================================
+
+// Sample biome mask at UV coordinates
+// Returns vec3(grassWeight, rockWeight, forestWeight) from the biome mask texture
+// Biome mask: R=grass, G=rock, B=forest (generated by BiomeMaskGenerator)
+fn sampleBiomeMaskWeights(uv: vec2f) -> vec3f {
+  let clampedUV = clamp(uv, vec2f(0.0), vec2f(1.0));
+  let biome = textureSample(biomeMask, texSampler, clampedUV);
+  return vec3f(biome.r, biome.g, biome.b);
 }
 
 // Simplified IBL for terrain - diffuse only (terrain is non-metallic)
@@ -904,92 +895,57 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let normalizedHeight = (input.worldPosition.y / max(uniforms.heightScale, 1.0)) + 0.5;
   let slope = input.slope;
   
-  // ===== Beach Biome Detection (Island Mode Only) =====
-  // Beach appears in coastal transition zones where:
-  // 1. Island mask is in the falloff region (not full land, not deep ocean)
-  // 2. Elevation is low (near water level)
-  // 3. Slope is gentle (flat areas, not cliffs)
-  var beachWeight = 0.0;
-  if (uniforms.islandEnabled > 0.5) {
-    let uv = worldToUV(worldXZ);
-    let mask = sampleIslandMask(uv);
-    
-    // isNearCoast: 1 when in the coastal falloff zone, 0 at interior or deep ocean
-    // mask ~0.1-0.5 = underwater near coast, ~0.5-0.9 = transitional land, 1.0 = interior
-    let isNearCoast = smoothstep(0.15, 0.5, mask) * (1.0 - smoothstep(0.85, 1.0, mask));
-    
-    // isLowElevation: beach only at low-lying areas
-    let isLowElevation = 1.0 - smoothstep(0.0, material.beachMaxHeight, normalizedHeight);
-    
-    // isFlat: beach only on gentle slopes (no beach on cliffs)
-    let isFlat = 1.0 - smoothstep(0.0, material.beachMaxSlope, slope);
-    
-    // Combine all factors for beach weight
-    beachWeight = isNearCoast * isLowElevation * isFlat;
-    
-    // Sharpen the transition slightly for more defined beach boundaries
-    beachWeight = smoothstep(0.1, 0.5, beachWeight);
+  // ===== Sample Biome Weights from Biome Mask Texture =====
+  // Biome mask is generated by BiomeMaskGenerator based on height, slope, flow
+  // R = grass probability, G = rock probability, B = forest probability
+  let biomeWeights = sampleBiomeMaskWeights(input.texCoord);
+  var grassWeight = biomeWeights.x;
+  var rockWeight = biomeWeights.y;
+  var forestWeight = biomeWeights.z;
+  
+  // Normalize weights to ensure they sum to 1
+  let totalWeight = grassWeight + rockWeight + forestWeight;
+  if (totalWeight > 0.001) {
+    grassWeight /= totalWeight;
+    rockWeight /= totalWeight;
+    forestWeight /= totalWeight;
+  } else {
+    // Fallback if biome mask is all black
+    grassWeight = 1.0;
+    rockWeight = 0.0;
+    forestWeight = 0.0;
   }
   
-  // Material weight calculation
-  var snowWeight = smoothstep(material.snowLine - 0.1, material.snowLine + 0.1, normalizedHeight);
-  snowWeight *= (1.0 - smoothstep(0.5, 0.8, slope));
-  
-  var rockWeight = smoothstep(material.maxGrassSlope - 0.1, material.maxGrassSlope + 0.1, slope);
-  rockWeight = max(rockWeight, smoothstep(material.rockLine - 0.1, material.rockLine + 0.1, normalizedHeight) * 0.5);
-  
-  let dirtWeight = 0.0;
-  
-  // Grass weight reduced by beach presence
-  var grassWeight = 1.0 - max(snowWeight, max(rockWeight, beachWeight));
-  
-  // Normalize weights (now includes beach)
-  let totalWeight = snowWeight + rockWeight + dirtWeight + grassWeight + beachWeight;
-  snowWeight /= totalWeight;
-  rockWeight /= totalWeight;
-  grassWeight /= totalWeight;
-  let normalizedBeachWeight = beachWeight / totalWeight;
-  let normalizedDirtWeight = dirtWeight / totalWeight;
-  
   // ===== Sample Biome Textures (Albedo) from Texture Arrays =====
-  // Sample albedo textures with fallback to material colors
+  // Sample albedo textures with fallback to material colors (3 biomes)
   let grassAlbedoColor = sampleBiomeAlbedoArray(BIOME_GRASS, worldXZ, material.grassColor.rgb);
   let rockAlbedoColor = sampleBiomeAlbedoArray(BIOME_ROCK, worldXZ, material.rockColor.rgb);
-  let snowAlbedoColor = sampleBiomeAlbedoArray(BIOME_SNOW, worldXZ, material.snowColor.rgb);
-  let dirtAlbedoColor = sampleBiomeAlbedoArray(BIOME_DIRT, worldXZ, material.dirtColor.rgb);
-  let beachAlbedoColor = sampleBiomeAlbedoArray(BIOME_BEACH, worldXZ, material.beachColor.rgb);
+  let forestAlbedoColor = sampleBiomeAlbedoArray(BIOME_FOREST, worldXZ, material.forestColor.rgb);
   
   // Blend albedo from sampled textures (or fallback colors)
   var albedo = grassAlbedoColor * grassWeight
              + rockAlbedoColor * rockWeight
-             + snowAlbedoColor * snowWeight
-             + dirtAlbedoColor * normalizedDirtWeight
-             + beachAlbedoColor * normalizedBeachWeight;
+             + forestAlbedoColor * forestWeight;
   
   // ===== Sample Biome Normal Maps from Texture Arrays =====
-  // Sample normal textures for each biome
+  // Sample normal textures for each biome (3 biomes)
   let grassBiomeNormal = sampleBiomeNormalArray(BIOME_GRASS, worldXZ);
   let rockBiomeNormal = sampleBiomeNormalArray(BIOME_ROCK, worldXZ);
-  let snowBiomeNormal = sampleBiomeNormalArray(BIOME_SNOW, worldXZ);
-  let dirtBiomeNormal = sampleBiomeNormalArray(BIOME_DIRT, worldXZ);
-  let beachBiomeNormal = sampleBiomeNormalArray(BIOME_BEACH, worldXZ);
+  let forestBiomeNormal = sampleBiomeNormalArray(BIOME_FOREST, worldXZ);
   
   // Blend biome normals weighted by biome presence
   let biomeDetailNormal = blendBiomeNormals(
     grassBiomeNormal, grassWeight,
     rockBiomeNormal, rockWeight,
-    snowBiomeNormal, snowWeight,
-    dirtBiomeNormal, normalizedDirtWeight,
-    beachBiomeNormal, normalizedBeachWeight
+    forestBiomeNormal, forestWeight
   );
   
   // ===== Blend Base Normal with Biome Detail Normals =====
   // First blend base heightmap normal with procedural detail normal (existing)
   // Then blend with biome texture normals for additional detail
-  // Sum all normal enable flags to check if any biome normal is active
+  // Sum all normal enable flags to check if any biome normal is active (3 biomes)
   let hasAnyBiomeNormal = getBiomeNormalEnabled(BIOME_GRASS) + getBiomeNormalEnabled(BIOME_ROCK) 
-                        + getBiomeNormalEnabled(BIOME_SNOW) + getBiomeNormalEnabled(BIOME_DIRT) 
-                        + getBiomeNormalEnabled(BIOME_BEACH);
+                        + getBiomeNormalEnabled(BIOME_FOREST);
   
   // If any biome normal maps are enabled, blend them with the base normal
   var finalBlendedNormal = blendedNormal;

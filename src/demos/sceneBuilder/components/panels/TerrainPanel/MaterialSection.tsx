@@ -6,8 +6,8 @@ import styles from './TerrainPanel.module.css';
 
 // ==================== Types ====================
 
-/** Biome types for texture assignment */
-export type BiomeType = 'grass' | 'rock' | 'snow' | 'dirt' | 'beach';
+/** Biome types for texture assignment (3 biomes: grass, rock, forest) */
+export type BiomeType = 'grass' | 'rock' | 'forest';
 
 /** Biome texture configuration */
 export interface BiomeTextureConfig {
@@ -17,23 +17,21 @@ export interface BiomeTextureConfig {
   tilingScale: number;
 }
 
+/**
+ * Material params for terrain rendering.
+ * Uses biome mask texture for weight calculation (R=grass, G=rock, B=forest).
+ * Legacy fields kept for backwards compatibility with uniform buffer layout.
+ */
 export interface MaterialParams {
-  snowLine: number;
-  rockLine: number;
-  maxGrassSlope: number;
-  beachMaxHeight: number;
-  beachMaxSlope: number;
+  // Primary biome colors (used by shader)
   grassColor: [number, number, number];
   rockColor: [number, number, number];
-  snowColor: [number, number, number];
-  dirtColor: [number, number, number];
-  beachColor: [number, number, number];
+  forestColor: [number, number, number];
+  
   // Texture configurations per biome
   grassTexture?: BiomeTextureConfig;
   rockTexture?: BiomeTextureConfig;
-  snowTexture?: BiomeTextureConfig;
-  dirtTexture?: BiomeTextureConfig;
-  beachTexture?: BiomeTextureConfig;
+  forestTexture?: BiomeTextureConfig;
 }
 
 export interface MaterialSectionProps {
@@ -204,35 +202,7 @@ export function MaterialSection({
     <div class={styles.section}>
       <div class={styles.sectionTitle}>Material</div>
 
-      <Slider
-        label="Snow Line"
-        value={params.snowLine}
-        min={0}
-        max={1}
-        step={0.05}
-        format={(v) => v.toFixed(2)}
-        onChange={(v) => handleChange('snowLine', v)}
-      />
-
-      <Slider
-        label="Rock Line"
-        value={params.rockLine}
-        min={0}
-        max={1}
-        step={0.05}
-        format={(v) => v.toFixed(2)}
-        onChange={(v) => handleChange('rockLine', v)}
-      />
-
-      <Slider
-        label="Max Grass Slope"
-        value={params.maxGrassSlope}
-        min={0}
-        max={1}
-        step={0.05}
-        format={(v) => v.toFixed(2)}
-        onChange={(v) => handleChange('maxGrassSlope', v)}
-      />
+      {/* Legacy sliders removed - biome weights now come from biome mask texture */}
 
       <div class={styles.subsectionTitle}>Biome Textures</div>
       
@@ -257,61 +227,14 @@ export function MaterialSection({
       />
       
       <BiomeTextureRow
-        label="Snow"
-        color={params.snowColor}
-        texture={params.snowTexture}
-        onColorChange={(v) => handleChange('snowColor', v)}
-        onTextureClick={() => openTexturePicker('snow')}
-        onTextureClear={() => clearTexture('snow')}
-        onTilingChange={(v) => updateTiling('snow', v)}
+        label="Forest"
+        color={params.forestColor}
+        texture={params.forestTexture}
+        onColorChange={(v) => handleChange('forestColor', v)}
+        onTextureClick={() => openTexturePicker('forest')}
+        onTextureClear={() => clearTexture('forest')}
+        onTilingChange={(v) => updateTiling('forest', v)}
       />
-      
-      <BiomeTextureRow
-        label="Dirt"
-        color={params.dirtColor}
-        texture={params.dirtTexture}
-        onColorChange={(v) => handleChange('dirtColor', v)}
-        onTextureClick={() => openTexturePicker('dirt')}
-        onTextureClear={() => clearTexture('dirt')}
-        onTilingChange={(v) => updateTiling('dirt', v)}
-      />
-      
-      {islandEnabled && (
-        <BiomeTextureRow
-          label="Beach"
-          color={params.beachColor}
-          texture={params.beachTexture}
-          onColorChange={(v) => handleChange('beachColor', v)}
-          onTextureClick={() => openTexturePicker('beach')}
-          onTextureClear={() => clearTexture('beach')}
-          onTilingChange={(v) => updateTiling('beach', v)}
-        />
-      )}
-
-      {/* Beach settings (island mode only) */}
-      {islandEnabled && (
-        <>
-          <div class={styles.subsectionTitle}>Beach (Island Mode)</div>
-          <Slider
-            label="Beach Max Height"
-            value={params.beachMaxHeight}
-            min={0.01}
-            max={0.5}
-            step={0.01}
-            format={(v) => v.toFixed(2)}
-            onChange={(v) => handleChange('beachMaxHeight', v)}
-          />
-          <Slider
-            label="Beach Max Slope"
-            value={params.beachMaxSlope}
-            min={0.05}
-            max={0.8}
-            step={0.05}
-            format={(v) => v.toFixed(2)}
-            onChange={(v) => handleChange('beachMaxSlope', v)}
-          />
-        </>
-      )}
       
       {/* Texture picker modal */}
       <AssetPickerModal

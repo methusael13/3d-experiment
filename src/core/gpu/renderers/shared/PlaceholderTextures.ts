@@ -40,6 +40,10 @@ export class PlaceholderTextures {
   private _sceneColorHDR: GPUTexture;
   private _sceneColorHDRView: GPUTextureView;
   
+  // Biome mask placeholder (pure grass: R=1, G=0, B=0 for grass/rock/forest weights)
+  private _biomeMask: GPUTexture;
+  private _biomeMaskView: GPUTextureView;
+  
   private constructor(ctx: GPUContext) {
     const device = ctx.device;
     
@@ -179,6 +183,24 @@ export class PlaceholderTextures {
     });
     this._sceneColorHDRView = this._sceneColorHDR.createView();
     // Default to black (no refraction contribution when no scene color available)
+    
+    // ============ Terrain Placeholders ============
+    
+    // 1x1 biome mask placeholder (pure grass: R=1, G=0, B=0)
+    // Biome mask format: R=grass weight, G=rock weight, B=forest weight
+    this._biomeMask = device.createTexture({
+      label: 'placeholder-biome-mask',
+      size: { width: 1, height: 1 },
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this._biomeMaskView = this._biomeMask.createView();
+    ctx.queue.writeTexture(
+      { texture: this._biomeMask },
+      new Uint8Array([255, 0, 0, 255]), // Pure grass (R=1, G=0, B=0)
+      { bytesPerRow: 4 },
+      { width: 1, height: 1 }
+    );
   }
   
   /**
@@ -204,6 +226,7 @@ export class PlaceholderTextures {
       inst._black.destroy();
       inst._normal.destroy();
       inst._sceneColorHDR.destroy();
+      inst._biomeMask.destroy();
       PlaceholderTextures.instance = null;
     }
   }
@@ -224,4 +247,6 @@ export class PlaceholderTextures {
   get linearSampler(): GPUSampler { return this._linearSampler; }
   
   get sceneColorHDRView(): GPUTextureView { return this._sceneColorHDRView; }
+  
+  get biomeMaskView(): GPUTextureView { return this._biomeMaskView; }
 }

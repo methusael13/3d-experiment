@@ -54,16 +54,10 @@ const DEFAULT_EROSION_PARAMS: ErosionParams = {
 };
 
 const DEFAULT_MATERIAL_PARAMS: TerrainMaterialParams = {
-  snowLine: 0.7,
-  rockLine: 0.4,
-  maxGrassSlope: 0.6,
-  beachMaxHeight: 0.15,
-  beachMaxSlope: 0.25,
+  // Primary biome colors (3 biomes: grass, rock, forest)
   grassColor: [0.2, 0.5, 0.1],
   rockColor: [0.4, 0.35, 0.3],
-  snowColor: [0.95, 0.95, 0.97],
-  dirtColor: [0.4, 0.3, 0.2],
-  beachColor: [0.76, 0.7, 0.5],  // Sandy tan color
+  forestColor: [0.35, 0.28, 0.18]
 };
 
 
@@ -126,16 +120,10 @@ function buildErosionConfig(params: ErosionParams) {
 /** Convert UI material params to TerrainManager material config */
 function buildMaterialConfig(params: TerrainMaterialParams) {
   return {
-    snowLine: params.snowLine,
-    rockLine: params.rockLine,
-    maxGrassSlope: params.maxGrassSlope,
-    beachMaxHeight: params.beachMaxHeight,
-    beachMaxSlope: params.beachMaxSlope,
+    // Primary 3 biome colors
     grassColor: params.grassColor,
     rockColor: params.rockColor,
-    snowColor: params.snowColor,
-    dirtColor: params.dirtColor,
-    beachColor: params.beachColor,
+    forestColor: params.forestColor
   };
 }
 
@@ -466,13 +454,14 @@ export function ConnectedTerrainPanel({
         params.erosion.thermalIterations = erosionParams.thermalIterations;
         params.erosion.talusAngle = erosionParams.talusAngle;
         
-        params.material.snowLine = materialParams.snowLine;
-        params.material.rockLine = materialParams.rockLine;
-        params.material.maxGrassSlope = materialParams.maxGrassSlope;
+        // Legacy params
+        params.material.snowLine = 0;
+        params.material.rockLine = 0;
+        params.material.maxGrassSlope = 0;
         params.material.grassColor = materialParams.grassColor;
         params.material.rockColor = materialParams.rockColor;
-        params.material.snowColor = materialParams.snowColor;
-        params.material.dirtColor = materialParams.dirtColor;
+        params.material.snowColor = [0.95, 0.95, 0.97];
+        params.material.dirtColor = [0.35, 0.28, 0.18];
         
         // Set rendering modes
         terrain.cdlodEnabled = cdlodEnabled;

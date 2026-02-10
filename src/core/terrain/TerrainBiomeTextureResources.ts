@@ -2,7 +2,8 @@
  * TerrainBiomeTextureResources - Manages biome texture arrays for terrain splatting
  * 
  * Uses texture_2d_array for efficient biome texture sampling:
- * - 5 layers per array: grass=0, rock=1, snow=2, dirt=3, beach=4
+ * - 3 layers per array: grass=0, rock=1, forest=2
+ * - Biome weights sourced from biome mask texture (R=grass, G=rock, B=forest)
  * - Configurable resolution: 1024, 2048, or 4096
  * - Lazy allocation: tiny placeholder arrays until first texture is loaded
  * - Downsampling: 4K imports are downsampled to target resolution via canvas
@@ -31,9 +32,7 @@ import {
 export const BIOME_LAYERS = {
   grass: 0,
   rock: 1,
-  snow: 2,
-  dirt: 3,
-  beach: 4,
+  forest: 2,
 } as const;
 
 export type BiomeType = keyof typeof BIOME_LAYERS;
@@ -45,8 +44,8 @@ export type BiomeResolution = 1024 | 2048 | 4096;
 /** Minimum required source texture size */
 const MIN_SOURCE_SIZE = 4096;
 
-/** Number of biome layers */
-const NUM_BIOME_LAYERS = 5;
+/** Number of biome layers (grass, rock, forest) */
+const NUM_BIOME_LAYERS = 3;
 
 /** 
  * Cached source image for re-downsampling on resolution change.
@@ -89,13 +88,11 @@ export class TerrainBiomeTextureResources {
   private loadedAlbedoLayers: Set<number> = new Set();
   private loadedNormalLayers: Set<number> = new Set();
   
-  // Per-biome tiling scales
+  // Per-biome tiling scales (grass, rock, forest)
   private tilingScales: Record<BiomeType, number> = {
     grass: 4.0,
     rock: 8.0,
-    snow: 6.0,
-    dirt: 4.0,
-    beach: 4.0,
+    forest: 4.0,
   };
   
   // Track if bind group needs recreation
@@ -343,10 +340,10 @@ export class TerrainBiomeTextureResources {
    * Create the params uniform buffer
    */
   private createParamsBuffer(): void {
-    // 80 bytes for new BiomeTextureUniformData (20 floats * 4 bytes)
+    // 48 bytes for BiomeTextureUniformData (12 floats * 4 bytes) - 3 vec4f
     this.paramsBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'terrain-biome-params',
-      size: 80,
+      size: 48,
     });
   }
   
@@ -360,25 +357,19 @@ export class TerrainBiomeTextureResources {
     // Start with material-derived uniform data (for fallback colors, etc.)
     const uniformData = createBiomeTextureUniform(material);
     
-    // Override enable flags based on actual loaded state
-    // First 4 biomes: grass=0, rock=1, snow=2, dirt=3
-    for (let i = 0; i < 4; i++) {
+    // Override enable flags based on actual loaded state (3 biomes: grass=0, rock=1, forest=2)
+    for (let i = 0; i < NUM_BIOME_LAYERS; i++) {
       uniformData.albedoEnabled[i] = this.loadedAlbedoLayers.has(i) ? 1.0 : 0.0;
       uniformData.normalEnabled[i] = this.loadedNormalLayers.has(i) ? 1.0 : 0.0;
     }
-    
-    // Beach (layer 4) goes in beachFlags
-    uniformData.beachFlags[0] = this.loadedAlbedoLayers.has(4) ? 1.0 : 0.0;
-    uniformData.beachFlags[1] = this.loadedNormalLayers.has(4) ? 1.0 : 0.0;
     
     // Override tiling scales from our stored values
     uniformData.tilingScales = [
       this.tilingScales.grass,
       this.tilingScales.rock,
-      this.tilingScales.snow,
-      this.tilingScales.dirt,
+      this.tilingScales.forest,
+      0.0,  // unused 4th slot for vec4 alignment
     ];
-    uniformData.beachTiling[0] = this.tilingScales.beach;
     
     const data = biomeTextureUniformToFloat32Array(uniformData);
     this.paramsBuffer.write(this.ctx, data);

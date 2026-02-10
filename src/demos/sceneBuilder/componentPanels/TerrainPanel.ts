@@ -1161,13 +1161,8 @@ export class TerrainPanel {
     if (this.terrainManager) {
       // WebGPU mode - call setMaterial for immediate effect
       this.terrainManager.setMaterial({
-        snowLine: parseFloat(this.snowLine.value),
-        rockLine: parseFloat(this.rockLine.value),
-        maxGrassSlope: parseFloat(this.grassSlope.value),
         grassColor: this.hexToRgb(this.grassColor.value),
-        rockColor: this.hexToRgb(this.rockColor.value),
-        snowColor: this.hexToRgb(this.snowColor.value),
-        dirtColor: this.hexToRgb(this.dirtColor.value),
+        rockColor: this.hexToRgb(this.rockColor.value)
       });
     } else if (this.terrain) {
       // WebGL mode - syncToTerrain already updates it

@@ -555,6 +555,7 @@ export class TerrainManager {
       heightScale: this.config.heightScale,
       heightmapTexture: this.heightmap || undefined,
       normalMapTexture: this.normalMap || undefined,
+      biomeMaskTexture: this.biomeMask || undefined,
       island: {
         enabled: islandConfig.enabled,
         seaFloorDepth: islandConfig.seaFloorDepth,
@@ -778,13 +779,13 @@ export class TerrainManager {
    * Set biome texture from URL path
    * Loads the texture and updates GPU bind group
    * 
-   * @param biome Biome type (grass, rock, snow, dirt, beach)
+   * @param biome Biome type (grass, rock, forest)
    * @param textureType Type of texture (albedo or normal)
    * @param url URL path to texture file
    * @param tilingScale World-space tiling scale (meters per tile)
    */
   async setBiomeTexture(
-    biome: 'grass' | 'rock' | 'snow' | 'dirt' | 'beach',
+    biome: 'grass' | 'rock' | 'forest',
     textureType: 'albedo' | 'normal',
     url: string,
     tilingScale?: number
@@ -804,7 +805,7 @@ export class TerrainManager {
    * @param textureType Which texture to clear (albedo or normal)
    */
   clearBiomeTexture(
-    biome: 'grass' | 'rock' | 'snow' | 'dirt' | 'beach',
+    biome: 'grass' | 'rock' | 'forest',
     textureType: 'albedo' | 'normal'
   ): void {
     this.renderer?.clearBiomeTexture(biome, textureType);
@@ -817,7 +818,7 @@ export class TerrainManager {
    * @param scale Tiling scale in world units
    */
   setBiomeTiling(
-    biome: 'grass' | 'rock' | 'snow' | 'dirt' | 'beach',
+    biome: 'grass' | 'rock' | 'forest',
     scale: number
   ): void {
     this.renderer?.setBiomeTiling(biome, scale);

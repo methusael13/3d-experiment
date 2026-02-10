@@ -20,7 +20,7 @@ import {
   VertexBufferLayoutDesc,
   loadTextureFromURL,
 } from '../gpu';
-import { SceneEnvironment, ENV_BINDING_MASK } from '../gpu/renderers/shared';
+import { SceneEnvironment, ENV_BINDING_MASK, PlaceholderTextures } from '../gpu/renderers/shared';
 import cdlodShadowShader from '../gpu/shaders/terrain/cdlod-shadow.wgsl?raw';
 import {
   TerrainQuadtree,
@@ -67,26 +67,19 @@ export interface CDLODGPUConfig {
 }
 
 /**
- * Terrain material configuration
+ * Terrain material configuration (3 biomes: grass, rock, forest)
+ * Biome weights are sourced from biome mask texture (R=grass, G=rock, B=forest)
  */
 export interface TerrainMaterial {
+  // Biome fallback colors (RGB 0-1)
   grassColor: [number, number, number];
   rockColor: [number, number, number];
-  snowColor: [number, number, number];
-  dirtColor: [number, number, number];
-  beachColor: [number, number, number];
-  snowLine: number;
-  rockLine: number;
-  maxGrassSlope: number;
-  beachMaxHeight: number;  // Max normalized height for beach (0-1)
-  beachMaxSlope: number;   // Max slope for beach (0-1)
+  forestColor: [number, number, number];
   
-  // Optional biome texture sets
+  // Optional biome texture sets (grass, rock, forest)
   grassTexture?: BiomeTextureSet;
   rockTexture?: BiomeTextureSet;
-  snowTexture?: BiomeTextureSet;
-  dirtTexture?: BiomeTextureSet;
-  beachTexture?: BiomeTextureSet;
+  forestTexture?: BiomeTextureSet;
 }
 
 /**
@@ -123,6 +116,7 @@ export interface CDLODRenderParams {
   heightScale: number;
   heightmapTexture?: UnifiedGPUTexture;
   normalMapTexture?: UnifiedGPUTexture;
+  biomeMaskTexture?: UnifiedGPUTexture;
   material?: Partial<TerrainMaterial>;
   lightDirection?: vec3;
   lightColor?: vec3;
@@ -160,20 +154,14 @@ export function createDefaultCDLODGPUConfig(): CDLODGPUConfig {
 }
 
 /**
- * Default terrain material
+ * Default terrain material (3 biomes)
  */
 export function createDefaultTerrainMaterial(): TerrainMaterial {
   return {
+    // Primary biome colors (grass, rock, forest)
     grassColor: [0.3, 0.5, 0.2],
     rockColor: [0.4, 0.35, 0.3],
-    snowColor: [0.95, 0.95, 1.0],
-    dirtColor: [0.4, 0.3, 0.2],
-    beachColor: [0.76, 0.7, 0.5],  // Sandy tan color
-    snowLine: 0.75,
-    rockLine: 0.6,
-    maxGrassSlope: 0.5,
-    beachMaxHeight: 0.15,  // Beach only below 15% height
-    beachMaxSlope: 0.25,   // Beach only on gentle slopes
+    forestColor: [0.35, 0.28, 0.18]
   };
 }
 
@@ -254,6 +242,9 @@ export class CDLODRendererGPU {
   private defaultShadowMap: UnifiedGPUTexture | null = null;
   private defaultIslandMask: UnifiedGPUTexture | null = null;
   
+  // Placeholder textures singleton (for biome mask, etc.)
+  private placeholders: PlaceholderTextures | null = null;
+  
   // Biome texture splatting resources (Group 1)
   private biomeResources: TerrainBiomeTextureResources | null = null;
   
@@ -290,7 +281,7 @@ export class CDLODRendererGPU {
     
     // Uniform builders (52 floats for uniforms including detail + island params, 56 floats for material with beach + shadows)
     this.uniformBuilder = new UniformBuilder(52);
-    this.materialBuilder = new UniformBuilder(56); // Expanded for beach + shadow params + lightSpaceMatrix
+    this.materialBuilder = new UniformBuilder(44); // Expanded for biome color shadow params + lightSpaceMatrix
     
     // Initialize material with defaults
     this.currentMaterial = createDefaultTerrainMaterial();
@@ -306,6 +297,9 @@ export class CDLODRendererGPU {
    * Initialize all GPU resources
    */
   private initializeResources(): void {
+    // Get shared placeholder textures
+    this.placeholders = PlaceholderTextures.get(this.ctx);
+    
     this.createGridMesh();
     this.createBuffers();
     this.createSamplers();
@@ -618,6 +612,7 @@ export class CDLODRendererGPU {
       .depthTexture(5, 'fragment')                 // Shadow map (depth texture)
       .comparisonSampler(6, 'fragment')            // Shadow comparison sampler
       .texture(7, 'all', 'unfilterable-float')     // Island mask (r32float, sampled in vertex + fragment for beach)
+      .texture(8, 'fragment', 'float')             // Biome mask (rgba8, R=grass, G=rock, B=forest weights)
       .build(this.ctx);
     
     // Get terrain-specific minimal environment layout from SceneEnvironment
@@ -717,10 +712,11 @@ export class CDLODRendererGPU {
     heightmapTexture?: UnifiedGPUTexture,
     normalMapTexture?: UnifiedGPUTexture,
     shadowMapTexture?: UnifiedGPUTexture | null,
-    islandMaskTexture?: UnifiedGPUTexture | null
+    islandMaskTexture?: UnifiedGPUTexture | null,
+    biomeMaskView?: GPUTextureView | null
   ): void {
     if (!this.bindGroupLayout || !this.uniformBuffer || !this.materialBuffer || 
-        !this.linearSampler || !this.shadowSampler) {
+        !this.linearSampler || !this.shadowSampler || !this.placeholders) {
       return;
     }
     
@@ -728,6 +724,7 @@ export class CDLODRendererGPU {
     const normalMap = normalMapTexture || this.defaultNormalMap!;
     const shadowMap = shadowMapTexture || this.defaultShadowMap!;
     const islandMask = islandMaskTexture || this.defaultIslandMask!;
+    const biomeMask = biomeMaskView || this.placeholders.biomeMaskView;
     
     this.bindGroup = new BindGroupBuilder('cdlod-bind-group')
       .buffer(0, this.uniformBuffer)
@@ -738,6 +735,7 @@ export class CDLODRendererGPU {
       .texture(5, shadowMap)
       .sampler(6, this.shadowSampler)
       .texture(7, islandMask)
+      .texture(8, biomeMask)
       .build(this.ctx, this.bindGroupLayout);
   }
   
@@ -782,7 +780,8 @@ export class CDLODRendererGPU {
       params.heightmapTexture, 
       params.normalMapTexture,
       params.shadow?.shadowMap,
-      params.island?.maskTexture
+      params.island?.maskTexture,
+      params.biomeMaskTexture?.view
     );
     
     if (!this.bindGroup) {
@@ -928,17 +927,14 @@ export class CDLODRendererGPU {
     const lightSpaceMatrix = shadow?.lightSpaceMatrix || mat4.create();
     
     this.materialBuilder.reset()
-      .vec4(mat.grassColor[0], mat.grassColor[1], mat.grassColor[2], 1.0)   // 0-3
-      .vec4(mat.rockColor[0], mat.rockColor[1], mat.rockColor[2], 1.0)     // 4-7
-      .vec4(mat.snowColor[0], mat.snowColor[1], mat.snowColor[2], 1.0)     // 8-11
-      .vec4(mat.dirtColor[0], mat.dirtColor[1], mat.dirtColor[2], 1.0)     // 12-15
-      .vec4(mat.beachColor[0], mat.beachColor[1], mat.beachColor[2], 1.0)  // 16-19 - beach color
-      .vec4(mat.snowLine, mat.rockLine, mat.maxGrassSlope, mat.beachMaxHeight) // 20-23
-      .vec4(lightDir[0], lightDir[1], lightDir[2], mat.beachMaxSlope)      // 24-27
-      .vec4(lightColor[0], lightColor[1], lightColor[2], 0)                // 28-31
-      .vec4(params.ambientIntensity ?? 0.3, params.isSelected ? 1.0 : 0.0, shadowEnabled, shadowSoftness) // 32-35
-      .vec4(shadowRadius, shadowFadeStart, 0, 0)                           // 36-39
-      .mat4(lightSpaceMatrix as Float32Array);                             // 40-55
+      .vec4(mat.grassColor[0], mat.grassColor[1], mat.grassColor[2], 1.0)     // 0-3
+      .vec4(mat.rockColor[0], mat.rockColor[1], mat.rockColor[2], 1.0)        // 4-7
+      .vec4(mat.forestColor[0], mat.forestColor[1], mat.forestColor[2], 1.0)  // 8-11
+      .vec4(lightDir[0], lightDir[1], lightDir[2], 1.0)                       // 12-15
+      .vec4(lightColor[0], lightColor[1], lightColor[2], 0)                   // 16-19
+      .vec4(params.ambientIntensity ?? 0.3, params.isSelected ? 1.0 : 0.0, shadowEnabled, shadowSoftness) // 20-23
+      .vec4(shadowRadius, shadowFadeStart, 0, 0)                              // 24-27
+      .mat4(lightSpaceMatrix as Float32Array);                                // 28-43
     
     this.materialBuffer!.write(this.ctx, this.materialBuilder.build());
   }
@@ -967,7 +963,15 @@ export class CDLODRendererGPU {
   private updateBiomeParams(): void {
     if (!this.biomeResources) return;
     
-    this.biomeResources.updateParams({ ...this.currentMaterial });
+    // Convert TerrainMaterial to TerrainMaterialParams format
+    this.biomeResources.updateParams({
+      grassColor: this.currentMaterial.grassColor,
+      rockColor: this.currentMaterial.rockColor,
+      forestColor: this.currentMaterial.forestColor,
+      grassTexture: this.currentMaterial.grassTexture,
+      rockTexture: this.currentMaterial.rockTexture,
+      forestTexture: this.currentMaterial.forestTexture,
+    });
     this.biomeResources.ensureBindGroup();
   }
   
