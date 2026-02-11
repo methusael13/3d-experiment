@@ -37,14 +37,13 @@ export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironm
       scene: store.scene!,
       windManager: store.windManager!,
       lightingManager: store.lightingManager!,
-      shadowRenderer: null,
       cameraController: null,
       objectWindSettings: store.objectWindSettings.value,
       
       // Wire up callbacks
       onLightingChanged: () => {
         if (store.lightingManager && store.viewport) {
-          const params = store.lightingManager.getLightParams(null);
+          const params = store.lightingManager.getLightParams();
           store.viewport.setLightParams(params);
         }
       },

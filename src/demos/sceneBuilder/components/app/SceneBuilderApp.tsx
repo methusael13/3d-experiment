@@ -72,7 +72,7 @@ export function SceneBuilderApp({
     store.syncFromScene();
     
     // Initial lighting setup
-    const lightParams = lightingManager.getLightParams(null);
+    const lightParams = lightingManager.getLightParams();
     viewport.setLightParams(lightParams);
     viewport.setWindParams(windManager.getShaderUniforms());
     

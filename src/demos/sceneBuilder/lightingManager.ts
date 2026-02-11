@@ -7,7 +7,6 @@ import {
   ToneMappingMode,
   TONE_MAPPING
 } from '../../core/sceneObjects/lights';
-import type { ShadowRenderer } from '../../core/renderers/ShadowRenderer';
 
 export type SceneLightMode = 'directional' | 'hdr';
 
@@ -103,7 +102,7 @@ export class LightingManager {
   /**
    * Get combined light parameters for rendering
    */
-  getLightParams(shadowRenderer: ShadowRenderer | null = null): SceneLightingParams {
+  getLightParams(): SceneLightingParams {
     const activeLight = this.getActiveLight();
     const lightParams = activeLight.getLightParams();
     
@@ -113,13 +112,7 @@ export class LightingManager {
       shadowEnabled,
       shadowDebug: this.shadowDebug,
     };
-    
-    if (shadowRenderer && shadowEnabled) {
-      shadowParams.shadowMap = shadowRenderer.getTexture();
-      shadowParams.lightSpaceMatrix = shadowRenderer.getLightSpaceMatrix();
-      shadowParams.shadowBias = 0.003;
-    }
-    
+
     // Combine all params
     return {
       ...lightParams,

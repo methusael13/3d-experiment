@@ -16,12 +16,6 @@ export {
   type NodeRenderData,
 } from './TerrainQuadtree';
 
-export {
-  CDLODRenderer,
-  createDefaultCDLODConfig,
-  type CDLODRendererConfig,
-} from './CDLODRenderer';
-
 // WebGPU-based CDLOD renderer
 export {
   CDLODRendererGPU,

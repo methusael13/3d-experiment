@@ -7,7 +7,6 @@ import type {
 } from './types';
 
 // Import factory function and utilities from existing modules
-import { createObjectRenderer } from '../renderers';
 import { loadGLB, type GLBModel } from '../../loaders';
 import { computeBoundsFromGLB } from '../sceneGraph';
 

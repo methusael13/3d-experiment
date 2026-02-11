@@ -10,7 +10,6 @@ import type { LightingManager } from '../lightingManager';
 import type { CameraController } from '../CameraController';
 import type { GizmoMode } from '../gizmos';
 import type { GizmoOrientation } from '../gizmos/BaseGizmo';
-import type { ShadowRenderer, ContactShadowSettings } from '../../../core/renderers';
 import type { WebGPUShadowSettings } from '../components/panels/RenderingPanel';
 
 // ==================== Types ====================
@@ -32,7 +31,6 @@ export interface PanelContext {
   scene: Scene;
   windManager: WindManager;
   lightingManager: LightingManager;
-  shadowRenderer: ShadowRenderer | null;
   cameraController: CameraController | null;
 
   // Object wind settings accessors
@@ -48,7 +46,6 @@ export interface PanelContext {
   setShadowResolution(resolution: number): void;
   setShadowEnabled(enabled: boolean): void;
   setShowShadowThumbnail(show: boolean): void;
-  setContactShadowSettings(settings: ContactShadowSettings): void;
   setLightMode(mode: 'directional' | 'hdr'): void;
   loadHDRTexture(file: File): Promise<void>;
   setHDRTexture(texture: WebGLTexture | null): void;
@@ -87,7 +84,6 @@ export interface PanelContextConfig {
   scene: Scene;
   windManager: WindManager;
   lightingManager: LightingManager;
-  shadowRenderer: ShadowRenderer | null;
   cameraController: CameraController | null;
 
   // Per-object settings storage (Maps)
@@ -102,7 +98,6 @@ export interface PanelContextConfig {
   setShadowResolution?: (resolution: number) => void;
   setShadowEnabled?: (enabled: boolean) => void;
   setShowShadowThumbnail?: (show: boolean) => void;
-  setContactShadowSettings?: (settings: ContactShadowSettings) => void;
   setLightMode?: (mode: 'directional' | 'hdr') => void;
   loadHDRTexture?: (file: File) => Promise<void>;
   setHDRTexture?: (texture: WebGLTexture | null) => void;
@@ -152,7 +147,6 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     scene,
     windManager,
     lightingManager,
-    shadowRenderer,
     cameraController,
     objectWindSettings,
     onGizmoModeChange,
@@ -163,7 +157,6 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     setShadowResolution,
     setShadowEnabled,
     setShowShadowThumbnail,
-    setContactShadowSettings,
     setLightMode,
     loadHDRTexture,
     setHDRTexture,
@@ -177,7 +170,6 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     scene,
     windManager,
     lightingManager,
-    shadowRenderer,
     cameraController,
 
     // Object wind settings accessors
@@ -201,7 +193,6 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     setShadowResolution: setShadowResolution || (() => {}),
     setShadowEnabled: setShadowEnabled || (() => {}),
     setShowShadowThumbnail: setShowShadowThumbnail || (() => {}),
-    setContactShadowSettings: setContactShadowSettings || (() => {}),
     setLightMode: setLightMode || (() => {}),
     loadHDRTexture: loadHDRTexture || (async () => {}),
     setHDRTexture: setHDRTexture || (() => {}),
