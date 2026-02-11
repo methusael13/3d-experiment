@@ -160,7 +160,7 @@ fn sampleBiomeAlbedoArray(
 
 // Sample biome normal from texture array and unpack from [0,1] to [-1,1]
 // Returns Y-up tangent space normal, or (0,1,0) if not enabled
-// layer: biome layer index (0-4)
+// layer: biome layer index (0-2: grass, rock, forest)
 // worldXZ: world position for UV calculation
 fn sampleBiomeNormalArray(
   layer: i32,
@@ -756,25 +756,29 @@ fn sampleShadowHard(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f) -> f32
 }
 
 // Sample shadow map with PCF (soft shadows)
-fn sampleShadowPCF(lightSpacePos: vec4f, kernelSize: i32) -> f32 {
+// Note: WGSL requires uniform control flow - we must always sample.
+// Bounds checking is done via clamp and blend instead of early return.
+fn sampleShadowPCF(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f, kernelSize: i32) -> f32 {
   // Perspective divide to get NDC coordinates
   let projCoords = lightSpacePos.xyz / lightSpacePos.w;
   
   // Transform from NDC [-1,1] to texture UV [0,1]
-  let shadowUV = projCoords.xy * 0.5 + 0.5;
+  // WebGPU: NDC has Y pointing up, but texture UV has Y pointing down (origin top-left)
+  // So we need to flip Y: shadowUV.y = 1 - (ndc.y * 0.5 + 0.5) = 0.5 - ndc.y * 0.5
+  let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
   
-  // Check if outside shadow map bounds
-  if (shadowUV.x < 0.0 || shadowUV.x > 1.0 || 
-      shadowUV.y < 0.0 || shadowUV.y > 1.0 ||
-      projCoords.z < 0.0 || projCoords.z > 1.0) {
-    return 1.0;
-  }
+  // Apply slope-dependent receiver-side bias to prevent self-shadowing artifacts
+  let NdotL = max(dot(normal, lightDir), 0.001);
+  let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL; // tan(acos(NdotL))
+  let baseBias = 0.0003;
+  let slopeBias = 0.002;
+  let shadowBias = baseBias + clamp(slopeFactor, 0.0, 5.0) * slopeBias;
+  let biasedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
   
-  let currentDepth = projCoords.z;
   let shadowMapSize = textureDimensions(shadowMap);
   let texelSize = vec2f(1.0 / f32(shadowMapSize.x), 1.0 / f32(shadowMapSize.y));
   
-  // PCF kernel sampling
+  // PCF kernel sampling - always sample (uniform control flow)
   var shadow = 0.0;
   let halfKernel = kernelSize / 2;
   var samples = 0.0;
@@ -782,12 +786,23 @@ fn sampleShadowPCF(lightSpacePos: vec4f, kernelSize: i32) -> f32 {
   for (var x = -halfKernel; x <= halfKernel; x++) {
     for (var y = -halfKernel; y <= halfKernel; y++) {
       let offset = vec2f(f32(x), f32(y)) * texelSize;
-      shadow += textureSampleCompare(shadowMap, shadowSampler, shadowUV + offset, currentDepth);
+      let sampleUV = clamp(shadowUV + offset, vec2f(0.001), vec2f(0.999));
+      shadow += textureSampleCompare(shadowMap, shadowSampler, sampleUV, biasedDepth);
       samples += 1.0;
     }
   }
   
-  return shadow / samples;
+  let shadowValue = shadow / samples;
+  
+  // Check if outside shadow map bounds AFTER sampling
+  // If outside bounds, return 1.0 (no shadow)
+  let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
+  let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
+  let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
+  let inBounds = inBoundsX * inBoundsY * inBoundsZ;
+  
+  // Return shadow value if in bounds, 1.0 (no shadow) if out of bounds
+  return mix(1.0, shadowValue, inBounds);
 }
 
 // Calculate shadow factor with distance-based fade
@@ -805,9 +820,15 @@ fn calculateShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDi
   let fadeEnd = material.shadowRadius;
   let fadeFactor = 1.0 - smoothstep(fadeStart, fadeEnd, distanceFromCamera);
   
-  // Always sample shadow map (uniform control flow required for textureSampleCompare)
-  // Use hard shadows with slope-based bias
-  let shadowValue = sampleShadowHard(lightSpacePos, normal, lightDir);
+  // Always sample both shadow methods (uniform control flow required)
+  // Hard shadows: single sample, sharp edges
+  let hardShadow = sampleShadowHard(lightSpacePos, normal, lightDir);
+  // Soft shadows: PCF kernel, blurred edges (3x3 kernel)
+  let softShadow = sampleShadowPCF(lightSpacePos, normal, lightDir, 3);
+  
+  // Blend between hard and soft shadows based on softness parameter
+  // shadowSoftness: 0 = hard shadows, 1 = soft PCF shadows
+  let shadowValue = mix(hardShadow, softShadow, material.shadowSoftness);
   
   // Apply fade and enable flag AFTER sampling
   // If shadows disabled or fully faded, result is 1.0 (no shadow)
@@ -820,6 +841,35 @@ fn calculateShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDi
 // ============================================================================
 // Fragment Shader
 // ============================================================================
+
+// Build a TBN (Tangent-Bitangent-Normal) matrix for transforming tangent-space
+// normals to world space. For terrain, we construct tangent along the world X-axis
+// and derive bitangent from the cross product.
+// worldNormal: the terrain normal in world space (Y-up)
+// Returns: mat3x3f where column 0 = tangent, column 1 = bitangent, column 2 = normal
+fn buildTerrainTBN(worldNormal: vec3f) -> mat3x3f {
+  // For terrain, tangent generally follows world X-axis
+  // We use cross product to compute a tangent perpendicular to the normal
+  let worldUp = vec3f(0.0, 1.0, 0.0);
+  
+  // Compute tangent: perpendicular to normal, in the XZ plane
+  // If normal is nearly vertical, tangent defaults to world X-axis
+  var tangent = cross(worldUp, worldNormal);
+  let tangentLen = length(tangent);
+  if (tangentLen < 0.001) {
+    // Normal is nearly straight up/down, use X-axis as tangent
+    tangent = vec3f(1.0, 0.0, 0.0);
+  } else {
+    tangent = tangent / tangentLen; // normalize
+  }
+  
+  // Compute bitangent: perpendicular to both normal and tangent
+  let bitangent = normalize(cross(worldNormal, tangent));
+  
+  // TBN matrix: transforms from tangent space to world space
+  // Column-major: TBN * tangentSpaceNormal = worldSpaceNormal
+  return mat3x3f(tangent, bitangent, worldNormal);
+}
 
 // Blend two normals using Reoriented Normal Mapping (RNM)
 // This properly combines the base normal with a detail normal
@@ -928,12 +978,21 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
              + forestAlbedoColor * forestWeight;
   
   // ===== Sample Biome Normal Maps from Texture Arrays =====
-  // Sample normal textures for each biome (3 biomes)
-  let grassBiomeNormal = sampleBiomeNormalArray(BIOME_GRASS, worldXZ);
-  let rockBiomeNormal = sampleBiomeNormalArray(BIOME_ROCK, worldXZ);
-  let forestBiomeNormal = sampleBiomeNormalArray(BIOME_FOREST, worldXZ);
+  // Sample normal textures for each biome (3 biomes) - these are in tangent space
+  let grassBiomeNormalTS = sampleBiomeNormalArray(BIOME_GRASS, worldXZ);
+  let rockBiomeNormalTS = sampleBiomeNormalArray(BIOME_ROCK, worldXZ);
+  let forestBiomeNormalTS = sampleBiomeNormalArray(BIOME_FOREST, worldXZ);
   
-  // Blend biome normals weighted by biome presence
+  // Build TBN matrix to transform biome normals from tangent space to world space
+  // This ensures proper normal blending on steep slopes
+  let TBN = buildTerrainTBN(blendedNormal);
+  
+  // Transform each biome normal from tangent space to world space
+  let grassBiomeNormal = normalize(TBN * grassBiomeNormalTS);
+  let rockBiomeNormal = normalize(TBN * rockBiomeNormalTS);
+  let forestBiomeNormal = normalize(TBN * forestBiomeNormalTS);
+  
+  // Blend biome normals weighted by biome presence (now in world space)
   let biomeDetailNormal = blendBiomeNormals(
     grassBiomeNormal, grassWeight,
     rockBiomeNormal, rockWeight,
@@ -947,12 +1006,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let hasAnyBiomeNormal = getBiomeNormalEnabled(BIOME_GRASS) + getBiomeNormalEnabled(BIOME_ROCK) 
                         + getBiomeNormalEnabled(BIOME_FOREST);
   
-  // If any biome normal maps are enabled, blend them with the base normal
+  // If any biome normal maps are enabled, use the TBN-transformed world-space normals
   var finalBlendedNormal = blendedNormal;
   if (hasAnyBiomeNormal > 0.0) {
-    // Blend biome detail normals onto the base normal using RNM
-    // This adds texture detail on top of the terrain shape
-    finalBlendedNormal = blendNormalsRNM(blendedNormal, biomeDetailNormal);
+    // Biome normals are already transformed to world space via TBN
+    // Use weighted blend to combine base terrain normal with biome detail
+    // This preserves the macro terrain shape while adding biome micro-detail
+    finalBlendedNormal = normalize(blendedNormal * 0.5 + biomeDetailNormal * 0.5);
   }
   
   // Use final blended normal for lighting
