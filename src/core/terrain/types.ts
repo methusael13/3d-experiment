@@ -77,11 +77,12 @@ export interface TerrainMaterialParams {
 
 /**
  * GPU uniform data for biome texture parameters.
- * Packed for texture array sampling (48 bytes total = 3 vec4f).
+ * Packed for texture array sampling (64 bytes total = 4 vec4f).
  * 
  * Matches shader struct BiomeTextureParams (simplified for 3 biomes):
  * - albedoEnabled: vec4f [grass, rock, forest, unused]
  * - normalEnabled: vec4f [grass, rock, forest, unused]
+ * - aoEnabled: vec4f [grass, rock, forest, unused]
  * - tilingScales: vec4f [grass, rock, forest, unused]
  */
 export interface BiomeTextureUniformData {
@@ -90,6 +91,9 @@ export interface BiomeTextureUniformData {
   
   // Normal map enable flags
   normalEnabled: [number, number, number, number]; // [grass, rock, forest, unused]
+  
+  // AO map enable flags
+  aoEnabled: [number, number, number, number]; // [grass, rock, forest, unused]
   
   // Tiling scales for biomes (world units per texture tile)
   tilingScales: [number, number, number, number]; // [grass, rock, forest, unused]
@@ -132,6 +136,14 @@ export function createBiomeTextureUniform(params: TerrainMaterialParams): BiomeT
       0.0,  // unused
     ],
     
+    // AO map enable flags [grass, rock, forest, unused]
+    aoEnabled: [
+      params.grassTexture?.maps.ao ? 1.0 : 0.0,
+      params.rockTexture?.maps.ao ? 1.0 : 0.0,
+      params.forestTexture?.maps.ao ? 1.0 : 0.0,
+      0.0,  // unused
+    ],
+    
     // Tiling scales [grass, rock, forest, unused]
     tilingScales: [
       getTilingScale(params.grassTexture),
@@ -144,7 +156,7 @@ export function createBiomeTextureUniform(params: TerrainMaterialParams): BiomeT
 
 /**
  * Convert BiomeTextureUniformData to Float32Array for GPU upload
- * Layout matches shader struct BiomeTextureParams (48 bytes = 12 floats)
+ * Layout matches shader struct BiomeTextureParams (64 bytes = 16 floats)
  */
 export function biomeTextureUniformToFloat32Array(data: BiomeTextureUniformData): Float32Array {
   return new Float32Array([
@@ -152,6 +164,8 @@ export function biomeTextureUniformToFloat32Array(data: BiomeTextureUniformData)
     ...data.albedoEnabled,
     // normalEnabled: vec4f [grass, rock, forest, unused]  
     ...data.normalEnabled,
+    // aoEnabled: vec4f [grass, rock, forest, unused]
+    ...data.aoEnabled,
     // tilingScales: vec4f [grass, rock, forest, unused]
     ...data.tilingScales,
   ]);

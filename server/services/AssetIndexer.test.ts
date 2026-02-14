@@ -74,7 +74,36 @@ describe('AssetIndexer', () => {
       expect(vegetationAsset?.type).toBe('model');
     });
 
-    it.todo('should detect IBL category from path - requires HDR standalone file support');
+    it('should detect IBL category from path', async () => {
+      tmpDir = createTempStructure({
+        'ibl/autumn_field.hdr': 'hdr-content',
+        'ibl/night_sky.exr': 'exr-content',
+      });
+      
+      const { AssetIndexer } = await import('./AssetIndexer.js');
+      const mockDb = createMockDatabase();
+      vi.spyOn(await import('../db/database.js'), 'getDatabase').mockReturnValue(mockDb);
+      
+      const indexer = new AssetIndexer(tmpDir);
+      await indexer.fullIndex();
+      
+      const hdrAsset = mockDb.insertedAssets.find((a: any) => 
+        a.path.includes('autumn_field')
+      );
+      const exrAsset = mockDb.insertedAssets.find((a: any) => 
+        a.path.includes('night_sky')
+      );
+      
+      expect(hdrAsset).toBeDefined();
+      expect(hdrAsset?.type).toBe('texture');
+      expect(hdrAsset?.category).toBe('ibl');
+      expect(hdrAsset?.subtype).toBe('environment');
+      
+      expect(exrAsset).toBeDefined();
+      expect(exrAsset?.type).toBe('texture');
+      expect(exrAsset?.category).toBe('ibl');
+      expect(exrAsset?.subtype).toBe('environment');
+    });
 
     it('should detect rocks subtype from path', async () => {
       tmpDir = createTempStructure({
@@ -204,14 +233,63 @@ describe('AssetIndexer', () => {
     });
   });
 
-  describe('HDR file parsing', () => {
-    it.todo('should parse standalone HDR files - requires HDR file support in indexer');
-    
-    // NOTE: Currently the indexer doesn't support standalone HDR files.
-    // HDR files in /ibl/ are individual assets, not a texture pack.
-    // To properly support IBL assets, we need to:
-    // 1. Add HDR file parsing similar to GLB file parsing
-    // 2. Or create a manifest.json in the ibl folder
+  describe('HDR/EXR file parsing', () => {
+    it('should parse standalone HDR files as IBL texture assets', async () => {
+      tmpDir = createTempStructure({
+        'ibl/studio.hdr': 'hdr-binary-content',
+      });
+      
+      const { AssetIndexer } = await import('./AssetIndexer.js');
+      const mockDb = createMockDatabase();
+      vi.spyOn(await import('../db/database.js'), 'getDatabase').mockReturnValue(mockDb);
+      
+      const indexer = new AssetIndexer(tmpDir);
+      await indexer.fullIndex();
+      
+      const hdrAsset = mockDb.insertedAssets.find((a: any) => 
+        a.path.includes('studio')
+      );
+      
+      expect(hdrAsset).toBeDefined();
+      expect(hdrAsset?.type).toBe('texture');
+      expect(hdrAsset?.category).toBe('ibl');
+      expect(hdrAsset?.name).toBe('Studio');
+      
+      // Should have one file entry
+      const files = mockDb.insertedFiles.filter((f: any) => 
+        f.assetId === hdrAsset?.id
+      );
+      expect(files.length).toBe(1);
+      expect(files[0].format).toBe('hdr');
+    });
+
+    it('should parse standalone EXR files as IBL texture assets', async () => {
+      tmpDir = createTempStructure({
+        'ibl/NightSkyHDRI001_4K_HDR.exr': 'exr-binary-content',
+      });
+      
+      const { AssetIndexer } = await import('./AssetIndexer.js');
+      const mockDb = createMockDatabase();
+      vi.spyOn(await import('../db/database.js'), 'getDatabase').mockReturnValue(mockDb);
+      
+      const indexer = new AssetIndexer(tmpDir);
+      await indexer.fullIndex();
+      
+      const exrAsset = mockDb.insertedAssets.find((a: any) => 
+        a.path.includes('NightSkyHDRI001')
+      );
+      
+      expect(exrAsset).toBeDefined();
+      expect(exrAsset?.type).toBe('texture');
+      expect(exrAsset?.category).toBe('ibl');
+      expect(exrAsset?.subtype).toBe('environment');
+      
+      const files = mockDb.insertedFiles.filter((f: any) => 
+        f.assetId === exrAsset?.id
+      );
+      expect(files.length).toBe(1);
+      expect(files[0].format).toBe('exr');
+    });
   });
 
   describe('Path category override', () => {

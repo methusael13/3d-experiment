@@ -11,6 +11,10 @@ export interface WebGPUShadowSettings {
   resolution: number;
   shadowRadius: number;
   softShadows: boolean;
+  // CSM settings
+  csmEnabled: boolean;
+  cascadeCount: number;
+  cascadeBlendFraction: number;
 }
 
 /**
@@ -44,6 +48,12 @@ const resolutionOptions = [
   { value: '1024', label: '1024' },
   { value: '2048', label: '2048' },
   { value: '4096', label: '4096' },
+];
+
+const cascadeCountOptions = [
+  { value: '2', label: '2 Cascades' },
+  { value: '3', label: '3 Cascades' },
+  { value: '4', label: '4 Cascades' },
 ];
 
 const ssaoSamplesOptions = [
@@ -98,6 +108,30 @@ export function RenderingPanel({
   const handleSoftShadows = useCallback(
     (enabled: boolean) => {
       onShadowSettingsChange({ softShadows: enabled });
+    },
+    [onShadowSettingsChange]
+  );
+
+  // CSM enabled
+  const handleCSMEnabled = useCallback(
+    (enabled: boolean) => {
+      onShadowSettingsChange({ csmEnabled: enabled });
+    },
+    [onShadowSettingsChange]
+  );
+
+  // CSM cascade count
+  const handleCascadeCount = useCallback(
+    (value: string) => {
+      onShadowSettingsChange({ cascadeCount: parseInt(value, 10) });
+    },
+    [onShadowSettingsChange]
+  );
+
+  // CSM cascade blend fraction
+  const handleCascadeBlendFraction = useCallback(
+    (value: number) => {
+      onShadowSettingsChange({ cascadeBlendFraction: value });
     },
     [onShadowSettingsChange]
   );
@@ -215,6 +249,39 @@ export function RenderingPanel({
             onChange={onShadowDebugToggle}
             disabled={controlsDisabled}
           />
+
+          {/* CSM Settings */}
+          <div class={styles.csmSection}>
+            <Checkbox
+              label="Cascaded Shadow Maps (CSM)"
+              checked={shadowSettings.csmEnabled}
+              onChange={handleCSMEnabled}
+              disabled={controlsDisabled}
+            />
+
+            <div class={`${styles.csmControls} ${(!shadowSettings.csmEnabled || controlsDisabled) ? styles.disabled : ''}`}>
+              <div class={styles.controlGroup}>
+                <label class={styles.controlLabel}>Cascades</label>
+                <Select
+                  value={String(shadowSettings.cascadeCount)}
+                  options={cascadeCountOptions}
+                  onChange={handleCascadeCount}
+                  disabled={!shadowSettings.csmEnabled || controlsDisabled}
+                />
+              </div>
+
+              <Slider
+                label="Cascade Blend"
+                value={shadowSettings.cascadeBlendFraction}
+                min={0.01}
+                max={0.3}
+                step={0.01}
+                format={(v) => `${Math.round(v * 100)}%`}
+                onChange={handleCascadeBlendFraction}
+                disabled={!shadowSettings.csmEnabled || controlsDisabled}
+              />
+            </div>
+          </div>
         </div>
       </Section>
 

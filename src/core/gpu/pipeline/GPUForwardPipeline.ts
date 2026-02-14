@@ -74,6 +74,7 @@ export interface RenderOptions {
   wireframe?: boolean;
   ambientIntensity?: number;
   lightDirection?: [number, number, number];
+  lightColor?: [number, number, number];
   shadowEnabled?: boolean;
   shadowSoftShadows?: boolean;
   shadowRadius?: number;
@@ -94,6 +95,7 @@ export const DEFAULT_RENDER_OPTIONS: Required<RenderOptions> = {
   wireframe: false,
   ambientIntensity: 0.3,
   lightDirection: [1, 0, 1],
+  lightColor: [1, 1, 1],
   shadowEnabled: true,
   shadowSoftShadows: true,
   shadowRadius: 200,
@@ -258,6 +260,16 @@ export class GPUForwardPipeline {
     }
     if (config.resolution !== undefined) {
       this.shadowRenderer.setResolution(config.resolution);
+    }
+    // CSM settings
+    if (config.csmEnabled !== undefined) {
+      this.shadowRenderer.setCSMEnabled(config.csmEnabled);
+    }
+    if (config.cascadeCount !== undefined) {
+      this.shadowRenderer.setCascadeCount(config.cascadeCount);
+    }
+    if (config.cascadeBlendFraction !== undefined) {
+      this.shadowRenderer.setCascadeBlendFraction(config.cascadeBlendFraction);
     }
   }
   
@@ -483,14 +495,29 @@ export class GPUForwardPipeline {
       this.sceneEnvironment.setIBL(null);
     }
     
-    // Update SceneEnvironment with shadow map
+    // Update SceneEnvironment with shadow map and CSM resources
     if (mergedOptions.shadowEnabled) {
       const shadowMap = this.shadowRenderer.getShadowMap();
       if (shadowMap) {
         this.sceneEnvironment.setShadowMap(shadowMap.view);
       }
+      
+      // Update CSM resources if CSM is enabled
+      if (this.shadowRenderer.isCSMEnabled()) {
+        const csmArrayView = this.shadowRenderer.getShadowMapArrayView();
+        const csmUniformBuffer = this.shadowRenderer.getCSMUniformBuffer();
+        if (csmArrayView && csmUniformBuffer) {
+          this.sceneEnvironment.setCSM({
+            shadowArrayView: csmArrayView,
+            uniformBuffer: csmUniformBuffer,
+          });
+        }
+      } else {
+        this.sceneEnvironment.setCSM(null);
+      }
     } else {
       this.sceneEnvironment.setShadowMap(null);
+      this.sceneEnvironment.setCSM(null);
     }
     
     // Get near/far from camera or use defaults

@@ -64,6 +64,7 @@ export interface ShadowPassDependencies {
  * ShadowPass - Renders shadow map from light's perspective
  * Category: scene (shadow maps are used by scene passes)
  * 
+ * Supports both single shadow map and Cascaded Shadow Maps (CSM).
  * Uses actual mesh geometry via ShadowCaster interface. Scene objects that
  * implement ShadowCaster (terrain, etc.) render their own depth. Batched
  * objects (primitives) are handled separately via ObjectRendererGPU.
@@ -87,23 +88,41 @@ export class ShadowPass extends BaseRenderPass {
     
     if (!shadowEnabled) return;
     
-    // Update shadow renderer params and compute light space matrix
+    // Update shadow renderer params and compute light space matrix (single + CSM)
     this.shadowRenderer.updateLightMatrix({
       lightDirection: lightDirection as [number, number, number],
       cameraPosition: ctx.cameraPosition,
       cameraForward: ctx.cameraForward,
+      cameraNearPlane: ctx.near,
+      cameraFarPlane: this.shadowRenderer.getConfig().shadowRadius,
     });
     
-    const shadowMap = this.shadowRenderer.getShadowMap();
-    const lightSpaceMatrix = this.shadowRenderer.getLightSpaceMatrix();
     const shadowConfig = this.shadowRenderer.getConfig();
     const lightPos = this.shadowRenderer.getDirectionalLightPos();
+    
+    // Check if CSM is enabled
+    if (shadowConfig.csmEnabled) {
+      this.executeCSM(ctx, shadowConfig, lightPos);
+    } else {
+      this.executeSingleMap(ctx, shadowConfig, lightPos);
+    }
+  }
+  
+  /** Render single shadow map (non-CSM mode) */
+  private executeSingleMap(
+    ctx: RenderContext, 
+    shadowConfig: ReturnType<ShadowRendererGPU['getConfig']>,
+    lightPos: ArrayLike<number>
+  ): void {
+    const lightPosArray = [lightPos[0], lightPos[1], lightPos[2]] as [number, number, number];
+    const shadowMap = this.shadowRenderer.getShadowMap();
+    const lightSpaceMatrix = this.shadowRenderer.getLightSpaceMatrix();
     
     if (!shadowMap) return;
     
     // Begin shadow render pass
     const passEncoder = ctx.encoder.beginRenderPass({
-      label: 'unified-shadow-pass',
+      label: 'single-shadow-pass',
       colorAttachments: [],
       depthStencilAttachment: {
         view: shadowMap.view,
@@ -116,23 +135,65 @@ export class ShadowPass extends BaseRenderPass {
     passEncoder.setViewport(0, 0, shadowConfig.resolution, shadowConfig.resolution, 0, 1);
     
     // Render shadow casters via ShadowCaster interface
-    // This includes terrain and any other objects that implement ShadowCaster
     const shadowCasters = ctx.scene?.getShadowCasters() ?? [];
     for (const caster of shadowCasters) {
       if (caster.canCastShadows) {
-        caster.renderDepthOnly(
-          passEncoder,
-          lightSpaceMatrix,
-          lightPos
-        );
+        caster.renderDepthOnly(passEncoder, lightSpaceMatrix, lightPosArray);
       }
     }
 
     // Render batched object shadows via ObjectRendererGPU
-    // (PrimitiveObjects are batched together, not individual ShadowCasters)
-    this.objectRenderer.renderShadowPass(passEncoder, lightSpaceMatrix, lightPos);
+    this.objectRenderer.renderShadowPass(passEncoder, lightSpaceMatrix, lightPosArray);
     
     passEncoder.end();
+  }
+  
+  /** Render multiple cascade shadow maps (CSM mode) */
+  private executeCSM(
+    ctx: RenderContext,
+    shadowConfig: ReturnType<ShadowRendererGPU['getConfig']>,
+    lightPos: ArrayLike<number>
+  ): void {
+    const lightPosArray = [lightPos[0], lightPos[1], lightPos[2]] as [number, number, number];
+    const shadowCasters = ctx.scene?.getShadowCasters() ?? [];
+    
+    // Render each cascade
+    for (let cascadeIdx = 0; cascadeIdx < shadowConfig.cascadeCount; cascadeIdx++) {
+      const cascadeView = this.shadowRenderer.getCascadeView(cascadeIdx);
+      const cascadeLightMatrix = this.shadowRenderer.getCascadeLightSpaceMatrix(cascadeIdx);
+      
+      if (!cascadeView) continue;
+      
+      // Begin cascade shadow render pass
+      const passEncoder = ctx.encoder.beginRenderPass({
+        label: `csm-shadow-pass-cascade-${cascadeIdx}`,
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: cascadeView,
+          depthClearValue: 1.0,
+          depthLoadOp: 'clear',
+          depthStoreOp: 'store',
+        },
+      });
+      
+      passEncoder.setViewport(0, 0, shadowConfig.resolution, shadowConfig.resolution, 0, 1);
+      
+      // Render shadow casters for this cascade
+      for (const caster of shadowCasters) {
+        if (caster.canCastShadows) {
+          caster.renderDepthOnly(passEncoder, cascadeLightMatrix, lightPosArray);
+        }
+      }
+
+      // Render batched object shadows for this cascade
+      this.objectRenderer.renderShadowPass(passEncoder, cascadeLightMatrix, lightPosArray);
+      
+      passEncoder.end();
+    }
+    
+    // Also render single shadow map for fallback/compatibility
+    // This ensures non-CSM aware receivers still work
+    this.executeSingleMap(ctx, shadowConfig, lightPos);
   }
 }
 
@@ -169,26 +230,26 @@ export class OpaquePass extends BaseRenderPass {
   execute(ctx: RenderContext): void {
     const { 
       wireframe, ambientIntensity, lightDirection,
-      shadowEnabled, shadowSoftShadows, shadowRadius,
-      dynamicIBL
+      lightColor, shadowEnabled, shadowSoftShadows,
+      shadowRadius, dynamicIBL
     } = ctx.options;
     
     // Get terrain from scene
     const terrainManager = ctx.scene?.getWebGPUTerrain()?.getTerrainManager() ?? null;
-    
+
     // Get shadow map and light space matrix if shadows enabled
     const lightSpaceMatrix = shadowEnabled ? this.shadowRenderer.getLightSpaceMatrix() : null;
     const shadowMap = shadowEnabled ? this.shadowRenderer.getShadowMap() : null;
-    
+
     // Determine loadOp based on whether sky pass ran
     const loadOp = ctx.options.skyMode !== 'none' ? 'load' : 'clear';
-    
+
     const pass = ctx.encoder.beginRenderPass({
       label: 'opaque-pass',
       colorAttachments: [ctx.getColorAttachment(loadOp as 'clear' | 'load')],
       depthStencilAttachment: ctx.getDepthAttachment('clear'),
     });
-    
+
     // Render terrain (terrain uses its own SceneEnvironment integration)
     if (terrainManager?.isReady) {
       // Build shadow params for terrain (terrain has its own shadow implementation)
@@ -205,7 +266,7 @@ export class OpaquePass extends BaseRenderPass {
         modelMatrix: this.identityMatrix,
         cameraPosition: ctx.cameraPosition,
         lightDirection,
-        lightColor: [1, 1, 1],
+        lightColor,
         ambientIntensity,
         wireframe,
         shadow: shadowParams,
@@ -218,7 +279,7 @@ export class OpaquePass extends BaseRenderPass {
       viewProjectionMatrix: ctx.viewProjectionMatrix,
       cameraPosition: ctx.cameraPosition,
       lightDirection,
-      lightColor: [1, 1, 1] as [number, number, number],
+      lightColor,
       ambientIntensity,
       // Shadow parameters for objects to receive shadows
       lightSpaceMatrix: lightSpaceMatrix ?? undefined,

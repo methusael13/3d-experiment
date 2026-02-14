@@ -17,7 +17,18 @@
 
 import { GPUContext } from '../../GPUContext';
 import { PlaceholderTextures } from './PlaceholderTextures';
+import type { UnifiedGPUBuffer } from '../../GPUBuffer';
 import { IBLResources, ENVIRONMENT_BINDINGS, ENV_BINDING_MASK, EnvironmentBindingMask } from './types';
+
+/**
+ * CSM (Cascaded Shadow Map) resources
+ */
+export interface CSMResources {
+  /** 2D depth texture array view containing all cascade shadow maps */
+  shadowArrayView: GPUTextureView;
+  /** CSM uniform buffer with light matrices and split distances */
+  uniformBuffer: UnifiedGPUBuffer;
+}
 
 /**
  * Manages the shared environment bind group for all renderers
@@ -35,6 +46,7 @@ export class SceneEnvironment {
   // Current resource state
   private currentShadowMapView: GPUTextureView | null = null;
   private currentIBL: IBLResources | null = null;
+  private currentCSM: CSMResources | null = null;
 
   // Track if bind group needs rebuild
   private needsRebuild: boolean = false;
@@ -63,6 +75,7 @@ export class SceneEnvironment {
 
   /**
    * Create a bind group with the given resources (or placeholders)
+   * Includes all 9 bindings (0-8) including CSM for compatibility with ALL mask
    */
   private createBindGroup(
     shadowMapView: GPUTextureView | null,
@@ -74,6 +87,10 @@ export class SceneEnvironment {
     const brdf = ibl?.brdfLut ?? this.placeholders.brdfLutView;
     const cubeSampler = ibl?.cubemapSampler ?? this.placeholders.cubemapSampler;
     const lutSampler = ibl?.lutSampler ?? this.placeholders.lutSampler;
+    
+    // CSM resources (use placeholders if not set)
+    const csmArray = this.currentCSM?.shadowArrayView ?? this.placeholders.csmArrayView;
+    const csmBuffer = this.currentCSM?.uniformBuffer?.buffer ?? this.placeholders.csmUniformBuffer;
 
     return this.ctx.device.createBindGroup({
       label: 'shared-environment-bindgroup',
@@ -86,6 +103,8 @@ export class SceneEnvironment {
         { binding: ENVIRONMENT_BINDINGS.BRDF_LUT, resource: brdf },
         { binding: ENVIRONMENT_BINDINGS.IBL_CUBE_SAMPLER, resource: cubeSampler },
         { binding: ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER, resource: lutSampler },
+        { binding: ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY, resource: csmArray },
+        { binding: ENVIRONMENT_BINDINGS.CSM_UNIFORMS, resource: { buffer: csmBuffer } },
       ],
     });
   }
@@ -116,16 +135,36 @@ export class SceneEnvironment {
   }
 
   /**
-   * Update both shadow and IBL in one call
-   * More efficient than calling setShadowMap + setIBL separately
+   * Set CSM resources for cascaded shadow mapping
+   * @param csm CSM resources (null to disable CSM)
    */
-  update(shadowMapView: GPUTextureView | null, ibl: IBLResources | null): void {
+  setCSM(csm: CSMResources | null): void {
+    if (this.currentCSM !== csm) {
+      this.currentCSM = csm;
+      this.needsRebuild = true;
+      this.invalidateMaskedBindGroups();
+    }
+  }
+
+  /**
+   * Update all environment resources in one call
+   * More efficient than calling individual setters
+   */
+  update(
+    shadowMapView: GPUTextureView | null, 
+    ibl: IBLResources | null,
+    csm?: CSMResources | null
+  ): void {
     const shadowChanged = this.currentShadowMapView !== shadowMapView;
     const iblChanged = this.currentIBL !== ibl;
+    const csmChanged = csm !== undefined && this.currentCSM !== csm;
 
-    if (shadowChanged || iblChanged) {
+    if (shadowChanged || iblChanged || csmChanged) {
       this.currentShadowMapView = shadowMapView;
       this.currentIBL = ibl;
+      if (csm !== undefined) {
+        this.currentCSM = csm;
+      }
       this.needsRebuild = true;
       this.invalidateMaskedBindGroups();
     }
@@ -143,6 +182,13 @@ export class SceneEnvironment {
    */
   hasShadow(): boolean {
     return this.currentShadowMapView !== null;
+  }
+
+  /**
+   * Check if CSM is currently active
+   */
+  hasCSM(): boolean {
+    return this.currentCSM !== null;
   }
 
   /**
@@ -179,6 +225,7 @@ export class SceneEnvironment {
   clear(): void {
     this.currentShadowMapView = null;
     this.currentIBL = null;
+    this.currentCSM = null;
     this.needsRebuild = true;
     this.invalidateMaskedBindGroups();
   }
@@ -245,6 +292,25 @@ export class SceneEnvironment {
         binding: ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER,
         visibility: GPUShaderStage.FRAGMENT,
         sampler: { type: 'filtering' },
+      });
+    }
+    
+    // CSM resources
+    if (mask & ENV_BINDING_MASK.CSM_SHADOW_ARRAY) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { 
+          sampleType: 'depth',
+          viewDimension: '2d-array',
+        },
+      });
+    }
+    if (mask & ENV_BINDING_MASK.CSM_UNIFORMS) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.CSM_UNIFORMS,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: 'uniform' },
       });
     }
     
@@ -323,6 +389,27 @@ export class SceneEnvironment {
     }
     if (mask & ENV_BINDING_MASK.IBL_LUT_SAMPLER) {
       entries.push({ binding: ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER, resource: lutSampler });
+    }
+    
+    // CSM resources
+    if (mask & ENV_BINDING_MASK.CSM_SHADOW_ARRAY) {
+      const csmArray = this.currentCSM?.shadowArrayView ?? this.placeholders.csmArrayView;
+      entries.push({ binding: ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY, resource: csmArray });
+    }
+    if (mask & ENV_BINDING_MASK.CSM_UNIFORMS) {
+      if (this.currentCSM?.uniformBuffer) {
+        entries.push({ 
+          binding: ENVIRONMENT_BINDINGS.CSM_UNIFORMS, 
+          resource: { buffer: this.currentCSM.uniformBuffer.buffer } 
+        });
+      } else {
+        // Skip CSM uniforms if not available - shader should check csmEnabled flag
+        // To prevent binding errors, we need a placeholder buffer
+        entries.push({ 
+          binding: ENVIRONMENT_BINDINGS.CSM_UNIFORMS, 
+          resource: { buffer: this.placeholders.csmUniformBuffer } 
+        });
+      }
     }
     
     return this.ctx.device.createBindGroup({

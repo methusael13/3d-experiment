@@ -48,6 +48,7 @@ export interface SceneBuilderStore {
   transformVersion: Signal<number>;  // Incremented when object transforms change
   
   // Viewport state
+  viewportInitialized: Signal<boolean>;
   viewportState: Signal<ViewportState>;
   gizmoMode: Signal<GizmoMode>;
   gizmoOrientation: Signal<GizmoOrientation>;
@@ -81,6 +82,7 @@ export interface SceneBuilderStore {
   setShowGrid(show: boolean): void;
   setShowAxes(show: boolean): void;
   setIsWebGPU(enabled: boolean): void;
+  setViewportInitialized(): void;
   
   // Camera bounds management
   updateCameraFromSceneBounds(): void;
@@ -96,6 +98,7 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   const selectedIds = signal<Set<string>>(new Set());
   const expandedGroupIds = signal<Set<string>>(new Set());
   
+  const viewportInitialized = signal<boolean>(false);
   const viewportState = signal<ViewportState>({
     mode: 'solid',
     showGrid: true,
@@ -229,6 +232,10 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     viewport?.setGizmoOrientation(orientation);
   }
   
+  function setViewportInitialized() {
+    viewportInitialized.value = true;
+  }
+
   function setViewportMode(mode: 'solid' | 'wireframe'): void {
     viewportState.value = { ...viewportState.value, mode };
     viewport?.setViewportMode(mode);
@@ -368,6 +375,7 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     groups,
     selectedIds,
     expandedGroupIds,
+    viewportInitialized,
     viewportState,
     gizmoMode,
     gizmoOrientation,
@@ -399,6 +407,7 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     toggleGroup,
     setGizmoMode,
     setGizmoOrientation,
+    setViewportInitialized,
     setViewportMode,
     setShowGrid,
     setShowAxes,

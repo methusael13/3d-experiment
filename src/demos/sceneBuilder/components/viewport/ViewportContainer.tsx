@@ -134,32 +134,41 @@ export function ViewportContainer({
     };
     
     const viewport = new Viewport(canvasRef.current, viewportOptions);
-    
-    if (!viewport.init()) {
-      console.error('[ViewportContainer] Failed to initialize Viewport');
-      return;
+    const asyncInit = async () => {
+      const initiated = await viewport.init();
+      if (!initiated) {
+        console.error('[ViewportContainer] Failed to initialize Viewport');
+        return;
+      }
+
+      viewportRef.current = viewport;
+      store.viewport = viewport;
+      
+      // Set overlay container
+      if (containerRef.current) {
+        viewport.setOverlayContainer(containerRef.current);
+      }
+      
+      // Get GL context and notify
+      if (onInitialized) {
+        onInitialized(viewport);
+      }
     }
-    
-    viewportRef.current = viewport;
-    store.viewport = viewport;
-    
-    // Set overlay container
-    if (containerRef.current) {
-      viewport.setOverlayContainer(containerRef.current);
-    }
-    
-    // Get GL context and notify
-    if (onInitialized) {
-      onInitialized(viewport);
-    }
-    
+    asyncInit();
+
     return () => {
       viewport.destroy();
       viewportRef.current = null;
       store.viewport = null;
     };
   }, []); // Only run once on mount
-  
+
+  useSignalEffect(() => {
+    // Update gizmo target on selection change
+    const _ = store.selectedIds.value;
+    updateGizmoTarget();
+  });
+
   // ==================== Sync State to Viewport ====================
   
   const updateGizmoTarget = useCallback(() => {

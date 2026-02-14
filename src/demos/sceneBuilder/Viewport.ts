@@ -9,7 +9,7 @@ import type { GizmoOrientation } from './gizmos/BaseGizmo';
 import { CameraController, type CameraState } from './CameraController';
 import { InputManager } from './InputManager';
 import { screenToRay, projectToScreen } from '../../core/utils/raycastUtils';
-import type { SceneLightingParams } from '../../core/sceneObjects/lights';
+import type { DirectionalLightParams, RGBColor, SceneLightingParams } from '../../core/sceneObjects/lights';
 import type {
   WindParams,
   ObjectWindSettings,
@@ -201,7 +201,7 @@ export class Viewport {
   /**
    * Initialize WebGL, renderers, camera, and start render loop
    */
-  init(): boolean {
+  async init(): Promise<boolean> {
     // Set physical canvas size (high resolution for HiDPI)
     this.canvas.width = this.renderWidth;
     this.canvas.height = this.renderHeight;
@@ -210,7 +210,7 @@ export class Viewport {
     this.canvas.style.width = this.logicalWidth + 'px';
     this.canvas.style.height = this.logicalHeight + 'px';
 
-    this.initWebGPU();
+    await this.initWebGPU();
     this.initCamera();
     this.initGizmo();
     this.startRendering();
@@ -462,7 +462,10 @@ export class Viewport {
     const sunIntensity = (this.lightParams as any)?.sunIntensity ?? 20;
     const hdrExposure = (this.lightParams as any)?.hdrExposure ?? 1.0;
     const ambientIntensity = (this.lightParams as any)?.ambient ?? 0.3;
-    
+    const lightColor = isHDR
+      ? [1.0, 1.0, 1.0] as RGBColor
+      : (this.lightParams as DirectionalLightParams).effectiveColor;
+
     // Get pre-computed light direction from DirectionalLight (avoids redundant calculation)
     // Only available on directional light type, not HDR
     const lightDirection = (this.lightParams as any)?.direction as [number, number, number] | undefined;
@@ -479,6 +482,7 @@ export class Viewport {
       wireframe: this.viewportMode == 'wireframe',
       ambientIntensity,
       lightDirection,  // Pass pre-computed direction
+      lightColor,
       dynamicIBL: this.dynamicIBLEnabled,  // Pass Dynamic IBL state
     };
     

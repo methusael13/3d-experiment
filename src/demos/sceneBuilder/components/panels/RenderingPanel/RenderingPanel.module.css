@@ -48,3 +48,21 @@
 .disabledSection {
   opacity: 0.5;
 }
+
+/* CSM Section */
+.csmSection {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--sb-border-color, rgba(255, 255, 255, 0.1));
+}
+
+.csmControls {
+  margin-top: 8px;
+  margin-left: 16px;
+  transition: opacity 0.15s;
+}
+
+.csmControls.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}

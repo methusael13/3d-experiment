@@ -66,7 +66,6 @@ export function SceneBuilderApp({
     viewport.setSceneGraph(sceneGraph);
     viewport.setScene(scene);
     
-    
     store.setupSceneCallbacks();
     // Initial sync
     store.syncFromScene();
@@ -75,7 +74,8 @@ export function SceneBuilderApp({
     const lightParams = lightingManager.getLightParams();
     viewport.setLightParams(lightParams);
     viewport.setWindParams(windManager.getShaderUniforms());
-    
+    store.setViewportInitialized();
+
     console.log('[SceneBuilderApp] Initialized');
   }, [store]);
   

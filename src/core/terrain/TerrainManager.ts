@@ -23,6 +23,7 @@ import { ErosionSimulator, HydraulicErosionParams, ThermalErosionParams } from '
 import { BiomeMaskGenerator, BiomeParams, createDefaultBiomeParams, PlantRegistry } from '../vegetation';
 import { CDLODRendererGPU, CDLODGPUConfig, CDLODRenderParams, TerrainMaterial } from './CDLODRendererGPU';
 import { QuadtreeConfig } from './TerrainQuadtree';
+import { BiomeType, TextureType } from './TerrainBiomeTextureResources';
 
 /**
  * Terrain generation configuration
@@ -785,8 +786,8 @@ export class TerrainManager {
    * @param tilingScale World-space tiling scale (meters per tile)
    */
   async setBiomeTexture(
-    biome: 'grass' | 'rock' | 'forest',
-    textureType: 'albedo' | 'normal',
+    biome: BiomeType,
+    textureType: TextureType,
     url: string,
     tilingScale?: number
   ): Promise<void> {
@@ -805,8 +806,8 @@ export class TerrainManager {
    * @param textureType Which texture to clear (albedo or normal)
    */
   clearBiomeTexture(
-    biome: 'grass' | 'rock' | 'forest',
-    textureType: 'albedo' | 'normal'
+    biome: BiomeType,
+    textureType: TextureType
   ): void {
     this.renderer?.clearBiomeTexture(biome, textureType);
   }

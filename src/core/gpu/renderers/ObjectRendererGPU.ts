@@ -34,6 +34,7 @@ import { registerWGSLShader, getWGSLShaderSource } from '../../../demos/sceneBui
 
 // Import shared environment (provides Group 3 bind group with shadow + IBL)
 import { SceneEnvironment, PlaceholderTextures } from './shared';
+import { ENVIRONMENT_BINDINGS, ENV_BINDING_MASK } from './shared/types';
 
 // ============ Types ============
 
@@ -118,6 +119,7 @@ export interface ObjectRenderParams {
   lightSpaceMatrix?: mat4 | Float32Array;  // For shadow mapping
   shadowEnabled?: boolean;
   shadowBias?: number;
+  csmEnabled?: boolean;  // Enable Cascaded Shadow Maps (requires CSM resources in SceneEnvironment)
 }
 
 /**
@@ -321,22 +323,12 @@ export class ObjectRendererGPU {
   
   /**
    * Create environment bind group layout for Group 3
-   * Must match SceneEnvironment's layout exactly
+   * Must match SceneEnvironment's layout exactly - includes CSM bindings 7-8
    */
   private createEnvironmentBindGroupLayout(): GPUBindGroupLayout {
     return this.ctx.device.createBindGroupLayout({
       label: 'object-environment-layout',
-      entries: [
-        // Shadow resources (bindings 0-1)
-        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
-        // IBL resources (bindings 2-6)
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: 'cube' } },
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: 'cube' } },
-        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
-        { binding: 5, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-        { binding: 6, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-      ],
+      entries: SceneEnvironment.getBindGroupLayoutEntriesForMask(ENV_BINDING_MASK.ALL),
     });
   }
   
@@ -720,7 +712,7 @@ export class ObjectRendererGPU {
     // Shadow parameters (16 bytes) - indices 44-47
     data[44] = params.shadowEnabled ? 1.0 : 0.0;
     data[45] = params.shadowBias ?? 0.002;
-    data[46] = 0; // pad
+    data[46] = params.csmEnabled ? 1.0 : 0.0;  // CSM enabled flag
     data[47] = 0; // pad
     
     this.globalUniformBuffer.write(this.ctx, data);

@@ -44,6 +44,13 @@ export class PlaceholderTextures {
   private _biomeMask: GPUTexture;
   private _biomeMaskView: GPUTextureView;
   
+  // CSM uniform buffer placeholder (identity matrices, CSM disabled)
+  private _csmUniformBuffer: GPUBuffer;
+  
+  // CSM shadow array placeholder (1x1x4 depth texture array for 4 cascades)
+  private _csmArray: GPUTexture;
+  private _csmArrayView: GPUTextureView;
+  
   private constructor(ctx: GPUContext) {
     const device = ctx.device;
     
@@ -201,6 +208,42 @@ export class PlaceholderTextures {
       { bytesPerRow: 4 },
       { width: 1, height: 1 }
     );
+    
+    // ============ CSM Placeholders ============
+    
+    // CSM uniform buffer placeholder (288 bytes)
+    // Layout: 4 identity matrices + vec4 splits (10000s) + vec4 config (0, 0, 0.1, 0)
+    const csmData = new Float32Array(72); // 288 / 4
+    // Initialize 4 identity matrices
+    for (let i = 0; i < 4; i++) {
+      const offset = i * 16;
+      csmData[offset + 0] = 1; csmData[offset + 5] = 1; csmData[offset + 10] = 1; csmData[offset + 15] = 1;
+    }
+    // Cascade splits (far away = no cascade selection)
+    csmData[64] = 10000; csmData[65] = 10000; csmData[66] = 10000; csmData[67] = 10000;
+    // Config: cascadeCount=0, csmEnabled=0, blendFraction=0.1, pad=0
+    csmData[68] = 0; csmData[69] = 0; csmData[70] = 0.1; csmData[71] = 0;
+    
+    this._csmUniformBuffer = device.createBuffer({
+      label: 'placeholder-csm-uniforms',
+      size: 288,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    new Float32Array(this._csmUniformBuffer.getMappedRange()).set(csmData);
+    this._csmUniformBuffer.unmap();
+    
+    // CSM shadow map array placeholder (1x1x4 depth texture array)
+    this._csmArray = device.createTexture({
+      label: 'placeholder-csm-array',
+      size: { width: 1, height: 1, depthOrArrayLayers: 4 },
+      format: 'depth32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this._csmArrayView = this._csmArray.createView({
+      dimension: '2d-array',
+      arrayLayerCount: 4,
+    });
   }
   
   /**
@@ -227,6 +270,8 @@ export class PlaceholderTextures {
       inst._normal.destroy();
       inst._sceneColorHDR.destroy();
       inst._biomeMask.destroy();
+      inst._csmUniformBuffer.destroy();
+      inst._csmArray.destroy();
       PlaceholderTextures.instance = null;
     }
   }
@@ -249,4 +294,7 @@ export class PlaceholderTextures {
   get sceneColorHDRView(): GPUTextureView { return this._sceneColorHDRView; }
   
   get biomeMaskView(): GPUTextureView { return this._biomeMaskView; }
+  
+  get csmUniformBuffer(): GPUBuffer { return this._csmUniformBuffer; }
+  get csmArrayView(): GPUTextureView { return this._csmArrayView; }
 }

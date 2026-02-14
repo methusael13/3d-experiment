@@ -32,7 +32,7 @@ const EXTENSION_MAP: Record<string, { type: AssetType; category?: AssetCategory;
   '.png': { type: 'texture' },
   '.webp': { type: 'texture' },
   '.tga': { type: 'texture' },
-  '.exr': { type: 'texture' },
+  '.exr': { type: 'texture', category: 'ibl', subtype: 'environment' },
   // HDR (textures with ibl category)
   '.hdr': { type: 'texture', category: 'ibl', subtype: 'environment' },
   // Materials
@@ -294,6 +294,18 @@ export class AssetIndexer {
         if (file.name.endsWith('.glb')) {
           const filePath = path.join(currentPath, file.name);
           const asset = await this.parseGlbFile(filePath);
+          if (asset) {
+            assets.push(asset);
+          }
+        }
+      }
+
+      // Process other standalone files (HDR, EXR, etc.) that match EXTENSION_MAP
+      for (const file of files) {
+        const ext = path.extname(file.name).toLowerCase();
+        if (ext !== '.glb' && EXTENSION_MAP[ext]) {
+          const filePath = path.join(currentPath, file.name);
+          const asset = await this.parseFile(filePath);
           if (asset) {
             assets.push(asset);
           }

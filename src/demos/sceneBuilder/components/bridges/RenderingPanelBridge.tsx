@@ -24,6 +24,10 @@ const defaultRenderingState: RenderingState = {
     resolution: 4096,
     shadowRadius: 200,
     softShadows: true,
+    // CSM defaults
+    csmEnabled: false,
+    cascadeCount: 4,
+    cascadeBlendFraction: 0.1,
   },
   ssaoSettings: {
     enabled: false,

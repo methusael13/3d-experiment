@@ -198,9 +198,13 @@ export function useKeyboardShortcuts() {
   
   // Attach to InputManager 'editor' channel on mount
   useEffect(() => {
+    if (!store.viewportInitialized.value) {
+      return;
+    }
+
     const viewport = store.viewport;
-    const inputManager: InputManager | undefined = (viewport as any)?.inputManager;
-    
+    const inputManager = viewport?.getInputManager();
+
     if (!inputManager) {
       console.warn('[useKeyboardShortcuts] No InputManager available');
       return;
@@ -216,5 +220,5 @@ export function useKeyboardShortcuts() {
     return () => {
       inputManager.off('editor', 'keydown', handler);
     };
-  }, [store.viewport]);
+  }, [store.viewportInitialized]);
 }

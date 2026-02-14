@@ -12,7 +12,8 @@ import { BiomeMaskPanelBridge } from './BiomeMaskPanelBridge';
 import { VegetationPanelBridge } from './VegetationPanelBridge';
 import { isGPUTerrainObject, type GPUTerrainSceneObject } from '../../../../core/sceneObjects';
 import { debounce } from '../../../../core/utils/debounce';
-import { TerrainManager } from '@/core/terrain';
+import { TerrainManager, TextureType } from '@/core/terrain';
+import { AssetFile } from 'server/types';
 
 // ==================== Default Parameter Sets ====================
 
@@ -463,6 +464,15 @@ export function ConnectedTerrainPanel({
       console.warn('[TerrainPanelBridge] Cannot set biome texture - no terrain manager');
       return;
     }
+
+    const findAndSetTextureType = async (assetFiles: AssetFile[], type: TextureType) => {
+      const texMap = assetFiles.find(f => f.fileSubType === type);
+      if (texMap?.path) {
+        const texUrl = texMap.path;
+        console.log(`[TerrainPanelBridge] Loading ${biome} ${type} from ${texUrl}`);
+        await manager.setBiomeTexture(biome, type, texUrl, tilingScale);
+      }
+    }
     
     const manager = terrainInfo.manager;
     
@@ -475,26 +485,11 @@ export function ConnectedTerrainPanel({
       const basePath = asset.path.substring(0, asset.path.lastIndexOf('/'));
       
       // Find basecolor/albedo map
-      const baseColorMap = assetFiles?.find(f => f.fileSubType === 'albedo');
-      const assetPreviewUrl = asset.previewPath;
-      if (baseColorMap?.path || assetPreviewUrl) {
-        const albedoUrl = baseColorMap?.path 
-          ? baseColorMap.path
-          : assetPreviewUrl;
-        
-        if (albedoUrl) {
-          console.log(`[TerrainPanelBridge] Loading ${biome} albedo from ${albedoUrl}`);
-          await manager.setBiomeTexture(biome, 'albedo', albedoUrl, tilingScale);
-        }
-      }
-      
+      await findAndSetTextureType(assetFiles, 'albedo');
       // Find normal map
-      const normalMap = assetFiles?.find(f => f.fileSubType === 'normal');
-      if (normalMap?.path) {
-        const normalUrl = normalMap.path;
-        console.log(`[TerrainPanelBridge] Loading ${biome} normal from ${normalUrl}`);
-        await manager.setBiomeTexture(biome, 'normal', normalUrl, tilingScale);
-      }
+      await findAndSetTextureType(assetFiles, 'normal');
+      // Find ao map
+      await findAndSetTextureType(assetFiles, 'ao');
       
       // Update tiling
       manager.setBiomeTiling(biome, tilingScale);
@@ -502,6 +497,7 @@ export function ConnectedTerrainPanel({
       // Clear the texture
       manager.clearBiomeTexture(biome, 'albedo');
       manager.clearBiomeTexture(biome, 'normal');
+      manager.clearBiomeTexture(biome, 'ao');
     }
   }, [selectedTerrainInfo]);
 

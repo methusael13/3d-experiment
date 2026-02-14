@@ -91,6 +91,8 @@ export interface TerrainShadowParams {
   shadowRadius: number;
   lightSpaceMatrix: mat4;
   shadowMap: UnifiedGPUTexture | null;
+  /** Enable Cascaded Shadow Maps (requires CSM resources in SceneEnvironment) */
+  csmEnabled?: boolean;
 }
 
 /**
@@ -702,8 +704,8 @@ export class CDLODRendererGPU {
     });
   }
   
-  /** Environment binding mask for terrain - only diffuse IBL (no specular, no shadow from Group 3) */
-  private static readonly TERRAIN_ENV_MASK = ENV_BINDING_MASK.DIFFUSE_IBL;
+  /** Environment binding mask for terrain - diffuse IBL + CSM shadow maps */
+  private static readonly TERRAIN_ENV_MASK = ENV_BINDING_MASK.DIFFUSE_IBL | ENV_BINDING_MASK.CSM_SHADOW;
   
   /**
    * Update the bind group with current textures using BindGroupBuilder
@@ -924,6 +926,7 @@ export class CDLODRendererGPU {
     const shadowSoftness = shadow?.softShadows ? 1.0 : 0.0;
     const shadowRadius = shadow?.shadowRadius ?? 200;
     const shadowFadeStart = shadowRadius * 0.8;
+    const csmEnabled = shadow?.csmEnabled ? 1.0 : 0.0;
     const lightSpaceMatrix = shadow?.lightSpaceMatrix || mat4.create();
     
     this.materialBuilder.reset()
@@ -933,7 +936,7 @@ export class CDLODRendererGPU {
       .vec4(lightDir[0], lightDir[1], lightDir[2], 1.0)                       // 12-15
       .vec4(lightColor[0], lightColor[1], lightColor[2], 0)                   // 16-19
       .vec4(params.ambientIntensity ?? 0.3, params.isSelected ? 1.0 : 0.0, shadowEnabled, shadowSoftness) // 20-23
-      .vec4(shadowRadius, shadowFadeStart, 0, 0)                              // 24-27
+      .vec4(shadowRadius, shadowFadeStart, csmEnabled, 0)                     // 24-27 (csmEnabled at index 26)
       .mat4(lightSpaceMatrix as Float32Array);                                // 28-43
     
     this.materialBuffer!.write(this.ctx, this.materialBuilder.build());

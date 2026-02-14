@@ -8,11 +8,14 @@
  * - Lazy allocation: tiny placeholder arrays until first texture is loaded
  * - Downsampling: 4K imports are downsampled to target resolution via canvas
  * 
+ * Refactored to use a config-driven approach for easy addition of new texture types.
+ * 
  * Shader bindings (Group 1):
  * - binding 0: biomeAlbedoArray (texture_2d_array)
  * - binding 1: biomeNormalArray (texture_2d_array)
- * - binding 2: biomeSampler
- * - binding 3: biomeParams uniform buffer
+ * - binding 2: biomeAoArray (texture_2d_array)
+ * - binding 3: biomeSampler
+ * - binding 4: biomeParams uniform buffer
  */
 
 import { 
@@ -36,7 +39,7 @@ export const BIOME_LAYERS = {
 } as const;
 
 export type BiomeType = keyof typeof BIOME_LAYERS;
-export type TextureType = 'albedo' | 'normal';
+export type TextureType = 'albedo' | 'normal' | 'ao';
 
 /** Supported texture array resolutions */
 export type BiomeResolution = 1024 | 2048 | 4096;
@@ -46,6 +49,65 @@ const MIN_SOURCE_SIZE = 4096;
 
 /** Number of biome layers (grass, rock, forest) */
 const NUM_BIOME_LAYERS = 3;
+
+/** 
+ * Configuration for a texture type (albedo, normal, ao, etc.)
+ * Defines how to create and manage each texture type.
+ */
+interface TextureTypeConfig {
+  /** Texture type name */
+  name: TextureType;
+  /** Binding index in the bind group */
+  bindingIndex: number;
+  /** RGBA placeholder color for unloaded textures */
+  placeholderColor: [number, number, number, number];
+  /** Label prefix for GPU resources */
+  label: string;
+}
+
+/**
+ * Runtime resources for a texture type.
+ * Managed per texture type (albedo, normal, ao).
+ */
+interface TextureTypeResources {
+  /** GPU texture array (3 layers for 3 biomes) */
+  array: GPUTexture | null;
+  /** Texture view for binding */
+  view: GPUTextureView | null;
+  /** Set of layer indices that have real textures loaded */
+  loadedLayers: Set<number>;
+}
+
+/**
+ * Configuration for all supported texture types.
+ * Add new entries here to support additional texture types (roughness, displacement, etc.)
+ */
+const TEXTURE_TYPE_CONFIGS: TextureTypeConfig[] = [
+  { 
+    name: 'albedo', 
+    bindingIndex: 0, 
+    placeholderColor: [128, 128, 128, 255],  // gray
+    label: 'albedo',
+  },
+  { 
+    name: 'normal', 
+    bindingIndex: 1, 
+    placeholderColor: [128, 128, 255, 255],  // flat up-facing normal
+    label: 'normal',
+  },
+  { 
+    name: 'ao', 
+    bindingIndex: 2, 
+    placeholderColor: [255, 255, 255, 255],  // white (no occlusion)
+    label: 'ao',
+  },
+];
+
+/** Sampler binding index (after all texture types) */
+const SAMPLER_BINDING_INDEX = TEXTURE_TYPE_CONFIGS.length;
+
+/** Params uniform buffer binding index (after sampler) */
+const PARAMS_BINDING_INDEX = SAMPLER_BINDING_INDEX + 1;
 
 /** 
  * Cached source image for re-downsampling on resolution change.
@@ -58,7 +120,19 @@ interface CachedSourceImage {
 }
 
 /**
- * Manages biome texture arrays for terrain rendering
+ * Get the config for a texture type
+ */
+function getTextureTypeConfig(type: TextureType): TextureTypeConfig {
+  const config = TEXTURE_TYPE_CONFIGS.find(c => c.name === type);
+  if (!config) {
+    throw new Error(`Unknown texture type: ${type}`);
+  }
+  return config;
+}
+
+/**
+ * Manages biome texture arrays for terrain rendering.
+ * Uses a config-driven approach to support multiple texture types generically.
  */
 export class TerrainBiomeTextureResources {
   private ctx: GPUContext;
@@ -69,11 +143,8 @@ export class TerrainBiomeTextureResources {
   private paramsBuffer: UnifiedGPUBuffer | null = null;
   private sampler: GPUSampler | null = null;
   
-  // Texture arrays (5 layers each)
-  private albedoArray: GPUTexture | null = null;
-  private normalArray: GPUTexture | null = null;
-  private albedoArrayView: GPUTextureView | null = null;
-  private normalArrayView: GPUTextureView | null = null;
+  // Texture resources per type (keyed by TextureType)
+  private textureResources: Map<TextureType, TextureTypeResources> = new Map();
   
   // Current array resolution
   private _resolution: BiomeResolution = 2048;
@@ -83,10 +154,6 @@ export class TerrainBiomeTextureResources {
   
   // Cache source images for re-downsampling
   private sourceCache: Map<string, CachedSourceImage> = new Map();
-  
-  // Track which layers have real textures (vs placeholder)
-  private loadedAlbedoLayers: Set<number> = new Set();
-  private loadedNormalLayers: Set<number> = new Set();
   
   // Per-biome tiling scales (grass, rock, forest)
   private tilingScales: Record<BiomeType, number> = {
@@ -100,7 +167,21 @@ export class TerrainBiomeTextureResources {
   
   constructor(ctx: GPUContext) {
     this.ctx = ctx;
+    this.initializeTextureResources();
     this.initialize();
+  }
+  
+  /**
+   * Initialize the texture resources map for all configured types
+   */
+  private initializeTextureResources(): void {
+    for (const config of TEXTURE_TYPE_CONFIGS) {
+      this.textureResources.set(config.name, {
+        array: null,
+        view: null,
+        loadedLayers: new Set(),
+      });
+    }
   }
   
   /**
@@ -159,110 +240,82 @@ export class TerrainBiomeTextureResources {
   }
   
   /**
-   * Create tiny 1x1 placeholder texture arrays.
+   * Create tiny 1x1 placeholder texture arrays for all texture types.
    * These consume minimal VRAM until real textures are loaded.
    */
   private createPlaceholderArrays(): void {
-    // Create 1x1x5 placeholder arrays
-    this.albedoArray = this.ctx.device.createTexture({
-      label: 'terrain-biome-albedo-placeholder',
-      size: { width: 1, height: 1, depthOrArrayLayers: NUM_BIOME_LAYERS },
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    
-    this.normalArray = this.ctx.device.createTexture({
-      label: 'terrain-biome-normal-placeholder',
-      size: { width: 1, height: 1, depthOrArrayLayers: NUM_BIOME_LAYERS },
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    
-    // Fill placeholder albedo with gray (128, 128, 128, 255)
-    const grayPixel = new Uint8Array([128, 128, 128, 255]);
-    // Fill placeholder normal with flat up-facing (128, 128, 255, 255)
-    const flatNormal = new Uint8Array([128, 128, 255, 255]);
-    
-    for (let layer = 0; layer < NUM_BIOME_LAYERS; layer++) {
-      this.ctx.device.queue.writeTexture(
-        { texture: this.albedoArray, origin: { x: 0, y: 0, z: layer } },
-        grayPixel,
-        { bytesPerRow: 4 },
-        { width: 1, height: 1 }
-      );
-      this.ctx.device.queue.writeTexture(
-        { texture: this.normalArray, origin: { x: 0, y: 0, z: layer } },
-        flatNormal,
-        { bytesPerRow: 4 },
-        { width: 1, height: 1 }
-      );
+    for (const config of TEXTURE_TYPE_CONFIGS) {
+      const resources = this.textureResources.get(config.name)!;
+      
+      // Create 1x1xN placeholder array
+      resources.array = this.ctx.device.createTexture({
+        label: `terrain-biome-${config.label}-placeholder`,
+        size: { width: 1, height: 1, depthOrArrayLayers: NUM_BIOME_LAYERS },
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      
+      // Fill placeholder with the configured color
+      const pixel = new Uint8Array(config.placeholderColor);
+      for (let layer = 0; layer < NUM_BIOME_LAYERS; layer++) {
+        this.ctx.device.queue.writeTexture(
+          { texture: resources.array, origin: { x: 0, y: 0, z: layer } },
+          pixel,
+          { bytesPerRow: 4 },
+          { width: 1, height: 1 }
+        );
+      }
+      
+      resources.view = resources.array.createView({
+        dimension: '2d-array',
+        baseArrayLayer: 0,
+        arrayLayerCount: NUM_BIOME_LAYERS,
+      });
+      
+      resources.loadedLayers.clear();
     }
-    
-    this.albedoArrayView = this.albedoArray.createView({
-      dimension: '2d-array',
-      baseArrayLayer: 0,
-      arrayLayerCount: NUM_BIOME_LAYERS,
-    });
-    
-    this.normalArrayView = this.normalArray.createView({
-      dimension: '2d-array',
-      baseArrayLayer: 0,
-      arrayLayerCount: NUM_BIOME_LAYERS,
-    });
     
     this.fullArraysAllocated = false;
   }
   
   /**
-   * Create full-size texture arrays at current resolution.
+   * Create full-size texture arrays at current resolution for all texture types.
    * Called lazily when first texture is loaded.
    */
   private createFullTextureArrays(): void {
     const size = this._resolution;
     const mipLevels = Math.floor(Math.log2(size)) + 1;
     
-    // Destroy placeholder arrays
+    // Destroy placeholder arrays first
     this.destroyTextureArrays();
     
-    // Create full-size albedo array
-    this.albedoArray = this.ctx.device.createTexture({
-      label: `terrain-biome-albedo-${size}`,
-      size: { width: size, height: size, depthOrArrayLayers: NUM_BIOME_LAYERS },
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-      mipLevelCount: mipLevels,
-    });
-    
-    // Create full-size normal array
-    this.normalArray = this.ctx.device.createTexture({
-      label: `terrain-biome-normal-${size}`,
-      size: { width: size, height: size, depthOrArrayLayers: NUM_BIOME_LAYERS },
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-      mipLevelCount: mipLevels,
-    });
-    
-    // Fill all layers with placeholder data
-    this.fillArrayWithPlaceholder(this.albedoArray, [128, 128, 128, 255]); // gray
-    this.fillArrayWithPlaceholder(this.normalArray, [128, 128, 255, 255]); // flat normal
-    
-    this.albedoArrayView = this.albedoArray.createView({
-      dimension: '2d-array',
-      baseArrayLayer: 0,
-      arrayLayerCount: NUM_BIOME_LAYERS,
-    });
-    
-    this.normalArrayView = this.normalArray.createView({
-      dimension: '2d-array',
-      baseArrayLayer: 0,
-      arrayLayerCount: NUM_BIOME_LAYERS,
-    });
+    for (const config of TEXTURE_TYPE_CONFIGS) {
+      const resources = this.textureResources.get(config.name)!;
+      
+      // Create full-size array
+      resources.array = this.ctx.device.createTexture({
+        label: `terrain-biome-${config.label}-${size}`,
+        size: { width: size, height: size, depthOrArrayLayers: NUM_BIOME_LAYERS },
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+        mipLevelCount: mipLevels,
+      });
+      
+      // Fill all layers with placeholder data
+      this.fillArrayWithPlaceholder(resources.array, config.placeholderColor);
+      
+      resources.view = resources.array.createView({
+        dimension: '2d-array',
+        baseArrayLayer: 0,
+        arrayLayerCount: NUM_BIOME_LAYERS,
+      });
+      
+      resources.loadedLayers.clear();
+    }
     
     this.fullArraysAllocated = true;
-    this.loadedAlbedoLayers.clear();
-    this.loadedNormalLayers.clear();
     
-    console.log(`[BiomeTextures] Allocated ${size}x${size}x${NUM_BIOME_LAYERS} texture arrays (${mipLevels} mip levels)`);
+    console.log(`[BiomeTextures] Allocated ${size}x${size}x${NUM_BIOME_LAYERS} texture arrays for ${TEXTURE_TYPE_CONFIGS.length} types (${mipLevels} mip levels)`);
   }
   
   /**
@@ -286,64 +339,68 @@ export class TerrainBiomeTextureResources {
         { width: size, height: size }
       );
     }
-    
-    // Generate mipmaps for the placeholder (simple approach - just write to mip 0)
-    // Real mipmaps will be generated when actual textures are loaded
   }
   
   /**
-   * Destroy texture arrays
+   * Destroy all texture arrays
    */
   private destroyTextureArrays(): void {
-    this.albedoArray?.destroy();
-    this.normalArray?.destroy();
-    this.albedoArray = null;
-    this.normalArray = null;
-    this.albedoArrayView = null;
-    this.normalArrayView = null;
+    for (const resources of this.textureResources.values()) {
+      resources.array?.destroy();
+      resources.array = null;
+      resources.view = null;
+    }
   }
   
   /**
-   * Create the bind group layout for Group 1
+   * Create the bind group layout dynamically based on configured texture types.
+   * Layout: [texture0, texture1, ..., textureN, sampler, params]
    */
   private createBindGroupLayout(): void {
+    const entries: GPUBindGroupLayoutEntry[] = [];
+    
+    // Add texture entries for each configured type
+    for (const config of TEXTURE_TYPE_CONFIGS) {
+      entries.push({
+        binding: config.bindingIndex,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: {
+          sampleType: 'float',
+          viewDimension: '2d-array',
+        },
+      });
+    }
+    
+    // Add sampler entry
+    entries.push({
+      binding: SAMPLER_BINDING_INDEX,
+      visibility: GPUShaderStage.FRAGMENT,
+      sampler: { type: 'filtering' },
+    });
+    
+    // Add params uniform buffer entry
+    entries.push({
+      binding: PARAMS_BINDING_INDEX,
+      visibility: GPUShaderStage.FRAGMENT,
+      buffer: { type: 'uniform' },
+    });
+    
     this._bindGroupLayout = this.ctx.device.createBindGroupLayout({
       label: 'terrain-biome-bind-group-layout',
-      entries: [
-        // binding 0: biomeAlbedoArray (texture_2d_array)
-        { 
-          binding: 0, 
-          visibility: GPUShaderStage.FRAGMENT, 
-          texture: { 
-            sampleType: 'float',
-            viewDimension: '2d-array',
-          } 
-        },
-        // binding 1: biomeNormalArray (texture_2d_array)
-        { 
-          binding: 1, 
-          visibility: GPUShaderStage.FRAGMENT, 
-          texture: { 
-            sampleType: 'float',
-            viewDimension: '2d-array',
-          } 
-        },
-        // binding 2: biomeSampler
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-        // binding 3: biomeParams uniform buffer
-        { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
-      ],
+      entries,
     });
   }
   
   /**
-   * Create the params uniform buffer
+   * Create the params uniform buffer.
+   * Size: 64 bytes for BiomeTextureUniformData (16 floats * 4 bytes) - 4 vec4f
    */
   private createParamsBuffer(): void {
-    // 48 bytes for BiomeTextureUniformData (12 floats * 4 bytes) - 3 vec4f
+    // 64 bytes for BiomeTextureUniformData (16 floats * 4 bytes) - 4 vec4f
+    // [albedoEnabled, normalEnabled, aoEnabled, tilingScales]
     this.paramsBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'terrain-biome-params',
-      size: 48,
+      size: 64,
     });
   }
   
@@ -358,9 +415,14 @@ export class TerrainBiomeTextureResources {
     const uniformData = createBiomeTextureUniform(material);
     
     // Override enable flags based on actual loaded state (3 biomes: grass=0, rock=1, forest=2)
+    const albedoResources = this.textureResources.get('albedo')!;
+    const normalResources = this.textureResources.get('normal')!;
+    const aoResources = this.textureResources.get('ao')!;
+    
     for (let i = 0; i < NUM_BIOME_LAYERS; i++) {
-      uniformData.albedoEnabled[i] = this.loadedAlbedoLayers.has(i) ? 1.0 : 0.0;
-      uniformData.normalEnabled[i] = this.loadedNormalLayers.has(i) ? 1.0 : 0.0;
+      uniformData.albedoEnabled[i] = albedoResources.loadedLayers.has(i) ? 1.0 : 0.0;
+      uniformData.normalEnabled[i] = normalResources.loadedLayers.has(i) ? 1.0 : 0.0;
+      uniformData.aoEnabled[i] = aoResources.loadedLayers.has(i) ? 1.0 : 0.0;
     }
     
     // Override tiling scales from our stored values
@@ -376,23 +438,46 @@ export class TerrainBiomeTextureResources {
   }
   
   /**
-   * Recreate the bind group with current texture arrays
+   * Recreate the bind group with current texture arrays.
+   * Dynamically builds entries based on configured texture types.
    */
   private updateBindGroup(): void {
-    if (!this._bindGroupLayout || !this.paramsBuffer || !this.sampler ||
-        !this.albedoArrayView || !this.normalArrayView) {
+    if (!this._bindGroupLayout || !this.paramsBuffer || !this.sampler) {
       return;
     }
+    
+    // Check all texture views are available
+    for (const resources of this.textureResources.values()) {
+      if (!resources.view) return;
+    }
+    
+    const entries: GPUBindGroupEntry[] = [];
+    
+    // Add texture entries for each configured type
+    for (const config of TEXTURE_TYPE_CONFIGS) {
+      const resources = this.textureResources.get(config.name)!;
+      entries.push({
+        binding: config.bindingIndex,
+        resource: resources.view!,
+      });
+    }
+    
+    // Add sampler entry
+    entries.push({
+      binding: SAMPLER_BINDING_INDEX,
+      resource: this.sampler,
+    });
+    
+    // Add params uniform buffer entry
+    entries.push({
+      binding: PARAMS_BINDING_INDEX,
+      resource: { buffer: this.paramsBuffer.buffer },
+    });
     
     this._bindGroup = this.ctx.device.createBindGroup({
       label: 'terrain-biome-bind-group',
       layout: this._bindGroupLayout,
-      entries: [
-        { binding: 0, resource: this.albedoArrayView },
-        { binding: 1, resource: this.normalArrayView },
-        { binding: 2, resource: this.sampler },
-        { binding: 3, resource: { buffer: this.paramsBuffer.buffer } },
-      ],
+      entries,
     });
     
     this.bindGroupDirty = false;
@@ -407,10 +492,9 @@ export class TerrainBiomeTextureResources {
     type: TextureType
   ): Promise<void> {
     const layer = BIOME_LAYERS[biome];
-    const array = type === 'albedo' ? this.albedoArray : this.normalArray;
-    const loadedSet = type === 'albedo' ? this.loadedAlbedoLayers : this.loadedNormalLayers;
-
-    if (!array) return;
+    const resources = this.textureResources.get(type);
+    
+    if (!resources?.array) return;
 
     // Downsample to current resolution using TextureLoader utility
     const downsampledBitmap = await downsampleBitmap(bitmap, this._resolution);
@@ -418,14 +502,14 @@ export class TerrainBiomeTextureResources {
     // Copy to GPU texture layer
     this.ctx.device.queue.copyExternalImageToTexture(
       { source: downsampledBitmap },
-      { texture: array, origin: { x: 0, y: 0, z: layer } },
+      { texture: resources.array, origin: { x: 0, y: 0, z: layer } },
       { width: this._resolution, height: this._resolution }
     );
 
     // Generate mipmaps for this layer
-    this.generateMipmapsForLayer(array, layer);
+    this.generateMipmapsForLayer(resources.array, layer);
 
-    loadedSet.add(layer);
+    resources.loadedLayers.add(layer);
 
     // Clean up downsampled bitmap if it was created
     if (downsampledBitmap !== bitmap) {
@@ -447,7 +531,7 @@ export class TerrainBiomeTextureResources {
    * Uses TextureLoader utility for loading and validation.
    * @param url - URL to load the texture from
    * @param biome - Biome layer to load into
-   * @param type - Texture type ('albedo' or 'normal')
+   * @param type - Texture type ('albedo', 'normal', or 'ao')
    * @returns true if loaded successfully, false if rejected
    */
   async loadTextureFromURL(url: string, biome: BiomeType, type: TextureType): Promise<boolean> {
@@ -478,7 +562,6 @@ export class TerrainBiomeTextureResources {
       
       console.log(`[BiomeTextures] Loaded ${type} for ${biome} (${originalWidth}x${originalHeight} → ${this._resolution})`);
       return true;
-      
     } catch (error) {
       if (error instanceof Error && error.message.includes('too small')) {
         console.warn(`[BiomeTextures] Rejected texture: ${error.message}`);
@@ -501,33 +584,30 @@ export class TerrainBiomeTextureResources {
     }
     
     const layer = BIOME_LAYERS[biome];
-    const loadedSet = type === 'albedo' ? this.loadedAlbedoLayers : this.loadedNormalLayers;
-    loadedSet.delete(layer);
+    const resources = this.textureResources.get(type);
+    const config = getTextureTypeConfig(type);
+    
+    if (!resources) return;
+    
+    resources.loadedLayers.delete(layer);
     
     // Fill this layer with placeholder data
-    if (this.fullArraysAllocated) {
-      const array = type === 'albedo' ? this.albedoArray : this.normalArray;
-      const color: [number, number, number, number] = type === 'albedo' 
-        ? [128, 128, 128, 255] 
-        : [128, 128, 255, 255];
-      
-      if (array) {
-        const size = this._resolution;
-        const pixels = new Uint8Array(size * size * 4);
-        for (let i = 0; i < size * size; i++) {
-          pixels[i * 4 + 0] = color[0];
-          pixels[i * 4 + 1] = color[1];
-          pixels[i * 4 + 2] = color[2];
-          pixels[i * 4 + 3] = color[3];
-        }
-        
-        this.ctx.device.queue.writeTexture(
-          { texture: array, origin: { x: 0, y: 0, z: layer } },
-          pixels,
-          { bytesPerRow: size * 4 },
-          { width: size, height: size }
-        );
+    if (this.fullArraysAllocated && resources.array) {
+      const size = this._resolution;
+      const pixels = new Uint8Array(size * size * 4);
+      for (let i = 0; i < size * size; i++) {
+        pixels[i * 4 + 0] = config.placeholderColor[0];
+        pixels[i * 4 + 1] = config.placeholderColor[1];
+        pixels[i * 4 + 2] = config.placeholderColor[2];
+        pixels[i * 4 + 3] = config.placeholderColor[3];
       }
+      
+      this.ctx.device.queue.writeTexture(
+        { texture: resources.array, origin: { x: 0, y: 0, z: layer } },
+        pixels,
+        { bytesPerRow: size * 4 },
+        { width: size, height: size }
+      );
     }
     
     this.bindGroupDirty = true;
@@ -547,8 +627,11 @@ export class TerrainBiomeTextureResources {
     this.destroyTextureArrays();
     this.createPlaceholderArrays();
     
-    this.loadedAlbedoLayers.clear();
-    this.loadedNormalLayers.clear();
+    // Clear loaded layers for all texture types
+    for (const resources of this.textureResources.values()) {
+      resources.loadedLayers.clear();
+    }
+    
     this.bindGroupDirty = true;
   }
   
@@ -557,9 +640,8 @@ export class TerrainBiomeTextureResources {
    */
   hasTexture(biome: BiomeType, type: TextureType): boolean {
     const layer = BIOME_LAYERS[biome];
-    return type === 'albedo' 
-      ? this.loadedAlbedoLayers.has(layer) 
-      : this.loadedNormalLayers.has(layer);
+    const resources = this.textureResources.get(type);
+    return resources?.loadedLayers.has(layer) ?? false;
   }
   
   /**
@@ -607,10 +689,43 @@ export class TerrainBiomeTextureResources {
   }
   
   /**
-   * Check if any biome textures are loaded
+   * Check if any biome textures are loaded (any type)
    */
   hasAnyTextures(): boolean {
-    return this.loadedAlbedoLayers.size > 0 || this.loadedNormalLayers.size > 0;
+    for (const resources of this.textureResources.values()) {
+      if (resources.loadedLayers.size > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+  
+  /**
+   * Get the list of supported texture types
+   */
+  static getSupportedTextureTypes(): TextureType[] {
+    return TEXTURE_TYPE_CONFIGS.map(c => c.name);
+  }
+  
+  /**
+   * Get the binding index for a texture type (useful for shader generation)
+   */
+  static getBindingIndex(type: TextureType): number {
+    return getTextureTypeConfig(type).bindingIndex;
+  }
+  
+  /**
+   * Get the sampler binding index
+   */
+  static get samplerBindingIndex(): number {
+    return SAMPLER_BINDING_INDEX;
+  }
+  
+  /**
+   * Get the params uniform buffer binding index
+   */
+  static get paramsBindingIndex(): number {
+    return PARAMS_BINDING_INDEX;
   }
   
   /**
@@ -631,7 +746,9 @@ export class TerrainBiomeTextureResources {
     this._bindGroupLayout = null;
     this.sampler = null;
     
-    this.loadedAlbedoLayers.clear();
-    this.loadedNormalLayers.clear();
+    // Clear loaded layers for all texture types
+    for (const resources of this.textureResources.values()) {
+      resources.loadedLayers.clear();
+    }
   }
 }

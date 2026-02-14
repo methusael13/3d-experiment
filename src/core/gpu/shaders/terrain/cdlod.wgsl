@@ -2,6 +2,9 @@
 // Continuous Distance-Dependent Level of Detail terrain shader with morphing
 // Designed to work with CDLODRendererGPU
 
+// Constants
+const PI: f32 = 3.14159265359;
+
 // ============================================================================
 // Uniform Structures
 // ============================================================================
@@ -47,7 +50,7 @@ struct Material {
   shadowSoftness: f32,            // 23 - 0 = hard, 1 = soft PCF
   shadowRadius: f32,              // 24 - Shadow coverage radius
   shadowFadeStart: f32,           // 25 - Distance where shadow starts fading
-  _pad3: f32,                     // 26
+  csmEnabled: f32,                // 26 - Enable CSM (1.0) vs single shadow map (0.0)
   _pad4: f32,                     // 27
   lightSpaceMatrix: mat4x4f,      // 28-43 - Shadow projection matrix
 }
@@ -83,6 +86,7 @@ struct BiomeTextureParams {
   // [grass, rock, forest, unused]
   albedoEnabled: vec4f,
   normalEnabled: vec4f,
+  aoEnabled: vec4f,
   
   // Tiling scales (world units per texture tile) - vec4f aligned
   // [grass, rock, forest, unused]
@@ -92,23 +96,40 @@ struct BiomeTextureParams {
 // Biome texture arrays (3 layers: grass=0, rock=1, forest=2)
 @group(1) @binding(0) var biomeAlbedoArray: texture_2d_array<f32>;
 @group(1) @binding(1) var biomeNormalArray: texture_2d_array<f32>;
+@group(1) @binding(2) var biomeAoArray: texture_2d_array<f32>;
 
 // Sampler for biome textures
-@group(1) @binding(2) var biomeSampler: sampler;
+@group(1) @binding(3) var biomeSampler: sampler;
 
 // Biome parameters uniform
-@group(1) @binding(3) var<uniform> biomeParams: BiomeTextureParams;
+@group(1) @binding(4) var<uniform> biomeParams: BiomeTextureParams;
 
 // ============================================================================
-// Environment Bindings (Group 3) - IBL for ambient lighting  
+// Environment Bindings (Group 3) - IBL + CSM for ambient lighting and shadows
 // ============================================================================
 
 // Terrain only uses diffuse IBL from SceneEnvironment (non-metallic surface)
-// Shadow resources from Group 3 are not used - terrain has its own in Group 0
 // Specular IBL (env_iblSpecular, env_brdfLut) not needed for diffuse terrain
 // NOTE: Other bindings (0,1,3,4,6) exist in SceneEnvironment but are unused here
 @group(3) @binding(2) var env_iblDiffuse: texture_cube<f32>;
 @group(3) @binding(5) var env_cubeSampler: sampler;
+
+// CSM (Cascaded Shadow Maps) bindings from SceneEnvironment
+@group(3) @binding(7) var csmShadowArray: texture_depth_2d_array;
+@group(3) @binding(8) var<uniform> csmUniforms: CSMUniforms;
+
+// ============================================================================
+// CSM Uniform Structure (matches ShadowRendererGPU)
+// ============================================================================
+
+struct CSMUniforms {
+  viewProjectionMatrices: array<mat4x4f, 4>,  // Light-space VP matrices for each cascade
+  cascadeSplits: vec4f,                        // View-space depth splits
+  cascadeCount: f32,                           // Number of active cascades (2-4)
+  blendFraction: f32,                          // Fraction of cascade to blend (0.05-0.2)
+  shadowBias: f32,                             // Base shadow bias
+  _pad: f32,
+}
 
 // ============================================================================
 // IBL Functions
@@ -132,6 +153,11 @@ fn getBiomeAlbedoEnabled(layer: i32) -> f32 {
 // Helper: Get normal enabled flag for a biome layer (0-2: grass, rock, forest)
 fn getBiomeNormalEnabled(layer: i32) -> f32 {
   return biomeParams.normalEnabled[layer];
+}
+
+// Helper: Get AO enabled flag for a biome layer (0-2: grass, rock, forest)
+fn getBiomeAoEnabled(layer: i32) -> f32 {
+  return biomeParams.aoEnabled[layer];
 }
 
 // Helper: Get tiling scale for a biome layer (0-2: grass, rock, forest)
@@ -175,9 +201,28 @@ fn sampleBiomeNormalArray(
   // Unpack from [0,1] to [-1,1] (standard normal map encoding)
   let unpacked = texNormal * 2.0 - 1.0;
   // Ensure Y-up convention (some normal maps have Y inverted)
-  let normalTangent = vec3f(unpacked.x, unpacked.z, unpacked.y);
+  let normalTangent = vec3f(unpacked.x, unpacked.y, unpacked.z);
   // Return flat normal if not enabled
   return select(vec3f(0.0, 1.0, 0.0), normalize(normalTangent), enabled > 0.5);
+}
+
+// Sample biome AO (ambient occlusion) from texture array
+// Returns AO value (0 = fully occluded, 1 = no occlusion), or 1.0 if not enabled
+// layer: biome layer index (0-2: grass, rock, forest)
+// worldXZ: world position for UV calculation
+fn sampleBiomeAoArray(
+  layer: i32,
+  worldXZ: vec2f
+) -> f32 {
+  let tiling = getBiomeTiling(layer);
+  let worldUV = worldXZ / tiling;
+  let enabled = getBiomeAoEnabled(layer);
+  
+  // Sample AO map array (always sample for uniform control flow)
+  // AO is stored in the R channel (grayscale texture)
+  let texAo = textureSample(biomeAoArray, biomeSampler, worldUV, layer).r;
+  // Return 1.0 (no occlusion) if not enabled
+  return select(1.0, texAo, enabled > 0.5);
 }
 
 // Blend 3 biome normals weighted by biome weights (grass, rock, forest)
@@ -191,6 +236,17 @@ fn blendBiomeNormals(
               + rockNormal * rockWeight
               + forestNormal * forestWeight;
   return normalize(blended);
+}
+
+// Blend 3 biome AO values weighted by biome weights (grass, rock, forest)
+fn blendBiomeAo(
+  grassAo: f32, grassWeight: f32,
+  rockAo: f32, rockWeight: f32,
+  forestAo: f32, forestWeight: f32
+) -> f32 {
+  return grassAo * grassWeight
+       + rockAo * rockWeight
+       + forestAo * forestWeight;
 }
 
 // ============================================================================
@@ -212,8 +268,7 @@ fn calculateTerrainIBL(worldNormal: vec3f, albedo: vec3f) -> vec3f {
   // Sample diffuse irradiance (already convolved for hemisphere)
   let irradiance = sampleIBLDiffuse(worldNormal);
   // Apply moderate intensity for natural outdoor lighting
-  // Higher values work better with overhead sun (0.6 instead of 0.3)
-  return irradiance * albedo * 0.6;
+  return irradiance / PI * albedo;
 }
 
 // ============================================================================
@@ -805,10 +860,96 @@ fn sampleShadowPCF(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f, kernelS
   return mix(1.0, shadowValue, inBounds);
 }
 
+// ============================================================================
+// CSM Shadow Sampling Functions
+// ============================================================================
+
+// Select the appropriate cascade based on view-space depth
+fn selectCascade(viewDepth: f32) -> i32 {
+  let cascadeCount = i32(csmUniforms.cascadeCount);
+  // Compare against cascade split distances
+  if (viewDepth < csmUniforms.cascadeSplits.x) { return 0; }
+  if (viewDepth < csmUniforms.cascadeSplits.y && cascadeCount > 1) { return 1; }
+  if (viewDepth < csmUniforms.cascadeSplits.z && cascadeCount > 2) { return 2; }
+  if (cascadeCount > 3) { return 3; }
+  return cascadeCount - 1;
+}
+
+// Sample a single cascade shadow map with PCF
+fn sampleCascadeShadow(worldPos: vec4f, cascade: i32, normal: vec3f, lightDir: vec3f) -> f32 {
+  // Transform to light space for this cascade
+  let lightSpacePos = csmUniforms.viewProjectionMatrices[cascade] * worldPos;
+  let projCoords = lightSpacePos.xyz / lightSpacePos.w;
+  
+  // Transform from NDC [-1,1] to texture UV [0,1]
+  let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
+  
+  // Clamp UV to valid range
+  let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
+  
+  // Calculate bias (higher cascades need more bias due to lower resolution coverage)
+  let NdotL = max(dot(normal, lightDir), 0.001);
+  let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
+  let cascadeBias = csmUniforms.shadowBias * (1.0 + f32(cascade) * 0.5);
+  let shadowBias = cascadeBias + clamp(slopeFactor, 0.0, 5.0) * cascadeBias * 2.0;
+  let biasedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
+  
+  // Get cascade texture dimensions
+  let cascadeSize = textureDimensions(csmShadowArray);
+  let texelSize = vec2f(1.0 / f32(cascadeSize.x), 1.0 / f32(cascadeSize.y));
+  
+  // 3x3 PCF sampling for soft shadows
+  // Use textureSampleCompareLevel to avoid uniform control flow requirement
+  // (textureSampleCompare requires uniform control flow, but cascade index is per-pixel)
+  var shadow = 0.0;
+  for (var x = -1; x <= 1; x++) {
+    for (var y = -1; y <= 1; y++) {
+      let offset = vec2f(f32(x), f32(y)) * texelSize;
+      let sampleUV = clamp(clampedUV + offset, vec2f(0.001), vec2f(0.999));
+      shadow += textureSampleCompareLevel(csmShadowArray, shadowSampler, sampleUV, cascade, biasedDepth);
+    }
+  }
+  shadow /= 9.0;
+  
+  // Check bounds
+  let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
+  let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
+  let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
+  let inBounds = inBoundsX * inBoundsY * inBoundsZ;
+  
+  return mix(1.0, shadow, inBounds);
+}
+
+// Sample CSM with cascade blending for smooth transitions
+fn sampleCSMShadow(worldPos: vec4f, viewDepth: f32, normal: vec3f, lightDir: vec3f) -> f32 {
+  let cascade = selectCascade(viewDepth);
+  let cascadeCount = i32(csmUniforms.cascadeCount);
+  
+  // Get cascade split for current cascade
+  var cascadeSplit = csmUniforms.cascadeSplits.x;
+  if (cascade == 1) { cascadeSplit = csmUniforms.cascadeSplits.y; }
+  else if (cascade == 2) { cascadeSplit = csmUniforms.cascadeSplits.z; }
+  else if (cascade == 3) { cascadeSplit = csmUniforms.cascadeSplits.w; }
+  
+  // Sample current cascade
+  let shadow0 = sampleCascadeShadow(worldPos, cascade, normal, lightDir);
+  
+  // Check if we're in blend region with next cascade
+  let blendRegion = cascadeSplit * csmUniforms.blendFraction;
+  let blendStart = cascadeSplit - blendRegion;
+  
+  if (viewDepth > blendStart && cascade < cascadeCount - 1) {
+    // Blend with next cascade
+    let shadow1 = sampleCascadeShadow(worldPos, cascade + 1, normal, lightDir);
+    let blendFactor = smoothstep(blendStart, cascadeSplit, viewDepth);
+    return mix(shadow0, shadow1, blendFactor);
+  }
+  
+  return shadow0;
+}
+
 // Calculate shadow factor with distance-based fade
-// Note: WGSL requires uniform control flow for textureSampleCompare.
-// We must always sample the shadow map (no early returns before sampling)
-// and use the fade/enable factors to blend the result.
+// Supports both single shadow map and CSM modes
 fn calculateShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDir: vec3f) -> f32 {
   // Calculate distance from camera for fade
   let cameraXZ = uniforms.cameraPosition.xz;
@@ -820,19 +961,24 @@ fn calculateShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDi
   let fadeEnd = material.shadowRadius;
   let fadeFactor = 1.0 - smoothstep(fadeStart, fadeEnd, distanceFromCamera);
   
-  // Always sample both shadow methods (uniform control flow required)
-  // Hard shadows: single sample, sharp edges
-  let hardShadow = sampleShadowHard(lightSpacePos, normal, lightDir);
-  // Soft shadows: PCF kernel, blurred edges (3x3 kernel)
-  let softShadow = sampleShadowPCF(lightSpacePos, normal, lightDir, 3);
+  var shadowValue = 1.0;
   
-  // Blend between hard and soft shadows based on softness parameter
-  // shadowSoftness: 0 = hard shadows, 1 = soft PCF shadows
-  let shadowValue = mix(hardShadow, softShadow, material.shadowSoftness);
+  // Choose shadow method based on CSM enabled flag
+  if (material.csmEnabled > 0.5) {
+    // Use CSM (Cascaded Shadow Maps)
+    // Calculate view-space depth for cascade selection
+    let viewDepth = distanceFromCamera;  // Approximate view depth with camera distance
+    shadowValue = sampleCSMShadow(vec4f(worldPos, 1.0), viewDepth, normal, lightDir);
+  } else {
+    // Use single shadow map
+    // Always sample both methods for uniform control flow
+    let hardShadow = sampleShadowHard(lightSpacePos, normal, lightDir);
+    let softShadow = sampleShadowPCF(lightSpacePos, normal, lightDir, 3);
+    shadowValue = mix(hardShadow, softShadow, material.shadowSoftness);
+  }
   
-  // Apply fade and enable flag AFTER sampling
-  // If shadows disabled or fully faded, result is 1.0 (no shadow)
-  let enabledFactor = step(0.5, material.shadowEnabled);  // 0 if disabled, 1 if enabled
+  // Apply fade and enable flag
+  let enabledFactor = step(0.5, material.shadowEnabled);
   let finalFadeFactor = fadeFactor * enabledFactor;
   
   return mix(1.0, shadowValue, finalFadeFactor);
@@ -983,6 +1129,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let rockBiomeNormalTS = sampleBiomeNormalArray(BIOME_ROCK, worldXZ);
   let forestBiomeNormalTS = sampleBiomeNormalArray(BIOME_FOREST, worldXZ);
   
+  // ===== Sample Biome AO (Ambient Occlusion) from Texture Arrays =====
+  let grassAo = sampleBiomeAoArray(BIOME_GRASS, worldXZ);
+  let rockAo = sampleBiomeAoArray(BIOME_ROCK, worldXZ);
+  let forestAo = sampleBiomeAoArray(BIOME_FOREST, worldXZ);
+  
+  // Blend AO values weighted by biome presence
+  let biomeAo = blendBiomeAo(grassAo, grassWeight, rockAo, rockWeight, forestAo, forestWeight);
+  
   // Build TBN matrix to transform biome normals from tangent space to world space
   // This ensures proper normal blending on steep slopes
   let TBN = buildTerrainTBN(blendedNormal);
@@ -1039,10 +1193,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let useIBL = step(0.001, iblStrength);  // 1 if IBL has content, 0 if black
   let ambientColor = mix(flatAmbient, iblAmbient, useIBL);
   
+  // Apply biome AO to ambient lighting (AO primarily affects indirect/ambient light)
+  let aoAmbientColor = ambientColor * biomeAo;
+  
   // Apply shadow to diffuse component only (ambient is always visible)
   let diffuse = NdotL * material.lightColor.rgb * shadow;
   
-  var finalColor = ambientColor + albedo * diffuse;
+  var finalColor = aoAmbientColor + albedo * diffuse;
   
   // Selection highlight
   if (material.isSelected > 0.5) {

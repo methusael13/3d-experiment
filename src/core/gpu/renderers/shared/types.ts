@@ -92,13 +92,15 @@ export const BIND_GROUP_SLOTS = {
  * Environment bind group layout (Group 3)
  * Shared across Object, Terrain, and Water renderers
  * 
- * Binding 0: Shadow depth texture
+ * Binding 0: Shadow depth texture (single map, non-CSM)
  * Binding 1: Shadow comparison sampler
  * Binding 2: IBL diffuse cubemap
  * Binding 3: IBL specular cubemap
  * Binding 4: BRDF LUT texture
  * Binding 5: IBL cubemap sampler
  * Binding 6: IBL LUT sampler
+ * Binding 7: CSM shadow map array (4 cascades)
+ * Binding 8: CSM uniforms buffer (matrices + splits + config)
  */
 export const ENVIRONMENT_BINDINGS = {
   SHADOW_MAP: 0,
@@ -108,6 +110,8 @@ export const ENVIRONMENT_BINDINGS = {
   BRDF_LUT: 4,
   IBL_CUBE_SAMPLER: 5,
   IBL_LUT_SAMPLER: 6,
+  CSM_SHADOW_ARRAY: 7,
+  CSM_UNIFORMS: 8,
 } as const;
 
 /**
@@ -123,18 +127,28 @@ export const ENV_BINDING_MASK = {
   BRDF_LUT: 1 << ENVIRONMENT_BINDINGS.BRDF_LUT,             // 16
   IBL_CUBE_SAMPLER: 1 << ENVIRONMENT_BINDINGS.IBL_CUBE_SAMPLER, // 32
   IBL_LUT_SAMPLER: 1 << ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER,   // 64
+  CSM_SHADOW_ARRAY: 1 << ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY, // 128
+  CSM_UNIFORMS: 1 << ENVIRONMENT_BINDINGS.CSM_UNIFORMS,         // 256
   
   // Common presets
   /** Shadow resources only (shadow map + comparison sampler) */
   SHADOW: (1 << ENVIRONMENT_BINDINGS.SHADOW_MAP) | (1 << ENVIRONMENT_BINDINGS.SHADOW_SAMPLER),
+  /** CSM shadow resources (array + uniforms + sampler) */
+  CSM_SHADOW: (1 << ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY) | (1 << ENVIRONMENT_BINDINGS.CSM_UNIFORMS) | 
+              (1 << ENVIRONMENT_BINDINGS.SHADOW_SAMPLER),
+  /** Full shadow resources (single + CSM) */
+  FULL_SHADOW: (1 << ENVIRONMENT_BINDINGS.SHADOW_MAP) | (1 << ENVIRONMENT_BINDINGS.SHADOW_SAMPLER) |
+               (1 << ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY) | (1 << ENVIRONMENT_BINDINGS.CSM_UNIFORMS),
   /** Diffuse IBL only (diffuse cubemap + cube sampler) - for terrain */
   DIFFUSE_IBL: (1 << ENVIRONMENT_BINDINGS.IBL_DIFFUSE) | (1 << ENVIRONMENT_BINDINGS.IBL_CUBE_SAMPLER),
   /** Full IBL (diffuse + specular + BRDF LUT + samplers) - for PBR objects */
   FULL_IBL: (1 << ENVIRONMENT_BINDINGS.IBL_DIFFUSE) | (1 << ENVIRONMENT_BINDINGS.IBL_SPECULAR) |
             (1 << ENVIRONMENT_BINDINGS.BRDF_LUT) | (1 << ENVIRONMENT_BINDINGS.IBL_CUBE_SAMPLER) |
             (1 << ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER),
-  /** All resources - default for most renderers */
-  ALL: 0x7F, // All 7 bindings
+  /** All legacy resources - default for most renderers (without CSM) */
+  ALL_LEGACY: 0x7F, // Original 7 bindings
+  /** All resources including CSM - for CSM-aware renderers */
+  ALL: 0x1FF, // All 9 bindings
 } as const;
 
 export type EnvironmentBindingMask = number;

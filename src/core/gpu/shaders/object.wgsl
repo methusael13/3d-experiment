@@ -34,7 +34,7 @@ struct GlobalUniforms {
   lightSpaceMatrix: mat4x4f,  // For shadow mapping
   shadowEnabled: f32,         // 0 = disabled, 1 = enabled
   shadowBias: f32,            // Bias to prevent shadow acne
-  _pad2: f32,
+  csmEnabled: f32,            // 0 = single shadow map, 1 = CSM
   _pad3: f32,
 }
 
@@ -94,6 +94,20 @@ struct SingleModelUniforms {
 @group(3) @binding(4) var iblBrdfLut: texture_2d<f32>;          // BRDF integration LUT
 @group(3) @binding(5) var iblCubemapSampler: sampler;           // Cubemap sampler
 @group(3) @binding(6) var iblLutSampler: sampler;               // BRDF LUT sampler
+
+// CSM (Cascaded Shadow Maps) resources (bindings 7-8)
+@group(3) @binding(7) var csmShadowArray: texture_depth_2d_array;
+@group(3) @binding(8) var<uniform> csmUniforms: CSMUniforms;
+
+// CSM Uniforms structure (matches ShadowRendererGPU)
+struct CSMUniforms {
+  viewProjectionMatrices: array<mat4x4f, 4>,  // Light-space VP matrices for each cascade
+  cascadeSplits: vec4f,                        // View-space depth splits
+  cascadeCount: f32,                           // Number of active cascades (2-4)
+  blendFraction: f32,                          // Fraction of cascade to blend (0.05-0.2)
+  shadowBias: f32,                             // Base shadow bias
+  _pad: f32,
+}
 
 // ============ Vertex Shader ============
 
@@ -300,24 +314,12 @@ fn srgbToLinear(srgb: vec3f) -> vec3f {
 
 // ============ Shadow Functions ============
 
-// Sample shadow map with slope-dependent bias
-fn sampleShadow(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f) -> f32 {
-  // Check if shadows are enabled
-  if (globals.shadowEnabled < 0.5) {
-    return 1.0;
-  }
-  
-  // Perspective divide to get NDC coordinates
+// Sample single shadow map with slope-dependent bias
+fn sampleSingleShadow(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f) -> f32 {
   let projCoords = lightSpacePos.xyz / lightSpacePos.w;
-  
-  // Transform from NDC [-1,1] to texture UV [0,1]
-  // WebGPU: NDC has Y pointing up, but texture UV has Y pointing down
   let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
-  
-  // Clamp UV to valid range (must always sample at valid coords)
   let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
   
-  // Apply slope-dependent bias to prevent shadow acne
   let NdotL = max(dot(normal, lightDir), 0.001);
   let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
   let baseBias = globals.shadowBias;
@@ -325,17 +327,99 @@ fn sampleShadow(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f) -> f32 {
   let shadowBias = baseBias + clamp(slopeFactor, 0.0, 5.0) * slopeBias;
   let clampedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
   
-  // Sample shadow map with comparison
   let shadowValue = textureSampleCompare(shadowMap, shadowSampler, clampedUV, clampedDepth);
   
-  // Check if outside shadow map bounds
   let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
   let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
   let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
   let inBounds = inBoundsX * inBoundsY * inBoundsZ;
   
-  // Return shadow value if in bounds, 1.0 (no shadow) if out of bounds
   return mix(1.0, shadowValue, inBounds);
+}
+
+// ============ CSM Functions ============
+
+fn selectCascade(viewDepth: f32) -> i32 {
+  let cascadeCount = i32(csmUniforms.cascadeCount);
+  if (viewDepth < csmUniforms.cascadeSplits.x) { return 0; }
+  if (viewDepth < csmUniforms.cascadeSplits.y && cascadeCount > 1) { return 1; }
+  if (viewDepth < csmUniforms.cascadeSplits.z && cascadeCount > 2) { return 2; }
+  if (cascadeCount > 3) { return 3; }
+  return cascadeCount - 1;
+}
+
+fn sampleCascadeShadow(worldPos: vec4f, cascade: i32, normal: vec3f, lightDir: vec3f) -> f32 {
+  let lightSpacePos = csmUniforms.viewProjectionMatrices[cascade] * worldPos;
+  let projCoords = lightSpacePos.xyz / lightSpacePos.w;
+  let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
+  let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
+  
+  let NdotL = max(dot(normal, lightDir), 0.001);
+  let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
+  let cascadeBias = csmUniforms.shadowBias * (1.0 + f32(cascade) * 0.5);
+  let shadowBias = cascadeBias + clamp(slopeFactor, 0.0, 5.0) * cascadeBias * 2.0;
+  let biasedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
+  
+  let cascadeSize = textureDimensions(csmShadowArray);
+  let texelSize = vec2f(1.0 / f32(cascadeSize.x), 1.0 / f32(cascadeSize.y));
+  
+  // 3x3 PCF - Use textureSampleCompareLevel to avoid uniform control flow requirement
+  // (textureSampleCompare requires uniform control flow, but cascade index is per-pixel)
+  var shadow = 0.0;
+  for (var x = -1; x <= 1; x++) {
+    for (var y = -1; y <= 1; y++) {
+      let offset = vec2f(f32(x), f32(y)) * texelSize;
+      let sampleUV = clamp(clampedUV + offset, vec2f(0.001), vec2f(0.999));
+      shadow += textureSampleCompareLevel(csmShadowArray, shadowSampler, sampleUV, cascade, biasedDepth);
+    }
+  }
+  shadow /= 9.0;
+  
+  let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
+  let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
+  let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
+  let inBounds = inBoundsX * inBoundsY * inBoundsZ;
+  
+  return mix(1.0, shadow, inBounds);
+}
+
+fn sampleCSMShadow(worldPos: vec4f, viewDepth: f32, normal: vec3f, lightDir: vec3f) -> f32 {
+  let cascade = selectCascade(viewDepth);
+  let cascadeCount = i32(csmUniforms.cascadeCount);
+  
+  var cascadeSplit = csmUniforms.cascadeSplits.x;
+  if (cascade == 1) { cascadeSplit = csmUniforms.cascadeSplits.y; }
+  else if (cascade == 2) { cascadeSplit = csmUniforms.cascadeSplits.z; }
+  else if (cascade == 3) { cascadeSplit = csmUniforms.cascadeSplits.w; }
+  
+  let shadow0 = sampleCascadeShadow(worldPos, cascade, normal, lightDir);
+  
+  let blendRegion = cascadeSplit * csmUniforms.blendFraction;
+  let blendStart = cascadeSplit - blendRegion;
+  
+  if (viewDepth > blendStart && cascade < cascadeCount - 1) {
+    let shadow1 = sampleCascadeShadow(worldPos, cascade + 1, normal, lightDir);
+    let blendFactor = smoothstep(blendStart, cascadeSplit, viewDepth);
+    return mix(shadow0, shadow1, blendFactor);
+  }
+  
+  return shadow0;
+}
+
+// Sample shadow with CSM or single shadow map based on globals.csmEnabled
+fn sampleShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDir: vec3f) -> f32 {
+  if (globals.shadowEnabled < 0.5) {
+    return 1.0;
+  }
+  
+  if (globals.csmEnabled > 0.5) {
+    // Use CSM - calculate view depth from camera distance
+    let viewDepth = length(worldPos - globals.cameraPosition);
+    return sampleCSMShadow(vec4f(worldPos, 1.0), viewDepth, normal, lightDir);
+  } else {
+    // Use single shadow map
+    return sampleSingleShadow(lightSpacePos, normal, lightDir);
+  }
 }
 
 // Compute cotangent frame for normal mapping without pre-computed tangents
@@ -432,7 +516,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let L = normalize(globals.lightDirection);
   
   // Calculate shadow factor
-  let shadow = sampleShadow(input.lightSpacePos, N, L);
+  let shadow = sampleShadow(input.lightSpacePos, input.worldPosition, N, L);
   
   // Direct lighting (affected by shadow)
   let direct = pbrDirectional(N, V, L, albedo, metallic, roughness, globals.lightColor) * shadow;
@@ -457,7 +541,7 @@ fn fs_notex(input: VertexOutput) -> @location(0) vec4f {
   let L = normalize(globals.lightDirection);
   
   // Calculate shadow factor
-  let shadow = sampleShadow(input.lightSpacePos, N, L);
+  let shadow = sampleShadow(input.lightSpacePos, input.worldPosition, N, L);
   
   // Direct lighting (affected by shadow)
   let direct = pbrDirectional(
@@ -542,7 +626,7 @@ fn fs_main_ibl(input: VertexOutput) -> @location(0) vec4f {
   let L = normalize(globals.lightDirection);
   
   // Calculate shadow factor
-  let shadow = sampleShadow(input.lightSpacePos, N, L);
+  let shadow = sampleShadow(input.lightSpacePos, input.worldPosition, N, L);
   
   // Direct lighting (affected by shadow)
   let direct = pbrDirectional(N, V, L, albedo, metallic, roughness, globals.lightColor) * shadow;
@@ -562,7 +646,7 @@ fn fs_notex_ibl(input: VertexOutput) -> @location(0) vec4f {
   let L = normalize(globals.lightDirection);
   
   // Calculate shadow factor
-  let shadow = sampleShadow(input.lightSpacePos, N, L);
+  let shadow = sampleShadow(input.lightSpacePos, input.worldPosition, N, L);
   
   // Direct lighting (affected by shadow)
   let direct = pbrDirectional(
