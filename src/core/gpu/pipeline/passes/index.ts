@@ -9,7 +9,7 @@ import { BaseRenderPass, PassPriority, type PassCategory } from '../RenderPass';
 import type { RenderContext } from '../RenderContext';
 import type { SkyRendererGPU } from '../../renderers/SkyRendererGPU';
 import type { ObjectRendererGPU } from '../../renderers/ObjectRendererGPU';
-import type { GridRendererGPU } from '../../renderers/GridRendererGPU';
+import type { GridRendererGPU, GridGroundRenderParams } from '../../renderers/GridRendererGPU';
 import type { ShadowRendererGPU } from '../../renderers/ShadowRendererGPU';
 import type { DebugTextureManager } from '../../renderers/DebugTextureManager';
 
@@ -89,12 +89,15 @@ export class ShadowPass extends BaseRenderPass {
     if (!shadowEnabled) return;
     
     // Update shadow renderer params and compute light space matrix (single + CSM)
+    // Use SCENE camera (not debug/view camera) so CSM frustum splits match what the scene sees
     this.shadowRenderer.updateLightMatrix({
       lightDirection: lightDirection as [number, number, number],
-      cameraPosition: ctx.cameraPosition,
-      cameraForward: ctx.cameraForward,
+      cameraPosition: ctx.sceneCameraPosition,
+      cameraForward: ctx.sceneCameraForward,
+      cameraViewMatrix: ctx.sceneCameraViewMatrix,
+      cameraProjectionMatrix: ctx.sceneCameraProjectionMatrix,
       cameraNearPlane: ctx.near,
-      cameraFarPlane: this.shadowRenderer.getConfig().shadowRadius,
+      cameraFarPlane: ctx.far,
     });
     
     const shadowConfig = this.shadowRenderer.getConfig();
@@ -112,13 +115,19 @@ export class ShadowPass extends BaseRenderPass {
   private executeSingleMap(
     ctx: RenderContext, 
     shadowConfig: ReturnType<ShadowRendererGPU['getConfig']>,
-    lightPos: ArrayLike<number>
+    lightPos: ArrayLike<number>,
+    slotIndex: number = 0
   ): void {
     const lightPosArray = [lightPos[0], lightPos[1], lightPos[2]] as [number, number, number];
     const shadowMap = this.shadowRenderer.getShadowMap();
     const lightSpaceMatrix = this.shadowRenderer.getLightSpaceMatrix();
     
     if (!shadowMap) return;
+    
+    // Pre-write single matrix when called standalone (not from executeCSM)
+    if (slotIndex === 0) {
+      this.objectRenderer.writeShadowMatrices([lightSpaceMatrix]);
+    }
     
     // Begin shadow render pass
     const passEncoder = ctx.encoder.beginRenderPass({
@@ -138,12 +147,12 @@ export class ShadowPass extends BaseRenderPass {
     const shadowCasters = ctx.scene?.getShadowCasters() ?? [];
     for (const caster of shadowCasters) {
       if (caster.canCastShadows) {
-        caster.renderDepthOnly(passEncoder, lightSpaceMatrix, lightPosArray);
+        caster.renderDepthOnly(passEncoder, lightSpaceMatrix, lightPosArray, slotIndex);
       }
     }
 
-    // Render batched object shadows via ObjectRendererGPU
-    this.objectRenderer.renderShadowPass(passEncoder, lightSpaceMatrix, lightPosArray);
+    // Render batched object shadows via ObjectRendererGPU (using dynamic offset slot)
+    this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPosArray);
     
     passEncoder.end();
   }
@@ -157,7 +166,30 @@ export class ShadowPass extends BaseRenderPass {
     const lightPosArray = [lightPos[0], lightPos[1], lightPos[2]] as [number, number, number];
     const shadowCasters = ctx.scene?.getShadowCasters() ?? [];
     
-    // Render each cascade
+    // Pre-write ALL shadow matrices (cascades + single map) in one call
+    // Slot layout: [cascade0, cascade1, cascade2, cascade3, singleMap]
+    const matrices: (Float32Array | ReturnType<ShadowRendererGPU['getCascadeLightSpaceMatrix']>)[] = [];
+    const casterMatrices: { lightSpaceMatrix: mat4; lightPosition: [number, number, number] }[] = [];
+    for (let i = 0; i < shadowConfig.cascadeCount; i++) {
+      const m = this.shadowRenderer.getCascadeLightSpaceMatrix(i);
+      matrices.push(m);
+      casterMatrices.push({ lightSpaceMatrix: m as mat4, lightPosition: lightPosArray });
+    }
+    // Single map matrix goes in the slot after all cascades
+    const singleMapSlot = shadowConfig.cascadeCount;
+    const singleMatrix = this.shadowRenderer.getLightSpaceMatrix();
+    matrices.push(singleMatrix);
+    casterMatrices.push({ lightSpaceMatrix: singleMatrix as mat4, lightPosition: lightPosArray });
+    this.objectRenderer.writeShadowMatrices(matrices);
+    
+    // Pre-write shadow uniforms for all shadow casters that support it
+    for (const caster of shadowCasters) {
+      if (caster.canCastShadows && caster.prepareShadowPasses) {
+        caster.prepareShadowPasses(casterMatrices);
+      }
+    }
+    
+    // Render each cascade using its pre-written slot
     for (let cascadeIdx = 0; cascadeIdx < shadowConfig.cascadeCount; cascadeIdx++) {
       const cascadeView = this.shadowRenderer.getCascadeView(cascadeIdx);
       const cascadeLightMatrix = this.shadowRenderer.getCascadeLightSpaceMatrix(cascadeIdx);
@@ -178,22 +210,23 @@ export class ShadowPass extends BaseRenderPass {
       
       passEncoder.setViewport(0, 0, shadowConfig.resolution, shadowConfig.resolution, 0, 1);
       
-      // Render shadow casters for this cascade
+      // Render shadow casters for this cascade (uses dynamic offset slot)
       for (const caster of shadowCasters) {
         if (caster.canCastShadows) {
-          caster.renderDepthOnly(passEncoder, cascadeLightMatrix, lightPosArray);
+          caster.renderDepthOnly(passEncoder, cascadeLightMatrix, lightPosArray, cascadeIdx);
         }
       }
 
-      // Render batched object shadows for this cascade
-      this.objectRenderer.renderShadowPass(passEncoder, cascadeLightMatrix, lightPosArray);
+      // Render batched object shadows for this cascade (uses dynamic offset slot)
+      this.objectRenderer.renderShadowPass(passEncoder, cascadeIdx, lightPosArray);
       
       passEncoder.end();
     }
     
     // Also render single shadow map for fallback/compatibility
     // This ensures non-CSM aware receivers still work
-    this.executeSingleMap(ctx, shadowConfig, lightPos);
+    // Uses the pre-written slot after cascade slots
+    this.executeSingleMap(ctx, shadowConfig, lightPos, singleMapSlot);
   }
 }
 
@@ -241,13 +274,12 @@ export class OpaquePass extends BaseRenderPass {
     const lightSpaceMatrix = shadowEnabled ? this.shadowRenderer.getLightSpaceMatrix() : null;
     const shadowMap = shadowEnabled ? this.shadowRenderer.getShadowMap() : null;
 
-    // Determine loadOp based on whether sky pass ran
-    const loadOp = ctx.options.skyMode !== 'none' ? 'load' : 'clear';
-
     const pass = ctx.encoder.beginRenderPass({
       label: 'opaque-pass',
-      colorAttachments: [ctx.getColorAttachment(loadOp as 'clear' | 'load')],
-      depthStencilAttachment: ctx.getDepthAttachment('clear'),
+      // Always load color (sky and/or ground already rendered)
+      colorAttachments: [ctx.getColorAttachment('load')],
+      // Load depth from ground pass (ground clears depth, opaque loads it)
+      depthStencilAttachment: ctx.getDepthAttachment('load'),
     });
 
     // Render terrain (terrain uses its own SceneEnvironment integration)
@@ -259,6 +291,7 @@ export class OpaquePass extends BaseRenderPass {
         shadowRadius: shadowRadius,
         lightSpaceMatrix: lightSpaceMatrix,
         shadowMap: shadowMap,
+        csmEnabled: this.shadowRenderer.isCSMEnabled(),
       } : undefined;
       
       terrainManager.render(pass, {
@@ -285,6 +318,7 @@ export class OpaquePass extends BaseRenderPass {
       lightSpaceMatrix: lightSpaceMatrix ?? undefined,
       shadowEnabled: shadowEnabled,
       shadowBias: 0.002,
+      csmEnabled: this.shadowRenderer.isCSMEnabled(),
     };
     
     // Render objects with unified SceneEnvironment (shadow + IBL)
@@ -365,12 +399,80 @@ export class TransparentPass extends BaseRenderPass {
 }
 
 // ============================================================================
-// OVERLAY PASS
+// GROUND PASS - Grid ground plane with shadow receiving
+// ============================================================================
+
+export interface GroundPassDependencies {
+  gridRenderer: GridRendererGPU;
+  shadowRenderer: ShadowRendererGPU;
+}
+
+/**
+ * GroundPass - Renders solid grid ground plane into HDR buffer
+ * Category: scene (participates in post-processing and shadow receiving)
+ * Priority: between SKY and OPAQUE so objects render on top
+ */
+export class GroundPass extends BaseRenderPass {
+  readonly name = 'ground';
+  readonly priority = PassPriority.SKY + 50; // After sky, before opaque
+  readonly category: PassCategory = 'scene';
+  
+  private gridRenderer: GridRendererGPU;
+  private shadowRenderer: ShadowRendererGPU;
+  
+  constructor(deps: GroundPassDependencies) {
+    super();
+    this.gridRenderer = deps.gridRenderer;
+    this.shadowRenderer = deps.shadowRenderer;
+  }
+  
+  execute(ctx: RenderContext): void {
+    const { showGrid, shadowEnabled, lightDirection, lightColor, ambientIntensity } = ctx.options;
+    
+    // Color: load from sky pass if sky ran, otherwise clear
+    const colorLoadOp = ctx.options.skyMode !== 'none' ? 'load' : 'clear';
+    
+    // Always begin pass to clear depth (OpaquePass depends on depth being cleared here).
+    // Only render the ground plane geometry when showGrid is true.
+    const pass = ctx.encoder.beginRenderPass({
+      label: 'ground-pass',
+      colorAttachments: [ctx.getColorAttachment(colorLoadOp as 'clear' | 'load')],
+      // Ground is the first pass using the main depth buffer - always clear it
+      depthStencilAttachment: ctx.getDepthAttachment('clear'),
+    });
+    
+    if (showGrid && ctx.sceneEnvironment) {
+      // Get light space matrix for shadow receiving
+      const lightSpaceMatrix = shadowEnabled ? this.shadowRenderer.getLightSpaceMatrix() : null;
+      
+      const params: GridGroundRenderParams = {
+        viewProjectionMatrix: ctx.viewProjectionMatrix,
+        cameraPosition: ctx.cameraPosition,
+        lightDirection: lightDirection as [number, number, number],
+        lightColor: lightColor as [number, number, number],
+        ambientIntensity,
+        lightSpaceMatrix: lightSpaceMatrix ?? undefined,
+        shadowEnabled,
+        shadowResolution: this.shadowRenderer.getConfig().resolution,
+      };
+      
+      this.gridRenderer.renderGround(pass, params, ctx.sceneEnvironment);
+    }
+    
+    pass.end();
+  }
+}
+
+// ============================================================================
+// OVERLAY PASS - Axis lines only (viewport overlay)
 // ============================================================================
 
 /**
- * OverlayPass - Renders grid and axes (depth test, no write)
+ * OverlayPass - Renders axis lines (depth test, no write)
  * Category: viewport (renders AFTER post-processing to avoid tonemapping)
+ * 
+ * Note: Grid ground plane is now rendered in GroundPass (scene category).
+ * This pass only renders the colored axis indicator lines.
  */
 export class OverlayPass extends BaseRenderPass {
   readonly name = 'overlay';
@@ -382,9 +484,9 @@ export class OverlayPass extends BaseRenderPass {
   }
   
   execute(ctx: RenderContext): void {
-    const { showGrid, showAxes } = ctx.options;
+    const { showAxes } = ctx.options;
     
-    if (!showGrid && !showAxes) return;
+    if (!showAxes) return;
     
     // Viewport passes render to final backbuffer (after post-processing)
     const pass = ctx.encoder.beginRenderPass({
@@ -393,10 +495,7 @@ export class OverlayPass extends BaseRenderPass {
       depthStencilAttachment: ctx.getDepthAttachment('load'),
     });
     
-    this.gridRenderer.render(pass, ctx.viewProjectionMatrix, {
-      showGrid,
-      showAxes,
-    });
+    this.gridRenderer.renderAxes(pass, ctx.viewProjectionMatrix);
     
     pass.end();
   }

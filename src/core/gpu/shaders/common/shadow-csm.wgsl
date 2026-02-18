@@ -22,6 +22,9 @@ struct CSMUniforms {
   cascadeSplits: vec4f,
   // Config: cascadeCount, csmEnabled, blendFraction, _pad (16 bytes)
   config: vec4f,
+  // Camera forward direction for view-space depth calculation (16 bytes)
+  // xyz = normalized camera forward, w = 0
+  cameraForward: vec4f,
 }
 
 // ============================================================================
@@ -264,9 +267,13 @@ fn sampleSingleShadow(
 // Unified Shadow Sampling (auto-selects CSM or single based on config)
 // ============================================================================
 
-// Calculate view-space depth from world position and view matrix
-fn calculateViewDepth(worldPos: vec3f, cameraPos: vec3f) -> f32 {
-  return length(worldPos - cameraPos);
+// Calculate view-space depth from world position using camera forward direction.
+// Projects (worldPos - cameraPos) onto the camera's forward axis to get linear
+// view-space Z depth. This matches how cascade splits are computed (perspective
+// near/far along the view axis), giving correct planar cascade boundaries rather
+// than spherical ones from Euclidean distance.
+fn calculateViewDepth(worldPos: vec3f, cameraPos: vec3f, cameraForward: vec3f) -> f32 {
+  return abs(dot(worldPos - cameraPos, cameraForward));
 }
 
 // Debug function to visualize cascade boundaries

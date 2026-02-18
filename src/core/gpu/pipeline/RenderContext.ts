@@ -25,7 +25,7 @@ export interface RenderContext {
   readonly ctx: GPUContext;
   readonly scene: Scene | null;
   
-  // Camera state (read-only)
+  // Camera state for VIEWING (what appears on screen - may be debug camera)
   readonly camera: GPUCamera;
   readonly viewMatrix: Float32Array;
   readonly projectionMatrix: Float32Array;
@@ -34,6 +34,15 @@ export interface RenderContext {
   readonly inverseViewMatrix: Float32Array;
   readonly cameraPosition: [number, number, number];
   readonly cameraForward: [number, number, number];
+  
+  // Scene camera state (the "real" camera for shadows, culling, shader uniforms)
+  // When not in debug camera mode, these are identical to the view camera fields above.
+  readonly sceneCamera: GPUCamera;
+  readonly sceneCameraPosition: [number, number, number];
+  readonly sceneCameraForward: [number, number, number];
+  readonly sceneCameraViewMatrix: Float32Array;
+  readonly sceneCameraProjectionMatrix: Float32Array;
+  readonly sceneCameraViewProjectionMatrix: Float32Array;
   
   // Render options
   readonly options: Required<RenderOptions>;
@@ -87,6 +96,8 @@ export interface RenderContextOptions {
   ctx: GPUContext;
   encoder: GPUCommandEncoder;
   camera: GPUCamera;
+  /** Scene camera for shadows/culling. If omitted, same as camera. */
+  sceneCamera?: GPUCamera;
   scene: Scene | null;
   options: RenderOptions;
   width: number;
@@ -154,6 +165,14 @@ export class RenderContextImpl implements RenderContext {
   readonly msaaHdrColorTexture?: UnifiedGPUTexture;
   readonly msaaColorTexture?: UnifiedGPUTexture;
   
+  // Scene camera (for shadows, culling, shader uniforms)
+  readonly sceneCamera: GPUCamera;
+  readonly sceneCameraPosition: [number, number, number];
+  readonly sceneCameraForward: [number, number, number];
+  readonly sceneCameraViewMatrix: Float32Array;
+  readonly sceneCameraProjectionMatrix: Float32Array;
+  readonly sceneCameraViewProjectionMatrix: Float32Array;
+  
   // Unified environment (shadow + IBL)
   readonly sceneEnvironment?: SceneEnvironment;
   
@@ -210,18 +229,64 @@ export class RenderContextImpl implements RenderContext {
     const pos = this.camera.getPosition();
     this.cameraPosition = [pos[0], pos[1], pos[2]];
     
-    // Camera forward (from view matrix)
+    // Camera forward from view matrix (column-major layout from gl-matrix lookAt):
+    // m[2]=-f.x, m[6]=-f.y, m[10]=-f.z where f=normalize(center-eye)
+    // So forward = [-m[2], -m[6], -m[10]]
     const forward: [number, number, number] = [
-      -this.viewMatrix[8],
-      0,
+      -this.viewMatrix[2],
+      -this.viewMatrix[6],
       -this.viewMatrix[10],
     ];
-    const len = Math.sqrt(forward[0] * forward[0] + forward[2] * forward[2]);
+    const len = Math.sqrt(forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2]);
     if (len > 0.001) {
       forward[0] /= len;
+      forward[1] /= len;
       forward[2] /= len;
     }
     this.cameraForward = forward;
+    
+    // Scene camera (defaults to view camera if not provided)
+    const sc = opts.sceneCamera ?? opts.camera;
+    this.sceneCamera = sc;
+    
+    if (sc === opts.camera) {
+      // Same camera - reuse computed values
+      this.sceneCameraPosition = this.cameraPosition;
+      this.sceneCameraForward = this.cameraForward;
+      this.sceneCameraViewMatrix = this.viewMatrix;
+      this.sceneCameraProjectionMatrix = this.projectionMatrix;
+      this.sceneCameraViewProjectionMatrix = this.viewProjectionMatrix;
+    } else {
+      // Different camera - compute scene camera matrices
+      const scViewMat = sc.getViewMatrix();
+      const scProjMat = sc.getProjectionMatrix();
+      
+      this.sceneCameraViewMatrix = new Float32Array(scViewMat);
+      this.sceneCameraProjectionMatrix = new Float32Array(scProjMat);
+      
+      this.sceneCameraViewProjectionMatrix = new Float32Array(16);
+      mat4.multiply(
+        this.sceneCameraViewProjectionMatrix as unknown as mat4,
+        scProjMat as mat4,
+        scViewMat as mat4
+      );
+      
+      const scPos = sc.getPosition();
+      this.sceneCameraPosition = [scPos[0], scPos[1], scPos[2]];
+      
+      const scFwd: [number, number, number] = [
+        -this.sceneCameraViewMatrix[2],
+        -this.sceneCameraViewMatrix[6],
+        -this.sceneCameraViewMatrix[10],
+      ];
+      const scLen = Math.sqrt(scFwd[0] * scFwd[0] + scFwd[1] * scFwd[1] + scFwd[2] * scFwd[2]);
+      if (scLen > 0.001) {
+        scFwd[0] /= scLen;
+        scFwd[1] /= scLen;
+        scFwd[2] /= scLen;
+      }
+      this.sceneCameraForward = scFwd;
+    }
   }
   
   /**

@@ -72,6 +72,32 @@ export function ConnectedRenderingPanel({
   );
   
   // Handlers
+
+  /** Apply the correct shadow debug textures based on CSM state */
+  const applyShadowDebugTextures = useCallback((enabled: boolean, csmEnabled: boolean, cascadeCount: number) => {
+    const debugManager = store.viewport?.getDebugTextureManager?.();
+    if (!debugManager) return;
+
+    if (csmEnabled) {
+      // CSM mode: show cascade maps, hide single map
+      debugManager.setEnabled('shadow-map', false);
+      for (let i = 0; i < 4; i++) {
+        debugManager.setEnabled(`csm-cascade-${i}`, enabled && i < cascadeCount);
+      }
+    } else {
+      // Single map mode: show single map, hide all cascades
+      debugManager.setEnabled('shadow-map', enabled);
+      for (let i = 0; i < 4; i++) {
+        debugManager.setEnabled(`csm-cascade-${i}`, false);
+      }
+    }
+  }, [store]);
+
+  const handleShadowDebugToggle = useCallback((enabled: boolean) => {
+    applyShadowDebugTextures(enabled, shadowSettings.csmEnabled ?? false, shadowSettings.cascadeCount ?? 4);
+    setShowShadowThumbnail(enabled);
+  }, [shadowSettings.csmEnabled, shadowSettings.cascadeCount, applyShadowDebugTextures]);
+
   const handleShadowSettingsChange = useCallback((settings: Partial<WebGPUShadowSettings>) => {
     setShadowSettings(prev => {
       const updated = { ...prev, ...settings };
@@ -83,17 +109,13 @@ export function ConnectedRenderingPanel({
       if (viewport) {
         viewport.setWebGPUShadowSettings(updated);
       }
+      // Re-apply debug textures if thumbnail is visible and CSM settings changed
+      if (showShadowThumbnail && (settings.csmEnabled !== undefined || settings.cascadeCount !== undefined)) {
+        applyShadowDebugTextures(true, updated.csmEnabled ?? false, updated.cascadeCount ?? 4);
+      }
       return updated;
     });
-  }, [store, externalShadowChange]);
-
-  const handleShadowDebugToggle = useCallback((enabled: boolean) => {
-    const debugManager = store.viewport?.getDebugTextureManager?.();
-    if (debugManager) {
-      debugManager.setEnabled('shadow-map', enabled);
-    }
-    setShowShadowThumbnail(enabled);
-  }, [store]);
+  }, [store, externalShadowChange, showShadowThumbnail, applyShadowDebugTextures]);
   
   const handleSSAOSettingsChange = useCallback((settings: Partial<SSAOSettings>) => {
     setSSAOSettings(prev => {

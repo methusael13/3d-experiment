@@ -211,9 +211,9 @@ export class PlaceholderTextures {
     
     // ============ CSM Placeholders ============
     
-    // CSM uniform buffer placeholder (288 bytes)
-    // Layout: 4 identity matrices + vec4 splits (10000s) + vec4 config (0, 0, 0.1, 0)
-    const csmData = new Float32Array(72); // 288 / 4
+    // CSM uniform buffer placeholder (304 bytes)
+    // Layout: 4 identity matrices + vec4 splits (10000s) + vec4 config (0, 0, 0.1, 0) + vec4 cameraForward
+    const csmData = new Float32Array(76); // 304 / 4
     // Initialize 4 identity matrices
     for (let i = 0; i < 4; i++) {
       const offset = i * 16;
@@ -223,10 +223,12 @@ export class PlaceholderTextures {
     csmData[64] = 10000; csmData[65] = 10000; csmData[66] = 10000; csmData[67] = 10000;
     // Config: cascadeCount=0, csmEnabled=0, blendFraction=0.1, pad=0
     csmData[68] = 0; csmData[69] = 0; csmData[70] = 0.1; csmData[71] = 0;
+    // Camera forward: default (0, 0, -1, 0)
+    csmData[72] = 0; csmData[73] = 0; csmData[74] = -1; csmData[75] = 0;
     
     this._csmUniformBuffer = device.createBuffer({
       label: 'placeholder-csm-uniforms',
-      size: 288,
+      size: 304,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       mappedAtCreation: true,
     });

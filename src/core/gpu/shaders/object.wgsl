@@ -21,6 +21,12 @@
 const PI = 3.14159265359;
 const EPSILON = 0.0001;
 
+// ============ CSM Debug Mode ============
+// 0 = Normal rendering (no debug)
+// 1 = Cascade index visualization (Red/Green/Blue/Yellow bands)
+// 2 = Shadow UV coordinates per cascade
+const OBJECT_CSM_DEBUG_MODE = 0;
+
 // ============ Uniforms ============
 
 struct GlobalUniforms {
@@ -103,10 +109,10 @@ struct SingleModelUniforms {
 struct CSMUniforms {
   viewProjectionMatrices: array<mat4x4f, 4>,  // Light-space VP matrices for each cascade
   cascadeSplits: vec4f,                        // View-space depth splits
-  cascadeCount: f32,                           // Number of active cascades (2-4)
-  blendFraction: f32,                          // Fraction of cascade to blend (0.05-0.2)
-  shadowBias: f32,                             // Base shadow bias
-  _pad: f32,
+  // config: x=cascadeCount, y=csmEnabled, z=blendFraction, w=pad
+  config: vec4f,
+  // Camera forward direction for view-space depth: xyz = forward, w = 0
+  cameraForward: vec4f,
 }
 
 // ============ Vertex Shader ============
@@ -340,7 +346,7 @@ fn sampleSingleShadow(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f) -> f
 // ============ CSM Functions ============
 
 fn selectCascade(viewDepth: f32) -> i32 {
-  let cascadeCount = i32(csmUniforms.cascadeCount);
+  let cascadeCount = i32(csmUniforms.config.x);
   if (viewDepth < csmUniforms.cascadeSplits.x) { return 0; }
   if (viewDepth < csmUniforms.cascadeSplits.y && cascadeCount > 1) { return 1; }
   if (viewDepth < csmUniforms.cascadeSplits.z && cascadeCount > 2) { return 2; }
@@ -356,7 +362,7 @@ fn sampleCascadeShadow(worldPos: vec4f, cascade: i32, normal: vec3f, lightDir: v
   
   let NdotL = max(dot(normal, lightDir), 0.001);
   let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
-  let cascadeBias = csmUniforms.shadowBias * (1.0 + f32(cascade) * 0.5);
+  let cascadeBias = 0.001 * (1.0 + f32(cascade) * 0.5);
   let shadowBias = cascadeBias + clamp(slopeFactor, 0.0, 5.0) * cascadeBias * 2.0;
   let biasedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
   
@@ -385,7 +391,7 @@ fn sampleCascadeShadow(worldPos: vec4f, cascade: i32, normal: vec3f, lightDir: v
 
 fn sampleCSMShadow(worldPos: vec4f, viewDepth: f32, normal: vec3f, lightDir: vec3f) -> f32 {
   let cascade = selectCascade(viewDepth);
-  let cascadeCount = i32(csmUniforms.cascadeCount);
+  let cascadeCount = i32(csmUniforms.config.x);
   
   var cascadeSplit = csmUniforms.cascadeSplits.x;
   if (cascade == 1) { cascadeSplit = csmUniforms.cascadeSplits.y; }
@@ -394,7 +400,7 @@ fn sampleCSMShadow(worldPos: vec4f, viewDepth: f32, normal: vec3f, lightDir: vec
   
   let shadow0 = sampleCascadeShadow(worldPos, cascade, normal, lightDir);
   
-  let blendRegion = cascadeSplit * csmUniforms.blendFraction;
+  let blendRegion = cascadeSplit * csmUniforms.config.z;
   let blendStart = cascadeSplit - blendRegion;
   
   if (viewDepth > blendStart && cascade < cascadeCount - 1) {
@@ -413,13 +419,46 @@ fn sampleShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDir: 
   }
   
   if (globals.csmEnabled > 0.5) {
-    // Use CSM - calculate view depth from camera distance
-    let viewDepth = length(worldPos - globals.cameraPosition);
+    // Use CSM - calculate view-space depth using projection onto camera forward axis
+    let cameraFwd = normalize(csmUniforms.cameraForward.xyz);
+    let viewDepth = abs(dot(worldPos - globals.cameraPosition, cameraFwd));
     return sampleCSMShadow(vec4f(worldPos, 1.0), viewDepth, normal, lightDir);
   } else {
     // Use single shadow map
     return sampleSingleShadow(lightSpacePos, normal, lightDir);
   }
+}
+
+// ============ CSM Debug Visualization ============
+
+fn objectCsmDebugColor(worldPos: vec3f) -> vec4f {
+  if (OBJECT_CSM_DEBUG_MODE == 0 || globals.csmEnabled < 0.5) {
+    return vec4f(-1.0); // Sentinel: no debug override
+  }
+  
+  let cameraFwd = normalize(csmUniforms.cameraForward.xyz);
+  let viewDepth = abs(dot(worldPos - globals.cameraPosition, cameraFwd));
+  let cascade = selectCascade(viewDepth);
+  
+  if (OBJECT_CSM_DEBUG_MODE == 1) {
+    // Cascade index colors: Red=0, Green=1, Blue=2, Yellow=3
+    var cascadeColor = vec3f(0.0);
+    if (cascade == 0) { cascadeColor = vec3f(1.0, 0.3, 0.3); }
+    else if (cascade == 1) { cascadeColor = vec3f(0.3, 1.0, 0.3); }
+    else if (cascade == 2) { cascadeColor = vec3f(0.3, 0.3, 1.0); }
+    else { cascadeColor = vec3f(1.0, 1.0, 0.3); }
+    return vec4f(cascadeColor, 1.0);
+  }
+  
+  if (OBJECT_CSM_DEBUG_MODE == 2) {
+    // Shadow UV coordinates per cascade
+    let lightSpacePos = csmUniforms.viewProjectionMatrices[cascade] * vec4f(worldPos, 1.0);
+    let projCoords = lightSpacePos.xyz / lightSpacePos.w;
+    let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
+    return vec4f(shadowUV.x, shadowUV.y, 0.0, 1.0);
+  }
+  
+  return vec4f(-1.0); // No override
 }
 
 // Compute cotangent frame for normal mapping without pre-computed tangents
@@ -527,6 +566,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   // Final color
   let color = direct + ambient + emissive;
   
+  // CSM debug override
+  let dbg0 = objectCsmDebugColor(input.worldPosition);
+  if (dbg0.x >= 0.0) { return dbg0; }
+  
   // Output linear HDR - tonemapping and gamma applied in composite pass
   return vec4f(color, alpha);
 }
@@ -556,6 +599,10 @@ fn fs_notex(input: VertexOutput) -> @location(0) vec4f {
   let ambient = hemisphereAmbient(N, material.albedo, globals.ambientIntensity);
   
   let color = direct + ambient + material.emissiveFactor;
+  
+  // CSM debug override
+  let dbg1 = objectCsmDebugColor(input.worldPosition);
+  if (dbg1.x >= 0.0) { return dbg1; }
   
   return vec4f(color, 1.0);
 }
@@ -636,6 +683,10 @@ fn fs_main_ibl(input: VertexOutput) -> @location(0) vec4f {
   
   let color = direct + ambient + emissive;
   
+  // CSM debug override
+  let dbg2 = objectCsmDebugColor(input.worldPosition);
+  if (dbg2.x >= 0.0) { return dbg2; }
+  
   return vec4f(color, alpha);
 }
 
@@ -668,6 +719,10 @@ fn fs_notex_ibl(input: VertexOutput) -> @location(0) vec4f {
   );
   
   let color = direct + ambient + material.emissiveFactor;
+  
+  // CSM debug override
+  let dbg3 = objectCsmDebugColor(input.worldPosition);
+  if (dbg3.x >= 0.0) { return dbg3; }
   
   return vec4f(color, 1.0);
 }

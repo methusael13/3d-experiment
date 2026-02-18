@@ -189,6 +189,12 @@ export class ObjectRendererGPU {
   private shadowUniformBuffer: UnifiedGPUBuffer | null = null;
   private shadowBindGroup: GPUBindGroup | null = null;
   
+  // Dynamic uniform buffer for CSM shadow passes
+  // Each slot is 256-byte aligned (WebGPU requirement for dynamic offsets)
+  // Slot layout: [cascade0, cascade1, cascade2, cascade3, singleMap]
+  private static readonly SHADOW_SLOT_SIZE = 256; // Must be 256-byte aligned
+  private static readonly MAX_SHADOW_SLOTS = 5;   // 4 cascades + 1 single map
+  
   // Registered meshes
   private meshes: Map<number, GPUMeshInternal> = new Map();
   private nextMeshId = 1;
@@ -852,19 +858,26 @@ export class ObjectRendererGPU {
   
   /**
    * Create shadow pass pipeline and resources
+   * Uses a dynamic uniform buffer with 256-byte aligned slots to support
+   * multiple light-space matrices (CSM cascades + single map) without
+   * the writeBuffer race condition.
    */
   private createShadowPipeline(): void {
-    // Shadow uniform buffer (64 bytes for mat4)
+    const slotSize = ObjectRendererGPU.SHADOW_SLOT_SIZE;
+    const totalSize = slotSize * ObjectRendererGPU.MAX_SHADOW_SLOTS;
+    
+    // Shadow uniform buffer: 5 slots × 256 bytes = 1280 bytes
+    // Each slot holds one mat4x4f (64 bytes) padded to 256-byte alignment
     this.shadowUniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
-      label: 'object-shadow-uniforms',
-      size: 64,
+      label: 'object-shadow-uniforms-dynamic',
+      size: totalSize,
     });
     
-    // Bind group layout for shadow pass global uniforms
+    // Bind group layout for shadow pass global uniforms (dynamic offset)
     this.shadowBindGroupLayout = this.ctx.device.createBindGroupLayout({
       label: 'object-shadow-global-layout',
       entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true } },
       ],
     });
     
@@ -910,7 +923,7 @@ export class ObjectRendererGPU {
       // No fragment shader - depth-only rendering
       primitive: {
         topology: 'triangle-list',
-        cullMode: 'back',
+        cullMode: 'none',  // No culling for shadow maps - ensures shadows cast even when light is inside geometry
       },
       depthStencil: {
         format: 'depth32float',
@@ -919,30 +932,61 @@ export class ObjectRendererGPU {
       },
     });
     
-    // Create shadow bind group
+    // Create shadow bind group with dynamic offset support
+    // The size must match what the shader expects (64 bytes for mat4x4f)
     this.shadowBindGroup = this.ctx.device.createBindGroup({
       label: 'object-shadow-bindgroup',
       layout: this.shadowBindGroupLayout,
       entries: [
-        { binding: 0, resource: { buffer: this.shadowUniformBuffer!.buffer } },
+        { binding: 0, resource: { buffer: this.shadowUniformBuffer!.buffer, size: 64 } },
       ],
     });
   }
   
   /**
-   * Render all objects to shadow map
+   * Pre-write all shadow matrices to the dynamic uniform buffer.
+   * Must be called ONCE before recording any shadow render passes.
+   * 
+   * @param matrices - Array of light-space matrices to write.
+   *   For CSM: [cascade0, cascade1, cascade2, cascade3, singleMap]
+   *   For single map only: [singleMap]
+   */
+  writeShadowMatrices(matrices: (mat4 | Float32Array)[]): void {
+    if (!this.shadowUniformBuffer) return;
+    
+    const slotSize = ObjectRendererGPU.SHADOW_SLOT_SIZE;
+    const floatsPerSlot = slotSize / 4; // 64 floats per 256-byte slot
+    const totalFloats = floatsPerSlot * matrices.length;
+    const data = new Float32Array(totalFloats);
+    
+    for (let i = 0; i < matrices.length; i++) {
+      // Write mat4 (16 floats = 64 bytes) at the start of each 256-byte slot
+      data.set(matrices[i] as Float32Array, i * floatsPerSlot);
+    }
+    
+    this.shadowUniformBuffer.write(this.ctx, data);
+  }
+  
+  /**
+   * Render all objects to shadow map using a pre-written matrix slot.
+   * 
+   * Call writeShadowMatrices() once before recording render passes,
+   * then call this method for each cascade/single-map pass with the
+   * appropriate slotIndex to select the correct light-space matrix
+   * via dynamic uniform buffer offset.
    * 
    * Filters objects based on:
    * 1. Per-object castsShadow flag (explicit toggle)
    * 2. Optional distance-based culling (shadowParams.shadowRadius)
    * 
    * @param passEncoder - Shadow map render pass encoder
-   * @param lightSpaceMatrix - Light's view-projection matrix
+   * @param slotIndex - Index into the pre-written matrix slots (0-4)
+   * @param lightPosition - Light position for distance culling
    * @param shadowParams - Optional params for distance-based culling
    */
   renderShadowPass(
     passEncoder: GPURenderPassEncoder,
-    lightSpaceMatrix: mat4 | Float32Array,
+    slotIndex: number,
     lightPosition: vec3,
     shadowParams?: ShadowPassParams
   ): void {
@@ -955,12 +999,12 @@ export class ObjectRendererGPU {
       return;
     }
     
-    // Update shadow uniform buffer with light space matrix
-    this.shadowUniformBuffer.write(this.ctx, lightSpaceMatrix as Float32Array);
+    // Calculate dynamic offset for this slot (256-byte aligned)
+    const dynamicOffset = slotIndex * ObjectRendererGPU.SHADOW_SLOT_SIZE;
     
-    // Set pipeline and global bind group
+    // Set pipeline and global bind group with dynamic offset
     passEncoder.setPipeline(this.shadowPipeline);
-    passEncoder.setBindGroup(0, this.shadowBindGroup);
+    passEncoder.setBindGroup(0, this.shadowBindGroup, [dynamicOffset]);
     
     // Precompute distance culling params
     const useDistanceCulling = shadowParams && shadowParams.shadowRadius > 0;

@@ -32,6 +32,23 @@ export interface ShadowCaster {
   canCastShadows: boolean;
   
   /**
+   * Pre-write all shadow uniforms for multiple passes (CSM cascades + single map).
+   * Called ONCE before any renderDepthOnly calls in a frame.
+   * 
+   * Implementors should write all light-space matrices into a dynamic uniform buffer
+   * so each renderDepthOnly call can select the correct slot via dynamic offset,
+   * avoiding writeBuffer race conditions when multiple passes share a buffer.
+   * 
+   * Optional: if not implemented, renderDepthOnly receives lightSpaceMatrix directly
+   * and must handle its own uniform updates (legacy behavior).
+   * 
+   * @param matrices - Array of { lightSpaceMatrix, lightPosition } for each slot
+   */
+  prepareShadowPasses?(
+    matrices: { lightSpaceMatrix: mat4; lightPosition: vec3 }[]
+  ): void;
+  
+  /**
    * Render this object's depth to the shadow map.
    * Called during shadow pass with the light space matrix.
    * 
@@ -41,11 +58,14 @@ export interface ShadowCaster {
    * 
    * @param passEncoder - Active shadow render pass
    * @param lightSpaceMatrix - Light view-projection matrix
+   * @param lightPosition - Light world position (for LOD selection)
+   * @param slotIndex - Index into pre-written uniform slots (from prepareShadowPasses)
    */
   renderDepthOnly(
     passEncoder: GPURenderPassEncoder,
     lightSpaceMatrix: mat4,
-    lightPosition: vec3
+    lightPosition: vec3,
+    slotIndex: number
   ): void;
 }
 

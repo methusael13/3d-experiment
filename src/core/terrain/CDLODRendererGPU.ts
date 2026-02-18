@@ -216,6 +216,12 @@ export class CDLODRendererGPU {
   private bindGroupLayout: GPUBindGroupLayout | null = null;
   private pipelineLayout: GPUPipelineLayout | null = null;
   
+  // Dynamic uniform buffer for CSM shadow passes (same approach as ObjectRendererGPU)
+  // Each slot is 256-byte aligned (WebGPU requirement for dynamic offsets)
+  // Slot layout: [cascade0, cascade1, cascade2, cascade3, singleMap]
+  private static readonly SHADOW_SLOT_SIZE = 256; // Must be 256-byte aligned
+  private static readonly MAX_SHADOW_SLOTS = 5;   // 4 cascades + 1 single map
+  
   // Buffers using unified abstraction
   private gridVertexBuffer: UnifiedGPUBuffer | null = null;
   private gridIndexBuffer: UnifiedGPUBuffer | null = null;
@@ -252,6 +258,9 @@ export class CDLODRendererGPU {
   
   // Last selection (for debugging)
   private lastSelection: SelectionResult | null = null;
+  
+  // Last camera position from render() - used for shadow pass LOD selection
+  private lastCameraPosition: vec3 = vec3.create();
   
   // Shadow-specific instance buffer (separate from camera view)
   private shadowInstanceBuffer: UnifiedGPUBuffer | null = null;
@@ -542,12 +551,13 @@ export class CDLODRendererGPU {
       size: 224, // Will be aligned to 256
     });
     
-    // Shadow uniform buffer (96 bytes = mat4 + vec4 + vec4)
-    // lightSpaceMatrix(16 floats) + cameraPos(3) + pad(1) + terrainSize, heightScale, gridSize, skirtDepth(4)
-    // = 24 floats × 4 bytes = 96 bytes
+    // Shadow uniform buffer with dynamic offsets for CSM
+    // Each slot: 96 bytes (mat4 + vec4 + vec4) padded to 256-byte alignment
+    // Total: 5 slots × 256 bytes = 1280 bytes
+    const totalShadowSize = CDLODRendererGPU.SHADOW_SLOT_SIZE * CDLODRendererGPU.MAX_SHADOW_SLOTS;
     this.shadowUniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
-      label: 'cdlod-shadow-uniforms',
-      size: 96,
+      label: 'cdlod-shadow-uniforms-dynamic',
+      size: totalShadowSize,
     });
   }
   
@@ -663,7 +673,7 @@ export class CDLODRendererGPU {
       },
       primitive: {
         topology: 'triangle-list',
-        cullMode: 'back',
+        cullMode: 'none',
         frontFace: 'ccw',
       },
       depthStencil: {
@@ -767,6 +777,9 @@ export class CDLODRendererGPU {
     // Select visible nodes
     const selection = this.quadtree.select(params.cameraPosition, params.viewProjectionMatrix);
     this.lastSelection = selection;
+    
+    // Store camera position for shadow pass LOD selection
+    vec3.copy(this.lastCameraPosition, params.cameraPosition);
     
     if (selection.nodes.length === 0) {
       return;
@@ -1230,7 +1243,7 @@ export class CDLODRendererGPU {
       },
       primitive: {
         topology: 'triangle-list',
-        cullMode: 'back',
+        cullMode: 'none',
         frontFace: 'ccw',
       },
       depthStencil: {
@@ -1284,13 +1297,16 @@ export class CDLODRendererGPU {
    * Uses depth-only rendering with the same vertex layout as main render
    */
   private createShadowPipeline(): void {
-    // Create bind group layout for shadow pass
-    // Binding 0: uniforms (lightSpaceMatrix, terrain params)
+    // Create bind group layout for shadow pass (dynamic offset for CSM support)
+    // Binding 0: uniforms with dynamic offset (lightSpaceMatrix, terrain params)
     // Binding 1: heightmap texture
-    this.shadowBindGroupLayout = new BindGroupLayoutBuilder('cdlod-shadow-bind-group-layout')
-      .uniformBuffer(0, 'vertex')                          // Shadow uniforms
-      .texture(1, 'vertex', 'unfilterable-float')          // Heightmap (r32float)
-      .build(this.ctx);
+    this.shadowBindGroupLayout = this.ctx.device.createBindGroupLayout({
+      label: 'cdlod-shadow-bind-group-layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX, texture: { sampleType: 'unfilterable-float' } },
+      ],
+    });
     
     // Create pipeline layout
     const pipelineLayout = this.ctx.device.createPipelineLayout({
@@ -1316,7 +1332,7 @@ export class CDLODRendererGPU {
       // No fragment shader - depth-only rendering
       primitive: {
         topology: 'triangle-list',
-        cullMode: 'back',
+        cullMode: 'none',  // No culling for shadow maps - ensures shadows cast even when light is inside geometry
         frontFace: 'ccw',
       },
       depthStencil: {
@@ -1329,6 +1345,7 @@ export class CDLODRendererGPU {
   
   /**
    * Update shadow bind group with current heightmap texture
+   * Uses dynamic offset support - size must match shader's ShadowUniforms struct (96 bytes)
    */
   private updateShadowBindGroup(heightmapTexture?: UnifiedGPUTexture): void {
     if (!this.shadowBindGroupLayout || !this.shadowUniformBuffer) {
@@ -1337,67 +1354,90 @@ export class CDLODRendererGPU {
     
     const heightmap = heightmapTexture || this.defaultHeightmap!;
     
-    this.shadowBindGroup = new BindGroupBuilder('cdlod-shadow-bind-group')
-      .buffer(0, this.shadowUniformBuffer)
-      .texture(1, heightmap)
-      .build(this.ctx, this.shadowBindGroupLayout);
+    // Create bind group with explicit size (96 bytes = what shader expects)
+    this.shadowBindGroup = this.ctx.device.createBindGroup({
+      label: 'cdlod-shadow-bind-group',
+      layout: this.shadowBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.shadowUniformBuffer.buffer, size: 96 } },
+        { binding: 1, resource: heightmap.view },
+      ],
+    });
   }
   
   /**
-   * Update shadow uniform buffer with light space matrix and terrain params
+   * Pre-write all shadow uniforms to the dynamic uniform buffer.
+   * Must be called ONCE before recording any shadow render passes.
+   * 
+   * Each slot contains the full ShadowUniforms struct (96 bytes = 24 floats)
+   * padded to 256-byte alignment.
+   * 
+   * @param matrices - Array of { lightSpaceMatrix, lightPosition } for each slot
+   * @param terrainSize - Terrain world size
+   * @param heightScale - Terrain height scale
    */
-  private updateShadowUniformBuffer(
-    lightSpaceMatrix: mat4,
-    cameraPosition: vec3,
+  writeShadowUniforms(
+    matrices: { lightSpaceMatrix: mat4; lightPosition: vec3 }[],
     terrainSize: number,
-    heightScale: number
+    heightScale: number,
   ): void {
     if (!this.shadowUniformBuffer) return;
     
-    // Shadow uniform layout (matches shader ShadowUniforms struct):
-    // mat4 lightSpaceMatrix (16 floats)
-    // vec3 cameraPosition + pad (4 floats)
-    // terrainSize, heightScale, gridSize, skirtDepth (4 floats)
-    const data = new Float32Array(24);
+    const slotSize = CDLODRendererGPU.SHADOW_SLOT_SIZE;
+    const floatsPerSlot = slotSize / 4; // 64 floats per 256-byte slot
+    const totalFloats = floatsPerSlot * matrices.length;
+    const data = new Float32Array(totalFloats);
     
-    // Light space matrix
-    data.set(lightSpaceMatrix as Float32Array, 0);
-    
-    // Camera position
-    data[16] = cameraPosition[0];
-    data[17] = cameraPosition[1];
-    data[18] = cameraPosition[2];
-    data[19] = 0; // padding
-    
-    // Terrain params
-    data[20] = terrainSize;
-    data[21] = heightScale;
-    data[22] = this.config.gridSize;
-    data[23] = this.config.skirtDepthMultiplier;
+    for (let i = 0; i < matrices.length; i++) {
+      const base = i * floatsPerSlot;
+      const { lightSpaceMatrix, lightPosition } = matrices[i];
+      
+      // mat4 lightSpaceMatrix (16 floats)
+      data.set(lightSpaceMatrix as Float32Array, base);
+      
+      // vec3 cameraPosition + pad (4 floats)
+      data[base + 16] = lightPosition[0];
+      data[base + 17] = lightPosition[1];
+      data[base + 18] = lightPosition[2];
+      data[base + 19] = 0; // padding
+      
+      // terrainSize, heightScale, gridSize, skirtDepth (4 floats)
+      data[base + 20] = terrainSize;
+      data[base + 21] = heightScale;
+      data[base + 22] = this.config.gridSize;
+      data[base + 23] = this.config.skirtDepthMultiplier;
+    }
     
     this.shadowUniformBuffer.write(this.ctx, data);
   }
   
   /**
-   * Render terrain to shadow map using light-centric LOD selection
+   * Render terrain to shadow map using a pre-written uniform slot.
    * 
-   * Unlike camera rendering, shadow maps need camera-independent LOD selection.
-   * We use a virtual "shadow camera" positioned above the terrain center,
-   * which provides consistent shadows regardless of actual camera position.
+   * Call writeShadowUniforms() once before recording render passes,
+   * then call this method for each cascade/single-map pass with the
+   * appropriate slotIndex to select the correct light-space matrix
+   * via dynamic uniform buffer offset.
+   * 
+   * LOD STRATEGY: Uses the CAMERA position for LOD distance calculation
+   * but the LIGHT's view-projection matrix for frustum culling. This ensures:
+   * - Terrain outside the camera view but inside the cascade volume is included
+   *   (so off-screen terrain can still cast shadows into the visible area)
+   * - LOD levels and morph factors are determined by camera distance, matching
+   *   the main pass for terrain that appears in both views (eliminating
+   *   self-shadowing artifacts from LOD/morph mismatch)
    * 
    * @param passEncoder - Shadow map render pass encoder
-   * @param lightSpaceMatrix - Light's view-projection matrix
-   * @param shadowCenter - Center of shadow volume in world space (XZ)
-   * @param terrainSize - Terrain world size
-   * @param heightScale - Terrain height scale
+   * @param slotIndex - Index into the pre-written uniform slots (0-4)
+   * @param lightSpaceMatrix - Light's view-projection matrix (used for frustum culling)
+   * @param lightPosition - Light position (unused, kept for API compat)
    * @param heightmapTexture - Optional heightmap texture
    */
   renderShadowPass(
     passEncoder: GPURenderPassEncoder,
+    slotIndex: number,
     lightSpaceMatrix: mat4,
     lightPosition: vec3,
-    terrainSize: number,
-    heightScale: number,
     heightmapTexture?: UnifiedGPUTexture,
   ): void {
     if (!this.shadowPipeline || !this.shadowUniformBuffer ||
@@ -1405,25 +1445,30 @@ export class CDLODRendererGPU {
       return;
     }
 
-    const shadowSelection = this.quadtree.select(lightPosition, lightSpaceMatrix);
+    // Select nodes using CAMERA position for LOD + LIGHT frustum for culling.
+    // - lightSpaceMatrix → frustum planes → includes off-screen terrain in cascade volume
+    // - lastCameraPosition → LOD distance → matches main pass for visible terrain
+    const shadowSelection = this.quadtree.select(this.lastCameraPosition, lightSpaceMatrix);
     if (shadowSelection.nodes.length === 0) {
       return;
     }
     
-    // Update shadow instance buffer (separate from main camera instance buffer)
+    // Update shadow instance buffer with camera-distance-based LOD + morph
     this.updateShadowInstanceBuffer(shadowSelection.nodes);
-    // Update shadow uniforms
-    this.updateShadowUniformBuffer(lightSpaceMatrix, lightPosition, terrainSize, heightScale);
-    // Update bind group with heightmap
+    
+    // Update bind group with heightmap (bind group is reusable across slots)
     this.updateShadowBindGroup(heightmapTexture);
     
     if (!this.shadowBindGroup) {
       return;
     }
     
-    // Draw shadow pass with shadow-specific instance buffer
+    // Calculate dynamic offset for this slot (256-byte aligned)
+    const dynamicOffset = slotIndex * CDLODRendererGPU.SHADOW_SLOT_SIZE;
+    
+    // Draw shadow pass with shadow instance buffer (camera LOD, light frustum)
     passEncoder.setPipeline(this.shadowPipeline);
-    passEncoder.setBindGroup(0, this.shadowBindGroup);
+    passEncoder.setBindGroup(0, this.shadowBindGroup, [dynamicOffset]);
     passEncoder.setVertexBuffer(0, this.gridVertexBuffer.buffer);
     passEncoder.setVertexBuffer(1, this.shadowInstanceBuffer.buffer);
     passEncoder.setIndexBuffer(this.gridIndexBuffer.buffer, 'uint32');

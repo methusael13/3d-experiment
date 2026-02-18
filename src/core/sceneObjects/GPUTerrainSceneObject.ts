@@ -102,23 +102,36 @@ export class GPUTerrainSceneObject extends SceneObject implements ShadowCaster {
   }
   
   /**
-   * Render terrain depth to shadow map
-   * Delegates to CDLODRenderer's shadow pass
+   * Pre-write all shadow uniforms for multiple passes (CSM cascades + single map).
+   * Delegates to CDLODRenderer's writeShadowUniforms for dynamic offset support.
    */
-  renderDepthOnly(passEncoder: GPURenderPassEncoder, lightSpaceMatrix: mat4, lightPosition: vec3): void {
+  prepareShadowPasses(matrices: { lightSpaceMatrix: mat4; lightPosition: vec3 }[]): void {
+    if (!this._terrainManager?.isReady) return;
+    
+    const renderer = this._terrainManager.getRenderer();
+    const config = this._terrainManager.getConfig();
+    
+    if (renderer) {
+      renderer.writeShadowUniforms(matrices, config.worldSize, config.heightScale);
+    }
+  }
+  
+  /**
+   * Render terrain depth to shadow map
+   * Delegates to CDLODRenderer's shadow pass with slot index for dynamic offset
+   */
+  renderDepthOnly(passEncoder: GPURenderPassEncoder, lightSpaceMatrix: mat4, lightPosition: vec3, slotIndex: number): void {
     if (!this._terrainManager?.isReady) return;
     
     const renderer = this._terrainManager.getRenderer();
     const heightmap = this._terrainManager.getHeightmapTexture();
-    const config = this._terrainManager.getConfig();
     
     if (renderer) {
       renderer.renderShadowPass(
         passEncoder,
+        slotIndex,
         lightSpaceMatrix,
         lightPosition,
-        config.worldSize,
-        config.heightScale,
         heightmap ?? undefined
       );
     }

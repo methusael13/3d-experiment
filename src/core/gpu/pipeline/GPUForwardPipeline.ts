@@ -41,6 +41,7 @@ import {
   ShadowPass, 
   OpaquePass, 
   TransparentPass, 
+  GroundPass,
   OverlayPass, 
   DebugPass,
 } from './passes';
@@ -200,6 +201,16 @@ export class GPUForwardPipeline {
       'depth',
       () => this.shadowRenderer.getShadowMap()?.view ?? null
     );
+
+    // Register CSM cascade shadow maps for debug visualization
+    for (let i = 0; i < 4; i++) {
+      const cascadeIndex = i;
+      this.debugTextureManager.register(
+        `csm-cascade-${i}`,
+        'depth',
+        () => this.shadowRenderer.getCascadeView(cascadeIndex)
+      );
+    }
     
     // Create render passes
     this.initializePasses();
@@ -229,6 +240,11 @@ export class GPUForwardPipeline {
     
     const transparentPass = new TransparentPass();
     
+    const groundPass = new GroundPass({
+      gridRenderer: this.gridRenderer,
+      shadowRenderer: this.shadowRenderer,
+    });
+    
     const overlayPass = new OverlayPass(this.gridRenderer);
     
     const debugPass = new DebugPass({
@@ -241,6 +257,7 @@ export class GPUForwardPipeline {
     this.passes = [
       shadowPass,
       skyPass,
+      groundPass,
       opaquePass,
       transparentPass,
       overlayPass,
@@ -427,11 +444,17 @@ export class GPUForwardPipeline {
   
   /**
    * Render a frame using pass-based architecture
+   * @param scene The scene to render
+   * @param camera The view camera (what appears on screen - may be debug camera)
+   * @param options Render options
+   * @param sceneCamera Optional separate scene camera for shadows/culling/shader uniforms.
+   *                    If not provided, `camera` is used for everything.
    */
   render(
     scene: Scene | null,
     camera: GPUCamera,
-    options: RenderOptions = {}
+    options: RenderOptions = {},
+    sceneCamera?: GPUCamera
   ): void {
     // Calculate delta time
     const now = performance.now();
@@ -529,6 +552,7 @@ export class GPUForwardPipeline {
       ctx: this.ctx,
       encoder,
       camera,
+      sceneCamera,
       scene,
       options: mergedOptions,
       width: this.width,

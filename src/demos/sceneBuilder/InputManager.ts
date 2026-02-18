@@ -11,7 +11,7 @@
  * - 'global': Always receives events (keyboard shortcuts, etc.)
  */
 
-export type InputChannel = 'editor' | 'fps' | 'global';
+export type InputChannel = 'editor' | 'fps' | 'debug-camera' | 'global';
 
 export type InputEventType = 
   | 'mousedown' 
@@ -74,6 +74,7 @@ export class InputManager {
     // Initialize channel handler maps
     this.handlers.set('editor', {});
     this.handlers.set('fps', {});
+    this.handlers.set('debug-camera', {});
     this.handlers.set('global', {});
     
     this.setupEventListeners();

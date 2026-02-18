@@ -16,10 +16,13 @@ import type {
   IRenderer,
 } from '../../core/sceneObjects/types';
 import type { FPSCameraController } from './FPSCameraController';
+import { DebugCameraController } from './DebugCameraController';
+import { CameraFrustumRendererGPU, type CSMDebugInfo } from '../../core/gpu/renderers/CameraFrustumRendererGPU';
 import { WebGPUShadowSettings } from './components/panels/RenderingPanel';
 import type { SSAOSettings } from './components/panels/RenderingPanel';
 import type { CompositeEffectConfig } from '../../core/gpu/postprocess';
 import type { Scene } from '../../core/Scene';
+import { CameraObject } from '@/core/sceneObjects';
 
 // ==================== Type Definitions ====================
 
@@ -156,6 +159,11 @@ export class Viewport {
   // FPS Camera mode
   private fpsMode = false;
   private fpsController: FPSCameraController | null = null;
+  
+  // Debug Camera mode
+  private debugCameraMode = false;
+  private debugCameraController: DebugCameraController | null = null;
+  private cameraFrustumRenderer: CameraFrustumRendererGPU | null = null;
 
   private gpuContext: GPUContext | null = null;
   private gpuPipeline: GPUForwardPipeline | null = null;
@@ -424,6 +432,16 @@ export class Viewport {
       this.gpuPipeline.setCompositeConfig(config);
     }
   }
+
+  adaptCamera(camera: CameraObject): GPUCamera {
+    return {
+      getViewMatrix: () => camera.getViewMatrix() as Float32Array,
+      getProjectionMatrix: () => camera.getProjectionMatrix() as Float32Array,
+      getPosition: () => camera.getPosition() as number[],
+      near: camera.near,
+      far: camera.far,
+    };
+  }
   
   /**
    * Render using WebGPU (full pipeline with grid/sky)
@@ -431,29 +449,34 @@ export class Viewport {
   private renderWebGPU(): void {
     if (!this.gpuContext || !this.gpuPipeline || !this.cameraController) return;
     
-    // Create camera adapter for WebGPU pipeline (use FPS camera if active)
-    let cameraAdapter: GPUCamera;
+    // Scene camera adapter (always the orbit camera — drives shadows, culling, shader uniforms)
+    let sceneCameraAdapter = this.adaptCamera(this.cameraController.getCamera());
     
-    if (this.fpsMode && this.fpsController) {
-      // Use FPS camera matrices
-      cameraAdapter = {
+    // View camera adapter (what appears on screen — may be debug camera)
+    let viewCameraAdapter: GPUCamera;
+    let separateSceneCamera: GPUCamera | undefined;
+    
+    if (this.debugCameraMode && this.debugCameraController) {
+      // Debug camera mode: view from debug camera, scene camera separate
+      viewCameraAdapter = this.adaptCamera(this.debugCameraController.getCamera());
+      separateSceneCamera = sceneCameraAdapter;
+    } else if (this.fpsMode && this.fpsController) {
+      // FPS camera mode
+      viewCameraAdapter = {
         getViewMatrix: () => this.fpsController!.getViewMatrix() as Float32Array,
         getProjectionMatrix: () => this.fpsController!.getProjectionMatrix() as Float32Array,
         getPosition: () => this.fpsController!.getPosition() as number[],
         near: this.fpsController!.near,
         far: this.fpsController!.far,
       };
+      sceneCameraAdapter = viewCameraAdapter;
     } else {
-      // Use orbit camera
-      const camera = this.cameraController.getCamera();
-      cameraAdapter = {
-        getViewMatrix: () => camera.getViewMatrix() as Float32Array,
-        getProjectionMatrix: () => camera.getProjectionMatrix() as Float32Array,
-        getPosition: () => camera.getPosition() as number[],
-        near: camera.near,
-        far: camera.far,
-      };
+      // Normal mode: scene camera is also the view camera
+      viewCameraAdapter = sceneCameraAdapter;
     }
+    
+    // Alias for backward compatibility
+    const cameraAdapter = viewCameraAdapter;
     
     // Get lighting settings
     // Note: lightParams.direction is pre-computed from DirectionalLight
@@ -486,15 +509,89 @@ export class Viewport {
       dynamicIBL: this.dynamicIBLEnabled,  // Pass Dynamic IBL state
     };
     
-    // Use render with scene and camera adapter
-    this.gpuPipeline.render(this.scene, cameraAdapter as any, options);
+    // Use render with scene and camera adapter (pass separate scene camera if in debug mode)
+    this.gpuPipeline.render(this.scene, cameraAdapter as any, options, separateSceneCamera as any);
     
-    // Render gizmo via TransformGizmoManager (skip in FPS mode)
+    // Render debug camera frustum visualization when in debug camera mode
+    if (this.debugCameraMode && this.debugCameraController && this.cameraFrustumRenderer) {
+      this.renderDebugCameraOverlay();
+    }
+    
+    // Render gizmo via TransformGizmoManager (skip in FPS mode and debug camera mode)
     // This uses the same screen-space scale as hit testing for consistency
-    if (!this.fpsMode && this.transformGizmo?.hasGPURenderer()) {
+    if (!this.fpsMode && !this.debugCameraMode && this.transformGizmo?.hasGPURenderer()) {
       const vpMatrix = this.cameraController!.getCamera().getViewProjectionMatrix();
       this.renderGizmoOverlay(vpMatrix as Float32Array);
     }
+  }
+  
+  /**
+   * Render debug camera overlay: scene camera frustum + body visualization
+   */
+  private renderDebugCameraOverlay(): void {
+    if (!this.gpuContext || !this.cameraFrustumRenderer || !this.cameraController || !this.debugCameraController) return;
+    
+    const sceneCamera = this.cameraController.getCamera();
+    
+    // Update frustum geometry from scene camera parameters
+    const pos = sceneCamera.getPosition() as [number, number, number];
+    const target = sceneCamera.getTarget() as [number, number, number];
+    
+    // Build CSM debug info if shadow renderer has CSM enabled
+    let csmInfo: CSMDebugInfo | undefined;
+    if (this.gpuPipeline) {
+      const shadowRenderer = this.gpuPipeline.getShadowRenderer();
+      const shadowConfig = shadowRenderer.getConfig();
+      if (shadowConfig.csmEnabled) {
+        // Get light direction from current light params
+        const lightDir = (this.lightParams as any)?.direction as [number, number, number] | undefined;
+        if (lightDir) {
+          csmInfo = {
+            lightDirection: lightDir,
+            cascadeCount: shadowConfig.cascadeCount,
+            cascadeSplitLambda: shadowConfig.cascadeSplitLambda,
+            shadowRadius: shadowConfig.shadowRadius,
+          };
+        }
+      }
+    }
+    
+    this.cameraFrustumRenderer.updateFrustum(
+      pos,
+      target,
+      sceneCamera.fov,
+      this.logicalWidth / this.logicalHeight,
+      sceneCamera.near,
+      sceneCamera.far,
+      csmInfo
+    );
+    
+    // Get current backbuffer
+    const outputTexture = this.gpuContext.context?.getCurrentTexture();
+    if (!outputTexture) return;
+    
+    const outputView = outputTexture.createView();
+    
+    // Create command encoder for frustum pass
+    const encoder = this.gpuContext.device.createCommandEncoder({
+      label: 'camera-frustum-overlay-encoder',
+    });
+    
+    const passEncoder = encoder.beginRenderPass({
+      label: 'camera-frustum-overlay-pass',
+      colorAttachments: [{
+        view: outputView,
+        loadOp: 'load',
+        storeOp: 'store',
+      }],
+    });
+    
+    // Get debug camera VP matrix for rendering
+    const debugVP = this.debugCameraController.getCamera().getViewProjectionMatrix();
+    this.cameraFrustumRenderer.render(passEncoder, debugVP as Float32Array);
+    
+    passEncoder.end();
+    this.gpuContext.queue.submit([encoder.finish()]);
   }
   
   /**
@@ -622,6 +719,11 @@ export class Viewport {
   // ==================== Viewport Settings ====================
 
   setFPSMode(enabled: boolean, controller: FPSCameraController | null): void {
+    // Exit debug camera mode if entering FPS mode
+    if (enabled && this.debugCameraMode) {
+      this.setDebugCameraMode(false);
+    }
+    
     this.fpsMode = enabled;
     this.fpsController = controller;
     
@@ -631,6 +733,68 @@ export class Viewport {
     }
     
     console.log(`[Viewport] FPS mode ${enabled ? 'enabled' : 'disabled'}`);
+  }
+  
+  /**
+   * Enable/disable debug (global) camera mode.
+   * When enabled, the scene is viewed from an independent debug camera
+   * while the scene camera continues to drive shadows, culling, etc.
+   */
+  setDebugCameraMode(enabled: boolean): void {
+    if (enabled === this.debugCameraMode) return;
+    
+    // Exit FPS mode if entering debug camera mode
+    if (enabled && this.fpsMode) {
+      // Don't call setFPSMode to avoid recursion - just clear state
+      this.fpsMode = false;
+      this.fpsController = null;
+    }
+    
+    this.debugCameraMode = enabled;
+    
+    if (enabled) {
+      if (!this.inputManager || !this.cameraController) return;
+      
+      // Create debug camera controller if needed
+      if (!this.debugCameraController) {
+        this.debugCameraController = new DebugCameraController({
+          width: this.logicalWidth,
+          height: this.logicalHeight,
+          inputManager: this.inputManager,
+        });
+      }
+      
+      // Create frustum renderer if needed
+      if (!this.cameraFrustumRenderer && this.gpuContext) {
+        this.cameraFrustumRenderer = new CameraFrustumRendererGPU(this.gpuContext);
+      }
+      
+      // Initialize debug camera from current scene camera
+      this.debugCameraController.initFromSceneCamera(this.cameraController.getCamera());
+      
+      // Activate input handling
+      this.debugCameraController.activate();
+      this.inputManager.setActiveChannel('debug-camera');
+      
+      console.log('[Viewport] Debug camera mode enabled');
+    } else {
+      // Deactivate debug camera input
+      this.debugCameraController?.deactivate();
+      
+      // Switch back to editor channel
+      if (this.inputManager) {
+        this.inputManager.setActiveChannel('editor');
+      }
+      
+      console.log('[Viewport] Debug camera mode disabled');
+    }
+  }
+  
+  /**
+   * Check if debug camera mode is active
+   */
+  isDebugCameraMode(): boolean {
+    return this.debugCameraMode;
   }
   
   setViewportMode(mode: 'solid' | 'wireframe'): void {

@@ -10,9 +10,15 @@
 import { mat4, vec3, vec4 } from 'gl-matrix';
 import { GPUContext, UnifiedGPUTexture, UnifiedGPUBuffer } from '../index';
 import { DepthTextureVisualizer } from './DepthTextureVisualizer';
+import {
+  MAX_CASCADES,
+  calculateCascadeSplits,
+  getFrustumCornersWorldSpace,
+  calculateCascadeLightMatrix,
+  type CascadeLightResult,
+} from './shared/CSMUtils';
 
-/** Maximum number of cascades supported */
-export const MAX_CASCADES = 4;
+export { MAX_CASCADES };
 
 /** Shadow renderer configuration */
 export interface ShadowConfig {
@@ -45,7 +51,10 @@ export interface LightMatrixParams {
   lightDirection: vec3;
   cameraPosition: vec3;
   cameraForward?: vec3;
-  cameraViewMatrix?: mat4;
+  /** Camera view matrix (required for CSM frustum-fitting) */
+  cameraViewMatrix?: mat4 | Float32Array;
+  /** Camera projection matrix (required for CSM frustum-fitting) */
+  cameraProjectionMatrix?: mat4 | Float32Array;
   cameraNearPlane?: number;
   cameraFarPlane?: number;
 }
@@ -71,7 +80,7 @@ export function createDefaultShadowConfig(): ShadowConfig {
     csmEnabled: false,
     cascadeCount: 4,
     cascadeSplitLambda: 0.5,
-    cascadeBlendFraction: 0.1,
+    cascadeBlendFraction: 0.15,
   };
 }
 
@@ -106,6 +115,9 @@ export class ShadowRendererGPU {
   // Shadow center (updated each frame)
   private shadowCenter: [number, number] = [0, 0];
   private directionalLightPosition: vec3 = [0, 0, 0];
+  private cameraForward: vec3 = [0, 0, -1];
+
+  private _debugOnce: boolean = false;
   
   // Debug visualization
   private depthVisualizer: DepthTextureVisualizer | null = null;
@@ -189,8 +201,9 @@ export class ShadowRendererGPU {
     // - 4 mat4x4 light space matrices: 4 * 64 = 256 bytes
     // - vec4 cascade splits: 16 bytes
     // - cascadeCount, csmEnabled, blendFraction, _pad: 16 bytes
-    // Total: 288 bytes
-    const bufferSize = 288;
+    // - cameraForward (vec4f): 16 bytes (xyz = forward dir, w = pad)
+    // Total: 304 bytes
+    const bufferSize = 304;
     
     this.csmUniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'csm-uniforms',
@@ -210,124 +223,96 @@ export class ShadowRendererGPU {
     }
   }
   
-  /**
-   * Calculate cascade split distances using practical split scheme
-   * Blends between logarithmic (better near) and linear (even distribution)
-   */
-  private calculateCascadeSplits(nearPlane: number, farPlane: number): number[] {
-    const { cascadeCount, cascadeSplitLambda } = this.config;
-    const splits: number[] = [];
-    
-    for (let i = 1; i <= cascadeCount; i++) {
-      const p = i / cascadeCount;
-      
-      // Logarithmic split: preserves detail near camera
-      const logSplit = nearPlane * Math.pow(farPlane / nearPlane, p);
-      
-      // Linear split: even distribution
-      const linearSplit = nearPlane + (farPlane - nearPlane) * p;
-      
-      // Blend between the two
-      splits.push(cascadeSplitLambda * logSplit + (1 - cascadeSplitLambda) * linearSplit);
-    }
-    
-    return splits;
-  }
   
   /**
-   * Calculate light space matrix for a single cascade
-   * Center follows camera XZ position for camera-relative shadows
+   * Calculate light space matrix for single shadow map using frustum-fitting.
+   * Uses the same approach as CSM: fits a tight ortho to the camera frustum
+   * from [near, far] where far = shadowRadius (the shadow distance).
+   * Falls back to legacy camera-center approach if no camera matrices provided.
    */
-  private calculateCascadeLightMatrix(
+  private calculateLightMatrix(
     lightDir: vec3,
     cameraPos: vec3,
-    cascadeNear: number,
-    cascadeFar: number,
-    cascadeIndex: number
-  ): { matrix: mat4; radius: number } {
-    // Cascade radius is the distance range it covers
-    const cascadeRadius = (cascadeFar - cascadeNear) / 2;
-    const cascadeCenter = cascadeNear + cascadeRadius;
-    
-    // Shadow center follows camera XZ (Y=0 for terrain focus)
-    const center: vec3 = vec3.fromValues(cameraPos[0], 0, cameraPos[2]);
-    
-    // Light position: offset from center in light direction
-    const lightDistance = this.config.shadowRadius * 2;
-    const lightPos: vec3 = vec3.fromValues(
-      center[0] + lightDir[0] * lightDistance,
-      center[1] + lightDir[1] * lightDistance,
-      center[2] + lightDir[2] * lightDistance
-    );
-    
-    // Up vector (handle straight up/down light)
-    let up: vec3 = [0, 1, 0];
-    if (Math.abs(lightDir[1]) > 0.99) {
-      up = [0, 0, 1];
+    cameraForward?: vec3,
+    cameraView?: mat4,
+    cameraProj?: mat4,
+    nearPlane?: number,
+    farPlane?: number
+  ): mat4 {
+    // Use frustum-fitting if camera matrices are available
+    if (cameraView && cameraProj && nearPlane !== undefined && farPlane !== undefined) {
+      const result = calculateCascadeLightMatrix(
+        lightDir,
+        cameraView,
+        cameraProj,
+        nearPlane,
+        farPlane,
+        this.config.shadowRadius,
+        this.config.resolution,
+      );
+      mat4.copy(this.lightSpaceMatrix, result.lightSpaceMatrix);
+      
+      // Compute light position for external access (center of frustum + light offset)
+      const corners = getFrustumCornersWorldSpace(cameraView, cameraProj, nearPlane, farPlane);
+      const center: vec3 = vec3.fromValues(0, 0, 0);
+      for (const c of corners) {
+        center[0] += c[0]; center[1] += c[1]; center[2] += c[2];
+      }
+      center[0] /= corners.length; center[1] /= corners.length; center[2] /= corners.length;
+      this.directionalLightPosition = vec3.fromValues(
+        center[0] + lightDir[0],
+        center[1] + lightDir[1],
+        center[2] + lightDir[2]
+      );
+      this.shadowCenter = [cameraPos[0], cameraPos[2]];
+      
+      return this.lightSpaceMatrix;
     }
     
-    // View matrix
-    const viewMatrix = mat4.create();
-    mat4.lookAt(viewMatrix, lightPos, center, up);
-    
-    // Cascade-specific orthographic bounds
-    // Each cascade covers progressively larger area
-    const cascadeScale = Math.pow(2, cascadeIndex); // Exponential scaling
-    const orthoSize = (this.config.shadowRadius / this.config.cascadeCount) * cascadeScale;
-    
-    const projMatrix = mat4.create();
-    const near = 0.1;
-    const far = this.config.shadowRadius * 3;
-    mat4.ortho(projMatrix, -orthoSize, orthoSize, -orthoSize, orthoSize, near, far);
-    
-    // Combined matrix
-    const lightSpaceMatrix = mat4.create();
-    mat4.multiply(lightSpaceMatrix, projMatrix, viewMatrix);
-    
-    return { matrix: lightSpaceMatrix, radius: orthoSize };
-  }
-  
-  /** Calculate light space matrix for single shadow map (non-CSM) */
-  private calculateLightMatrix(lightDir: vec3, cameraPos: vec3, cameraForward?: vec3): mat4 {
+    // Legacy fallback: fixed-radius ortho centered on camera XZ
     const radius = this.config.shadowRadius;
-    
-    // Shadow center follows camera XZ position
     this.shadowCenter = [cameraPos[0], cameraPos[2]];
-    
     const center: vec3 = [this.shadowCenter[0], 0, this.shadowCenter[1]];
-    
-    // Light position: negate lightDir to get position opposite to light direction
     const lightDistance = radius * 2;
     const lightPos: vec3 = vec3.fromValues(
       center[0] + lightDir[0] * lightDistance,
       center[1] + lightDir[1] * lightDistance,
       center[2] + lightDir[2] * lightDistance
     );
-    
-    // Up vector
     let up: vec3 = [0, 1, 0];
-    if (Math.abs(lightDir[1]) > 0.99) {
-      up = [0, 0, 1];
-    }
-    
+    if (Math.abs(lightDir[1]) > 0.99) { up = [0, 0, 1]; }
     mat4.lookAt(this.lightViewMatrix, lightPos, center, up);
-    
     const near = 0.1;
     const far = radius * 3;
     mat4.ortho(this.lightProjMatrix, -radius, radius, -radius, radius, near, far);
-    
+    this.lightProjMatrix[10] = -1 / (far - near);
+    this.lightProjMatrix[14] = -near / (far - near);
     mat4.multiply(this.lightSpaceMatrix, this.lightProjMatrix, this.lightViewMatrix);
     this.directionalLightPosition = lightPos;
-
     return this.lightSpaceMatrix;
   }
   
   /**
    * Update light space matrices for all cascades (CSM mode)
+   * Uses frustum-fitting: each cascade's ortho tightly wraps the camera sub-frustum.
    */
-  private updateCascadeMatrices(lightDir: vec3, cameraPos: vec3, nearPlane: number, farPlane: number): void {
-    // Calculate split distances
-    this.cascadeSplits = this.calculateCascadeSplits(nearPlane, farPlane);
+  private updateCascadeMatrices(
+    lightDir: vec3,
+    cameraView: mat4,
+    cameraProj: mat4,
+    nearPlane: number,
+    farPlane: number
+  ): void {
+    // Make sure the full far plane is not considered for cascade split.
+    // Shadow map distance <= View distance 
+    const cappedFarPlane = Math.min(farPlane, this.config.shadowRadius);
+
+    // Calculate split distances using shared utility
+    this.cascadeSplits = calculateCascadeSplits(
+      nearPlane, cappedFarPlane,
+      this.config.cascadeCount,
+      this.config.cascadeSplitLambda
+    );
     
     // Calculate light matrix for each cascade
     let prevSplit = nearPlane;
@@ -335,20 +320,27 @@ export class ShadowRendererGPU {
     for (let i = 0; i < this.config.cascadeCount; i++) {
       const splitEnd = this.cascadeSplits[i];
       
-      const { matrix, radius } = this.calculateCascadeLightMatrix(
+      const result = calculateCascadeLightMatrix(
         lightDir,
-        cameraPos,
+        cameraView,
+        cameraProj,
         prevSplit,
         splitEnd,
-        i
+        this.config.shadowRadius,
+        this.config.resolution,
       );
+      if (!this._debugOnce) {
+        console.log(`Matrix for cascade: ${i}`, result);
+      }
       
-      mat4.copy(this.cascades[i].lightSpaceMatrix, matrix);
+      mat4.copy(this.cascades[i].lightSpaceMatrix, result.lightSpaceMatrix);
       this.cascades[i].splitDistance = splitEnd;
-      this.cascades[i].radius = radius;
+      this.cascades[i].radius = result.radius;
       
       prevSplit = splitEnd;
     }
+
+    this._debugOnce = true;
   }
   
   /**
@@ -357,7 +349,7 @@ export class ShadowRendererGPU {
   updateCSMUniforms(): void {
     if (!this.csmUniformBuffer) return;
     
-    const data = new Float32Array(72); // 288 bytes / 4
+    const data = new Float32Array(76); // 304 bytes / 4
     let offset = 0;
     
     // 4 light space matrices (always write all 4, unused ones are identity)
@@ -380,13 +372,23 @@ export class ShadowRendererGPU {
     data[offset + 1] = this.config.csmEnabled ? 1.0 : 0.0;
     data[offset + 2] = this.config.cascadeBlendFraction;
     data[offset + 3] = 0; // padding
+    offset += 4;
+    
+    // Camera forward direction (vec4f): xyz = normalized forward, w = 0
+    data[offset + 0] = this.cameraForward[0];
+    data[offset + 1] = this.cameraForward[1];
+    data[offset + 2] = this.cameraForward[2];
+    data[offset + 3] = 0; // padding
     
     this.csmUniformBuffer.write(this.ctx, data);
   }
   
   /**
    * Update light space matrix for external shadow rendering
-   * Called by ShadowPass before terrain/objects render their shadows
+   * Called by ShadowPass before terrain/objects render their shadows.
+   * 
+   * For CSM: requires cameraViewMatrix and cameraProjectionMatrix to compute
+   * frustum-fitted cascade ortho projections.
    */
   updateLightMatrix(params: LightMatrixParams): void {
     const lightDir = params.lightDirection as vec3;
@@ -395,16 +397,25 @@ export class ShadowRendererGPU {
     const nearPlane = params.cameraNearPlane ?? 0.1;
     const farPlane = params.cameraFarPlane ?? this.config.shadowRadius;
     
-    if (this.config.csmEnabled) {
-      // Update all cascade matrices
-      this.updateCascadeMatrices(lightDir, cameraPos, nearPlane, farPlane);
-      // Also update single map for fallback/compatibility
-      this.calculateLightMatrix(lightDir, cameraPos, cameraFwd);
+    // Store camera forward for CSM view-space depth calculation
+    if (cameraFwd) {
+      vec3.normalize(this.cameraForward, cameraFwd);
+    }
+    
+    const hasCameraMatrices = !!(params.cameraViewMatrix && params.cameraProjectionMatrix);
+    const cameraView = params.cameraViewMatrix as mat4 | undefined;
+    const cameraProj = params.cameraProjectionMatrix as mat4 | undefined;
+    
+    if (this.config.csmEnabled && hasCameraMatrices) {
+      // Update all cascade matrices using frustum-fitting
+      this.updateCascadeMatrices(lightDir, cameraView!, cameraProj!, nearPlane, farPlane);
+      // Also update single map using frustum-fitting for fallback/compatibility
+      this.calculateLightMatrix(lightDir, cameraPos, cameraFwd, cameraView, cameraProj, nearPlane, farPlane);
       // Update CSM uniforms
       this.updateCSMUniforms();
     } else {
-      // Single shadow map mode
-      this.calculateLightMatrix(lightDir, cameraPos, cameraFwd);
+      // Single shadow map mode — use frustum-fitting if camera matrices available
+      this.calculateLightMatrix(lightDir, cameraPos, cameraFwd, cameraView, cameraProj, nearPlane, farPlane);
     }
     
     // Store light position for external access

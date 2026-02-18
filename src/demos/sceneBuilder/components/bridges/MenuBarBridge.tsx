@@ -12,6 +12,9 @@ import { FPSCameraController } from '../../FPSCameraController';
 // Signal to track FPS mode state
 export const fpsModeActive = signal(false);
 
+// Signal to track Debug Camera mode state
+export const debugCameraModeActive = signal(false);
+
 // Signal to track current FPS
 export const currentFps = signal<number | undefined>(undefined);
 
@@ -222,6 +225,23 @@ export function ConnectedMenuBar() {
     }
   }, [store]);
   
+  const handleToggleDebugCamera = useCallback(() => {
+    const viewport = store.viewport;
+    if (!viewport) return;
+    
+    const newState = !debugCameraModeActive.value;
+    
+    // Exit FPS mode if entering debug camera mode
+    if (newState && fpsModeActive.value) {
+      fpsModeActive.value = false;
+    }
+    
+    viewport.setDebugCameraMode(newState);
+    debugCameraModeActive.value = newState;
+    
+    console.log(`[MenuBar] Debug Camera mode ${newState ? 'enabled' : 'disabled'}`);
+  }, [store]);
+  
   const handleToggleShaderEditor = useCallback(() => {
     toggleShaderPanel();
   }, []);
@@ -359,6 +379,7 @@ export function ConnectedMenuBar() {
         { separator: true, id: 'sep2', label: '' },
         { id: 'expand', label: 'Expand View', onClick: handleExpandView },
         { id: 'fps', label: 'FPS Camera', checked: fpsModeActive.value, onClick: handleFPSCamera },
+        { id: 'debugCamera', label: 'Debug Camera', checked: debugCameraModeActive.value, onClick: handleToggleDebugCamera },
         { separator: true, id: 'sep3', label: '' },
         { id: 'shaderEditor', label: 'Shader Editor', checked: shaderPanelVisible.value, onClick: handleToggleShaderEditor },
         { separator: true, id: 'sep4', label: '' },
@@ -390,9 +411,9 @@ export function ConnectedMenuBar() {
     handleSaveScene, handleLoadScene,
     handleSelectAll, handleDuplicate, handleDeleteSelected, handleGroupSelection, handleUngroup,
     handleSetViewportMode, handleToggleGrid, handleToggleAxes, handleExpandView, handleFPSCamera, handleCameraPreset,
-    handleToggleShaderEditor,
+    handleToggleShaderEditor, handleToggleDebugCamera,
     handleAddPrimitive, handleAddTerrain, handleAddWater,
-    hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value, fpsModeActive.value,
+    hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value, fpsModeActive.value, debugCameraModeActive.value,
   ]);
   
   return <MenuBar menus={menus} fps={currentFps.value} />;

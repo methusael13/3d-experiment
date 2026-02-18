@@ -125,10 +125,10 @@ struct BiomeTextureParams {
 struct CSMUniforms {
   viewProjectionMatrices: array<mat4x4f, 4>,  // Light-space VP matrices for each cascade
   cascadeSplits: vec4f,                        // View-space depth splits
-  cascadeCount: f32,                           // Number of active cascades (2-4)
-  blendFraction: f32,                          // Fraction of cascade to blend (0.05-0.2)
-  shadowBias: f32,                             // Base shadow bias
-  _pad: f32,
+  // config: x=cascadeCount, y=csmEnabled, z=blendFraction, w=pad
+  config: vec4f,
+  // Camera forward direction for view-space depth: xyz = forward, w = 0
+  cameraForward: vec4f,
 }
 
 // ============================================================================
@@ -866,7 +866,7 @@ fn sampleShadowPCF(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f, kernelS
 
 // Select the appropriate cascade based on view-space depth
 fn selectCascade(viewDepth: f32) -> i32 {
-  let cascadeCount = i32(csmUniforms.cascadeCount);
+  let cascadeCount = i32(csmUniforms.config.x);
   // Compare against cascade split distances
   if (viewDepth < csmUniforms.cascadeSplits.x) { return 0; }
   if (viewDepth < csmUniforms.cascadeSplits.y && cascadeCount > 1) { return 1; }
@@ -875,32 +875,50 @@ fn selectCascade(viewDepth: f32) -> i32 {
   return cascadeCount - 1;
 }
 
-// Sample a single cascade shadow map with PCF
-fn sampleCascadeShadow(worldPos: vec4f, cascade: i32, normal: vec3f, lightDir: vec3f) -> f32 {
-  // Transform to light space for this cascade
+// Get cascade split distance by index
+fn getCascadeSplit(cascade: i32) -> f32 {
+  if (cascade == 0) { return csmUniforms.cascadeSplits.x; }
+  if (cascade == 1) { return csmUniforms.cascadeSplits.y; }
+  if (cascade == 2) { return csmUniforms.cascadeSplits.z; }
+  return csmUniforms.cascadeSplits.w;
+}
+
+// Project world position to a cascade's shadow UV + depth.
+// Returns vec4(shadowUV.xy, biasedDepth, inBounds) where inBounds > 0.5 means valid.
+fn projectToCascade(worldPos: vec4f, cascade: i32, normal: vec3f, lightDir: vec3f) -> vec4f {
   let lightSpacePos = csmUniforms.viewProjectionMatrices[cascade] * worldPos;
   let projCoords = lightSpacePos.xyz / lightSpacePos.w;
-  
-  // Transform from NDC [-1,1] to texture UV [0,1]
   let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
   
-  // Clamp UV to valid range
-  let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
-  
-  // Calculate bias (higher cascades need more bias due to lower resolution coverage)
+  // Slope-dependent bias
   let NdotL = max(dot(normal, lightDir), 0.001);
   let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
-  let cascadeBias = csmUniforms.shadowBias * (1.0 + f32(cascade) * 0.5);
+  let cascadeBias = 0.001 * (1.0 + f32(cascade) * 0.5);
   let shadowBias = cascadeBias + clamp(slopeFactor, 0.0, 5.0) * cascadeBias * 2.0;
   let biasedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
   
-  // Get cascade texture dimensions
+  // Bounds check: fragment must be within [0,1] in UV and depth
+  let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
+  let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
+  let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
+  let inBounds = inBoundsX * inBoundsY * inBoundsZ;
+  
+  return vec4f(shadowUV, biasedDepth, inBounds);
+}
+
+// Sample a single cascade shadow map - hard shadow (single texel comparison)
+fn sampleCascadeHard(cascade: i32, shadowUV: vec2f, biasedDepth: f32) -> f32 {
+  let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
+  return textureSampleCompareLevel(csmShadowArray, shadowSampler, clampedUV, cascade, biasedDepth);
+}
+
+// Sample a single cascade shadow map with PCF at the given projection (soft shadows)
+fn sampleCascadePCF(cascade: i32, shadowUV: vec2f, biasedDepth: f32) -> f32 {
   let cascadeSize = textureDimensions(csmShadowArray);
   let texelSize = vec2f(1.0 / f32(cascadeSize.x), 1.0 / f32(cascadeSize.y));
+  let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
   
-  // 3x3 PCF sampling for soft shadows
-  // Use textureSampleCompareLevel to avoid uniform control flow requirement
-  // (textureSampleCompare requires uniform control flow, but cascade index is per-pixel)
+  // 3x3 PCF using textureSampleCompareLevel (non-uniform cascade index safe)
   var shadow = 0.0;
   for (var x = -1; x <= 1; x++) {
     for (var y = -1; y <= 1; y++) {
@@ -909,40 +927,70 @@ fn sampleCascadeShadow(worldPos: vec4f, cascade: i32, normal: vec3f, lightDir: v
       shadow += textureSampleCompareLevel(csmShadowArray, shadowSampler, sampleUV, cascade, biasedDepth);
     }
   }
-  shadow /= 9.0;
-  
-  // Check bounds
-  let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
-  let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
-  let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
-  let inBounds = inBoundsX * inBoundsY * inBoundsZ;
-  
-  return mix(1.0, shadow, inBounds);
+  return shadow / 9.0;
 }
 
-// Sample CSM with cascade blending for smooth transitions
+// Sample cascade shadow with softness blending (matches single shadow map behavior)
+fn sampleCascadeShadow(cascade: i32, shadowUV: vec2f, biasedDepth: f32) -> f32 {
+  let hardShadow = sampleCascadeHard(cascade, shadowUV, biasedDepth);
+  let softShadow = sampleCascadePCF(cascade, shadowUV, biasedDepth);
+  return mix(hardShadow, softShadow, material.shadowSoftness);
+}
+
+// Sample CSM with cascade fallback for terrain.
+// On terrain, a fragment's world Y may extend above the ortho box of the
+// view-depth-selected cascade (e.g. tall hills). When the selected cascade
+// doesn't cover the fragment (out-of-bounds UV), we promote to the next
+// cascade which has a larger ortho volume. PCF is only applied once we
+// find a valid cascade.
 fn sampleCSMShadow(worldPos: vec4f, viewDepth: f32, normal: vec3f, lightDir: vec3f) -> f32 {
-  let cascade = selectCascade(viewDepth);
-  let cascadeCount = i32(csmUniforms.cascadeCount);
+  let startCascade = selectCascade(viewDepth);
+  let cascadeCount = i32(csmUniforms.config.x);
   
-  // Get cascade split for current cascade
-  var cascadeSplit = csmUniforms.cascadeSplits.x;
-  if (cascade == 1) { cascadeSplit = csmUniforms.cascadeSplits.y; }
-  else if (cascade == 2) { cascadeSplit = csmUniforms.cascadeSplits.z; }
-  else if (cascade == 3) { cascadeSplit = csmUniforms.cascadeSplits.w; }
+  // Try cascades from the selected one upward until we find one that covers the fragment
+  var validCascade = -1;
+  var validProj = vec4f(0.0);
   
-  // Sample current cascade
-  let shadow0 = sampleCascadeShadow(worldPos, cascade, normal, lightDir);
+  // Unrolled loop over max 4 cascades for GPU efficiency
+  // (WGSL for-loops with non-const bounds can be problematic on some drivers)
+  if (startCascade <= 0 && 0 < cascadeCount && validCascade < 0) {
+    let proj = projectToCascade(worldPos, 0, normal, lightDir);
+    if (proj.w > 0.5) { validCascade = 0; validProj = proj; }
+  }
+  if (startCascade <= 1 && 1 < cascadeCount && validCascade < 0) {
+    let proj = projectToCascade(worldPos, 1, normal, lightDir);
+    if (proj.w > 0.5) { validCascade = 1; validProj = proj; }
+  }
+  if (startCascade <= 2 && 2 < cascadeCount && validCascade < 0) {
+    let proj = projectToCascade(worldPos, 2, normal, lightDir);
+    if (proj.w > 0.5) { validCascade = 2; validProj = proj; }
+  }
+  if (startCascade <= 3 && 3 < cascadeCount && validCascade < 0) {
+    let proj = projectToCascade(worldPos, 3, normal, lightDir);
+    if (proj.w > 0.5) { validCascade = 3; validProj = proj; }
+  }
   
-  // Check if we're in blend region with next cascade
-  let blendRegion = cascadeSplit * csmUniforms.blendFraction;
+  // No cascade covers this fragment — fully lit (outside shadow region)
+  if (validCascade < 0) {
+    return 1.0;
+  }
+  
+  // Sample shadow on the valid cascade (respects material.shadowSoftness)
+  let shadow0 = sampleCascadeShadow(validCascade, validProj.xy, validProj.z);
+  
+  // Cascade blending: if near the boundary of the valid cascade, blend with the next
+  let cascadeSplit = getCascadeSplit(validCascade);
+  let blendRegion = cascadeSplit * csmUniforms.config.z;
   let blendStart = cascadeSplit - blendRegion;
   
-  if (viewDepth > blendStart && cascade < cascadeCount - 1) {
-    // Blend with next cascade
-    let shadow1 = sampleCascadeShadow(worldPos, cascade + 1, normal, lightDir);
-    let blendFactor = smoothstep(blendStart, cascadeSplit, viewDepth);
-    return mix(shadow0, shadow1, blendFactor);
+  if (viewDepth > blendStart && validCascade < cascadeCount - 1) {
+    let nextCascade = validCascade + 1;
+    let nextProj = projectToCascade(worldPos, nextCascade, normal, lightDir);
+    if (nextProj.w > 0.5) {
+      let shadow1 = sampleCascadeShadow(nextCascade, nextProj.xy, nextProj.z);
+      let blendFactor = smoothstep(blendStart, cascadeSplit, viewDepth);
+      return mix(shadow0, shadow1, blendFactor);
+    }
   }
   
   return shadow0;
@@ -966,8 +1014,9 @@ fn calculateShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDi
   // Choose shadow method based on CSM enabled flag
   if (material.csmEnabled > 0.5) {
     // Use CSM (Cascaded Shadow Maps)
-    // Calculate view-space depth for cascade selection
-    let viewDepth = distanceFromCamera;  // Approximate view depth with camera distance
+    // Calculate view-space depth using projection onto camera forward axis
+    let cameraFwd = normalize(csmUniforms.cameraForward.xyz);
+    let viewDepth = abs(dot(worldPos - uniforms.cameraPosition, cameraFwd));
     shadowValue = sampleCSMShadow(vec4f(worldPos, 1.0), viewDepth, normal, lightDir);
   } else {
     // Use single shadow map

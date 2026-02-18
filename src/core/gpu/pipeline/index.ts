@@ -27,11 +27,13 @@ export {
   ShadowPass,
   OpaquePass,
   TransparentPass,
+  GroundPass,
   OverlayPass,
   DebugPass,
 } from './passes';
 export type {
   ShadowPassDependencies,
   OpaquePassDependencies,
+  GroundPassDependencies,
   DebugPassDependencies,
 } from './passes';
