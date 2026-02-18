@@ -32,5 +32,8 @@ export {
   type DebugLayoutConfig,
 } from './DebugTextureManager';
 
+// Selection outline
+export { SelectionOutlineRendererGPU, type SelectionOutlineParams } from './SelectionOutlineRendererGPU';
+
 // Types
 export type { BoundingBox, ShadowCaster, ShadowReceiver } from './types';

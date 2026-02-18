@@ -62,6 +62,12 @@ struct MaterialUniforms {
   // Texture flags packed into 16 bytes
   // hasBaseColorTex, hasNormalTex, hasMetallicRoughnessTex, hasOcclusionTex
   textureFlags: vec4f,
+  
+  // Reserved (16 bytes) - selection highlighting is now done via a separate outline pass
+  _reserved0: f32,
+  _reserved1: f32,
+  _reserved2: f32,
+  _reserved3: f32,
 }
 
 @group(0) @binding(0) var<uniform> globals: GlobalUniforms;
@@ -564,7 +570,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let ambient = hemisphereAmbient(N, albedo, globals.ambientIntensity) * ao;
   
   // Final color
-  let color = direct + ambient + emissive;
+  var color = direct + ambient + emissive;
   
   // CSM debug override
   let dbg0 = objectCsmDebugColor(input.worldPosition);
@@ -598,7 +604,7 @@ fn fs_notex(input: VertexOutput) -> @location(0) vec4f {
   // Ambient lighting (not affected by shadow)
   let ambient = hemisphereAmbient(N, material.albedo, globals.ambientIntensity);
   
-  let color = direct + ambient + material.emissiveFactor;
+  var color = direct + ambient + material.emissiveFactor;
   
   // CSM debug override
   let dbg1 = objectCsmDebugColor(input.worldPosition);
@@ -681,7 +687,7 @@ fn fs_main_ibl(input: VertexOutput) -> @location(0) vec4f {
   // IBL ambient lighting (replaces hemisphere ambient)
   let ambient = iblAmbient(N, V, albedo, metallic, roughness, ao, globals.ambientIntensity);
   
-  let color = direct + ambient + emissive;
+  var color = direct + ambient + emissive;
   
   // CSM debug override
   let dbg2 = objectCsmDebugColor(input.worldPosition);
@@ -718,7 +724,7 @@ fn fs_notex_ibl(input: VertexOutput) -> @location(0) vec4f {
     globals.ambientIntensity
   );
   
-  let color = direct + ambient + material.emissiveFactor;
+  var color = direct + ambient + material.emissiveFactor;
   
   // CSM debug override
   let dbg3 = objectCsmDebugColor(input.worldPosition);

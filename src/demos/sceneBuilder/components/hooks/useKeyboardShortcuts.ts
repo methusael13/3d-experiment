@@ -71,6 +71,7 @@ export function useKeyboardShortcuts() {
               // Get current mouse position
               const mousePos = v.getLastMousePos();
               
+              console.log('[useKeyboardShortcuts] Starting uniform scale');
               // Start uniform scale mode
               v.startUniformScale(startScale, objectScreenPos, mousePos);
               e.originalEvent.preventDefault();
@@ -220,5 +221,5 @@ export function useKeyboardShortcuts() {
     return () => {
       inputManager.off('editor', 'keydown', handler);
     };
-  }, [store.viewportInitialized]);
+  }, [store.viewportInitialized.value]);
 }

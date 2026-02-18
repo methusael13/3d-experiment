@@ -45,7 +45,7 @@ struct Material {
   lightColor: vec3f,              // 16-18
   _pad2: f32,                     // 19
   ambientIntensity: f32,          // 20
-  isSelected: f32,                // 21
+  _reserved_sel: f32,             // 21 - reserved (selection now via outline pass)
   shadowEnabled: f32,             // 22 - Enable/disable shadows
   shadowSoftness: f32,            // 23 - 0 = hard, 1 = soft PCF
   shadowRadius: f32,              // 24 - Shadow coverage radius
@@ -1083,6 +1083,36 @@ fn blendNormalsUDN(baseN: vec3f, detailN: vec3f) -> vec3f {
   return normalize(vec3f(baseN.xy + detailN.xy, baseN.z));
 }
 
+// ============ Selection Highlight ============
+// Consistent orange outline effect for selected objects (shared with object.wgsl)
+// Uses screen-space normal discontinuity to detect silhouette edges
+
+fn _applySelectionHighlight_REMOVED(color: vec3f, N: vec3f, worldPos: vec3f, cameraPos: vec3f, isSelected: f32) -> vec3f {
+  if (isSelected < 0.5) {
+    return color;
+  }
+  
+  let outlineColor = vec3f(1.0, 0.5, 0.0); // orange
+  
+  // Fresnel rim: surfaces perpendicular to view direction get highlighted
+  let V = normalize(cameraPos - worldPos);
+  let NdotV = max(dot(N, V), 0.0);
+  
+  // rimFactor = 1 at silhouette edges, 0 when facing camera
+  let rimFactor = 1.0 - NdotV;
+  
+  // Sharpen the rim into a narrow band using smoothstep
+  let rim = smoothstep(0.45, 0.85, rimFactor);
+  
+  // Apply strong orange on rim edges
+  var result = mix(color, outlineColor, rim * 0.92);
+  
+  // Very subtle overall tint so the selected object is always distinguishable
+  result = mix(result, outlineColor, 0.05);
+  
+  return result;
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   // Get base normal from vertex shader (from normal map)
@@ -1250,10 +1280,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   
   var finalColor = aoAmbientColor + albedo * diffuse;
   
-  // Selection highlight
-  if (material.isSelected > 0.5) {
-    finalColor = mix(finalColor, vec3f(1.0, 0.6, 0.3), 0.1);
-  }
+  // Selection highlighting is now handled via a separate outline pass (SelectionOutlinePass)
 
   // Debug: visualize shadow UV coordinates
   let debugUV = 0.0;

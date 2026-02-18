@@ -28,6 +28,7 @@ import { BindGroupLayoutBuilder, BindGroupBuilder } from '../GPUBindGroup';
 // Import shaders
 import objectShaderDefault from '../shaders/object.wgsl?raw';
 import objectShadowShader from '../shaders/object-shadow.wgsl?raw';
+import selectionMaskShader from '../shaders/selection-mask.wgsl?raw';
 
 // Import shader manager for live editing
 import { registerWGSLShader, getWGSLShaderSource } from '../../../demos/sceneBuilder/shaderManager';
@@ -185,6 +186,11 @@ export class ObjectRendererGPU {
   // Shadow pass resources
   private shadowPipeline: GPURenderPipeline | null = null;
   private shadowBindGroupLayout: GPUBindGroupLayout | null = null;
+  
+  // Selection mask pipeline (renders selected meshes to a flat mask texture)
+  private selectionMaskPipeline: GPURenderPipeline | null = null;
+  private selectionMaskGlobalBuffer: GPUBuffer | null = null;
+  private selectionMaskGlobalBindGroup: GPUBindGroup | null = null;
   private shadowModelBindGroupLayout: GPUBindGroupLayout | null = null;
   private shadowUniformBuffer: UnifiedGPUBuffer | null = null;
   private shadowBindGroup: GPUBindGroup | null = null;
@@ -199,8 +205,8 @@ export class ObjectRendererGPU {
   private meshes: Map<number, GPUMeshInternal> = new Map();
   private nextMeshId = 1;
   
-  // Current material (for batch rendering optimization)
-  private currentMaterialId: number = -1;
+  // Selection state: set of mesh IDs that are currently selected
+  private selectedMeshIds: Set<number> = new Set();
   
   constructor(ctx: GPUContext) {
     this.ctx = ctx;
@@ -523,10 +529,10 @@ export class ObjectRendererGPU {
     mat4.identity(modelMatrix as unknown as mat4);
     modelBuffer.write(this.ctx, modelMatrix);
     
-    // Create per-mesh material buffer (64 bytes)
+    // Create per-mesh material buffer (80 bytes - 5×vec4f)
     const materialBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: `object-material-${id}`,
-      size: 64,
+      size: 80,
     });
     
     // Merge material with defaults
@@ -640,11 +646,11 @@ export class ObjectRendererGPU {
   }
   
   /**
-   * Write material data to a buffer (64 bytes)
+   * Write material data to a buffer (80 bytes = 20 floats)
    * Layout must match MaterialUniforms in shader
    */
   private writeMaterialToBuffer(buffer: UnifiedGPUBuffer, material: GPUMaterial): void {
-    const data = new Float32Array(16); // 64 bytes / 4
+    const data = new Float32Array(20); // 80 bytes / 4
     
     // albedo (vec3f) + metallic (f32)
     data[0] = material.albedo[0];
@@ -671,6 +677,12 @@ export class ObjectRendererGPU {
     data[13] = tex?.normal ? 1.0 : 0.0;
     data[14] = tex?.metallicRoughness ? 1.0 : 0.0;
     data[15] = tex?.occlusion ? 1.0 : 0.0;
+    
+    // Reserved (vec4f) - selection is now handled via separate outline pass
+    data[16] = 0.0; // _reserved0
+    data[17] = 0.0; // _reserved1
+    data[18] = 0.0; // pad
+    data[19] = 0.0; // pad
     
     buffer.write(this.ctx, data);
   }
@@ -750,7 +762,7 @@ export class ObjectRendererGPU {
     
     // Render meshes grouped by pipeline type
     let currentPipeline: RenderPipelineWrapper | null = null;
-    
+
     for (const mesh of this.meshes.values()) {
       // Select pipeline based on:
       // 1. Whether mesh has textures
@@ -843,6 +855,14 @@ export class ObjectRendererGPU {
   getCastsShadow(id: number): boolean {
     const mesh = this.meshes.get(id);
     return mesh?.castsShadow ?? false;
+  }
+  
+  /**
+   * Update selection state for all meshes.
+   * The selection mask pass reads from this set to decide which meshes to render.
+   */
+  setSelectedMeshIds(selectedIds: Set<number>): void {
+    this.selectedMeshIds = new Set(selectedIds);
   }
   
   /**
@@ -1052,6 +1072,153 @@ export class ObjectRendererGPU {
     }
   }
   
+  // ============ Selection Mask Pass ============
+  
+  /**
+   * Create selection mask pipeline (lazy init on first use)
+   * Renders selected meshes as flat white to an r8unorm mask texture.
+   * Uses depth-equal test against the main depth buffer so only visible
+   * selected pixels are marked.
+   */
+  private ensureSelectionMaskPipeline(): void {
+    if (this.selectionMaskPipeline) return;
+    
+    const shaderModule = this.ctx.device.createShaderModule({
+      label: 'selection-mask-shader',
+      code: selectionMaskShader,
+    });
+    
+    // Global bind group layout: viewProjection uniform
+    const globalLayout = this.ctx.device.createBindGroupLayout({
+      label: 'selection-mask-global-layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+      ],
+    });
+    
+    // Per-model bind group layout: model matrix uniform
+    const modelLayout = this.ctx.device.createBindGroupLayout({
+      label: 'selection-mask-model-layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } },
+      ],
+    });
+    
+    const pipelineLayout = this.ctx.device.createPipelineLayout({
+      label: 'selection-mask-pipeline-layout',
+      bindGroupLayouts: [globalLayout, modelLayout],
+    });
+    
+    this.selectionMaskPipeline = this.ctx.device.createRenderPipeline({
+      label: 'selection-mask-pipeline',
+      layout: pipelineLayout,
+      vertex: {
+        module: shaderModule,
+        entryPoint: 'vs_main',
+        buffers: [{
+          arrayStride: 32,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' },
+            { shaderLocation: 1, offset: 12, format: 'float32x3' },
+            { shaderLocation: 2, offset: 24, format: 'float32x2' },
+          ],
+        }],
+      },
+      fragment: {
+        module: shaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: 'r8unorm' }],
+      },
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'back',
+      },
+      depthStencil: {
+        format: 'depth24plus',
+        depthWriteEnabled: false,     // Don't write to depth
+        depthCompare: 'greater-equal', // Reversed-Z: pass if equal to existing depth
+      },
+    });
+    
+    // Create global uniform buffer (80 bytes: mat4x4f + vec3f + pad)
+    this.selectionMaskGlobalBuffer = this.ctx.device.createBuffer({
+      label: 'selection-mask-global-uniforms',
+      size: 80,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    
+    // Create global bind group
+    this.selectionMaskGlobalBindGroup = this.ctx.device.createBindGroup({
+      label: 'selection-mask-global-bindgroup',
+      layout: globalLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this.selectionMaskGlobalBuffer } },
+      ],
+    });
+  }
+  
+  /**
+   * Render selected meshes to a selection mask texture.
+   * Only meshes in selectedMeshIds are drawn.
+   * 
+   * @param passEncoder - Render pass targeting an r8unorm texture with depth read
+   * @param viewProjectionMatrix - Camera view-projection matrix
+   * @param cameraPosition - Camera position for the global uniform
+   */
+  renderSelectionMask(
+    passEncoder: GPURenderPassEncoder,
+    viewProjectionMatrix: mat4 | Float32Array,
+    cameraPosition: [number, number, number]
+  ): void {
+    if (this.selectedMeshIds.size === 0) return;
+    
+    this.ensureSelectionMaskPipeline();
+    if (!this.selectionMaskPipeline || !this.selectionMaskGlobalBuffer || !this.selectionMaskGlobalBindGroup) return;
+    
+    // Update global uniforms (viewProjection + cameraPosition)
+    const data = new Float32Array(20); // 80 bytes
+    data.set(viewProjectionMatrix as Float32Array, 0);
+    data[16] = cameraPosition[0];
+    data[17] = cameraPosition[1];
+    data[18] = cameraPosition[2];
+    data[19] = 0;
+    this.ctx.queue.writeBuffer(this.selectionMaskGlobalBuffer, 0, data);
+    
+    passEncoder.setPipeline(this.selectionMaskPipeline);
+    passEncoder.setBindGroup(0, this.selectionMaskGlobalBindGroup);
+    
+    for (const meshId of this.selectedMeshIds) {
+      const mesh = this.meshes.get(meshId);
+      if (!mesh) continue;
+      
+      // Create per-mesh bind group (model matrix only)
+      const modelBindGroup = this.ctx.device.createBindGroup({
+        label: `selection-mask-model-${mesh.id}`,
+        layout: this.selectionMaskPipeline.getBindGroupLayout(1),
+        entries: [
+          { binding: 0, resource: { buffer: mesh.modelBuffer.buffer } },
+        ],
+      });
+      
+      passEncoder.setBindGroup(1, modelBindGroup);
+      passEncoder.setVertexBuffer(0, mesh.vertexBuffer.buffer);
+      
+      if (mesh.indexBuffer) {
+        passEncoder.setIndexBuffer(mesh.indexBuffer.buffer, mesh.indexFormat);
+        passEncoder.drawIndexed(mesh.indexCount, 1, 0, 0, 0);
+      } else {
+        passEncoder.draw(mesh.vertexCount, 1, 0, 0);
+      }
+    }
+  }
+  
+  /**
+   * Check if there are any selected meshes
+   */
+  hasSelectedMeshes(): boolean {
+    return this.selectedMeshIds.size > 0;
+  }
+  
   // ============ Cleanup ============
   
   /**
@@ -1079,5 +1246,10 @@ export class ObjectRendererGPU {
     this.shadowBindGroupLayout = null;
     this.shadowModelBindGroupLayout = null;
     this.shadowBindGroup = null;
+    
+    // Destroy selection mask resources
+    this.selectionMaskGlobalBuffer?.destroy();
+    this.selectionMaskPipeline = null;
+    this.selectionMaskGlobalBindGroup = null;
   }
 }

@@ -12,6 +12,8 @@ import type { ObjectRendererGPU } from '../../renderers/ObjectRendererGPU';
 import type { GridRendererGPU, GridGroundRenderParams } from '../../renderers/GridRendererGPU';
 import type { ShadowRendererGPU } from '../../renderers/ShadowRendererGPU';
 import type { DebugTextureManager } from '../../renderers/DebugTextureManager';
+import type { SelectionOutlineRendererGPU } from '../../renderers/SelectionOutlineRendererGPU';
+import { isPrimitiveObject, isModelObject } from '../../../sceneObjects';
 
 // ============================================================================
 // SKY PASS
@@ -268,7 +270,8 @@ export class OpaquePass extends BaseRenderPass {
     } = ctx.options;
     
     // Get terrain from scene
-    const terrainManager = ctx.scene?.getWebGPUTerrain()?.getTerrainManager() ?? null;
+    const terrain = ctx.scene?.getWebGPUTerrain();
+    const terrainManager = terrain?.getTerrainManager() ?? null;
 
     // Get shadow map and light space matrix if shadows enabled
     const lightSpaceMatrix = shadowEnabled ? this.shadowRenderer.getLightSpaceMatrix() : null;
@@ -304,6 +307,7 @@ export class OpaquePass extends BaseRenderPass {
         wireframe,
         shadow: shadowParams,
         sceneEnvironment: ctx.sceneEnvironment,
+        isSelected: ctx.scene?.getSelectedIds().has(terrain!.id)
       });
     }
     
@@ -542,6 +546,131 @@ export class DebugPass extends BaseRenderPass {
         ctx.height
       );
     }
+  }
+}
+
+// ============================================================================
+// SELECTION MASK PASS - Renders selected objects to binary mask
+// ============================================================================
+
+export interface SelectionMaskPassDependencies {
+  objectRenderer: ObjectRendererGPU;
+}
+
+/**
+ * SelectionMaskPass - Renders selected objects into a binary r8unorm mask texture
+ * Category: viewport (runs AFTER post-processing, before outline)
+ * 
+ * Re-renders only selected meshes using the main depth buffer (depth-equal test)
+ * to produce a clean mask where 1 = selected pixel, 0 = not selected.
+ */
+export class SelectionMaskPass extends BaseRenderPass {
+  readonly name = 'selection-mask';
+  readonly priority = PassPriority.OVERLAY + 5; // After overlays, before outline
+  readonly category: PassCategory = 'viewport';
+  
+  private objectRenderer: ObjectRendererGPU;
+  
+  constructor(deps: SelectionMaskPassDependencies) {
+    super();
+    this.objectRenderer = deps.objectRenderer;
+  }
+  
+  execute(ctx: RenderContext): void {
+    if (!ctx.selectionMaskTexture) {
+      return;
+    }
+    
+    // Build mesh→selection mapping for object highlighting BEFORE the guard
+    // Maps scene object selection state to GPU mesh IDs
+    const selectedMeshIds = new Set<number>();
+    if (ctx.scene) {
+      for (const obj of ctx.scene.getSelectedObjects()) {
+        // PrimitiveObject has a single meshId
+        if (isPrimitiveObject(obj) && obj.isGPUInitialized && obj.meshId !== null) {
+          selectedMeshIds.add(obj.meshId);
+        }
+        // ModelObject has multiple meshIds (one per GLB mesh)
+        else if (isModelObject(obj) && obj.isGPUInitialized) {
+          for (const meshId of obj.meshIds) {
+            selectedMeshIds.add(meshId);
+          }
+        }
+      }
+    }
+    
+    // Update selection state on the object renderer
+    this.objectRenderer.setSelectedMeshIds(selectedMeshIds);
+    
+    // Skip rendering if nothing is selected
+    if (selectedMeshIds.size === 0) {
+      return;
+    }
+    
+    const pass = ctx.encoder.beginRenderPass({
+      label: 'selection-mask-pass',
+      colorAttachments: [{
+        view: ctx.selectionMaskTexture.view,
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+      depthStencilAttachment: {
+        view: ctx.depthTexture.view,
+        depthReadOnly: true,    // Read-only depth: no loadOp/storeOp allowed
+        stencilReadOnly: true,  // Required when depthReadOnly=true and format may have stencil
+      },
+    });
+
+    this.objectRenderer.renderSelectionMask(
+      pass,
+      ctx.viewProjectionMatrix,
+      ctx.cameraPosition
+    );
+    
+    pass.end();
+  }
+}
+
+// ============================================================================
+// SELECTION OUTLINE PASS - Composites outline via SelectionOutlineRendererGPU
+// ============================================================================
+
+export interface SelectionOutlinePassDependencies {
+  objectRenderer: ObjectRendererGPU;
+  outlineRenderer: SelectionOutlineRendererGPU;
+}
+
+/**
+ * SelectionOutlinePass - Fullscreen pass that reads the selection mask and
+ * draws an orange outline on the backbuffer via SelectionOutlineRendererGPU.
+ * Category: viewport (runs AFTER post-processing and mask pass)
+ */
+export class SelectionOutlinePass extends BaseRenderPass {
+  readonly name = 'selection-outline';
+  readonly priority = PassPriority.OVERLAY + 10; // After mask pass
+  readonly category: PassCategory = 'viewport';
+  
+  private objectRenderer: ObjectRendererGPU;
+  private outlineRenderer: SelectionOutlineRendererGPU;
+  
+  constructor(deps: SelectionOutlinePassDependencies) {
+    super();
+    this.objectRenderer = deps.objectRenderer;
+    this.outlineRenderer = deps.outlineRenderer;
+  }
+  
+  execute(ctx: RenderContext): void {
+    if (!ctx.selectionMaskTexture || !this.objectRenderer.hasSelectedMeshes()) {
+      return;
+    }
+    
+    this.outlineRenderer.render(ctx.encoder, {
+      maskTexture: ctx.selectionMaskTexture,
+      outputView: ctx.outputView,
+      width: ctx.width,
+      height: ctx.height,
+    });
   }
 }
 

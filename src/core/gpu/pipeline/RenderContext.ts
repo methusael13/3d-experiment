@@ -78,6 +78,9 @@ export interface RenderContext {
   readonly msaaHdrColorTexture?: UnifiedGPUTexture;
   readonly msaaColorTexture?: UnifiedGPUTexture;
   
+  // Selection mask (r8unorm, written by OpaquePass MRT, read by SelectionOutlinePass)
+  readonly selectionMaskTexture?: UnifiedGPUTexture;
+  
   // Unified environment (shadow + IBL)
   readonly sceneEnvironment?: SceneEnvironment;
   
@@ -119,6 +122,9 @@ export interface RenderContextOptions {
   sceneColorTextureCopy?: UnifiedGPUTexture;
   msaaHdrColorTexture?: UnifiedGPUTexture;
   msaaColorTexture?: UnifiedGPUTexture;
+  
+  // Selection mask texture
+  selectionMaskTexture?: UnifiedGPUTexture;
   
   // Flags
   useHDR: boolean;
@@ -165,6 +171,9 @@ export class RenderContextImpl implements RenderContext {
   readonly msaaHdrColorTexture?: UnifiedGPUTexture;
   readonly msaaColorTexture?: UnifiedGPUTexture;
   
+  // Selection mask (written by OpaquePass, read by SelectionOutlinePass)
+  readonly selectionMaskTexture?: UnifiedGPUTexture;
+  
   // Scene camera (for shadows, culling, shader uniforms)
   readonly sceneCamera: GPUCamera;
   readonly sceneCameraPosition: [number, number, number];
@@ -205,6 +214,7 @@ export class RenderContextImpl implements RenderContext {
     this.sceneColorTextureCopy = opts.sceneColorTextureCopy;
     this.msaaHdrColorTexture = opts.msaaHdrColorTexture;
     this.msaaColorTexture = opts.msaaColorTexture;
+    this.selectionMaskTexture = opts.selectionMaskTexture;
     
     // Unified environment (shadow + IBL)
     this.sceneEnvironment = opts.sceneEnvironment;

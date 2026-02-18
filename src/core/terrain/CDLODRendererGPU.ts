@@ -123,6 +123,7 @@ export interface CDLODRenderParams {
   lightDirection?: vec3;
   lightColor?: vec3;
   ambientIntensity?: number;
+  /** @deprecated Selection is now handled via separate outline pass */
   isSelected?: boolean;
   /** Enable wireframe rendering to visualize LOD grid density */
   wireframe?: boolean;
@@ -948,7 +949,7 @@ export class CDLODRendererGPU {
       .vec4(mat.forestColor[0], mat.forestColor[1], mat.forestColor[2], 1.0)  // 8-11
       .vec4(lightDir[0], lightDir[1], lightDir[2], 1.0)                       // 12-15
       .vec4(lightColor[0], lightColor[1], lightColor[2], 0)                   // 16-19
-      .vec4(params.ambientIntensity ?? 0.3, params.isSelected ? 1.0 : 0.0, shadowEnabled, shadowSoftness) // 20-23
+      .vec4(params.ambientIntensity ?? 0.3, 0.0 /* reserved (selection via outline pass) */, shadowEnabled, shadowSoftness) // 20-23
       .vec4(shadowRadius, shadowFadeStart, csmEnabled, 0)                     // 24-27 (csmEnabled at index 26)
       .mat4(lightSpaceMatrix as Float32Array);                                // 28-43
     

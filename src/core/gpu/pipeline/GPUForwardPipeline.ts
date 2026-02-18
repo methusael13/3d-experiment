@@ -42,9 +42,12 @@ import {
   OpaquePass, 
   TransparentPass, 
   GroundPass,
-  OverlayPass, 
+  OverlayPass,
   DebugPass,
+  SelectionMaskPass,
+  SelectionOutlinePass,
 } from './passes';
+import { SelectionOutlineRendererGPU } from '../renderers/SelectionOutlineRendererGPU';
 import type { Scene } from '../../Scene';
 
 /**
@@ -120,6 +123,8 @@ export class GPUForwardPipeline {
   private msaaHdrColorTexture: UnifiedGPUTexture | null = null;
   private sceneColorTexture: UnifiedGPUTexture | null = null;
   private sceneColorTextureCopy: UnifiedGPUTexture | null = null;
+  private selectionMaskTexture: UnifiedGPUTexture | null = null;
+  private selectionOutlineRenderer!: SelectionOutlineRendererGPU;
   
   // Post-processing pipeline (plugin-based)
   private postProcessPipeline: PostProcessPipeline | null = null;
@@ -192,6 +197,12 @@ export class GPUForwardPipeline {
     // Create shared SceneEnvironment for shadow + IBL (Group 3 bind group)
     this.sceneEnvironment = new SceneEnvironment(ctx);
     
+    // Create selection outline renderer
+    this.selectionOutlineRenderer = new SelectionOutlineRendererGPU(ctx);
+    
+    // Create selection mask texture (r8unorm, same size as viewport)
+    this.selectionMaskTexture = this._createSelectionMaskTexture();
+    
     // Create debug texture manager
     this.debugTextureManager = new DebugTextureManager(ctx);
     
@@ -252,6 +263,15 @@ export class GPUForwardPipeline {
       debugTextureManager: this.debugTextureManager,
     });
     
+    const selectionMaskPass = new SelectionMaskPass({
+      objectRenderer: this.objectRenderer,
+    });
+    
+    const selectionOutlinePass = new SelectionOutlinePass({
+      objectRenderer: this.objectRenderer,
+      outlineRenderer: this.selectionOutlineRenderer,
+    });
+    
     // Store passes in priority order
     // Note: Gizmos are rendered by TransformGizmoManager, not by the pipeline
     this.passes = [
@@ -261,6 +281,8 @@ export class GPUForwardPipeline {
       opaquePass,
       transparentPass,
       overlayPass,
+      selectionMaskPass,
+      selectionOutlinePass,
       debugPass,
     ].sort((a, b) => a.priority - b.priority);
   }
@@ -342,6 +364,20 @@ export class GPUForwardPipeline {
       renderTarget: false,  // Not a render target, just copy destination
       sampled: true,
       copyDst: true,
+    });
+  }
+  
+  /**
+   * Create selection mask texture (r8unorm) for selection outline pass
+   */
+  private _createSelectionMaskTexture(): UnifiedGPUTexture {
+    return UnifiedGPUTexture.create2D(this.ctx, {
+      label: 'selection-mask',
+      width: this.width,
+      height: this.height,
+      format: 'r8unorm',
+      renderTarget: true,
+      sampled: true,
     });
   }
   
@@ -434,6 +470,12 @@ export class GPUForwardPipeline {
     if (this.msaaHdrColorTexture) {
       this.msaaHdrColorTexture.destroy();
       this.msaaHdrColorTexture = this.createMsaaHdrColorTexture();
+    }
+    
+    // Recreate selection mask texture
+    if (this.selectionMaskTexture) {
+      this.selectionMaskTexture.destroy();
+      this.selectionMaskTexture = this._createSelectionMaskTexture();
     }
     
     // Resize post-processing pipeline
@@ -571,6 +613,8 @@ export class GPUForwardPipeline {
       sceneColorTextureCopy: this.sceneColorTextureCopy ?? undefined,
       msaaHdrColorTexture: this.msaaHdrColorTexture ?? undefined,
       msaaColorTexture: this.msaaColorTexture ?? undefined,
+      // Selection mask texture for outline pass
+      selectionMaskTexture: this.selectionMaskTexture ?? undefined,
       // Unified SceneEnvironment (shadow + IBL) for all renderers
       sceneEnvironment: this.sceneEnvironment,
     };
@@ -751,6 +795,8 @@ export class GPUForwardPipeline {
     this.dynamicSkyIBL.destroy();
     // OceanManager is owned externally, not destroyed here
     this.postProcessPipeline?.destroy();
+    this.selectionMaskTexture?.destroy();
+    this.selectionOutlineRenderer.destroy();
     this.debugTextureManager.destroy();
     
     // Destroy render passes
