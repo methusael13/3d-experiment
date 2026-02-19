@@ -398,7 +398,7 @@ export function createDefaultBiomeParams(): BiomeParams {
     grassSlopeMax: 0.5,         // Not too steep
     
     // Rock (G channel): steep slopes
-    rockSlopeMin: 0.4,          // Moderate to steep slopes
+    rockSlopeMin: 0.2,          // Moderate to steep slopes (post-normalization)
     
     // Forest (B channel): good water, moderate terrain
     forestFlowMin: 0.25,        // Needs decent water flow

@@ -259,7 +259,7 @@ export function BiomeMaskContent({
               <Slider
                 label="Min Slope"
                 value={params.rockSlopeMin}
-                min={0.2}
+                min={0}
                 max={0.8}
                 step={0.05}
                 format={(v) => v.toFixed(2)}

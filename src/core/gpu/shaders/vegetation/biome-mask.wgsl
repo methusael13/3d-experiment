@@ -121,8 +121,11 @@ fn calculateSlope(coord: vec2i, dims: vec2u) -> f32 {
   // Slope magnitude (gradient length)
   let slope = sqrt(dx * dx + dy * dy);
   
-  // Normalize to 0-1 range (tanh-like clamping for steep slopes)
-  return saturate(slope * 4.0);
+  // Normalize to 0-1 range. The raw heightmap is in [-0.5, 0.5] range,
+  // so per-pixel gradients are typically very small (0.001-0.05).
+  // A high scale factor is needed to produce meaningful 0-1 slope values
+  // that align with the UI slider range for rockSlopeMin/grassSlopeMax.
+  return saturate(slope * 25.0);
 }
 
 /**
