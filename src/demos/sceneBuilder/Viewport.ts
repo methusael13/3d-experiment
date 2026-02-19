@@ -482,7 +482,11 @@ export class Viewport {
     // Note: lightParams.direction is pre-computed from DirectionalLight
     // sunElevation/sunAzimuth are still needed for sky rendering
     const isHDR = this.lightParams?.type === 'hdr';
-    const sunIntensity = (this.lightParams as any)?.sunIntensity ?? 20;
+    // Scale sunIntensity by sunIntensityFactor (0 at night, 1 during day)
+    // This ensures water, terrain, and objects all receive zero direct light at night
+    const baseSunIntensity = (this.lightParams as any)?.sunIntensity ?? 20;
+    const sunIntensityFactor = (this.lightParams as any)?.sunIntensityFactor ?? 1.0;
+    const sunIntensity = baseSunIntensity * sunIntensityFactor;
     const hdrExposure = (this.lightParams as any)?.hdrExposure ?? 1.0;
     const ambientIntensity = (this.lightParams as any)?.ambient ?? 0.3;
     const lightColor = isHDR

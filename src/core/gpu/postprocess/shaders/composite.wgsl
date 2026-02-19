@@ -91,8 +91,21 @@ fn gamma_correct_configurable(color: vec3f) -> vec3f {
   return pow(color, vec3f(1.0 / uniforms.gamma));
 }
 
+// Screen-space dither to break 8-bit banding in dark gradients
+// Uses interleaved gradient noise (Jimenez 2014) - better than white noise for banding
+fn interleavedGradientNoise(fragCoord: vec2f) -> f32 {
+  let magic = vec3f(0.06711056, 0.00583715, 52.9829189);
+  return fract(magic.z * fract(dot(fragCoord, magic.xy)));
+}
+
+fn applyDither(color: vec3f, fragCoord: vec2f) -> vec3f {
+  let noise = interleavedGradientNoise(fragCoord);
+  // ±0.5/255 offset in sRGB space to eliminate banding at 8-bit quantization boundary
+  return color + (noise - 0.5) / 255.0;
+}
+
 @fragment
-fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
+fn fs_main(@builtin(position) fragCoord: vec4f, @location(0) uv: vec2f) -> @location(0) vec4f {
   // Sample HDR scene color
   let hdr_color = textureSample(colorTexture, texSampler, uv);
   
@@ -116,12 +129,15 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
   // Apply gamma correction
   color = gamma_correct_configurable(color);
   
+  // Apply dither to break 8-bit banding (especially visible in dark sky gradients)
+  color = applyDither(color, fragCoord.xy);
+  
   return vec4f(color, hdr_color.a);
 }
 
 // Passthrough version (for when AO is disabled, still applies tonemapping)
 @fragment
-fn fs_passthrough_copy(@location(0) uv: vec2f) -> @location(0) vec4f {
+fn fs_passthrough_copy(@builtin(position) fragCoord: vec4f, @location(0) uv: vec2f) -> @location(0) vec4f {
   let hdr_color = textureSample(colorTexture, texSampler, uv);
   
   // Apply exposure adjustment
@@ -132,6 +148,9 @@ fn fs_passthrough_copy(@location(0) uv: vec2f) -> @location(0) vec4f {
   
   // Apply gamma correction
   color = gamma_correct_configurable(color);
+  
+  // Apply dither to break 8-bit banding (especially visible in dark sky gradients)
+  color = applyDither(color, fragCoord.xy);
   
   return vec4f(color, hdr_color.a);
 }

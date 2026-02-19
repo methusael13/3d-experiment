@@ -177,7 +177,8 @@ fn getGerstnerWaves(worldXZ: vec2f, time: f32, waveScale: f32, baseWavelength: f
 
 // Sample IBL specular cubemap for environment reflection
 // Uses rough LOD (0 = mirror, higher = more diffuse) for water
-fn sampleIBLReflection(reflectDir: vec3f, roughness: f32) -> vec3f {
+// sunIntensityFactor: 0 at night, 1 during day - controls procedural fallback
+fn sampleIBLReflection(reflectDir: vec3f, roughness: f32, sunDir: vec3f, sunIntensityFactor: f32) -> vec3f {
   // Water uses low roughness for sharp reflections
   // textureSampleLevel: LOD 0 = highest detail (most mirror-like)
   let lod = roughness * 6.0;  // Max 6 mip levels typically
@@ -187,7 +188,8 @@ fn sampleIBLReflection(reflectDir: vec3f, roughness: f32) -> vec3f {
   let brightness = dot(envColor, vec3f(0.299, 0.587, 0.114));
   if (brightness < 0.001) {
     // Fallback to procedural atmosphere when IBL is placeholder
-    return cheapAtmosphere(reflectDir, normalize(vec3f(0.5, 0.8, 0.3)));
+    // BUT: scale by sunIntensityFactor so night sky stays black
+    return cheapAtmosphere(reflectDir, sunDir) * sunIntensityFactor;
   }
   
   return envColor;
@@ -398,6 +400,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let sunDir = normalize(material.sunDirection.xyz);
   let viewDir = normalize(input.viewDir);
   
+  // Sun intensity factor: derived from sunIntensity
+  // sunIntensity is 0 at night (below horizon), positive during day
+  // Use a threshold to create a smooth 0-1 factor
+  let sunIntensityFactor = saturate(sunIntensity / 5.0);
+  
   // ===== Wave Normal from Gerstner (computed in vertex shader) =====
   // Smooth normals with distance (avoid aliasing at distance)
   let distFactor = min(1.0, sqrt(input.distanceToCamera * 0.002) * 0.7);
@@ -433,8 +440,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   
   // Sky reflection from IBL cubemap (falls back to cheapAtmosphere if IBL is placeholder)
   // Water uses low roughness (0.05) for sharp mirror-like reflections
-  let skyColor = sampleIBLReflection(R, 0.05);
-  let sunReflection = getSun(R, sunDir, sunIntensity);
+  let skyColor = sampleIBLReflection(R, 0.05, sunDir, sunIntensityFactor);
+  // Sun disk reflection: scale by sunIntensityFactor so no sun reflection at night
+  let sunReflection = getSun(R, sunDir, sunIntensity) * sunIntensityFactor;
   let reflection = skyColor + vec3f(1.0, 0.95, 0.9) * sunReflection;
   
   // ===== Water Depth Calculation (Linearized) =====
@@ -519,20 +527,26 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   // - At glancing angles (horizon): fresnel ~1.0, mostly reflection visible
   
   // Start with water color, blend in refracted scene at shallow depths
-  var baseColor = waterTint;
+  // Scale water tint by sunIntensityFactor AND ambientIntensity for consistent behavior
+  // with terrain/object shaders. sunIntensityFactor: 0 at night, 1 during day.
+  // ambientIntensity: user-controlled ambient brightness slider.
+  // Water base color represents subsurface scattering of ambient light through water.
+  var baseColor = waterTint * sunIntensityFactor * ambientIntensity;
   if (refractionMix > 0.001) {
     // At shallow depths, show refracted terrain instead of pure water color
-    baseColor = mix(waterTint, refractedColor, refractionMix);
+    // refractedColor is already from the scene (which is dark at night)
+    baseColor = mix(baseColor, refractedColor, refractionMix);
   }
   
   // The 0.4 reflection multiplier ensures water tint shows through even at glancing angles
   var finalColor = mix(baseColor, reflection, fresnel * 0.4) + fresnel * reflection * 0.3;
   
   // Add ambient (slightly stronger for deep ocean richness)
-  finalColor += vec3f(0.02, 0.04, 0.08) * ambientIntensity;
+  // Scale by sunIntensityFactor so water doesn't glow at night
+  finalColor += vec3f(0.02, 0.04, 0.08) * ambientIntensity * sunIntensityFactor;
   
-  // Mix in shore foam
-  finalColor = mix(finalColor, material.foamColor.rgb, shoreFoam * 0.8);
+  // Mix in shore foam (scale by sunIntensityFactor AND ambientIntensity — foam needs light)
+  finalColor = mix(finalColor, material.foamColor.rgb * sunIntensityFactor * ambientIntensity, shoreFoam * 0.8);
   
   // ===== Alpha =====
   // Deep ocean mode: use high base opacity everywhere, only reduce slightly at very shallow shores

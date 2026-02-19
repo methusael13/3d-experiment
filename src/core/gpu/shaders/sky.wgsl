@@ -43,6 +43,10 @@ struct SkyUniforms {
   invViewProjection: mat4x4f,
   sunDirection: vec3f,
   sunIntensity: f32,
+  time: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: SkyUniforms;
@@ -232,6 +236,116 @@ fn computeAtmosphericScattering(rayDir: vec3f, sunDir: vec3f) -> vec4f {
   return vec4f(skyColor, select(0.0, 1.0, hitGround));
 }
 
+// ============================================================================
+// Star Field (Static Procedural)
+// ============================================================================
+
+// 3D hash for star cell randomization
+fn hash3(p: vec3f) -> f32 {
+  var p3 = fract(p * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+// Stellar spectral class color from a hash value [0, 1]
+// Models the Morgan-Keenan classification: M → K → G → F → A → B/O
+// Cool stars (M/K/G, red-yellow) ≈ 76%, hot stars (F/A/B/O, white-blue) ≈ 24%
+fn starSpectralColor(tempHash: f32) -> vec3f {
+  if (tempHash < 0.38) {
+    // M class: deep orange-red (coolest, most common)
+    let t = tempHash / 0.38;
+    return mix(vec3f(1.0, 0.5, 0.2), vec3f(1.0, 0.65, 0.35), t);
+  } else if (tempHash < 0.58) {
+    // K class: orange-yellow
+    let t = (tempHash - 0.38) / 0.20;
+    return mix(vec3f(1.0, 0.72, 0.42), vec3f(1.0, 0.85, 0.55), t);
+  } else if (tempHash < 0.76) {
+    // G class: yellow-white (sun-like)
+    let t = (tempHash - 0.58) / 0.18;
+    return mix(vec3f(1.0, 0.92, 0.7), vec3f(1.0, 0.97, 0.85), t);
+  } else if (tempHash < 0.88) {
+    // F class: white
+    let t = (tempHash - 0.76) / 0.12;
+    return mix(vec3f(1.0, 0.98, 0.92), vec3f(1.0, 1.0, 1.0), t);
+  } else if (tempHash < 0.95) {
+    // A class: white-blue
+    let t = (tempHash - 0.88) / 0.07;
+    return mix(vec3f(0.95, 0.97, 1.0), vec3f(0.85, 0.92, 1.0), t);
+  } else {
+    // B/O class: blue-white (hottest, rarest)
+    let t = (tempHash - 0.95) / 0.05;
+    return mix(vec3f(0.75, 0.85, 1.0), vec3f(0.6, 0.75, 1.0), t);
+  }
+}
+
+// Generate a static star field from ray direction
+// Returns star color (additive) scaled by nightFactor
+fn starField(rayDir: vec3f, nightFactor: f32, time: f32) -> vec3f {
+  if (nightFactor < 0.01 || rayDir.y < 0.0) {
+    return vec3f(0.0);
+  }
+  
+  // Project ray direction onto a high-resolution grid on the sky dome
+  // Use spherical coordinates to avoid pole distortion issues
+  let gridScale = 300.0;  // Number of cells across the sky (higher = more stars)
+  let cellPos = rayDir * gridScale;
+  let cell = floor(cellPos);
+  let cellFrac = fract(cellPos);
+  
+  var starLight = vec3f(0.0);
+  
+  // Check this cell and neighbors (needed because star center may be in adjacent cell)
+  for (var dx = -1; dx <= 1; dx++) {
+    for (var dy = -1; dy <= 1; dy++) {
+      for (var dz = -1; dz <= 1; dz++) {
+        let neighborCell = cell + vec3f(f32(dx), f32(dy), f32(dz));
+        
+        // Random star probability: only ~2% of cells have a star
+        let starProb = hash3(neighborCell);
+        if (starProb > 0.98) {
+          // Random position within the cell (0.2-0.8 to keep away from edges)
+          let starPos = vec3f(
+            hash3(neighborCell + vec3f(1.0, 0.0, 0.0)),
+            hash3(neighborCell + vec3f(0.0, 1.0, 0.0)),
+            hash3(neighborCell + vec3f(0.0, 0.0, 1.0))
+          ) * 0.6 + 0.2;
+          
+          // Distance from fragment to star center (in cell space)
+          let starWorldPos = neighborCell + starPos;
+          let dist = length(cellPos - starWorldPos);
+          
+          // Continuous apparent magnitude distribution (power-law)
+          // Cubic bias produces many dim stars and few bright ones,
+          // mimicking real stellar magnitude frequency
+          let magnitude = pow(hash3(neighborCell * 2.17), 3.0);
+          let starRadius = 0.2 + magnitude * 0.6;      // range [0.2, 0.8]
+          let starBrightness = 0.15 + magnitude * 0.85; // range [0.15, 1.0]
+          
+          // Sharp falloff for point-like stars
+          let glow = max(0.0, 1.0 - dist / starRadius);
+          
+          // Twinkle: per-star sinusoidal oscillation at random phase and speed
+          let twinklePhase = hash3(neighborCell * 13.37) * 6.2832; // random phase [0, 2π]
+          let twinkleSpeed = 0.5 + hash3(neighborCell * 5.71) * 1.5; // speed [0.5, 2.0]
+          let twinkle = 0.7 + 0.3 * sin(twinklePhase + time * twinkleSpeed); // range [0.4, 1.0]
+          
+          let pointLight = pow(glow, 8.0) * starBrightness * twinkle;
+          
+          // Color from stellar spectral classification
+          let starColor = starSpectralColor(hash3(neighborCell * 3.91));
+          
+          starLight += starColor * pointLight;
+        }
+      }
+    }
+  }
+  
+  // Fade stars near horizon (atmospheric extinction)
+  let horizonFade = smoothstep(0.0, 0.15, rayDir.y);
+  
+  return starLight * nightFactor * horizonFade * 0.8;
+}
+
 // Extended Reinhard tone mapping
 fn tonemap(c: vec3f) -> vec3f {
   let whitePoint = 4.0;
@@ -267,6 +381,11 @@ fn fs_sun(input: VertexOutput) -> @location(0) vec4f {
     let sunDisk = smoothstep(0.9998, 0.99995, sunDot);
     let sunGlow = pow(max(0.0, sunDot), 256.0) * 2.0;
     color += vec3f(1.0, 0.95, 0.9) * (sunDisk + sunGlow) * uniforms.sunIntensity * 0.1;
+    
+    // Add stars at night (fade based on sky brightness)
+    let skyLuminance = dot(skyColor, vec3f(0.299, 0.587, 0.114));
+    let nightFactor = 1.0 - saturate(skyLuminance * 15.0);
+    color += starField(rayDir, nightFactor, uniforms.time);
   }
   
   // Tone mapping to be handled in composite pass

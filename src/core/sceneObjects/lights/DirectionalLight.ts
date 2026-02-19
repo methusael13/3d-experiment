@@ -28,6 +28,8 @@ export interface DirectionalLightParams extends BaseLightParams<'directional'> {
   groundColor: RGBColor;
   /** Shadow map resolution */
   shadowResolution: number;
+  /** Sun intensity factor (0 at night, 1 during day, smooth transition at twilight) */
+  sunIntensityFactor: number;
 }
 
 /**
@@ -52,12 +54,42 @@ export class DirectionalLight extends Light {
     this.castsShadow = true;
   }
   
+  /** Moonlight intensity relative to sunlight (≈3% of full sun) */
+  static readonly MOON_INTENSITY = 0.03;
+  
+  /** Moonlight color (cool blue) */
+  static readonly MOON_COLOR: [number, number, number] = [0.4, 0.5, 0.7];
+  
   /**
-   * Calculate direction from azimuth and elevation
+   * Whether the scene is currently in night mode (sun below horizon threshold)
+   */
+  isNightMode(): boolean {
+    return this.elevation < -5;
+  }
+  
+  /**
+   * Calculate direction from azimuth and elevation.
+   * During night (elevation < -5°), returns a "moon" direction:
+   * the sun direction is mirrored to the opposite side of the sky
+   * (reversed XZ, positive Y using the magnitude of the below-horizon angle).
    */
   getDirection(): vec3 {
     const azRad = this.azimuth * Math.PI / 180;
     const elRad = this.elevation * Math.PI / 180;
+    
+    if (this.isNightMode()) {
+      // Moon direction: opposite side of the sky from the sun
+      // Use the absolute elevation angle to place moon above horizon
+      const moonElRad = Math.abs(elRad);
+      // Reverse azimuth (add 180°) to place moon on opposite side
+      const moonAzRad = azRad + Math.PI;
+      return vec3.fromValues(
+        Math.cos(moonElRad) * Math.sin(moonAzRad),
+        Math.sin(moonElRad),
+        Math.cos(moonElRad) * Math.cos(moonAzRad)
+      );
+    }
+    
     return vec3.fromValues(
       Math.cos(elRad) * Math.sin(azRad),
       Math.sin(elRad),
@@ -81,20 +113,42 @@ export class DirectionalLight extends Light {
   }
   
   /**
-   * Get sun color based on elevation (sunset/sunrise tint)
+   * Get directional light intensity factor based on elevation.
+   * Smoothly fades from 1.0 (full sun) to MOON_INTENSITY (moonlight) through twilight.
+   * Never reaches zero — at night, moonlight provides faint directional illumination.
+   */
+  getSunIntensityFactor(): number {
+    const moon = DirectionalLight.MOON_INTENSITY;
+    if (this.elevation >= 5) return 1.0;                              // Full sun
+    if (this.elevation <= -5) return moon;                             // Moonlight
+    // Smooth fade from 1.0 → moon across [-5°, +5°]
+    const t = (this.elevation + 5) / 10;                              // 0 at -5°, 1 at +5°
+    return moon + (1.0 - moon) * t;
+  }
+  
+  /**
+   * Get effective light color based on elevation (sunset/sunrise tint, moonlight at night).
+   * Scaled by sunIntensityFactor so light is dim moonlight blue at night, warm white during day.
    */
   getSunColor(): [number, number, number] {
-    if (Math.abs(this.elevation) < 15) {
-      // Sunset/sunrise tint
+    const factor = this.getSunIntensityFactor();
+    
+    let r: number, g: number, b: number;
+    if (this.isNightMode()) {
+      // Night: cool blue moonlight color
+      [r, g, b] = DirectionalLight.MOON_COLOR;
+    } else if (Math.abs(this.elevation) < 15) {
+      // Sunset/sunrise/twilight tint
       const t = Math.abs(this.elevation) / 15;
-      return [1.0, 0.6 + 0.4 * t, 0.4 + 0.6 * t];
-    }
-    if (this.elevation > 0) {
+      r = 1.0;
+      g = 0.6 + 0.4 * t;
+      b = 0.4 + 0.6 * t;
+    } else {
       // Day: white light
-      return [1.0, 1.0, 0.95];
+      r = 1.0; g = 1.0; b = 0.95;
     }
-    // Night: cool blue moonlight
-    return [0.4, 0.5, 0.7];
+    
+    return [r * factor, g * factor, b * factor];
   }
   
   /**
@@ -142,6 +196,7 @@ export class DirectionalLight extends Light {
       skyColor: this.getSkyColor(),
       groundColor: this.getGroundColor(),
       shadowResolution: this.shadowResolution,
+      sunIntensityFactor: this.getSunIntensityFactor(),
     };
   }
   

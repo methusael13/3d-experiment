@@ -34,8 +34,11 @@ export class SkyRendererGPU {
   private dummyTexture: UnifiedGPUTexture;
   
   // Shared uniform buffer
-  // Layout: mat4x4f (64) + vec3f (12) + f32 (4) = 80 bytes, aligned to 16 = 80
+  // Layout: mat4x4f (64) + vec3f (12) + f32 (4) + f32 (4) + pad (12) = 96 bytes
   private uniformBuffer: UnifiedGPUBuffer;
+  
+  // Internal time tracking for star twinkle
+  private startTime: number = performance.now() / 1000;
   
   // Cached inverse VP matrix
   private invVpMatrix = mat4.create();
@@ -43,10 +46,10 @@ export class SkyRendererGPU {
   constructor(ctx: GPUContext) {
     this.ctx = ctx;
     
-    // Create uniform buffer (80 bytes, aligned)
+    // Create uniform buffer (96 bytes, aligned to 16)
     this.uniformBuffer = UnifiedGPUBuffer.createUniform(ctx, {
       label: 'sky-uniforms',
-      size: 80,
+      size: 96,
     });
     
     // Create samplers
@@ -135,11 +138,13 @@ export class SkyRendererGPU {
     // Compute inverse view-projection
     mat4.invert(this.invVpMatrix, vpMatrix as mat4);
     
-    // Pack uniforms: mat4x4f (64) + vec3f (12) + f32 (4)
-    const data = new Float32Array(20);
+    // Pack uniforms: mat4x4f (64) + vec3f (12) + f32 (4) + f32 (4) + pad (12) = 96 bytes
+    const data = new Float32Array(24);
     data.set(this.invVpMatrix as Float32Array, 0); // invViewProjection
     data.set(sunDirection, 16); // sunDirection (vec3f at offset 64 bytes = 16 floats)
     data[19] = sunIntensity; // sunIntensity
+    data[20] = performance.now() / 1000 - this.startTime; // time (seconds since start)
+    // data[21..23] = padding
     
     this.uniformBuffer.write(this.ctx, data);
   }

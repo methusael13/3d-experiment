@@ -1261,14 +1261,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   // ===== Ambient Lighting: IBL or Flat =====
   // Use IBL diffuse irradiance if available (from SceneEnvironment Group 3)
   // IBL provides physically-based ambient that varies with normal direction
-  let iblAmbient = calculateTerrainIBL(normal, albedo);
+  // Sample raw IBL first (before any scaling) to check availability
+  let rawIBL = calculateTerrainIBL(normal, albedo);
+  
+  // Scale by ambientIntensity for consistent behavior with object shader
+  let iblAmbient = rawIBL * material.ambientIntensity;
   
   // Flat ambient fallback (scaled by material intensity)
   let flatAmbient = albedo * material.ambientIntensity;
   
   // Blend between IBL and flat ambient (IBL takes precedence if available)
   // IBL is considered "available" if it produces non-black values
-  let iblStrength = length(iblAmbient);
+  let iblStrength = length(rawIBL);
   let useIBL = step(0.001, iblStrength);  // 1 if IBL has content, 0 if black
   let ambientColor = mix(flatAmbient, iblAmbient, useIBL);
   
