@@ -4,9 +4,6 @@ node_modules/
 # Build output
 dist/
 
-# Assets (models, HDRs, etc.)
-public/
-
 # OS files
 .DS_Store
 Thumbs.db
