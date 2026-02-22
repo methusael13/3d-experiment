@@ -324,3 +324,91 @@ export const eulerEquals = (
   const dot = quat.dot(qa, qb);
   return Math.abs(Math.abs(dot) - 1) < tolerance * Math.PI / 180;
 };
+
+/**
+ * Extract 6 frustum planes from a view-projection matrix.
+ * Each plane is [a, b, c, d] where ax + by + cz + d >= 0 is inside.
+ */
+export function extractFrustumPlanes(vp: Float32Array): Float32Array {
+  // 6 planes × 4 components = 24 floats
+  const planes = new Float32Array(24);
+
+  // Left:   row3 + row0
+  planes[0] = vp[3] + vp[0];
+  planes[1] = vp[7] + vp[4];
+  planes[2] = vp[11] + vp[8];
+  planes[3] = vp[15] + vp[12];
+
+  // Right:  row3 - row0
+  planes[4] = vp[3] - vp[0];
+  planes[5] = vp[7] - vp[4];
+  planes[6] = vp[11] - vp[8];
+  planes[7] = vp[15] - vp[12];
+
+  // Bottom: row3 + row1
+  planes[8] = vp[3] + vp[1];
+  planes[9] = vp[7] + vp[5];
+  planes[10] = vp[11] + vp[9];
+  planes[11] = vp[15] + vp[13];
+
+  // Top:    row3 - row1
+  planes[12] = vp[3] - vp[1];
+  planes[13] = vp[7] - vp[5];
+  planes[14] = vp[11] - vp[9];
+  planes[15] = vp[15] - vp[13];
+
+  // Near:   row3 + row2 (WebGPU Z is 0 to 1)
+  planes[16] = vp[2];
+  planes[17] = vp[6];
+  planes[18] = vp[10];
+  planes[19] = vp[14];
+
+  // Far:    row3 - row2
+  planes[20] = vp[3] - vp[2];
+  planes[21] = vp[7] - vp[6];
+  planes[22] = vp[11] - vp[10];
+  planes[23] = vp[15] - vp[14];
+
+  // Normalize each plane
+  for (let i = 0; i < 6; i++) {
+    const base = i * 4;
+    const len = Math.sqrt(planes[base] ** 2 + planes[base + 1] ** 2 + planes[base + 2] ** 2);
+    if (len > 0) {
+      planes[base] /= len;
+      planes[base + 1] /= len;
+      planes[base + 2] /= len;
+      planes[base + 3] /= len;
+    }
+  }
+
+  return planes;
+}
+
+/**
+ * Test if an AABB (defined by XZ bounds + Y range) is inside the frustum.
+ * Returns true if the box is at least partially inside.
+ * 
+ * bounds: [minX, minZ, maxX, maxZ]
+ * Y range estimated from heightScale
+ */
+export function isAABBInFrustum(
+  planes: Float32Array,
+  minX: number, minY: number, minZ: number,
+  maxX: number, maxY: number, maxZ: number
+): boolean {
+  for (let i = 0; i < 6; i++) {
+    const base = i * 4;
+    const a = planes[base], b = planes[base + 1], c = planes[base + 2], d = planes[base + 3];
+
+    // Find the corner of the AABB that is most in the direction of the plane normal
+    const px = a >= 0 ? maxX : minX;
+    const py = b >= 0 ? maxY : minY;
+    const pz = c >= 0 ? maxZ : minZ;
+
+    // If the most-positive corner is behind the plane, the AABB is fully outside
+    if (a * px + b * py + c * pz + d < 0) {
+      return false;
+    }
+  }
+  return true;
+}

@@ -19,6 +19,8 @@ export type {
   BiomeParamsGPU,
   BiomeChannel,
   PlantType,
+  RenderMode,
+  ModelReference,
   AtlasRegion,
   AtlasRegionNormalized,
   AtlasReference,
@@ -39,8 +41,30 @@ export {
   FOREST_PLANT_PRESETS,
 } from './types';
 
+// Manager
+export { VegetationManager } from './VegetationManager';
+
 // Generators
 export { BiomeMaskGenerator } from './BiomeMaskGenerator';
+
+// Spawner
+export { VegetationSpawner } from './VegetationSpawner';
+export type { SpawnRequest, SpawnResult } from './VegetationSpawner';
+
+// Renderers
+export { VegetationRenderer } from './VegetationRenderer';
+export type { VegetationTileData, PlantTileData } from './VegetationRenderer';
+export { VegetationBillboardRenderer } from './VegetationBillboardRenderer';
+export { VegetationMeshRenderer } from './VegetationMeshRenderer';
+export type { VegetationMesh, VegetationSubMesh } from './VegetationMeshRenderer';
+
+// Tile Cache
+export { VegetationTileCache, DEFAULT_LOD_DENSITIES } from './VegetationTileCache';
+export type { LODDensityConfig, TileCacheStats } from './VegetationTileCache';
+
+// Culling Pipeline
+export { VegetationCullingPipeline } from './VegetationCullingPipeline';
+export type { CullResult } from './VegetationCullingPipeline';
 
 // Plant Registry
 export { PlantRegistry } from './PlantRegistry';

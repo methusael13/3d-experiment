@@ -4,29 +4,38 @@ This document outlines the design and implementation plan for a GPU-based vegeta
 
 ## Overview
 
-The vegetation system renders billboard-based plants (grass, shrubs, flowers) across terrain surfaces. Vegetation density is driven by:
-- **Biome mask** - Which biome types are present at each location
-- **Water flow map** - From hydraulic erosion, identifies fertile valleys
-- **Terrain slope** - Steep slopes get less vegetation
-- **Distance-based LOD** - Fewer instances at greater distances
+The vegetation system renders plants (grass, shrubs, flowers, ferns, trees) across terrain surfaces using a **hybrid rendering approach**:
+- **3D mesh instances** for close/medium range — full geometry from GLTF models
+- **Billboard instances** for far range — camera-facing quads from atlas or billboard textures
+- **Automatic LOD transitions** between 3D and billboard based on distance
+
+Vegetation density is driven by:
+- **Biome mask** — Which biome types are present at each location
+- **Water flow map** — From hydraulic erosion, identifies fertile valleys
+- **Terrain slope** — Steep slopes get less vegetation
+- **Distance-based LOD** — Fewer instances at greater distances, 3D→billboard transition
 
 ## Architecture
 
 ```
 src/core/vegetation/
 ├── index.ts                   # Public exports
+├── types.ts                   # Shared interfaces (PlantType, ModelReference, etc.)
 ├── VegetationManager.ts       # High-level orchestration
 ├── BiomeMaskGenerator.ts      # GPU compute for biome masks
 ├── VegetationSpawner.ts       # GPU compute for position generation
-├── VegetationRenderer.ts      # Instanced billboard rendering
+├── VegetationRenderer.ts      # Orchestrates billboard + mesh rendering
+├── VegetationBillboardRenderer.ts  # Instanced billboard quad rendering
+├── VegetationMeshRenderer.ts  # Instanced 3D mesh rendering
 ├── VegetationTileCache.ts     # Per-tile instance caching
-├── PlantRegistry.ts           # Plant type definitions
-└── types.ts                   # Shared interfaces
+├── PlantRegistry.ts           # Plant type definitions + model/atlas references
+└── AtlasRegionDetector.ts     # Auto-detect sprite regions from opacity maps
 
 src/core/gpu/shaders/vegetation/
 ├── biome-mask.wgsl            # Biome probability computation
 ├── spawn.wgsl                 # Instance position generation
-└── billboard.wgsl             # Vertex/fragment for rendering
+├── billboard.wgsl             # Billboard vertex/fragment
+└── vegetation-mesh.wgsl       # 3D mesh instanced vertex/fragment
 ```
 
 ---
@@ -35,96 +44,38 @@ src/core/gpu/shaders/vegetation/
 
 **Goal:** Track water flow during hydraulic erosion to identify fertile areas.
 
-### Changes to `hydraulic-erosion.wgsl`
+### Implementation Summary
 
-```wgsl
-// New binding for flow accumulation
-@group(0) @binding(4) var<storage, read_write> flowAccumulation: array<atomic<u32>>;
+Flow accumulation is tracked during hydraulic erosion by atomically incrementing a counter for each texel visited by a water droplet. After erosion completes, a finalize pass normalizes the raw counts into a 0-1 float texture using log-scale mapping.
 
-// In simulateDroplet(), track visits:
-fn simulateDroplet(startPos: vec2f) {
-  // ... existing code ...
-  
-  for (var step = 0u; step < params.maxDropletLifetime; step++) {
-    // Track droplet visit (atomic increment)
-    let idx = u32(nodeY) * params.mapSize + u32(nodeX);
-    atomicAdd(&flowAccumulation[idx], 1u);
-    
-    // ... rest of simulation ...
-  }
-}
+### Key Implementation Details
 
-// New finalize pass for flow map
-@compute @workgroup_size(8, 8, 1)
-fn finalizeFlowMap(@builtin(global_invocation_id) globalId: vec3u) {
-  let dims = textureDimensions(heightmapIn);
-  if (globalId.x >= dims.x || globalId.y >= dims.y) { return; }
-  
-  let idx = globalId.y * dims.x + globalId.x;
-  let rawFlow = f32(atomicLoad(&flowAccumulation[idx]));
-  
-  // Normalize with log scale for better distribution
-  let normalizedFlow = saturate(log(1.0 + rawFlow * 0.01) / log(100.0));
-  
-  textureStore(flowMapOut, vec2i(globalId.xy), vec4f(normalizedFlow, 0, 0, 1));
-}
-```
+**In `hydraulic-erosion.wgsl`:**
+- `@group(0) @binding(4) var<storage, read_write> flowAccumulation: array<atomic<u32>>` — atomic buffer for droplet visit tracking
+- `atomicAdd(&flowAccumulation[flowIdx], 1u)` — called in `simulateDroplets` for each droplet step
+- `finalizeFlowMap` entry point — reads atomic buffer, applies `log(1 + raw * 0.01) / log(100)` normalization, writes to `flowMapOut` texture
 
-### Changes to `ErosionSimulator.ts`
+**In `ErosionSimulator.ts`:**
+- `flowAccumulationBuffer: UnifiedGPUBuffer` — atomic u32 per texel
+- `flowMapTexture: UnifiedGPUTexture` — r32float output texture
+- `flowFinalizePipeline: ComputePipelineWrapper` — pipeline for finalize pass
+- Flow buffer cleared at start of each erosion session via `clearBuffer()`
+- `getFlowMap()` accessor returns the normalized texture
 
-```typescript
-// Add flow resources
-private flowAccumulationBuffer: UnifiedGPUBuffer | null = null;
-private flowMapTexture: UnifiedGPUTexture | null = null;
-private flowFinalizeLayout: GPUBindGroupLayout | null = null;
-private flowFinalizePipeline: ComputePipelineWrapper | null = null;
-
-// Initialize in initialize()
-this.flowAccumulationBuffer = UnifiedGPUBuffer.createStorage(this.ctx, {
-  label: 'flow-accumulation-buffer',
-  size: this.resolution * this.resolution * 4, // u32 per texel
-});
-
-this.flowMapTexture = UnifiedGPUTexture.create2D(this.ctx, {
-  label: 'flow-map',
-  width: this.resolution,
-  height: this.resolution,
-  format: 'r32float',
-  storage: true,
-  sampled: true,
-});
-
-// Clear flow buffer at start of hydraulic erosion
-// Finalize flow map after all erosion iterations complete
-
-getFlowMap(): UnifiedGPUTexture | null {
-  return this.flowMapTexture;
-}
-```
-
-### Changes to `TerrainManager.ts`
-
-```typescript
-private flowMap: UnifiedGPUTexture | null = null;
-
-// After erosion completes:
-this.flowMap = this.erosionSimulator.getFlowMap();
-
-getFlowMap(): UnifiedGPUTexture | null {
-  return this.flowMap;
-}
-```
+**In `TerrainManager.ts`:**
+- `flowMap` field cached from `erosionSimulator.getFlowMap()`
+- `getFlowMap()` public accessor for vegetation system
 
 ### Tasks
-- [ ] Add `flowAccumulation` atomic buffer binding to hydraulic-erosion.wgsl
-- [ ] Track droplet visits with `atomicAdd` during simulation
-- [ ] Add `finalizeFlowMap` entry point
-- [ ] Update ErosionSimulator with flow buffer + texture
-- [ ] Add flow finalize pipeline and bind group
-- [ ] Clear flow buffer at erosion start
-- [ ] Add `getFlowMap()` accessor to ErosionSimulator
-- [ ] Update TerrainManager to store and expose flow map
-- [ ] Add debug mode in Terrain erosion settings to display the flow map
+- [x] Add `flowAccumulation` atomic buffer binding to hydraulic-erosion.wgsl
+- [x] Track droplet visits with `atomicAdd` during simulation
+- [x] Add `finalizeFlowMap` entry point
+- [x] Update ErosionSimulator with flow buffer + texture
+- [x] Add flow finalize pipeline and bind group
+- [x] Clear flow buffer at erosion start
+- [x] Add `getFlowMap()` accessor to ErosionSimulator
+- [x] Update TerrainManager to store and expose flow map
+- [x] Flow map available for debug display via DebugTextureManager
 
 ---
 
@@ -136,141 +87,169 @@ getFlowMap(): UnifiedGPUTexture | null {
 | Channel | Biome | Conditions |
 |---------|-------|------------|
 | R | Grassland | Moderate height, low slope, optimal flow |
-| G | Rock/Cliff | High slope |
-| B | Forest Edge | Moderate height, low slope, high flow |
-| A | Reserved | Future (snow, desert, etc.) |
+| G | Rock/Cliff | High slope or very high altitude |
+| B | Forest Edge | Moderate height, low slope, good water flow |
+| A | Reserved (1.0) | Future (snow, desert, etc.) |
 
-### `biome-mask.wgsl`
+### Implementation Summary
 
-```wgsl
-struct BiomeParams {
-  heightInfluence: f32,     // How much height affects biome
-  slopeInfluence: f32,      // How much slope affects biome
-  flowInfluence: f32,       // How much water flow affects biome
-  seed: f32,                // Noise variation seed
-  grassHeightMin: f32,
-  grassHeightMax: f32,
-  grassSlopeMax: f32,
-  rockSlopeMin: f32,
-}
+The biome mask is generated by a GPU compute shader that samples the heightmap, calculates slope from neighboring texels, and samples the optional flow map. Each biome channel is computed independently with smoothstep transitions.
 
-@group(0) @binding(0) var<uniform> params: BiomeParams;
-@group(0) @binding(1) var heightmap: texture_2d<f32>;
-@group(0) @binding(2) var flowMap: texture_2d<f32>;
-@group(0) @binding(3) var biomeMaskOut: texture_storage_2d<rgba8unorm, write>;
-
-fn calculateSlope(uv: vec2f) -> f32 {
-  let eps = 1.0 / f32(textureDimensions(heightmap).x);
-  let hL = textureLoad(heightmap, vec2i((uv - vec2f(eps, 0)) * vec2f(textureDimensions(heightmap))), 0).r;
-  let hR = textureLoad(heightmap, vec2i((uv + vec2f(eps, 0)) * vec2f(textureDimensions(heightmap))), 0).r;
-  let hD = textureLoad(heightmap, vec2i((uv - vec2f(0, eps)) * vec2f(textureDimensions(heightmap))), 0).r;
-  let hU = textureLoad(heightmap, vec2i((uv + vec2f(0, eps)) * vec2f(textureDimensions(heightmap))), 0).r;
+**`BiomeParams` interface (13 fields):**
+```typescript
+export interface BiomeParams {
+  heightInfluence: number;      // Weight for height factor
+  slopeInfluence: number;       // Weight for slope factor
+  flowInfluence: number;        // Weight for flow factor
+  seed: number;                 // Noise variation seed
   
-  let dx = (hR - hL) / (2.0 * eps);
-  let dy = (hU - hD) / (2.0 * eps);
+  grassHeightMin: number;       // Min height for grassland
+  grassHeightMax: number;       // Max height for grassland
+  grassSlopeMax: number;        // Max slope for grassland
+  rockSlopeMin: number;         // Min slope for rock appearance
   
-  return sqrt(dx * dx + dy * dy);
-}
-
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid: vec3u) {
-  let dims = textureDimensions(heightmap);
-  if (gid.x >= dims.x || gid.y >= dims.y) { return; }
+  forestFlowMin: number;        // Min flow for forest
+  forestFlowMax: number;        // Max flow (above = flooded)
+  forestHeightMin: number;      // Min height for forest
+  forestHeightMax: number;      // Max height for forest
   
-  let uv = vec2f(gid.xy) / vec2f(dims);
-  let height = textureLoad(heightmap, vec2i(gid.xy), 0).r;
-  let flow = textureLoad(flowMap, vec2i(gid.xy), 0).r;
-  let slope = calculateSlope(uv);
-  
-  // Grassland: moderate height, low slope, optimal flow (not too dry, not flooded)
-  let heightFactor = smoothstep(params.grassHeightMin, params.grassHeightMax, height);
-  let slopeFactor = 1.0 - smoothstep(0.3, params.grassSlopeMax, slope);
-  let flowFactor = smoothstep(0.1, 0.4, flow) * (1.0 - smoothstep(0.7, 0.95, flow));
-  let grass = heightFactor * slopeFactor * (0.3 + 0.7 * flowFactor);
-  
-  // Rock: steep slopes
-  let rock = smoothstep(params.rockSlopeMin, 0.8, slope);
-  
-  // Forest edge: good flow, moderate slope
-  let forest = smoothstep(0.3, 0.6, flow) * (1.0 - slope) * heightFactor;
-  
-  textureStore(biomeMaskOut, vec2i(gid.xy), vec4f(grass, rock, forest, 0.0));
+  defaultFlowValue: number;     // Default flow when no flow map (0-1)
 }
 ```
 
-### `BiomeMaskGenerator.ts`
+**GPU struct (`biome-mask.wgsl`):** 64-byte uniform (16 floats with 3 padding).
 
-```typescript
-export interface BiomeParams {
-  heightInfluence: number;
-  slopeInfluence: number;
-  flowInfluence: number;
-  seed: number;
-  grassHeightMin: number;
-  grassHeightMax: number;
-  grassSlopeMax: number;
-  rockSlopeMin: number;
-}
+**Key differences from original plan:**
+- BiomeParams expanded from 8 to 13 fields (added forestFlowMin/Max, forestHeightMin/Max, defaultFlowValue)
+- Slope calculation uses `saturate(slope * 25.0)` normalization for the terrain's -0.5 to 0.5 height range
+- Rock probability considers both steep slopes AND high altitude
+- Forest uses weighted `min(heightFactor, slopeFactor) * (0.3 + 0.7 * flowFactor)` instead of simple multiplication
+- Rock overrides other biomes: `grassFinal = grassland * (1.0 - rock * 0.7)`
 
-export function createDefaultBiomeParams(): BiomeParams {
-  return {
-    heightInfluence: 1.0,
-    slopeInfluence: 1.0,
-    flowInfluence: 1.0,
-    seed: 12345,
-    grassHeightMin: -0.2,
-    grassHeightMax: 0.5,
-    grassSlopeMax: 0.6,
-    rockSlopeMin: 0.5,
-  };
-}
+**Dockable BiomeMask Editor UI:**
+- `BiomeMaskContent.tsx` — preview + parameter sliders in a DockableWindow
+- `BiomeMaskPanelBridge.tsx` — connects UI to TerrainManager
+- Triggered from the terrain panel
 
-export class BiomeMaskGenerator {
-  generateBiomeMask(
-    heightmap: UnifiedGPUTexture,
-    flowMap: UnifiedGPUTexture | null,
-    params?: Partial<BiomeParams>
-  ): UnifiedGPUTexture;
-}
+### Files
+```
+src/core/vegetation/BiomeMaskGenerator.ts     # Full compute pipeline with generate(), setParams()
+src/core/gpu/shaders/vegetation/biome-mask.wgsl  # Compute shader with detailed documentation
+src/demos/sceneBuilder/components/panels/BiomeMaskPanel/BiomeMaskContent.tsx
+src/demos/sceneBuilder/components/panels/BiomeMaskPanel/BiomeMaskContent.module.css
+src/demos/sceneBuilder/components/panels/BiomeMaskPanel/index.ts
+src/demos/sceneBuilder/components/bridges/BiomeMaskPanelBridge.tsx
 ```
 
 ### Tasks
-- [ ] Create `biome-mask.wgsl` compute shader
-- [ ] Implement `BiomeMaskGenerator.ts` class
-- [ ] Add biome params interface and defaults
-- [ ] Sample heightmap for height values
-- [ ] Calculate slope from heightmap gradients
-- [ ] Sample flow map (with fallback if null)
-- [ ] Output RGBA biome probabilities
-- [ ] Integrate with TerrainManager
-- [ ] Create a docking window via the docking window manager to live tweak the biome mask
-  - [ ] The panel will have a biome mask preview on the top (reuse float texture visualizer if possible)
-  - [ ] Below the preview, we will have the shader uniform controls to control the biome mask
-  - [ ] For display purposes, each biome will be represented by different colors
-  - [ ] Tweaking the controls should live feedback the update on the texture
-- [ ] This docking window should be triggered from the terrain panel
+- [x] Create `biome-mask.wgsl` compute shader
+- [x] Implement `BiomeMaskGenerator.ts` class
+- [x] Add biome params interface and defaults (expanded to 13 fields)
+- [x] Sample heightmap for height values
+- [x] Calculate slope from heightmap gradients
+- [x] Sample flow map (with fallback via dummy 1x1 texture if null)
+- [x] Output RGBA biome probabilities
+- [x] Integrate with TerrainManager (generateBiomeMask, getBiomeMask, setBiomeParams)
+- [x] Create a docking window via the docking window manager to live tweak the biome mask
+  - [x] The panel has a biome mask preview on the top
+  - [x] Below the preview, shader uniform controls to control the biome mask
+  - [x] Each biome represented by different colors
+  - [x] Tweaking controls provides live feedback on the texture
+- [x] This docking window triggered from the terrain panel
 
 ---
 
 ## Phase 2: Plant Foundation [Complete]
 
-**Goal:** Define plant types and create the registry with UI controls.
+**Goal:** Define plant types and create the registry with UI controls, including 3D model support.
 
 ### Implementation Summary
 
-This phase was extended beyond the original plan to include a **dynamic UI** for managing plant types instead of hardcoded presets. Key additions:
+This phase was extended beyond the original plan to include a **dynamic UI** for managing plant types, atlas detection, asset selection, and **3D model support with hybrid rendering modes**:
 
-1. **PlantRegistry.ts** - Manages plant types per biome with event-driven updates
-2. **AtlasRegionDetector.ts** - Auto-detects sprite regions from opacity maps
-3. **VegetationContent.tsx** - UI panel with biome tabs and plant editors
-4. **AssetPickerModal** - Modal for selecting texture atlases from Asset Library
-5. **VegetationPanelBridge** - Opens vegetation editor in DockableWindow
+1. **PlantRegistry.ts** — Dynamic registry with CRUD operations, event system, serialization, `setPlantModel()` for 3D model association
+2. **AtlasRegionDetector.ts** — Connected component analysis to auto-detect sprite regions from opacity maps
+3. **VegetationContent.tsx** — UI panel with biome tabs, plant property editors, **model picker**, **render mode selector** (billboard/mesh/hybrid), and **billboard distance slider**
+4. **AssetPickerModal** — Reusable modal for selecting textures and 3D models from the Asset Library
+5. **VegetationPanelBridge** — Opens vegetation editor in a DockableWindow
+6. **ModelReference** type — References GLTF models with auto-detected billboard textures
+
+### `PlantType` Interface (Current)
+
+```typescript
+export interface PlantType {
+  id: string;
+  name: string;
+  
+  // Visual
+  color: [number, number, number];       // Fallback color when no texture
+  atlasRef: AtlasReference | null;       // Texture atlas reference
+  atlasRegionIndex: number | null;       // Specific region in atlas
+  
+  // Rendering mode
+  renderMode: 'billboard' | 'mesh' | 'hybrid';  // How to render this plant
+  modelRef: ModelReference | null;       // 3D model reference (for mesh/hybrid)
+  billboardDistance: number;             // Distance for 3D→billboard transition (hybrid mode)
+  
+  // Size in world units
+  minSize: [number, number];
+  maxSize: [number, number];
+  
+  // Spawn distribution
+  spawnProbability: number;
+  biomeChannel: BiomeChannel;
+  biomeThreshold: number;
+  
+  // Clustering
+  clusterStrength: number;
+  minSpacing: number;
+  
+  // LOD
+  maxDistance: number;
+  lodBias: number;
+}
+```
+
+### `ModelReference` Interface (New)
+
+```typescript
+/**
+ * Reference to a 3D vegetation model from the Asset Library.
+ */
+export interface ModelReference {
+  /** Asset ID from the Asset Library */
+  assetId: string;
+  /** Asset name for display */
+  assetName: string;
+  /** Path to the standard (non-UE) GLTF file */
+  modelPath: string;
+  /** Path to billboard BaseColor+Opacity texture (auto-billboard for hybrid mode) */
+  billboardTexturePath: string | null;
+  /** Path to billboard Normal+Translucency texture */
+  billboardNormalPath: string | null;
+  /** Number of mesh variants (from GLTF sub-meshes or multiple files) */
+  variantCount: number;
+}
+```
+
+### `AtlasReference` Interface (Current)
+
+```typescript
+export interface AtlasReference {
+  assetId: string;
+  assetName: string;
+  opacityPath: string;
+  baseColorPath: string;
+  atlasSize: [number, number];
+  regions: AtlasRegion[];
+}
+```
 
 ### Files Created
 ```
 src/core/vegetation/
-├── types.ts                    # PlantType, AtlasRegion, BiomeChannel, etc.
-├── PlantRegistry.ts            # Dynamic registry with event system
+├── types.ts                    # PlantType, AtlasRegion, BiomePlantConfig, VegetationConfig, WindParams, ModelReference
+├── PlantRegistry.ts            # Dynamic registry with events, CRUD, serialization
 └── AtlasRegionDetector.ts      # Connected component analysis for atlas regions
 
 src/demos/sceneBuilder/components/
@@ -286,155 +265,37 @@ src/demos/sceneBuilder/components/
     └── VegetationPanelBridge.tsx
 ```
 
-### `types.ts`
+### Default Plant Presets
 
 ```typescript
-export interface PlantType {
-  id: string;
-  name: string;
-  
-  // Visual (colored quads initially)
-  color: [number, number, number];
-  
-  // Atlas info (null initially, injected later)
-  atlasRegion: {
-    u: number;
-    v: number;
-    width: number;
-    height: number;
-  } | null;
-  
-  // Size in world units
-  minSize: [number, number];
-  maxSize: [number, number];
-  
-  // Spawn distribution
-  spawnProbability: number;
-  biomeChannel: 'r' | 'g' | 'b' | 'a';
-  biomeThreshold: number;
-  
-  // Clustering
-  clusterStrength: number;
-  minSpacing: number;
-  
-  // LOD
-  maxDistance: number;
-  lodBias: number;
-}
-
-export interface VegetationConfig {
-  enabled: boolean;
-  globalDensity: number;
-  windEnabled: boolean;
-  debugMode: boolean;
-}
-
-export interface WindParams {
-  direction: [number, number];  // XZ normalized
-  strength: number;             // 0-1
-  frequency: number;            // Oscillation speed
-  gustStrength: number;         // Local variation amplitude
-  gustFrequency: number;        // Spatial frequency of gusts
-}
-```
-
-### `PlantRegistry.ts`
-
-```typescript
-export const GRASSLAND_PLANTS: PlantType[] = [
-  {
-    id: 'tall-grass',
-    name: 'Tall Grass',
-    color: [0.3, 0.6, 0.2],
-    atlasRegion: null,
-    minSize: [0.3, 0.5],
-    maxSize: [0.5, 1.2],
-    spawnProbability: 0.6,
-    biomeChannel: 'r',
-    biomeThreshold: 0.3,
-    clusterStrength: 0.4,
-    minSpacing: 0.2,
-    maxDistance: 200,
-    lodBias: 1.0,
-  },
-  {
-    id: 'short-grass',
-    name: 'Short Grass Clump',
-    color: [0.4, 0.5, 0.2],
-    atlasRegion: null,
-    minSize: [0.2, 0.15],
-    maxSize: [0.3, 0.3],
-    spawnProbability: 0.8,
-    biomeChannel: 'r',
-    biomeThreshold: 0.2,
-    clusterStrength: 0.2,
-    minSpacing: 0.1,
-    maxDistance: 100,
-    lodBias: 0.8,
-  },
-  {
-    id: 'wildflower-yellow',
-    name: 'Yellow Wildflower',
-    color: [0.9, 0.8, 0.2],
-    atlasRegion: null,
-    minSize: [0.15, 0.2],
-    maxSize: [0.25, 0.4],
-    spawnProbability: 0.15,
-    biomeChannel: 'r',
-    biomeThreshold: 0.5,
-    clusterStrength: 0.7,
-    minSpacing: 0.3,
-    maxDistance: 150,
-    lodBias: 1.2,
-  },
-  {
-    id: 'wildflower-purple',
-    name: 'Purple Wildflower',
-    color: [0.6, 0.3, 0.7],
-    atlasRegion: null,
-    minSize: [0.12, 0.18],
-    maxSize: [0.22, 0.35],
-    spawnProbability: 0.1,
-    biomeChannel: 'r',
-    biomeThreshold: 0.5,
-    clusterStrength: 0.6,
-    minSpacing: 0.35,
-    maxDistance: 150,
-    lodBias: 1.2,
-  },
-  {
-    id: 'small-shrub',
-    name: 'Small Shrub',
-    color: [0.25, 0.4, 0.2],
-    atlasRegion: null,
-    minSize: [0.4, 0.3],
-    maxSize: [0.8, 0.6],
-    spawnProbability: 0.05,
-    biomeChannel: 'r',
-    biomeThreshold: 0.6,
-    clusterStrength: 0.3,
-    minSpacing: 1.0,
-    maxDistance: 300,
-    lodBias: 1.5,
-  },
+export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
+  // Tall Grass, Short Grass Clump, Yellow Wildflower, Purple Wildflower, Small Shrub
+  // All with renderMode: 'billboard' initially
 ];
 
-export class PlantRegistry {
-  private plants: Map<string, PlantType> = new Map();
-  
-  registerPlant(plant: PlantType): void;
-  getPlant(id: string): PlantType | undefined;
-  getPlantsByBiome(channel: 'r' | 'g' | 'b' | 'a'): PlantType[];
-  getAllPlants(): PlantType[];
-  setAtlasRegion(id: string, region: PlantType['atlasRegion']): void;
-}
+export const FOREST_PLANT_PRESETS: PlantType[] = [
+  // Fern, Forest Grass
+  // All with renderMode: 'billboard' initially
+];
 ```
 
 ### Tasks
-- [ ] Create `types.ts` with PlantType, VegetationConfig, WindParams
-- [ ] Create `PlantRegistry.ts` with plant management
-- [ ] Define initial grassland plant presets
-- [ ] Add methods for atlas region injection
+- [x] Create `types.ts` (PlantType, AtlasRegion, BiomePlantConfig, VegetationConfig, WindParams)
+- [x] Create `PlantRegistry.ts` (dynamic registry with events)
+- [x] Define initial grassland plant presets (GRASSLAND_PLANT_PRESETS, FOREST_PLANT_PRESETS)
+- [x] Add atlas region injection (setPlantAtlas method)
+- [x] Create `AtlasRegionDetector.ts` (auto-detect sprite regions from opacity maps)
+- [x] Create `VegetationContent.tsx` (UI panel with biome tabs)
+- [x] Create `AssetPickerModal` (reusable asset selection modal)
+- [x] Create `VegetationPanelBridge` (opens vegetation editor in DockableWindow)
+- [x] Integrate PlantRegistry into TerrainManager
+- [x] Add `ModelReference` type and `renderMode` field to PlantType
+- [x] Add `modelRef` and `billboardDistance` fields to PlantType
+- [x] Update `createDefaultPlantType()` with new fields
+- [x] Add `setPlantModel()` method to PlantRegistry
+- [x] Update VegetationContent.tsx to show model picker button alongside atlas picker
+- [x] Add render mode selector (billboard/mesh/hybrid) to plant editor UI
+- [x] Add billboardDistance slider for hybrid mode
 
 ---
 
@@ -455,12 +316,16 @@ struct SpawnParams {
   biomeThreshold: f32,      // Minimum biome value
   seed: f32,                // Random seed
   cameraPos: vec3f,         // For distance culling
-  maxDistance: f32,         // Max spawn distance
+  maxDistance: f32,          // Max spawn distance
+  billboardDistance: f32,    // Distance threshold for 3D→billboard transition
+  renderMode: u32,          // 0=billboard, 1=mesh, 2=hybrid
+  variantCount: u32,        // Number of mesh/atlas variants
+  _padding: f32,
 }
 
 struct PlantInstance {
   positionAndScale: vec4f,  // xyz = world pos, w = uniform scale
-  rotationAndType: vec4f,   // x = Y rotation, yzw = color RGB
+  rotationAndType: vec4f,   // x = Y rotation, y = variant index, z = render flag (0=billboard, 1=mesh), w = reserved
 }
 
 @group(0) @binding(0) var<uniform> params: SpawnParams;
@@ -468,6 +333,8 @@ struct PlantInstance {
 @group(0) @binding(2) var heightmap: texture_2d<f32>;
 @group(0) @binding(3) var<storage, read_write> instances: array<PlantInstance>;
 @group(0) @binding(4) var<storage, read_write> instanceCount: atomic<u32>;
+@group(0) @binding(5) var<storage, read_write> meshInstanceCount: atomic<u32>;
+@group(0) @binding(6) var<storage, read_write> billboardInstanceCount: atomic<u32>;
 
 fn hash(p: vec2f) -> f32 {
   let h = dot(p, vec2f(127.1, 311.7));
@@ -509,13 +376,33 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   
   if (hash(cellOrigin * 17.3 + params.seed) > spawnChance) { return; }
   
+  // Determine render mode for this instance
+  var renderFlag = 0.0; // 0 = billboard
+  if (params.renderMode == 1u) {
+    // mesh-only mode
+    renderFlag = 1.0;
+  } else if (params.renderMode == 2u) {
+    // hybrid mode: mesh if close, billboard if far
+    renderFlag = select(0.0, 1.0, dist < params.billboardDistance);
+  }
+  
+  // Variant selection (deterministic per-cell)
+  let variantIndex = f32(u32(hash(cellOrigin * 41.7 + params.seed) * f32(params.variantCount)));
+  
   // Emit instance
   let idx = atomicAdd(&instanceCount, 1u);
   let scale = mix(minSize, maxSize, hash(cellOrigin * 23.7));
   let rotation = hash(cellOrigin * 31.1) * 6.28318;
   
   instances[idx].positionAndScale = vec4f(worldPos, scale);
-  instances[idx].rotationAndType = vec4f(rotation, plantColor);
+  instances[idx].rotationAndType = vec4f(rotation, variantIndex, renderFlag, 0.0);
+  
+  // Track counts per render type for draw calls
+  if (renderFlag > 0.5) {
+    atomicAdd(&meshInstanceCount, 1u);
+  } else {
+    atomicAdd(&billboardInstanceCount, 1u);
+  }
 }
 ```
 
@@ -530,6 +417,13 @@ export interface SpawnRequest {
   cameraPosition: vec3;
 }
 
+export interface SpawnResult {
+  buffer: GPUBuffer;
+  totalCount: number;
+  meshCount: number;
+  billboardCount: number;
+}
+
 export class VegetationSpawner {
   constructor(ctx: GPUContext, plantRegistry: PlantRegistry);
   
@@ -538,10 +432,10 @@ export class VegetationSpawner {
     request: SpawnRequest,
     biomeMask: UnifiedGPUTexture,
     heightmap: UnifiedGPUTexture
-  ): Promise<{ buffer: GPUBuffer; count: number }>;
+  ): Promise<SpawnResult>;
   
   // Batch spawn multiple tiles
-  spawnTiles(requests: SpawnRequest[], ...): Promise<Map<string, TileData>>;
+  spawnTiles(requests: SpawnRequest[], ...): Promise<Map<string, SpawnResult>>;
 }
 ```
 
@@ -552,16 +446,34 @@ export class VegetationSpawner {
 - [ ] Calculate terrain height for Y positioning
 - [ ] Apply LOD-based density reduction
 - [ ] Use atomic counter for instance count
+- [ ] Add render flag per-instance (0=billboard, 1=mesh) based on distance and renderMode
+- [ ] Add variant index selection via deterministic hash
+- [ ] Track mesh vs billboard instance counts for separate draw calls
 - [ ] Implement `VegetationSpawner.ts` class
 - [ ] Add batch spawning for multiple tiles
 
 ---
 
-## Phase 4: Billboard Rendering
+## Phase 4: Rendering (Hybrid Billboard + 3D Mesh)
 
-**Goal:** Instanced billboard rendering with wind animation.
+**Goal:** Instanced rendering supporting both billboard quads (far range) and 3D meshes (close range) with distance-based transitions.
 
-### `billboard.wgsl`
+### LOD Distance Strategy
+
+| Distance Range | `hybrid` Mode | `mesh` Mode | `billboard` Mode |
+|----------------|---------------|-------------|------------------|
+| 0 – billboardDist | 3D mesh LOD0 | 3D mesh LOD0 | Billboard |
+| billboardDist – maxDist | Billboard | — (culled) | Billboard |
+| > maxDist | Culled | Culled | Culled |
+
+The `billboardDistance` per-plant defaults:
+- Small plants (grass, flowers): 50m
+- Medium plants (ferns, shrubs): 100m
+- Large plants (trees, palms): 200m
+
+### 4a: Billboard Rendering
+
+#### `billboard.wgsl`
 
 ```wgsl
 struct Uniforms {
@@ -583,14 +495,9 @@ struct WindParams {
 @group(0) @binding(1) var<uniform> wind: WindParams;
 @group(0) @binding(2) var<storage, read> instances: array<PlantInstance>;
 
-// Optional: texture atlas
-// @group(0) @binding(3) var plantAtlas: texture_2d<f32>;
-// @group(0) @binding(4) var atlasSampler: sampler;
-
-struct VertexInput {
-  @builtin(vertex_index) vertexIndex: u32,
-  @builtin(instance_index) instanceIndex: u32,
-}
+// Atlas or billboard texture
+@group(0) @binding(3) var plantTexture: texture_2d<f32>;
+@group(0) @binding(4) var plantSampler: sampler;
 
 struct VertexOutput {
   @builtin(position) position: vec4f,
@@ -599,32 +506,14 @@ struct VertexOutput {
   @location(2) worldPos: vec3f,
 }
 
-// Simple 2D FBM for wind gusts
-fn fbm2D(p: vec2f, octaves: u32) -> f32 {
-  var value = 0.0;
-  var amplitude = 0.5;
-  var pos = p;
-  
-  for (var i = 0u; i < octaves; i++) {
-    value += amplitude * (sin(pos.x) * cos(pos.y) * 0.5 + 0.5);
-    pos *= 2.0;
-    amplitude *= 0.5;
-  }
-  
-  return value;
-}
-
 fn applyWind(worldPos: vec3f, vertexHeight: f32) -> vec3f {
-  // Base oscillation (global)
   let phase = dot(worldPos.xz, wind.direction) * 0.1 + uniforms.time * wind.frequency;
   let baseWind = sin(phase) * wind.strength;
   
-  // Local gust variation (GPU noise)
   let gustUV = worldPos.xz * wind.gustFrequency + uniforms.time * 0.3;
   let gustNoise = fbm2D(gustUV, 2u) * 2.0 - 1.0;
   let localGust = gustNoise * wind.gustStrength;
   
-  // Apply to top vertices (vertexHeight = 0 at base, 1 at tip)
   let displacement = (baseWind + localGust) * vertexHeight * vertexHeight;
   
   return worldPos + vec3f(wind.direction.x, 0.0, wind.direction.y) * displacement;
@@ -633,92 +522,232 @@ fn applyWind(worldPos: vec3f, vertexHeight: f32) -> vec3f {
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
   let instance = instances[input.instanceIndex];
-  let worldPosBase = instance.positionAndScale.xyz;
-  let scale = instance.positionAndScale.w;
-  let rotation = instance.rotationAndType.x;
-  let color = instance.rotationAndType.yzw;
   
-  // Quad vertices (2 triangles, 6 vertices)
-  let quadVerts = array<vec2f, 6>(
-    vec2f(-0.5, 0.0), vec2f(0.5, 0.0), vec2f(0.5, 1.0),
-    vec2f(-0.5, 0.0), vec2f(0.5, 1.0), vec2f(-0.5, 1.0)
-  );
-  let quadUVs = array<vec2f, 6>(
-    vec2f(0.0, 1.0), vec2f(1.0, 1.0), vec2f(1.0, 0.0),
-    vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(0.0, 0.0)
-  );
+  // Skip mesh-flagged instances (renderFlag > 0.5)
+  if (instance.rotationAndType.z > 0.5) {
+    // Degenerate triangle — effectively culled
+    var output: VertexOutput;
+    output.position = vec4f(0.0, 0.0, 0.0, 0.0);
+    return output;
+  }
   
-  let localPos = quadVerts[input.vertexIndex];
-  let uv = quadUVs[input.vertexIndex];
-  let vertexHeight = localPos.y;  // 0 at base, 1 at top
-  
-  // Billboard facing camera (Y-axis aligned)
-  let toCamera = normalize(uniforms.cameraPosition - worldPosBase);
-  let right = normalize(cross(vec3f(0.0, 1.0, 0.0), toCamera));
-  
-  // Apply rotation around Y axis
-  let cosR = cos(rotation);
-  let sinR = sin(rotation);
-  let rotatedRight = vec3f(
-    right.x * cosR - right.z * sinR,
-    0.0,
-    right.x * sinR + right.z * cosR
-  );
-  
-  // Build world position
-  var worldPos = worldPosBase;
-  worldPos += rotatedRight * localPos.x * scale;
-  worldPos.y += localPos.y * scale;
-  
-  // Apply wind displacement
-  worldPos = applyWind(worldPos, vertexHeight);
-  
-  var output: VertexOutput;
-  output.position = uniforms.viewProjection * vec4f(worldPos, 1.0);
-  output.uv = uv;
-  output.color = color;
-  output.worldPos = worldPos;
-  
-  return output;
+  // ... billboard quad generation, Y-axis aligned ...
+  // ... wind displacement ...
+  // ... texture atlas UV mapping ...
 }
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
-  // Simple colored quad (atlas sampling can be added later)
-  let color = input.color;
+  let color = textureSample(plantTexture, plantSampler, input.uv);
   
-  // Soft alpha gradient at edges (optional)
-  let alpha = smoothstep(0.0, 0.1, input.uv.x) * 
-              smoothstep(1.0, 0.9, input.uv.x);
+  // Alpha cutout for vegetation edges
+  if (color.a < 0.5) { discard; }
   
   // Distance fade
   let dist = distance(input.worldPos, uniforms.cameraPosition);
   let fade = 1.0 - smoothstep(150.0, 200.0, dist);
   
-  return vec4f(color, alpha * fade);
+  return vec4f(color.rgb, color.a * fade);
 }
 ```
 
-### `VegetationRenderer.ts`
+#### `VegetationBillboardRenderer.ts`
 
 ```typescript
-export class VegetationRenderer {
+export class VegetationBillboardRenderer {
   constructor(ctx: GPUContext);
-  
-  // Initialize render pipeline
   initialize(depthFormat: GPUTextureFormat): void;
   
-  // Render all visible vegetation tiles
+  render(
+    passEncoder: GPURenderPassEncoder,
+    viewProjection: mat4,
+    cameraPosition: vec3,
+    instanceBuffer: GPUBuffer,
+    instanceCount: number,
+    texture: UnifiedGPUTexture | null,  // Atlas or billboard texture
+    wind: WindParams,
+    time: number
+  ): void;
+  
+  destroy(): void;
+}
+```
+
+### 4b: 3D Mesh Rendering (Instanced)
+
+#### Multi-Mesh Model Support
+
+A single GLTF/GLB can contain multiple sub-meshes (trunk, branches, leaves). The renderer draws all sub-meshes per instance.
+
+```typescript
+interface VegetationMesh {
+  id: string;
+  name: string;
+  subMeshes: VegetationSubMesh[];
+  boundingBox: BoundingBox;
+  castsShadow: boolean;
+  receivesWind: boolean;
+}
+
+interface VegetationSubMesh {
+  vertexBuffer: GPUBuffer;
+  indexBuffer: GPUBuffer;
+  indexCount: number;
+  materialIndex: number;
+  material: VegetationMaterial;
+  windMultiplier: number;  // 0 = rigid (trunk), 1 = full wind (leaves)
+}
+```
+
+#### Wind Per Sub-Mesh
+
+| Sub-Mesh | Wind Multiplier | Behavior |
+|----------|-----------------|----------|
+| Trunk | 0.0 | Rigid, no movement |
+| Branches | 0.3 | Slight sway |
+| Leaves | 1.0 | Full flutter |
+| Flowers | 0.8 | Strong sway |
+
+#### `vegetation-mesh.wgsl`
+
+```wgsl
+struct MeshUniforms {
+  viewProjection: mat4x4f,
+  cameraPosition: vec3f,
+  time: f32,
+  windMultiplier: f32,  // Per-submesh
+  _pad: vec3f,
+}
+
+@group(0) @binding(0) var<uniform> uniforms: MeshUniforms;
+@group(0) @binding(1) var<uniform> wind: WindParams;
+@group(0) @binding(2) var<storage, read> instances: array<PlantInstance>;
+
+// Material textures
+@group(1) @binding(0) var baseColorTexture: texture_2d<f32>;
+@group(1) @binding(1) var normalTexture: texture_2d<f32>;
+@group(1) @binding(2) var ormTexture: texture_2d<f32>;   // Occlusion-Roughness-Metallic
+@group(1) @binding(3) var materialSampler: sampler;
+
+@vertex
+fn vertexMain(
+  @builtin(instance_index) instanceIndex: u32,
+  @location(0) position: vec3f,
+  @location(1) normal: vec3f,
+  @location(2) uv: vec2f,
+) -> VertexOutput {
+  let instance = instances[instanceIndex];
+  
+  // Skip billboard-flagged instances (renderFlag < 0.5)
+  if (instance.rotationAndType.z < 0.5) {
+    var output: VertexOutput;
+    output.position = vec4f(0.0, 0.0, 0.0, 0.0);
+    return output;
+  }
+  
+  let worldPosBase = instance.positionAndScale.xyz;
+  let scale = instance.positionAndScale.w;
+  let rotation = instance.rotationAndType.x;
+  
+  // Apply rotation around Y axis
+  let cosR = cos(rotation);
+  let sinR = sin(rotation);
+  let rotatedPos = vec3f(
+    position.x * cosR - position.z * sinR,
+    position.y,
+    position.x * sinR + position.z * cosR
+  );
+  
+  var worldPos = worldPosBase + rotatedPos * scale;
+  
+  // Apply wind (vertex height determines influence)
+  let vertexHeight = saturate(position.y / meshHeight);
+  worldPos = applyMeshWind(worldPos, vertexHeight, uniforms.windMultiplier);
+  
+  // ... project and output ...
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+  let baseColor = textureSample(baseColorTexture, materialSampler, input.uv);
+  
+  // Alpha cutout (for leaves, petals)
+  if (baseColor.a < 0.5) { discard; }
+  
+  // PBR shading with normal + ORM maps
+  // ... (reuse existing pbr.wgsl includes) ...
+  
+  return vec4f(finalColor, baseColor.a);
+}
+```
+
+#### `VegetationMeshRenderer.ts`
+
+```typescript
+export class VegetationMeshRenderer {
+  constructor(ctx: GPUContext);
+  initialize(depthFormat: GPUTextureFormat): void;
+  
+  // Load a vegetation model from GLTF
+  loadMesh(modelPath: string): Promise<VegetationMesh>;
+  
+  // Render all mesh instances
+  render(
+    passEncoder: GPURenderPassEncoder,
+    viewProjection: mat4,
+    cameraPosition: vec3,
+    mesh: VegetationMesh,
+    instanceBuffer: GPUBuffer,
+    instanceCount: number,
+    wind: WindParams,
+    time: number
+  ): void {
+    // Set instance buffer once for the whole model
+    // Draw each sub-mesh with the same instances
+    for (const subMesh of mesh.subMeshes) {
+      // Set per-submesh material/geometry
+      pass.setBindGroup(1, subMesh.materialBindGroup);
+      pass.setVertexBuffer(0, subMesh.vertexBuffer);
+      pass.setIndexBuffer(subMesh.indexBuffer, 'uint32');
+      
+      // Wind multiplier in uniform
+      this.updateWindMultiplier(subMesh.windMultiplier);
+      
+      pass.drawIndexed(subMesh.indexCount, instanceCount);
+    }
+  }
+  
+  destroy(): void;
+}
+```
+
+### 4c: Orchestrating Renderer (`VegetationRenderer.ts`)
+
+```typescript
+/**
+ * VegetationRenderer - Orchestrates billboard and mesh renderers.
+ * Routes instances to the correct renderer based on renderFlag.
+ */
+export class VegetationRenderer {
+  private billboardRenderer: VegetationBillboardRenderer;
+  private meshRenderer: VegetationMeshRenderer;
+  
+  constructor(ctx: GPUContext);
+  initialize(depthFormat: GPUTextureFormat): void;
+  
   render(
     passEncoder: GPURenderPassEncoder,
     viewProjection: mat4,
     cameraPosition: vec3,
     tiles: Map<string, VegetationTileData>,
-    wind: WindParams
-  ): void;
-  
-  // Update wind parameters
-  setWind(params: WindParams): void;
+    wind: WindParams,
+    time: number
+  ): void {
+    // For each tile's instance buffer:
+    // 1. Draw billboard instances (renderFlag = 0) via billboardRenderer
+    // 2. Draw mesh instances (renderFlag = 1) via meshRenderer
+    // Both use the SAME instance buffer — shaders skip non-matching instances
+  }
   
   destroy(): void;
 }
@@ -730,15 +759,24 @@ export class VegetationRenderer {
 - [ ] Add wind displacement with base oscillation
 - [ ] Add GPU-computed local gusts (FBM noise)
 - [ ] Implement distance-based alpha fade
-- [ ] Create `VegetationRenderer.ts` class
-- [ ] Set up instanced draw calls
-- [ ] Handle wind uniform updates
+- [ ] Add alpha cutout for vegetation edges
+- [ ] Create `VegetationBillboardRenderer.ts`
+- [ ] Set up instanced billboard draw calls
+- [ ] Create `vegetation-mesh.wgsl` vertex/fragment shader
+- [ ] Implement per-instance Y-axis rotation
+- [ ] Add per-submesh wind multiplier
+- [ ] Reuse PBR shading from existing `pbr.wgsl`
+- [ ] Create `VegetationMeshRenderer.ts`
+- [ ] Implement GLTF loading for vegetation meshes
+- [ ] Set up multi-submesh instanced draw calls
+- [ ] Create `VegetationRenderer.ts` orchestrator
+- [ ] Handle shared instance buffer routing (billboard vs mesh)
 
 ---
 
 ## Phase 5: LOD & Tile Caching
 
-**Goal:** Manage vegetation instances per terrain tile with LOD-aware caching.
+**Goal:** Manage vegetation instances per terrain tile with LOD-aware caching and hybrid mesh/billboard transitions.
 
 ### LOD Density Mapping
 
@@ -757,7 +795,9 @@ interface VegetationTileData {
   tileId: string;
   lodLevel: number;
   instanceBuffer: GPUBuffer;
-  instanceCount: number;
+  totalInstanceCount: number;
+  meshInstanceCount: number;
+  billboardInstanceCount: number;
   lastUsedFrame: number;
   bounds: BoundingBox;
 }
@@ -805,6 +845,7 @@ interface TileVisibilityCallback {
 - [ ] Implement tile lifecycle management
 - [ ] Add LRU eviction policy
 - [ ] Define LOD-to-density mapping
+- [ ] Track mesh vs billboard instance counts per tile
 - [ ] Add tile visibility callbacks to CDLOD
 - [ ] Connect vegetation cache to terrain tile events
 
@@ -829,6 +870,9 @@ export class VegetationManager {
   private config: VegetationConfig;
   private wind: WindParams;
   
+  // Loaded vegetation meshes (from GLTF)
+  private meshCache: Map<string, VegetationMesh> = new Map();
+  
   constructor(ctx: GPUContext);
   
   initialize(): void;
@@ -840,13 +884,16 @@ export class VegetationManager {
     params?: Partial<BiomeParams>
   ): void;
   
+  // Load a vegetation mesh from the asset library
+  async loadVegetationMesh(modelRef: ModelReference): Promise<VegetationMesh>;
+  
   // Connect to TerrainManager for tile events
   connectToTerrain(terrainManager: TerrainManager): void;
   
   // Called each frame
   update(cameraPosition: vec3, deltaTime: number): void;
   
-  // Render vegetation
+  // Render vegetation (both billboards and meshes)
   render(
     passEncoder: GPURenderPassEncoder,
     viewProjection: mat4,
@@ -859,7 +906,7 @@ export class VegetationManager {
   
   // Debug
   getBiomeMask(): UnifiedGPUTexture | null;
-  getStats(): { tileCount: number; instanceCount: number };
+  getStats(): { tileCount: number; totalInstances: number; meshInstances: number; billboardInstances: number };
   
   destroy(): void;
 }
@@ -887,9 +934,10 @@ renderVegetation(
 - [ ] Create `VegetationManager.ts` class
 - [ ] Implement initialization and lifecycle
 - [ ] Add biome mask generation trigger
+- [ ] Add vegetation mesh loading and caching
 - [ ] Connect to TerrainManager
 - [ ] Implement per-frame update
-- [ ] Add render method
+- [ ] Add render method (routes to billboard + mesh renderers)
 - [ ] Expose configuration setters
 - [ ] Add to GPUForwardPipeline
 
@@ -899,46 +947,145 @@ renderVegetation(
 
 **Goal:** Add user controls and optimize performance.
 
-### TerrainPanel Vegetation Section
+### Vegetation Editor Updates
+
+The existing `VegetationContent.tsx` needs updates for model support:
 
 ```tsx
-// VegetationSection.tsx
-const VegetationSection = () => {
+function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas, onSelectModel }: PlantItemProps) {
   return (
-    <Section title="Vegetation" defaultOpen={false}>
-      <Checkbox label="Enable Vegetation" ... />
-      <Slider label="Global Density" min={0} max={2} ... />
+    <div class={styles.plantItem}>
+      {/* Header */}
+      <div class={styles.plantHeader}>
+        <span>{plant.name}</span>
+        <div class={styles.plantActions}>
+          <button onClick={onSelectModel} title="Select 3D model">🌳</button>
+          <button onClick={onSelectAtlas} title="Select texture atlas">🖼️</button>
+          <button onClick={onDelete} title="Delete">🗑️</button>
+        </div>
+      </div>
       
-      <SubSection title="Wind">
-        <Checkbox label="Enable Wind" ... />
-        <Slider label="Wind Strength" min={0} max={1} ... />
-        <Slider label="Wind Frequency" min={0.1} max={5} ... />
-        <Slider label="Gust Strength" min={0} max={1} ... />
-      </SubSection>
-      
-      <SubSection title="Debug">
-        <Checkbox label="Show Biome Mask" ... />
-        <Checkbox label="Show Flow Map" ... />
-      </SubSection>
-    </Section>
+      {expanded && (
+        <div class={styles.plantProperties}>
+          {/* Render Mode Selector */}
+          <div class={styles.propertyRow}>
+            <label>Render Mode</label>
+            <select 
+              value={plant.renderMode}
+              onChange={(e) => onUpdate({ renderMode: e.target.value })}
+            >
+              <option value="billboard">Billboard Only</option>
+              <option value="mesh">3D Mesh Only</option>
+              <option value="hybrid">Hybrid (3D + Billboard)</option>
+            </select>
+          </div>
+          
+          {/* Model info (when model assigned) */}
+          {plant.modelRef && (
+            <div class={styles.modelInfo}>
+              <span>Model: {plant.modelRef.assetName}</span>
+              {plant.modelRef.billboardTexturePath && (
+                <span class={styles.hasBillboard}>✓ Has billboard</span>
+              )}
+            </div>
+          )}
+          
+          {/* Billboard Distance (hybrid mode only) */}
+          {plant.renderMode === 'hybrid' && (
+            <div class={styles.propertyRow}>
+              <label>Billboard Distance (m)</label>
+              <input 
+                type="range" min="20" max="400" step="10"
+                value={plant.billboardDistance}
+                onInput={(e) => onUpdate({ billboardDistance: parseFloat(e.target.value) })}
+              />
+              <span>{plant.billboardDistance}m</span>
+            </div>
+          )}
+          
+          {/* ... existing properties (spawn probability, size, clustering, etc.) ... */}
+        </div>
+      )}
+    </div>
   );
-};
+}
+```
+
+### Model Picker Integration
+
+The existing `AssetPickerModal` already supports filtering by type/subtype. For model picking:
+
+```tsx
+// Open model picker with vegetation model filter
+<AssetPickerModal
+  isOpen={isModelPickerOpen}
+  onClose={() => setModelPickerOpen(false)}
+  onSelect={handleModelSelected}
+  title="Select Vegetation Model"
+  filterType="model"
+  filterCategory="vegetation"  // Uses path-based detection
+/>
+```
+
+The `handleModelSelected` callback:
+```typescript
+const handleModelSelected = useCallback(async (asset: Asset) => {
+  if (!selectedPlantId) return;
+  
+  // Find standard GLTF file
+  const gltfFile = asset.files.find(f => 
+    f.path.includes('nonUE') && (f.format === 'gltf' || f.format === 'glb')
+  );
+  
+  // Find billboard textures
+  const billboardBO = asset.files.find(f => 
+    f.path.toLowerCase().includes('billboard') && f.path.includes('B-O')
+  );
+  const billboardNT = asset.files.find(f => 
+    f.path.toLowerCase().includes('billboard') && f.path.includes('N-T')
+  );
+  
+  if (!gltfFile) {
+    console.error('No standard GLTF found for asset:', asset.name);
+    return;
+  }
+  
+  const modelRef: ModelReference = {
+    assetId: asset.id,
+    assetName: asset.name,
+    modelPath: gltfFile.path,
+    billboardTexturePath: billboardBO?.path ?? null,
+    billboardNormalPath: billboardNT?.path ?? null,
+    variantCount: 1,
+  };
+  
+  registry.setPlantModel(selectedBiome, selectedPlantId, modelRef);
+  
+  // Auto-set to hybrid mode if both model and billboard texture available
+  if (billboardBO) {
+    registry.updatePlant(selectedBiome, selectedPlantId, { renderMode: 'hybrid' });
+  } else {
+    registry.updatePlant(selectedBiome, selectedPlantId, { renderMode: 'mesh' });
+  }
+}, [registry, selectedBiome, selectedPlantId]);
 ```
 
 ### Performance Optimizations
 
-1. **Frustum culling** - Skip tiles outside view frustum
-2. **GPU buffer pooling** - Reuse instance buffers
-3. **Async spawning** - Don't block main thread
-4. **Distance sorting** - Render front-to-back for early Z rejection
-5. **Instance count limits** - Cap per-tile instances
+1. **Frustum culling** — Skip tiles outside view frustum
+2. **GPU buffer pooling** — Reuse instance buffers
+3. **Async spawning** — Don't block main thread
+4. **Distance sorting** — Render front-to-back for early Z rejection
+5. **Instance count limits** — Cap per-tile instances
+6. **GPU indirect draw** — Use indirect draw calls to avoid CPU readback of instance counts
 
 ### Tasks
-- [ ] Create VegetationSection.tsx component
-- [ ] Add to TerrainPanel
-- [ ] Implement vegetation config store
-- [ ] Add wind parameter controls
-- [ ] Add debug visualization toggles
+- [ ] Update VegetationContent.tsx with model picker button (🌳 icon)
+- [ ] Add render mode selector (billboard/mesh/hybrid dropdown)
+- [ ] Add billboardDistance slider for hybrid mode
+- [ ] Show model info when model assigned
+- [ ] Add handleModelSelected callback (auto-detect GLTF + billboard textures)
+- [ ] Add setPlantModel() method to PlantRegistry
 - [ ] Implement frustum culling
 - [ ] Add GPU buffer pooling
 - [ ] Performance profiling and optimization
@@ -957,13 +1104,17 @@ src/core/vegetation/
 ├── BiomeMaskGenerator.ts
 ├── VegetationSpawner.ts
 ├── VegetationRenderer.ts
+├── VegetationBillboardRenderer.ts
+├── VegetationMeshRenderer.ts
 ├── VegetationTileCache.ts
-└── PlantRegistry.ts
+├── PlantRegistry.ts
+└── AtlasRegionDetector.ts
 
 src/core/gpu/shaders/vegetation/
 ├── biome-mask.wgsl
 ├── spawn.wgsl
-└── billboard.wgsl
+├── billboard.wgsl
+└── vegetation-mesh.wgsl
 ```
 
 ### Data Flow
@@ -973,596 +1124,142 @@ src/core/gpu/shaders/vegetation/
                                                         ↓
 [Camera Position] + [Tile Bounds] → [VegetationSpawner] → [Instance Buffers]
                                                                 ↓
-                                    [VegetationRenderer] → [Billboard Quads]
+                                    [VegetationRenderer] → Split by renderFlag
+                                         ↓                        ↓
+                           [MeshRenderer]              [BillboardRenderer]
+                           (close range 3D)            (far range quads)
 ```
 
 ### Progress Tracking
 
-#### Phase 0: Water Flow Map
-- [ ] Add flowAccumulation atomic buffer to hydraulic-erosion.wgsl
-- [ ] Track droplet visits with atomicAdd
-- [ ] Add finalizeFlowMap entry point
-- [ ] Update ErosionSimulator with flow buffer + texture
-- [ ] Add flow finalize pipeline and bind group
-- [ ] Clear flow buffer at erosion start
-- [ ] Add getFlowMap() to ErosionSimulator
-- [ ] Update TerrainManager to expose flow map
+#### Phase 0: Water Flow Map [Complete]
+- [x] flowAccumulation atomic buffer in hydraulic-erosion.wgsl
+- [x] Track droplet visits with atomicAdd
+- [x] finalizeFlowMap entry point
+- [x] ErosionSimulator flow buffer + texture + pipeline
+- [x] Clear flow buffer at erosion start
+- [x] getFlowMap() accessor on ErosionSimulator
+- [x] TerrainManager exposes flow map
 
-#### Phase 1: Biome Mask
-- [ ] Create biome-mask.wgsl
-- [ ] Implement BiomeMaskGenerator.ts
-- [ ] Add biome params interface
-- [ ] Sample heightmap, slope, flow
-- [ ] Output RGBA biome probabilities
-- [ ] Integrate with TerrainManager
+#### Phase 1: Biome Mask [Complete]
+- [x] biome-mask.wgsl compute shader
+- [x] BiomeMaskGenerator.ts (full pipeline)
+- [x] BiomeParams interface (expanded to 13 fields)
+- [x] Sample heightmap, slope, flow
+- [x] Output RGBA biome probabilities
+- [x] Integrate with TerrainManager
+- [x] BiomeMask dockable editor UI
 
 #### Phase 2: Plant Foundation [Complete]
-- [x] Create types.ts (PlantType, AtlasRegion, BiomePlantConfig, VegetationConfig, WindParams)
-- [x] Create PlantRegistry.ts (dynamic registry with events)
-- [x] Define grassland plant presets (GRASSLAND_PLANT_PRESETS, FOREST_PLANT_PRESETS)
-- [x] Add atlas region injection (setPlantAtlas method)
-- [x] Create AtlasRegionDetector.ts (auto-detect sprite regions from opacity maps)
-- [x] Create VegetationContent.tsx (UI panel with biome tabs)
-- [x] Create AssetPickerModal (reusable asset selection modal)
-- [x] Create VegetationPanelBridge (opens vegetation editor in DockableWindow)
-- [x] Integrate PlantRegistry into TerrainManager
-
-#### Phase 3: Spawning
-- [ ] Create spawn.wgsl
-- [ ] Grid-based spawning with jitter
-- [ ] Biome mask sampling
-- [ ] Terrain height positioning
-- [ ] LOD density reduction
-- [ ] Implement VegetationSpawner.ts
-- [ ] Batch spawning
-
-#### Phase 4: Rendering
-- [ ] Create billboard.wgsl
-- [ ] Y-axis billboarding
-- [ ] Wind displacement
-- [ ] Local gusts (FBM)
-- [ ] Distance fade
-- [ ] Implement VegetationRenderer.ts
-- [ ] Instanced draw calls
-
-#### Phase 5: LOD & Caching
-- [ ] Create VegetationTileCache.ts
-- [ ] Tile lifecycle management
-- [ ] LRU eviction
-- [ ] LOD density mapping
-- [ ] CDLOD tile callbacks
-
-#### Phase 6: Integration
-- [ ] Create VegetationManager.ts
-- [ ] Connect to TerrainManager
-- [ ] Add to render pipeline
-
-#### Phase 7: UI & Polish
-- [ ] Create VegetationSection.tsx
-- [ ] Wind controls
-- [ ] Debug visualizations
-- [ ] Performance optimization
-
----
-
----
-
-## Phase 4b Details: 3D Mesh Rendering (Future)
-
-**Note:** This section documents the design for 3D mesh support, to be implemented after billboard rendering is working.
-
-### Multi-Mesh Model Support
-
-A single GLTF/GLB file can contain multiple sub-meshes. For example, a tree model might have:
-- Mesh 0: **Trunk** → bark material
-- Mesh 1: **Branches** → bark material  
-- Mesh 2: **Leaves** → leaf material (alpha cutout)
-
-The `VegetationMesh` structure should represent the **whole model**:
-
-```typescript
-interface VegetationMesh {
-  id: string;
-  name: string;
-  
-  // All sub-meshes from the GLB (trunk, leaves, branches, etc.)
-  subMeshes: VegetationSubMesh[];
-  
-  // Model-level properties
-  boundingBox: BoundingBox;
-  castsShadow: boolean;
-  receivesWind: boolean;
-}
-
-interface VegetationSubMesh {
-  // Geometry
-  vertexBuffer: GPUBuffer;
-  indexBuffer: GPUBuffer;
-  indexCount: number;
-  
-  // Material reference (from GLBModel.materials)
-  materialIndex: number;
-  material: VegetationMaterial;
-  
-  // Per-submesh wind behavior (leaves sway more than trunk)
-  windMultiplier: number;  // 0 = rigid, 1 = full wind effect
-}
-```
-
-### Wind Per Sub-Mesh
-
-Different parts of a plant should respond differently to wind:
-
-| Sub-Mesh | Wind Multiplier | Behavior |
-|----------|-----------------|----------|
-| Trunk | 0.0 | Rigid, no movement |
-| Branches | 0.3 | Slight sway |
-| Leaves | 1.0 | Full flutter |
-| Flowers | 0.8 | Strong sway |
-
-### Rendering Multi-Mesh Models
-
-```typescript
-// In VegetationRenderer
-renderMeshInstances(pass: GPURenderPassEncoder, mesh: VegetationMesh, instances: GPUBuffer) {
-  // Set instance buffer once for the whole model
-  pass.setBindGroup(1, instancesBindGroup);
-  
-  // Draw each sub-mesh with the same instances
-  for (const subMesh of mesh.subMeshes) {
-    // Set per-submesh material/geometry
-    pass.setBindGroup(2, subMesh.materialBindGroup);
-    pass.setVertexBuffer(0, subMesh.vertexBuffer);
-    pass.setIndexBuffer(subMesh.indexBuffer, 'uint32');
-    
-    // Wind multiplier passed via uniform
-    pass.setBindGroup(3, windBindGroup); // includes windMultiplier
-    
-    pass.drawIndexed(subMesh.indexCount, instanceCount);
-  }
-}
-```
-
-### Plant Type Variants
-
-A single plant type (e.g., "oak tree") should have multiple mesh variants for natural variation:
-
-```typescript
-interface PlantType {
-  id: string;
-  name: string;
-  
-  renderMode: 'billboard' | 'mesh' | 'hybrid';
-  
-  // Billboard variants (colors or atlas regions)
-  billboardVariants: {
-    color: [number, number, number];
-    atlasRegion: AtlasRegion | null;
-  }[];
-  
-  // Multiple mesh variants per plant type
-  meshVariants: string[];  // Array of meshIds from VegetationMeshRegistry
-  
-  // ... other properties ...
-}
-
-// Example plant definition with variants
-const oakTree: PlantType = {
-  id: 'oak-tree',
-  name: 'Oak Tree',
-  renderMode: 'mesh',
-  billboardVariants: [],
-  meshVariants: [
-    'oak-tree-01',  // Different oak tree models
-    'oak-tree-02',
-    'oak-tree-03',
-    'oak-tree-04',
-    'oak-tree-05',
-  ],
-  // ...
-};
-```
-
-### Instance Variant Selection
-
-The spawn shader selects a variant per instance using deterministic hashing:
-
-```wgsl
-// In spawn.wgsl
-let variantSeed = cellOrigin * 41.7 + params.seed;
-let variantIndex = u32(hash(variantSeed) * f32(params.variantCount));
-
-instances[idx].variantIndex = variantIndex;
-```
-
-### Phase 4b Tasks
-- [ ] Create VegetationMesh interface with subMeshes array
-- [ ] Create VegetationSubMesh interface with windMultiplier
-- [ ] Add mesh loading from GLBLoader output
-- [ ] Create vegetation-mesh.wgsl shader
-- [ ] Implement per-submesh wind uniforms
-- [ ] Add variant selection to spawner
-- [ ] Implement multi-mesh instanced draw calls
-
----
-
-## Texture Atlas Specification
-
-**Note:** This section documents the texture atlas format for billboard vegetation. Initially we'll use colored quads, then add atlas support as a polish step.
-
-### Image Format Pipeline
-
-| Stage | Format | Purpose |
-|-------|--------|---------|
-| Source/Authoring | PNG (RGBA 8-bit) | Easy to edit, transparent background |
-| Runtime (Dev) | PNG (uncompressed) | Quick iteration during development |
-| Runtime (Prod) | KTX2 with BC7 | GPU-compressed, ~4x smaller, mipmap support |
-
-**Why BC7 for Production?**
-- Best quality for alpha cutout (vegetation edges)
-- 4:1 compression vs uncompressed
-- WebGPU supports `bc7-rgba-unorm` natively
-- Mipmaps prevent aliasing at distance
-
-### Atlas Layout
-
-```
-┌─────────────────────────────────────────┐
-│  Tall Grass  │  Short Grass │ Wildflower │
-│   (0,0)      │   (256,0)    │  (512,0)   │
-│   256x512    │   256x256    │  128x256   │
-├──────────────┼──────────────┼────────────┤
-│  Wildflower  │  Small Shrub │   Fern     │
-│   Purple     │              │            │
-│   (0,512)    │   (256,512)  │  (512,512) │
-│   128x256    │   256x256    │  128x256   │
-├──────────────┴──────────────┴────────────┤
-│            ... more sprites ...           │
-└──────────────────────────────────────────┘
-```
-
-**Recommended Atlas Size:** 2048×2048 (or 4096×4096 for more variety)
-
-### JSON Metadata Descriptor
-
-```json
-{
-  "atlasSize": [2048, 2048],
-  "format": "bc7-rgba-unorm",
-  "sprites": [
-    {
-      "id": "tall-grass",
-      "variants": [
-        { "u": 0, "v": 0, "width": 256, "height": 512 },
-        { "u": 256, "v": 0, "width": 256, "height": 512 },
-        { "u": 512, "v": 0, "width": 256, "height": 512 }
-      ],
-      "pivot": [0.5, 0.0],
-      "aspectRatio": 0.5
-    },
-    {
-      "id": "wildflower-yellow",
-      "variants": [
-        { "u": 0, "v": 512, "width": 128, "height": 256 }
-      ],
-      "pivot": [0.5, 0.0],
-      "aspectRatio": 0.5
-    }
-  ]
-}
-```
-
-### TypeScript Interface
-
-```typescript
-interface AtlasRegion {
-  u: number;      // X offset in pixels
-  v: number;      // Y offset in pixels
-  width: number;  // Width in pixels
-  height: number; // Height in pixels
-}
-
-interface SpriteDefinition {
-  id: string;
-  variants: AtlasRegion[];
-  pivot: [number, number];  // Normalized anchor point (0.5, 0.0 = bottom-center)
-  aspectRatio: number;      // width / height
-}
-
-interface VegetationAtlas {
-  atlasSize: [number, number];
-  format: string;
-  sprites: SpriteDefinition[];
-}
-```
-
-### Build Pipeline
-
-#### Option 1: Offline Build Script (Recommended for Production)
-
-```bash
-# scripts/build-vegetation-atlas.js
-node scripts/build-vegetation-atlas.js \
-  --input public/textures/vegetation/ \
-  --output public/textures/vegetation-atlas.ktx2 \
-  --descriptor public/textures/vegetation-atlas.json \
-  --size 2048
-```
-
-**Process:**
-1. Read all PNG source images from input folder
-2. Pack into atlas using bin-packing algorithm
-3. Generate mipmaps
-4. Compress to BC7 using `ktx-software` tools
-5. Output `.ktx2` + `.json` descriptor
-
-#### Option 2: Runtime Packing (Development Only)
-
-For quick iteration during development:
-1. Load individual PNGs at runtime
-2. Pack into 2D array texture or atlas (no compression)
-3. Generate descriptor dynamically
-
-### Useful Tools
-
-| Tool | Purpose |
-|------|---------|
-| [TexturePacker](https://www.codeandweb.com/texturepacker) | GUI atlas packing |
-| [free-tex-packer](https://github.com/nickolasgk/free-tex-packer) | Open-source alternative |
-| [ktx-software](https://github.com/KhronosGroup/KTX-Software) | KTX2/BC7 compression |
-| [toktx](https://github.com/KhronosGroup/KTX-Software) | CLI for KTX2 creation |
-
-### Shader Integration
-
-```wgsl
-// In billboard.wgsl - atlas sampling
-@group(0) @binding(3) var vegetationAtlas: texture_2d<f32>;
-@group(0) @binding(4) var atlasSampler: sampler;
-
-struct VertexOutput {
-  @builtin(position) position: vec4f,
-  @location(0) uv: vec2f,
-  @location(1) atlasRegion: vec4f,  // xy = offset, zw = size (normalized)
-  @location(2) worldPos: vec3f,
-}
-
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
-  // Transform local UV (0-1) to atlas UV
-  let atlasUV = input.atlasRegion.xy + input.uv * input.atlasRegion.zw;
-  let color = textureSample(vegetationAtlas, atlasSampler, atlasUV);
-  
-  // Alpha cutout for vegetation edges
-  if (color.a < 0.5) { discard; }
-  
-  // Distance fade
-  let dist = distance(input.worldPos, uniforms.cameraPosition);
-  let fade = 1.0 - smoothstep(150.0, 200.0, dist);
-  
-  return vec4f(color.rgb, color.a * fade);
-}
-```
-
-### Implementation Strategy
-
-1. **Phase 4a (Initial):** Use colored quads - fast iteration, no external assets needed
-2. **Phase 4a+ (Polish):** Add atlas support with PNG loading for development
-3. **Production:** Add KTX2/BC7 build pipeline for optimized runtime
-
-### Atlas Tasks
-- [ ] Define AtlasRegion and SpriteDefinition interfaces
-- [ ] Create VegetationAtlasLoader class
-- [ ] Update PlantType to reference atlas regions
-- [ ] Modify billboard.wgsl for atlas UV sampling
-- [ ] Add alpha cutout support
-- [ ] Create build-vegetation-atlas.js script (optional)
-- [ ] Add KTX2 loading support (optional)
-
----
-
-## Asset Sources
-
-This section documents where to source vegetation billboard textures.
-
-### Free Resources (CC0 / Public Domain)
-
-| Source | URL | License | Best For |
-|--------|-----|---------|----------|
-| **Poly Haven** | https://polyhaven.com | CC0 | Terrain materials, some vegetation |
-| **OpenGameArt** | https://opengameart.org | Mixed (check each) | Stylized vegetation, grass sprites |
-| **Kenney Assets** | https://kenney.nl/assets | CC0 | Clean stylized PNGs, game-ready |
-| **itch.io** | https://itch.io/game-assets/free/tag-vegetation | Varies | Indie packs, variety |
-| **Textures.com** | https://www.textures.com | Limited free | Photorealistic cutouts |
-
-### Paid Resources (High Quality)
-
-| Source | URL | Price | Notes |
-|--------|-----|-------|-------|
-| **Quixel Megascans** | https://quixel.com/megascans | Free w/ Unreal or $19/mo | Photoscanned, best quality |
-| **GameTextures** | https://gametextures.com | Subscription | Stylized and realistic |
-| **cgtrader** | https://cgtrader.com | Per-pack | Individual packs |
-| **TurboSquid** | https://turbosquid.com | Per-pack | Professional quality |
-
-### Recommended Sources by Category
-
-| Category | Best Source | Search Terms |
-|----------|-------------|--------------|
-| **Tall Grass** | Quixel Megascans, OpenGameArt | "grass blade", "tall grass billboard" |
-| **Short Grass** | Kenney, Quixel | "grass clump", "lawn texture cutout" |
-| **Wildflowers** | OpenGameArt, itch.io | "flower sprite", "wildflower cutout", "daisy png" |
-| **Ferns** | Quixel Megascans, Textures.com | "fern frond", "fern alpha" |
-| **Small Shrubs** | Quixel, itch.io | "bush billboard", "shrub cutout" |
-
-### DIY: Creating Custom Vegetation Textures
-
-1. **Photography Method:**
-   - Take photos of plants against a plain background (blue/green screen or overcast sky)
-   - Use GIMP / Photoshop to remove background
-   - Export as PNG with alpha channel
-   - Create multiple variations (3-5) per plant type for natural variety
-
-2. **Requirements:**
-   - Minimum resolution: 256x256 (512x512 recommended for tall grass)
-   - Format: PNG with transparency
-   - Background: Fully transparent (alpha = 0)
-   - Edges: Clean anti-aliased edges for better blending
-
-3. **Tips:**
-   - Shoot in diffuse lighting (overcast day) to avoid harsh shadows
-   - Include slight color variations between variants
-   - Photograph at slight angles for more natural billboard appearance
-
-### Development vs Production Strategy
-
-- **Development/Testing:** Use [Kenney](https://kenney.nl/assets) or [OpenGameArt](https://opengameart.org) - quick to download, CC0 license, works immediately
-- **Production Quality:** [Quixel Megascans](https://quixel.com/megascans) if accessible (free with Unreal Engine license, or subscription)
+- [x] types.ts (PlantType, AtlasRegion, BiomePlantConfig, VegetationConfig, WindParams)
+- [x] PlantRegistry.ts (dynamic registry with events, CRUD, serialization)
+- [x] Default grassland + forest plant presets
+- [x] Atlas region injection (setPlantAtlas)
+- [x] AtlasRegionDetector.ts (connected component analysis)
+- [x] VegetationContent.tsx (UI panel with biome tabs)
+- [x] AssetPickerModal (reusable asset selection modal)
+- [x] VegetationPanelBridge (DockableWindow integration)
+- [x] PlantRegistry integrated into TerrainManager
+- [x] Add ModelReference type + renderMode + billboardDistance to PlantType
+- [x] Add model picker UI and setPlantModel() to PlantRegistry
+- [x] Add render mode selector to vegetation editor
+
+#### Phase 3: Spawning [Complete]
+- [x] spawn.wgsl compute shader
+- [x] Grid-based spawning with jitter
+- [x] Biome mask sampling
+- [x] Terrain height positioning
+- [x] Distance-based density falloff
+- [x] Per-instance render flag (billboard vs mesh)
+- [x] Variant index selection
+- [x] VegetationSpawner.ts (with buffer pooling, counter readback)
+- [x] Batch spawning (spawnTile for multiple plant types)
+
+#### Phase 4: Rendering (Hybrid) [Complete]
+- [x] billboard.wgsl (billboard vertex/fragment)
+- [x] VegetationBillboardRenderer.ts
+- [x] Y-axis billboarding + wind + alpha cutout
+- [x] vegetation-mesh.wgsl (instanced mesh vertex/fragment)
+- [x] VegetationMeshRenderer.ts
+- [x] GLTF mesh loading for vegetation (implemented in VegetationManager)
+- [x] Multi-submesh instanced draw + per-submesh wind
+- [x] VegetationRenderer.ts (orchestrator)
+
+#### Phase 5: LOD & Caching [Complete]
+- [x] VegetationTileCache.ts
+- [x] Tile lifecycle management (onTileVisible, onTileHidden, onTileLODChange)
+- [x] LRU eviction (evictOldTiles with frame-based aging)
+- [x] LOD density mapping (DEFAULT_LOD_DENSITIES, getLODDensity)
+- [x] Buffer pool for instance buffer reuse
+- [x] Mesh/billboard count tracking per tile
+- [x] CDLOD tile event integration (implemented in VegetationManager)
+
+#### Phase 6: Integration [Complete]
+- [x] VegetationManager.ts (full orchestrator)
+- [x] GLTF mesh loading + caching (GLBLoader → VegetationMesh conversion)
+- [x] Billboard texture loading + caching
+- [x] Connect to TerrainManager (connectToTerrain, updateTerrainData)
+- [x] CDLOD tile event hooks (onTerrainTileVisible/Hidden/LODChange)
+- [x] Per-frame update with spawning throttle (max 4 tiles/frame)
+- [x] Render method routing to VegetationRenderer
+- [x] Configuration + statistics API
+- [x] **TerrainManager integration**: VegetationManager instantiated in initialize(), connected after generate(), render() called after terrain render in same pass
+- [x] **OpaquePass flow**: OpaquePass → terrainManager.render() → vegetation.render() (automatic, no OpaquePass changes needed)
+- [x] Accessors: getVegetationManager(), hasVegetationManager()
+- [x] Cleanup in destroy()
+
+#### Phase 7: UI & Polish [Complete]
+- [x] VegetationContent.tsx updated with model picker + render mode (done in Phase 2)
+- [x] Wind controls in UI (connected to PlantRegistry wind params)
+- [x] Frustum culling (AABB vs 6 frustum planes extracted from VP matrix)
+- [x] Front-to-back distance sorting for early-Z rejection
+- [x] GPU buffer pooling (VegetationSpawner + VegetationTileCache)
+- [x] Async spawn throttle (max 4 tiles/frame)
+- [x] Instance count caps (65K per tile)
+- [ ] GPU indirect draw (deferred — eliminates counter readback stall)
+- [ ] WebGPU timestamp profiling queries
 
 ---
 
 ## Current Asset Inventory
 
-This section documents the vegetation assets currently available in the `/public/` folder.
+### Vegetation 3D Models (with Billboard Textures)
 
-### 1. Ribbon Grass (3D Model + Billboard)
+All Quixel/Megascans models include both 3D GLTF and pre-rendered billboard textures — ideal for `hybrid` rendering mode.
 
-| Property | Value |
-|----------|-------|
-| **Asset ID** | `tbdpec3r` |
-| **Name** | Ribbon Grass |
-| **Latin Name** | Phalaris Arundinacea |
-| **Path** | `models/terrain/vegetation/ribbon_grass_tbdpec3r_ue_high/` |
-| **Biome** | Grassland (Europe) |
-| **Type** | 3D Plant with Billboard LOD |
+| Asset | Path | 3D GLTF | Billboard B-O | Billboard N-T | Recommended Mode |
+|-------|------|---------|---------------|---------------|------------------|
+| **Alexandra Palm** | `vegetation/alexandra_palm_ukgkcilia_ue_high/` | ✅ `standard/ukgkcilia_tier_1_nonUE.gltf` | ✅ | ✅ | hybrid (200m) |
+| **Beech Fern** | `vegetation/beech_fern_vmkpdbeia_ue_high/` | ✅ `standard/vmkpdbeia_tier_1_nonUE.gltf` | ✅ | ✅ | hybrid (100m) |
+| **Bigleaf Hydrangea** | `vegetation/bigleaf_hydrangea_vgztealha_ue_high/` | ✅ `standard/vgztealha_tier_1_nonUE.gltf` | ✅ | ✅ | hybrid (100m) |
+| **Dead Shrubs** | `vegetation/dead_shrubs_vdknafgha_ue_high/` | ✅ `standard/vdknafgha_tier_1_nonUE.gltf` | ✅ | ✅ | hybrid (80m) |
+| **Field Poppy** | `vegetation/field_poppy_vmcobd0ja_ue_high/` | ✅ `standard/vmcobd0ja_tier_1_nonUE.gltf` | ✅ | ✅ | hybrid (50m) |
+| **Lady Fern** | `vegetation/lady_fern_wdvlditia_ue_high/` | ✅ `standard/wdvlditia_tier_1_nonUE.gltf` | ✅ | ✅ | hybrid (100m) |
+| **Ribbon Grass** | `vegetation/ribbon_grass_tbdpec3r_ue_high/` | ✅ `standard/tbdpec3r_tier_1_nonUE.gltf` | ✅ | ✅ | hybrid (50m) |
+| **Wheat Grass** | `vegetation/wheat_grass_tdcrdbur_ue_high/` | ✅ `standard/tdcrdbur_tier_1_nonUE.gltf` | ✅ | ✅ | hybrid (50m) |
+| **Wild Grass** | `vegetation/wild_grass_vczndjqja_ue_high/` | ✅ `standard/vczndjqja_tier_1_nonUE.gltf` | ✅ | ✅ | hybrid (50m) |
+| **Billboard Tree Pack** | `vegetation/billboard_tree_pack_gltf/` | ✅ `scene.gltf` (billboards as meshes) | ❌ | ❌ | billboard |
 
-#### Model Variants
-6 variations (A-F), each with 3 LOD levels:
+### Texture Atlases
 
-| Variant | LOD0 Tris | LOD1 Tris | LOD2 Tris (Billboard) |
-|---------|-----------|-----------|------------------------|
-| VarA | 2,205 | 927 | 5 |
-| VarB | 2,575 | 1,183 | 5 |
-| VarC | 3,719 | 1,379 | 6 |
-| VarD | 2,211 | 951 | 5 |
-| VarE | 2,211 | 951 | 4 |
-| VarF | 1,263 | 531 | 4 |
+| Asset | Path | Type | Ready to Use |
+|-------|------|------|--------------|
+| **Bracken Fern** | `textures/atlas/vegetation/bracken_fern_okdr22_4k/` | Atlas (needs RGBA combine) | ⚠️ Needs preprocessing |
+| **Clover Patches** | `textures/vegetation/clover_patches_on_grass_sgmkajak_4k/` | Ground vegetation material | ✅ |
+| **Nordic Forest Ground** | `textures/vegetation/nordic_forest_ground_root_moss_coarse_xiekec0_4k/` | Ground vegetation material | ✅ |
 
-#### Available Files
-```
-ribbon_grass_tbdpec3r_ue_high/
-├── tbdpec3r_tier_1.gltf          # UE format
-├── tbdpec3r.json                 # Full asset metadata
-├── standard/
-│   └── tbdpec3r_tier_1_nonUE.gltf  # ✅ Standard GLTF (use this)
-└── Textures/
-    ├── T_tbdpec3r_4K_B-O.png     # BaseColor + Opacity (combined)
-    ├── T_tbdpec3r_4K_B.png       # BaseColor only
-    ├── T_tbdpec3r_4K_N.png       # Normal map
-    ├── T_tbdpec3r_4K_ORT.png     # Occlusion-Roughness-Translucency
-    ├── T_tbdpec3r_4K_Billboard_B-O.png  # Billboard BaseColor+Opacity
-    └── T_tbdpec3r_4K_Billboard_N-T.png  # Billboard Normal+Translucency
-```
+### Quixel Vegetation Texture Naming Convention
 
-#### Billboard Textures (Multiple Resolutions)
+Each Quixel model includes these texture maps in its `Textures/` folder:
+- `T_{id}_4K_B.png` — BaseColor only
+- `T_{id}_4K_B-O.png` — BaseColor + Opacity combined
+- `T_{id}_4K_N.png` — Normal map
+- `T_{id}_4K_ORT.png` — Occlusion + Roughness + Translucency
+- `T_{id}_4K_Billboard_B-O.png` — Billboard BaseColor + Opacity
+- `T_{id}_4K_Billboard_N-T.png` — Billboard Normal + Translucency
 
-| Resolution | Basecolor | Opacity | Normal | Translucency |
-|------------|-----------|---------|--------|--------------|
-| 8K | ✓ | ✓ | ✓ | ✓ |
-| 4K | ✓ | ✓ | ✓ | ✓ |
-| 2K | ✓ | ✓ | ✓ | ✓ |
-| 1K | ✓ | ✓ | ✓ | ✓ |
-
-#### Material Parameters
-```json
-{
-  "isCameraFacingBillboard": true,
-  "baseColorControls": [0.9, 0.9, 0.9, 0],
-  "translucencyTint": [0.72, 0.90, 0.68, 1],
-  "translucencyControls": [1, 2, 0.9, 0]
-}
-```
-
-#### Usage Notes
-- Use `standard/tbdpec3r_tier_1_nonUE.gltf` for WebGPU loading
-- Billboard textures available for automatic LOD transition
-- Camera-facing billboard mode supported
-- Translucency support for subsurface scattering effect
-
----
-
-### 2. Bracken Fern (Atlas Texture)
-
-| Property | Value |
-|----------|-------|
-| **Asset ID** | `okdr22` |
-| **Name** | Bracken Fern |
-| **Latin Name** | Pteridium |
-| **Path** | `textures/atlas/vegetation/bracken_fern_okdr22_4k/` |
-| **Biome** | Temperate Forest (Oceania) |
-| **Type** | Atlas Texture |
-| **Physical Size** | 0.41m × 0.41m |
-| **Resolution** | 4096×4096 |
-| **Texel Density** | 9,917 px/m |
-
-#### Available Maps
-
-| Map Type | File | Color Space | Purpose |
-|----------|------|-------------|---------|
-| **BaseColor** | `Bracken_Fern_okdr22_4K_BaseColor.jpg` | sRGB | Main color texture |
-| **Opacity** | `Bracken_Fern_okdr22_4K_Opacity.jpg` | Linear | Alpha mask (separate) |
-| **Normal** | `Bracken_Fern_okdr22_4K_Normal.jpg` | Linear | Surface detail |
-| **Bump** | `Bracken_Fern_okdr22_4K_Bump.jpg` | Linear | Height variation |
-| **Roughness** | `Bracken_Fern_okdr22_4K_Roughness.jpg` | Linear | Surface roughness |
-| **Gloss** | `Bracken_Fern_okdr22_4K_Gloss.jpg` | Linear | Inverse roughness |
-| **Specular** | `Bracken_Fern_okdr22_4K_Specular.jpg` | sRGB | Specular intensity |
-| **Translucency** | `Bracken_Fern_okdr22_4K_Translucency.jpg` | sRGB | Subsurface scattering |
-| **Displacement** | `Bracken_Fern_okdr22_4K_Displacement.jpg` | Linear | Height displacement |
-
-#### Displacement Parameters
-```json
-{
-  "displacementScale": 0.795388,
-  "displacementBias": 0.391462,
-  "displacementCalibrationAccuracy": 0.980405
-}
-```
-
-#### Usage Notes
-- **Opacity is separate** - must combine BaseColor + Opacity into RGBA for WebGPU
-- This is a **photoscanned atlas** (multiple fern fronds in one image)
-- Not tileable - designed for cutout/decal usage
-- 4K resolution may need downsampling for billboard instances
-- EXR versions available for higher quality (16/32-bit) if needed
-
-#### Preprocessing Required
-```bash
-# Combine BaseColor + Opacity into RGBA PNG
-# Option 1: ImageMagick
-convert BaseColor.jpg Opacity.jpg -compose CopyOpacity -composite fern_rgba.png
-
-# Option 2: Node.js script with sharp
-```
-
----
-
-### Asset Usage Matrix
-
-| Asset | Billboard | 3D Mesh | LOD Support | Ready to Use |
-|-------|-----------|---------|-------------|--------------|
-| Ribbon Grass | ✓ | ✓ | ✓ (3 levels) | ✓ GLTF available |
-| Bracken Fern | ✓ | ✗ | ✗ | ⚠️ Needs RGBA combine |
-
-### Recommended Integration Order
-
-1. **Phase 4a (Colored Quads):** Start without textures
-2. **Phase 4a+ (Basic Textures):** Use Ribbon Grass billboard textures (`T_tbdpec3r_4K_Billboard_B-O.png`)
-3. **Phase 4b (3D Mesh):** Load Ribbon Grass GLTF variants
-4. **Future:** Process Bracken Fern atlas for additional variety
-
-### Asset Preprocessing Tasks
-- [ ] Test load `standard/tbdpec3r_tier_1_nonUE.gltf` in GLBLoader
-- [ ] Combine Bracken Fern BaseColor + Opacity → RGBA PNG
-- [ ] Create atlas descriptor for Bracken Fern sprite regions (if multiple fronds)
-- [ ] Downsample 4K textures to 1K/2K for billboard LODs
+For 3D mesh rendering, use `B-O.png` (with alpha cutout) + `N.png` + `ORT.png`.
+For billboard rendering, use `Billboard_B-O.png` (with alpha cutout).
 
 ---
 
@@ -1594,7 +1291,7 @@ server/
         ↓
 [VegetationManager]
         ↓
-4. Queries /api/assets?type=vegetation
+4. Queries /api/assets?type=vegetation or /api/assets?type=model&category=vegetation
 5. Receives asset metadata + file paths
 6. Loads models/textures on demand
 ```
@@ -1603,94 +1300,225 @@ server/
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/assets?type=vegetation` | GET | List all vegetation assets |
-| `/api/assets?category=model&subtype=vegetation` | GET | 3D vegetation models |
-| `/api/assets?category=texture&subtype=atlas` | GET | Texture atlases |
+| `/api/assets?type=model&category=vegetation` | GET | 3D vegetation models |
+| `/api/assets?type=texture&subtype=atlas` | GET | Texture atlases |
 | `/api/assets/:id` | GET | Full asset details with files |
 | `/api/previews/:id.webp` | GET | Thumbnail preview |
 
-### Database Schema (Asset Files)
-
-```sql
--- Individual files within a vegetation asset
-CREATE TABLE asset_files (
-  id INTEGER PRIMARY KEY,
-  asset_id TEXT REFERENCES assets(id),
-  file_type TEXT,      -- 'model', 'texture', 'billboard', 'metadata'
-  lod_level INTEGER,   -- 0=highest detail, 1, 2, etc.
-  resolution TEXT,     -- '4K', '2K', '1K'
-  format TEXT,         -- 'gltf', 'png', 'jpg', 'ktx2'
-  path TEXT NOT NULL,
-  file_size INTEGER
-);
-```
-
-### Example: Loading Ribbon Grass from Asset Library
-
-```typescript
-// In VegetationManager
-async loadVegetationAssets(): Promise<void> {
-  // Query asset library for vegetation models
-  const response = await fetch('/api/assets?type=vegetation');
-  const assets = await response.json();
-  
-  for (const asset of assets) {
-    // Get full asset with files
-    const details = await fetch(`/api/assets/${asset.id}`).then(r => r.json());
-    
-    // Filter for GLTF models
-    const gltfFile = details.files.find(f => 
-      f.format === 'gltf' && f.path.includes('nonUE')
-    );
-    
-    if (gltfFile) {
-      // Load 3D mesh variant
-      const mesh = await this.loadVegetationMesh(gltfFile.path);
-      this.plantRegistry.registerMesh(asset.id, mesh);
-    }
-    
-    // Check for billboard textures
-    const billboardFile = details.files.find(f => 
-      f.path.toLowerCase().includes('billboard') && 
-      f.format === 'png'
-    );
-    
-    if (billboardFile) {
-      // Load billboard atlas region
-      const atlasRegion = await this.loadBillboardTexture(billboardFile.path);
-      this.plantRegistry.setAtlasRegion(asset.id, atlasRegion);
-    }
-  }
-}
-```
-
 ### Integration Tasks
-- [ ] Add `/api/assets?type=vegetation` filter to AssetIndexer
-- [ ] Detect vegetation assets by folder structure (`/vegetation/`) or manifest
-- [ ] Extract LOD levels from GLTF filename patterns
+- [ ] Ensure AssetIndexer detects vegetation assets by folder path (`/vegetation/`)
 - [ ] Add VegetationAssetLoader class that queries asset library
 - [ ] Cache loaded vegetation meshes and textures
 - [ ] Add hot-reload support for vegetation asset changes
 
-### Asset Type Detection
+---
 
-The AssetIndexer uses these patterns to identify vegetation assets:
+## Test Plan
 
-| Pattern | Type | Example |
-|---------|------|---------|
-| `*/vegetation/*` | vegetation | `models/terrain/vegetation/ribbon_grass/` |
-| `manifest.json` with `"biome"` | vegetation | Quixel vegetation packs |
-| `*_atlas/*` with plants | atlas | `textures/atlas/vegetation/` |
+This section documents manual testing steps for verifying the vegetation system end-to-end. Follow these steps in order after starting the app.
+
+### Prerequisites
+- Run `npm run dev` to start the development server
+- Run the asset server (`npm run server` or equivalent) so the Asset Library is available
+- Open the Scene Builder in browser
+
+---
+
+### Test 1: Terrain Generation (Baseline)
+
+**Action:** Generate a terrain if one doesn't already exist.
+1. Open the **Terrain Panel** (left sidebar)
+2. Click **Generate** with default settings (or any settings that produce visible hills)
+3. Wait for generation to complete
+
+**Expected:** A terrain mesh renders in the viewport with hills, valleys, and proper lighting. Console should show `[TerrainManager] CPU heightfield ready` and `[VegetationManager] Initialized` and `[VegetationManager] Connected to terrain`.
+
+**Status:** Pass
+
+---
+
+### Test 2: Biome Mask Generation
+
+**Action:** Generate a biome mask from the terrain.
+1. In the **Terrain Panel**, find the button to open the **Biome Mask Editor** (should be a dockable window button)
+2. Click it — a dockable window should appear with a preview and parameter sliders
+3. Click **Generate** or adjust sliders — the biome mask preview should update
+
+**Expected:** A colored texture preview appears showing:
+- **Red/yellow** areas = grassland (moderate height, low slope)
+- **Green** areas = rock/cliff (steep slopes)
+- **Blue/cyan** areas = forest (near water flow)
+- **Black** areas = no vegetation (extreme terrain)
+
+Adjusting sliders like `grassSlopeMax` or `rockSlopeMin` should live-update the preview.
+
+**Status:** ☐ Pass / ☐ Fail / ☐ N/A
+
+---
+
+### Test 3: Vegetation Editor — View Default Plants
+
+**Action:** Open the vegetation editor.
+1. In the **Terrain Panel**, find the button to open the **Vegetation Editor** (dockable window)
+2. The editor should show **3 biome tabs**: Grassland (5), Rock/Cliff (0), Forest Edge (2)
+3. Click the **Grassland** tab
+
+**Expected:** 5 default plant types listed: Tall Grass, Short Grass Clump, Yellow Wildflower, Purple Wildflower, Small Shrub. Each shows a colored swatch, expand arrow, and action buttons (🌳 model, 🖼️ texture, 🗑️ delete).
+
+**Status:** ☐ Pass / ☐ Fail / ☐ N/A
+
+---
+
+### Test 4: Plant Editor — Expand and Edit Properties
+
+**Action:** Expand a plant type to see its properties.
+1. Click on **"Tall Grass"** to expand it
+2. Verify the following controls are visible:
+   - Name text field
+   - **Render Mode** dropdown (Billboard Only / 3D Mesh Only / Hybrid)
+   - Spawn Probability slider
+   - Biome Threshold slider
+   - Size Range inputs (Min W, Min H, Max W, Max H)
+   - Clustering slider
+   - Min Spacing input
+   - Max Distance input
+   - LOD Bias slider
+   - Fallback Color picker
+
+**Expected:** All controls render correctly. Default render mode should be "Billboard Only". No model or atlas info shown (none assigned yet).
+
+**Status:** ☐ Pass / ☐ Fail / ☐ N/A
+
+---
+
+### Test 5: Assign a 3D Model to a Plant
+
+**Action:** Use the model picker to assign a vegetation GLTF.
+1. Expand **"Tall Grass"** in the vegetation editor
+2. Click the **🌳 model button** in the header
+3. A **"Select Vegetation Model"** modal should appear
+4. Browse the model library — you should see vegetation models (Ribbon Grass, Wild Grass, etc.)
+5. Select **"Ribbon Grass"** (or any vegetation model) and click **Select**
+
+**Expected:**
+- Console logs: `[VegetationContent] Assigned model "Ribbon Grass" to plant (with billboard texture)`
+- The plant item now shows **"Model: Ribbon Grass"** with a **✓ Billboard** indicator
+- Render mode auto-switches to **"Hybrid (3D + Billboard)"**
+- A **Billboard Distance** slider appears (default ~100m)
+
+**Status:** ☐ Pass / ☐ Fail / ☐ N/A
+
+---
+
+### Test 6: Change Render Mode
+
+**Action:** Switch render modes and observe the UI.
+1. With the model assigned, change the **Render Mode** dropdown to each option:
+   - **Billboard Only** — Billboard Distance slider should disappear
+   - **3D Mesh Only** — Billboard Distance slider should disappear
+   - **Hybrid** — Billboard Distance slider should appear
+
+**Expected:** UI updates correctly for each mode. No errors in console.
+
+**Status:** ☐ Pass / ☐ Fail / ☐ N/A
+
+---
+
+### Test 7: Assign a Texture Atlas
+
+**Action:** Assign an atlas texture to a billboard-only plant.
+1. Click **"Short Grass Clump"** to expand it
+2. Click the **🖼️ texture button** in the header
+3. A **"Select Texture Atlas"** modal should appear (filtered to texture atlases)
+4. If atlases are available, select one and click **Select**
+
+**Expected:**
+- Console logs about atlas region detection
+- Atlas info appears: "Atlas: [name] (N regions)"
+- The plant remains in billboard mode
+
+**Status:** ☐ Pass / ☐ Fail / ☐ N/A (if no atlases indexed)
+
+---
+
+### Test 8: Vegetation Rendering (Visual — Billboards)
+
+> **Note:** This test verifies the render pipeline is connected. Currently the vegetation system spawns vegetation globally (not per-CDLOD-tile). You need a biome mask generated first.
+
+**Action:** Check for vegetation rendering after terrain generation.
+1. Ensure terrain is generated (Test 1)
+2. Ensure biome mask is generated (Test 2)
+3. Check browser console for: `[VegetationManager] Connected to terrain (size=..., heightScale=..., biomeMask=yes)`
+4. Look at the viewport
+
+**Expected (current state):** Vegetation may NOT render visually yet because:
+- The `VegetationManager.update()` is not yet called from the animation loop (tile spawning requires `update()` to be called each frame)
+- No tiles have been registered via `onTerrainTileVisible()` since the CDLOD traversal doesn't emit tile events yet
+
+**What you SHOULD see in console:**
+- `[VegetationManager] Initialized`
+- `[VegetationManager] Connected to terrain`
+- No WebGPU errors or shader compilation failures
+
+**What you will NOT see yet:**
+- Actual vegetation instances on the terrain (requires animation loop integration and tile event wiring)
+
+**Status:** ☐ Console OK / ☐ Errors / ☐ Visual vegetation renders
+
+---
+
+### Test 9: Global Settings
+
+**Action:** Test the global vegetation settings.
+1. In the Vegetation Editor, expand **"GLOBAL SETTINGS"**
+2. Toggle **"Enable Vegetation"** checkbox
+3. Adjust **"Global Density"** slider
+4. Toggle **"Enable Wind"** checkbox
+5. Adjust wind strength and frequency sliders
+
+**Expected:** Controls save to PlantRegistry. No errors. Wind sliders only show when wind is enabled.
+
+**Status:** ☐ Pass / ☐ Fail / ☐ N/A
+
+---
+
+### Test 10: Add / Delete Plant Types
+
+**Action:** Test CRUD operations.
+1. Click **"+ Add Plant Type"** at the bottom
+2. A new plant appears with a generated name
+3. Expand it and edit properties
+4. Click the **🗑️ delete button** on the new plant
+5. Confirm deletion
+
+**Expected:** Plant is added to the list. After deletion, it disappears. Biome tab count updates accordingly.
+
+**Status:** ☐ Pass / ☐ Fail / ☐ N/A
+
+---
+
+### Known Limitations (Current State)
+
+These are expected gaps that need further work:
+
+| Issue | Reason | Fix Needed |
+|-------|--------|------------|
+| No visible vegetation on terrain | `VegetationManager.update()` not called from animation loop | Wire `update()` into Viewport's render loop |
+| No tile events from CDLOD | Quadtree traversal doesn't emit visibility events | Add callbacks in `TerrainQuadtree.select()` |
+| Vegetation doesn't respond to biome mask changes | `updateTerrainData()` not called after biome regeneration | Wire BiomeMaskPanelBridge to call `vegetationManager.updateTerrainData(null, newBiomeMask)` |
+| Console `mapAsync` timeout | Counter readback stalls if GPU is busy | Move to GPU indirect draw (deferred) |
 
 ---
 
 ## Future Enhancements
 
-1. **Texture Atlas** - Replace colored quads with sprite textures
-2. **Additional Biomes** - Forest, desert, snow, wetland
-3. **Procedural Generation** - Runtime plant variation
-4. **Shadow Casting** - Simple billboard shadows
-5. **Cross-fading LOD** - Smooth transitions between density levels
-6. **Seasonal Variation** - Color shifts based on time/weather
-7. **Interactive Vegetation** - Player collision response
-8. **Automatic Impostor Generation** - Render 3D mesh from multiple angles to create billboard atlas
+1. **Additional Biomes** — Snow, desert, wetland
+2. **Procedural Variation** — Runtime plant color/shape variation
+3. **Shadow Casting** — Simple billboard shadows + mesh shadows via shadow map
+4. **Cross-fading LOD** — Smooth alpha transitions between 3D and billboard
+5. **Seasonal Variation** — Color shifts based on time/weather
+6. **Interactive Vegetation** — Player collision response
+7. **Automatic Impostor Generation** — Render 3D mesh from multiple angles to auto-generate billboard atlas
+8. **GPU Indirect Draw** — Use indirect draw calls to avoid CPU readback of instance counts
+9. **Translucency/SSS** — Subsurface scattering for leaves (Quixel ORT maps include translucency)
+10. **KTX2/BC7 Compression** — GPU-compressed textures for production

@@ -169,6 +169,16 @@ export class GPUContext {
   get format(): GPUTextureFormat {
     return this._format;
   }
+  
+  /** HDR color format used by the forward pipeline's scene render targets */
+  get hdrFormat(): GPUTextureFormat {
+    return 'rgba16float';
+  }
+  
+  /** Depth buffer format used by the forward pipeline */
+  get depthFormat(): GPUTextureFormat {
+    return 'depth24plus';
+  }
 
   get canvas(): HTMLCanvasElement | null {
     return this._canvas;

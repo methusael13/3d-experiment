@@ -114,6 +114,8 @@ export interface CDLODRenderParams {
   viewProjectionMatrix: mat4;
   modelMatrix: mat4;
   cameraPosition: vec3;
+  sceneViewProjectionMatrix?: mat4;
+  sceneCameraPosition?: vec3;
   terrainSize: number;
   heightScale: number;
   heightmapTexture?: UnifiedGPUTexture;
@@ -775,12 +777,15 @@ export class CDLODRendererGPU {
       });
     }
     
+    const cameraPos = params.sceneCameraPosition ?? params.cameraPosition;
+    const viewProjMat = params.sceneViewProjectionMatrix ?? params.viewProjectionMatrix;
+
     // Select visible nodes
-    const selection = this.quadtree.select(params.cameraPosition, params.viewProjectionMatrix);
+    const selection = this.quadtree.select(cameraPos, viewProjMat);
     this.lastSelection = selection;
     
     // Store camera position for shadow pass LOD selection
-    vec3.copy(this.lastCameraPosition, params.cameraPosition);
+    vec3.copy(this.lastCameraPosition, cameraPos);
     
     if (selection.nodes.length === 0) {
       return;
@@ -894,11 +899,13 @@ export class CDLODRendererGPU {
    */
   private updateUniformBuffer(params: CDLODRenderParams): void {
     const island = params.island;
+    const cameraPos = params.sceneCameraPosition ?? params.cameraPosition;
     
     this.uniformBuilder.reset()
+      // Always need to transform vertices via the current view proj mat
       .mat4(params.viewProjectionMatrix as Float32Array)  // 0-15
       .mat4(params.modelMatrix as Float32Array)           // 16-31
-      .vec3(params.cameraPosition[0], params.cameraPosition[1], params.cameraPosition[2]) // 32-35 (padded to vec4)
+      .vec3(cameraPos[0], cameraPos[1], cameraPos[2]) // 32-35 (padded to vec4)
       .vec4(params.terrainSize, params.heightScale, this.config.gridSize, this.config.debugMode ? 1.0 : 0.0) // 36-39
       // Procedural detail parameters (40-47)
       .vec4(

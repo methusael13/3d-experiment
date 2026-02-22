@@ -304,8 +304,8 @@ export function ConnectedMenuBar() {
     
     // Add terrain to scene
     const terrainObj = await scene.addWebGPUTerrain(gpuContext, {
-      worldSize: 1024,
-      heightScale: 100
+      worldSize: 400,
+      heightScale: 136
     });
     
     if (terrainObj) {

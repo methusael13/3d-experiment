@@ -41,7 +41,7 @@ export interface IslandMaskParams {
  */
 export function createDefaultIslandMaskParams(): IslandMaskParams {
   return {
-    seed: 12345,
+    seed: 23860,
     islandRadius: 0.4,
     coastNoiseScale: 5,
     coastNoiseStrength: 0.2,
@@ -121,7 +121,7 @@ export function createDefaultNoiseParams(): NoiseParams {
     octaves: 6,
     persistence: 0.5,
     lacunarity: 2.0,
-    seed: 12345,
+    seed: 23860,
     // Domain warping defaults
     warpStrength: 0.5,
     warpScale: 2.0,

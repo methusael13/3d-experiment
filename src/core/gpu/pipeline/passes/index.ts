@@ -296,11 +296,13 @@ export class OpaquePass extends BaseRenderPass {
         shadowMap: shadowMap,
         csmEnabled: this.shadowRenderer.isCSMEnabled(),
       } : undefined;
-      
+
       terrainManager.render(pass, {
         viewProjectionMatrix: ctx.viewProjectionMatrix,
         modelMatrix: this.identityMatrix,
         cameraPosition: ctx.cameraPosition,
+        sceneViewProjectionMatrix: ctx.sceneCameraViewProjectionMatrix,
+        sceneCameraPosition: ctx.sceneCameraPosition,
         lightDirection,
         lightColor,
         ambientIntensity,

@@ -20,7 +20,7 @@ import {
   createDefaultIslandMaskParams,
 } from './HeightmapGenerator';
 import { ErosionSimulator, HydraulicErosionParams, ThermalErosionParams } from './ErosionSimulator';
-import { BiomeMaskGenerator, BiomeParams, createDefaultBiomeParams, PlantRegistry } from '../vegetation';
+import { BiomeMaskGenerator, BiomeParams, createDefaultBiomeParams, PlantRegistry, VegetationManager } from '../vegetation';
 import { CDLODRendererGPU, CDLODGPUConfig, CDLODRenderParams, TerrainMaterial } from './CDLODRendererGPU';
 import { QuadtreeConfig } from './TerrainQuadtree';
 import { BiomeType, TextureType } from './TerrainBiomeTextureResources';
@@ -117,8 +117,8 @@ export function createDefaultGenerationConfig(): TerrainGenerationConfig {
  */
 export function createDefaultTerrainManagerConfig(): TerrainManagerConfig {
   return {
-    worldSize: 1000,
-    heightScale: 50,
+    worldSize: 400,
+    heightScale: 125,
     quadtreeConfig: {},
     rendererConfig: {},
     generationConfig: createDefaultGenerationConfig(),
@@ -147,6 +147,7 @@ export class TerrainManager {
   private renderer: CDLODRendererGPU | null = null;
   
   // Vegetation system
+  private vegetationManager: VegetationManager | null = null;
   private biomeMaskGenerator: BiomeMaskGenerator | null = null;
   private plantRegistry: PlantRegistry | null = null;
   
@@ -188,6 +189,10 @@ export class TerrainManager {
     // Create plant registry with default presets
     this.plantRegistry = new PlantRegistry();
     this.plantRegistry.loadDefaultPresets();
+    
+    // Create vegetation manager
+    this.vegetationManager = new VegetationManager(this.ctx);
+    this.vegetationManager.initialize();
     
     // Create renderer with quadtree and renderer configs
     const quadtreeConfig: Partial<QuadtreeConfig> = {
@@ -334,6 +339,19 @@ export class TerrainManager {
       
       // Readback heightmap to CPU for collision/FPS camera
       await this.readbackHeightmap();
+      
+      // Connect vegetation manager to terrain data + quadtree LOD info
+      if (this.vegetationManager && this.plantRegistry && this.heightmap) {
+        const qtConfig = this.renderer?.getQuadtree()?.getConfig();
+        this.vegetationManager.connectToTerrain(
+          this.plantRegistry,
+          this.heightmap,
+          this.biomeMask,
+          this.config.worldSize,
+          this.config.heightScale,
+          qtConfig?.maxLodLevels ?? 10,
+        );
+      }
     } finally {
       this.isGenerating = false;
     }
@@ -563,6 +581,38 @@ export class TerrainManager {
         maskTexture: this.islandMask,
       },
     });
+    
+    // Render vegetation on top of terrain (same render pass)
+    if (this.vegetationManager?.isEnabled()) {
+      const vpMatrix = params.viewProjectionMatrix as Float32Array;
+      const sceneVpMatrix = params.sceneViewProjectionMatrix as Float32Array;
+      const camPos = (params.sceneCameraPosition || params.cameraPosition) as Float32Array;
+      const camPosArr: [number, number, number] = [camPos[0], camPos[1], camPos[2]];
+      
+      // Sync vegetation tiles with CDLOD quadtree selection
+      // This gives vegetation the same frustum-culled, LOD-selected tiles as terrain
+      const lastSelection = this.renderer?.getLastSelection();
+      if (lastSelection && lastSelection.nodes.length > 0) {
+        this.vegetationManager.syncWithCDLODSelection(lastSelection.nodes);
+      }
+      
+      // Run GPU culling compute passes BEFORE the render pass uses drawIndirect
+      const needsRender = this.vegetationManager.prepareFrame(
+        sceneVpMatrix ? sceneVpMatrix : vpMatrix,
+        camPosArr
+      );
+      if (needsRender) {
+        // Update vegetation lighting from scene light params
+        const ld = params.lightDirection || [0.5, 1, 0.5];
+        const lc = params.lightColor || [1, 1, 1];
+        this.vegetationManager.updateLightFromScene(
+          [ld[0], ld[1], ld[2]],
+          [lc[0], lc[1], lc[2]],
+          params.ambientIntensity ?? 1.0,
+        );
+        this.vegetationManager.render(passEncoder, vpMatrix, camPosArr);
+      }
+    }
   }
   
   // ============ Getters ============
@@ -944,6 +994,9 @@ export class TerrainManager {
       params
     );
     
+    // Notify vegetation manager of updated biome mask
+    this.vegetationManager?.updateTerrainData(undefined, this.biomeMask);
+    
     return this.biomeMask;
   }
   
@@ -992,6 +1045,20 @@ export class TerrainManager {
     return this.plantRegistry !== null;
   }
   
+  /**
+   * Get the vegetation manager for external control
+   */
+  getVegetationManager(): VegetationManager | null {
+    return this.vegetationManager;
+  }
+  
+  /**
+   * Check if vegetation manager is available
+   */
+  hasVegetationManager(): boolean {
+    return this.vegetationManager !== null;
+  }
+  
   // ============ Cleanup ============
   
   destroy(): void {
@@ -1001,6 +1068,7 @@ export class TerrainManager {
     this.heightmapGenerator?.destroy();
     this.erosionSimulator?.destroy();
     this.renderer?.destroy();
+    this.vegetationManager?.destroy();
     this.biomeMaskGenerator?.destroy();
     this.heightmap?.destroy();
     this.normalMap?.destroy();
@@ -1010,6 +1078,7 @@ export class TerrainManager {
     this.heightmapGenerator = null;
     this.erosionSimulator = null;
     this.renderer = null;
+    this.vegetationManager = null;
     this.biomeMaskGenerator = null;
     this.heightmap = null;
     this.normalMap = null;

@@ -5,6 +5,37 @@
  * biome parameters, plant types, and configuration.
  */
 
+// ==================== Render Mode ====================
+
+/**
+ * How a plant type should be rendered.
+ * - 'billboard': Always rendered as camera-facing quads (atlas or billboard texture)
+ * - 'mesh': Always rendered as 3D instanced mesh (GLTF model)
+ * - 'hybrid': 3D mesh at close range, billboard at far range (distance-based transition)
+ */
+export type RenderMode = 'billboard' | 'mesh' | 'hybrid' | 'grass-blade';
+
+// ==================== Model Reference ====================
+
+/**
+ * Reference to a 3D vegetation model from the Asset Library.
+ * Used for 'mesh' and 'hybrid' render modes.
+ */
+export interface ModelReference {
+  /** Asset ID from the Asset Library */
+  assetId: string;
+  /** Asset name for display */
+  assetName: string;
+  /** Path to the standard (non-UE) GLTF file */
+  modelPath: string;
+  /** Path to billboard BaseColor+Opacity texture (auto-billboard for hybrid mode) */
+  billboardTexturePath: string | null;
+  /** Path to billboard Normal+Translucency texture */
+  billboardNormalPath: string | null;
+  /** Number of mesh variants (from GLTF sub-meshes or multiple files) */
+  variantCount: number;
+}
+
 // ==================== Atlas & Texture Types ====================
 
 /**
@@ -68,10 +99,18 @@ export interface PlantType {
   // Visual properties
   /** Fallback color when no texture [R, G, B] (0-1) */
   color: [number, number, number];
-  /** Reference to texture atlas (null = use color) */
+  /** Reference to texture atlas (null = use color) — for billboard rendering */
   atlasRef: AtlasReference | null;
   /** Specific region in atlas to use (null = random from available) */
   atlasRegionIndex: number | null;
+  
+  // Rendering mode
+  /** How this plant should render: billboard, mesh, or hybrid (3D close + billboard far) */
+  renderMode: RenderMode;
+  /** Reference to 3D model for mesh/hybrid rendering (null = billboard-only) */
+  modelRef: ModelReference | null;
+  /** Distance threshold for 3D→billboard transition in hybrid mode (world units) */
+  billboardDistance: number;
   
   // Size in world units
   /** Minimum size [width, height] */
@@ -82,6 +121,8 @@ export interface PlantType {
   // Spawn distribution
   /** Base spawn probability (0-1) */
   spawnProbability: number;
+  /** Per-plant density multiplier (1.0 = normal, >1 = denser, <1 = sparser) */
+  densityMultiplier: number;
   /** Which biome channel this plant spawns in */
   biomeChannel: BiomeChannel;
   /** Minimum biome value required to spawn (0-1) */
@@ -98,6 +139,14 @@ export interface PlantType {
   maxDistance: number;
   /** LOD priority bias (higher = more important, render at greater distance) */
   lodBias: number;
+  /**
+   * Maximum CDLOD quadtree level at which this plant spawns.
+   * Uses quadtree convention: 0 = root (coarsest, farthest), N = leaf (finest, closest).
+   * A value of 0 means the plant spawns even on the coarsest/farthest tile (e.g., large tree billboards).
+   * A higher value means the plant only spawns on finer/closer tiles (e.g., grass).
+   * Default: 0 (spawn on all visible tiles).
+   */
+  maxVegetationLOD: number;
 }
 
 /**
@@ -110,17 +159,50 @@ export function createDefaultPlantType(id: string, name: string): PlantType {
     color: [0.3, 0.6, 0.2],
     atlasRef: null,
     atlasRegionIndex: null,
+    renderMode: 'billboard',
+    modelRef: null,
+    billboardDistance: 100,
     minSize: [0.3, 0.5],
     maxSize: [0.5, 1.0],
     spawnProbability: 0.5,
+    densityMultiplier: 1.0,
     biomeChannel: 'r',
     biomeThreshold: 0.3,
     clusterStrength: 0.3,
     minSpacing: 0.2,
     maxDistance: 200,
     lodBias: 1.0,
+    maxVegetationLOD: 8, // Default: only spawn on the 2 closest LOD levels (8 and 9 out of 0-9)
   };
 }
+
+// ==================== Vegetation Light Params ====================
+
+/**
+ * Light parameters for vegetation shading (from DirectionalLight).
+ * Shared across all vegetation renderers (grass blades, billboards, mesh).
+ */
+export interface VegetationLightParams {
+  /** Direction vector pointing towards the light source */
+  sunDirection: [number, number, number];
+  /** Computed effective sun/moon color (includes atmospheric tinting) */
+  sunColor: [number, number, number];
+  /** Sky hemisphere color for ambient lighting */
+  skyColor: [number, number, number];
+  /** Ground hemisphere color for ambient lighting */
+  groundColor: [number, number, number];
+  /** Sun intensity factor (0 at night moonlight, 1 during day) */
+  sunIntensityFactor: number;
+}
+
+/** Default vegetation light params (daytime white sun) */
+export const DEFAULT_VEGETATION_LIGHT: VegetationLightParams = {
+  sunDirection: [0.3, 0.8, 0.2],
+  sunColor: [1.0, 1.0, 0.95],
+  skyColor: [0.4, 0.6, 1.0],
+  groundColor: [0.3, 0.25, 0.2],
+  sunIntensityFactor: 1.0,
+};
 
 // ==================== Vegetation Configuration ====================
 
@@ -136,6 +218,8 @@ export interface VegetationConfig {
   windEnabled: boolean;
   /** Debug visualization mode */
   debugMode: boolean;
+  /** Global spawn seed for deterministic placement (shared by all plant types) */
+  spawnSeed: number;
 }
 
 /**
@@ -147,6 +231,7 @@ export function createDefaultVegetationConfig(): VegetationConfig {
     globalDensity: 1.0,
     windEnabled: true,
     debugMode: false,
+    spawnSeed: 42,
   };
 }
 
@@ -233,15 +318,20 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     color: [0.3, 0.6, 0.2],
     atlasRef: null,
     atlasRegionIndex: null,
+    renderMode: 'billboard',
+    modelRef: null,
+    billboardDistance: 50,
     minSize: [0.3, 0.5],
     maxSize: [0.5, 1.2],
     spawnProbability: 0.6,
+    densityMultiplier: 1.0,
     biomeChannel: 'r',
     biomeThreshold: 0.3,
     clusterStrength: 0.4,
     minSpacing: 0.2,
     maxDistance: 200,
     lodBias: 1.0,
+    maxVegetationLOD: 8,
   },
   {
     id: 'short-grass',
@@ -249,15 +339,20 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     color: [0.4, 0.5, 0.2],
     atlasRef: null,
     atlasRegionIndex: null,
+    renderMode: 'billboard',
+    modelRef: null,
+    billboardDistance: 50,
     minSize: [0.2, 0.15],
     maxSize: [0.3, 0.3],
     spawnProbability: 0.8,
+    densityMultiplier: 1.0,
     biomeChannel: 'r',
     biomeThreshold: 0.2,
     clusterStrength: 0.2,
     minSpacing: 0.1,
     maxDistance: 100,
     lodBias: 0.8,
+    maxVegetationLOD: 8,
   },
   {
     id: 'wildflower-yellow',
@@ -265,15 +360,20 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     color: [0.9, 0.8, 0.2],
     atlasRef: null,
     atlasRegionIndex: null,
+    renderMode: 'billboard',
+    modelRef: null,
+    billboardDistance: 50,
     minSize: [0.15, 0.2],
     maxSize: [0.25, 0.4],
     spawnProbability: 0.15,
+    densityMultiplier: 1.0,
     biomeChannel: 'r',
     biomeThreshold: 0.5,
     clusterStrength: 0.7,
     minSpacing: 0.3,
     maxDistance: 150,
     lodBias: 1.2,
+    maxVegetationLOD: 8,
   },
   {
     id: 'wildflower-purple',
@@ -281,15 +381,20 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     color: [0.6, 0.3, 0.7],
     atlasRef: null,
     atlasRegionIndex: null,
+    renderMode: 'billboard',
+    modelRef: null,
+    billboardDistance: 50,
     minSize: [0.12, 0.18],
     maxSize: [0.22, 0.35],
     spawnProbability: 0.1,
+    densityMultiplier: 1.0,
     biomeChannel: 'r',
     biomeThreshold: 0.5,
     clusterStrength: 0.6,
     minSpacing: 0.35,
     maxDistance: 150,
     lodBias: 1.2,
+    maxVegetationLOD: 8,
   },
   {
     id: 'small-shrub',
@@ -297,15 +402,20 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     color: [0.25, 0.4, 0.2],
     atlasRef: null,
     atlasRegionIndex: null,
+    renderMode: 'billboard',
+    modelRef: null,
+    billboardDistance: 80,
     minSize: [0.4, 0.3],
     maxSize: [0.8, 0.6],
     spawnProbability: 0.05,
+    densityMultiplier: 1.0,
     biomeChannel: 'r',
     biomeThreshold: 0.6,
     clusterStrength: 0.3,
     minSpacing: 1.0,
     maxDistance: 300,
     lodBias: 1.5,
+    maxVegetationLOD: 8,
   },
 ];
 
@@ -319,15 +429,20 @@ export const FOREST_PLANT_PRESETS: PlantType[] = [
     color: [0.2, 0.45, 0.15],
     atlasRef: null,
     atlasRegionIndex: null,
+    renderMode: 'billboard',
+    modelRef: null,
+    billboardDistance: 100,
     minSize: [0.3, 0.25],
     maxSize: [0.6, 0.5],
     spawnProbability: 0.5,
+    densityMultiplier: 1.0,
     biomeChannel: 'b',
     biomeThreshold: 0.3,
     clusterStrength: 0.5,
     minSpacing: 0.4,
     maxDistance: 200,
     lodBias: 1.0,
+    maxVegetationLOD: 8,
   },
   {
     id: 'forest-grass',
@@ -335,15 +450,20 @@ export const FOREST_PLANT_PRESETS: PlantType[] = [
     color: [0.2, 0.4, 0.15],
     atlasRef: null,
     atlasRegionIndex: null,
+    renderMode: 'billboard',
+    modelRef: null,
+    billboardDistance: 50,
     minSize: [0.2, 0.3],
     maxSize: [0.4, 0.6],
     spawnProbability: 0.4,
+    densityMultiplier: 1.0,
     biomeChannel: 'b',
     biomeThreshold: 0.25,
     clusterStrength: 0.3,
     minSpacing: 0.2,
     maxDistance: 150,
     lodBias: 0.9,
+    maxVegetationLOD: 8,
   },
 ];
 

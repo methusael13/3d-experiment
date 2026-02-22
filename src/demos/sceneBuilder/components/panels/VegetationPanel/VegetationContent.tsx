@@ -17,6 +17,8 @@ import type {
   VegetationConfig,
   WindParams,
   AtlasReference,
+  ModelReference,
+  RenderMode,
 } from '../../../../../core/vegetation/types';
 import type { PlantRegistry, PlantRegistryEvent } from '../../../../../core/vegetation/PlantRegistry';
 import { detectAtlasRegions } from '../../../../../core/vegetation/AtlasRegionDetector';
@@ -64,6 +66,12 @@ const TextureIcon = () => (
   </svg>
 );
 
+const ModelIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+  </svg>
+);
+
 const ExpandIcon = ({ expanded }: { expanded: boolean }) => (
   <svg 
     width="12" 
@@ -83,9 +91,10 @@ interface PlantItemProps {
   onUpdate: (updates: Partial<PlantType>) => void;
   onDelete: () => void;
   onSelectAtlas: () => void;
+  onSelectModel: () => void;
 }
 
-function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas }: PlantItemProps) {
+function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas, onSelectModel }: PlantItemProps) {
   const [expanded, setExpanded] = useState(false);
   
   return (
@@ -101,6 +110,13 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas }: PlantItemProps)
         />
         <span class={styles.plantName}>{plant.name}</span>
         <div class={styles.plantActions}>
+          <button 
+            class={styles.iconButton}
+            onClick={(e) => { e.stopPropagation(); onSelectModel(); }}
+            title="Select 3D model"
+          >
+            <ModelIcon />
+          </button>
           <button 
             class={styles.iconButton}
             onClick={(e) => { e.stopPropagation(); onSelectAtlas(); }}
@@ -131,6 +147,49 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas }: PlantItemProps)
             />
           </div>
           
+          {/* Render Mode Selector */}
+          <div class={styles.propertyRow}>
+            <label>Render Mode</label>
+            <select
+              value={plant.renderMode}
+              onChange={(e) => onUpdate({ renderMode: (e.target as HTMLSelectElement).value as RenderMode })}
+            >
+              <option value="billboard">Billboard Only</option>
+              <option value="mesh">3D Mesh Only</option>
+              <option value="hybrid">Hybrid (3D + Billboard)</option>
+              <option value="grass-blade">Procedural Grass Blade</option>
+            </select>
+          </div>
+          
+          {/* Model info */}
+          {plant.modelRef && (
+            <div class={styles.atlasInfo}>
+              <span class={styles.atlasLabel}>Model:</span>
+              <span class={styles.atlasName}>{plant.modelRef.assetName}</span>
+              {plant.modelRef.billboardTexturePath && (
+                <span class={styles.atlasRegions} style={{ color: '#4caf50' }}>
+                  ✓ Billboard
+                </span>
+              )}
+            </div>
+          )}
+          
+          {/* Billboard Distance (hybrid mode) */}
+          {plant.renderMode === 'hybrid' && (
+            <div class={styles.propertyRow}>
+              <label>Billboard Distance (m)</label>
+              <input 
+                type="range"
+                min="20"
+                max="400"
+                step="10"
+                value={plant.billboardDistance}
+                onInput={(e) => onUpdate({ billboardDistance: parseFloat((e.target as HTMLInputElement).value) })}
+              />
+              <span class={styles.propertyValue}>{plant.billboardDistance}m</span>
+            </div>
+          )}
+          
           {/* Atlas info */}
           {plant.atlasRef && (
             <div class={styles.atlasInfo}>
@@ -154,6 +213,20 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas }: PlantItemProps)
               onInput={(e) => onUpdate({ spawnProbability: parseFloat((e.target as HTMLInputElement).value) })}
             />
             <span class={styles.propertyValue}>{(plant.spawnProbability * 100).toFixed(0)}%</span>
+          </div>
+          
+          {/* Density Multiplier */}
+          <div class={styles.propertyRow}>
+            <label>Density Multiplier</label>
+            <input 
+              type="range"
+              min="0"
+              max="500"
+              step="1"
+              value={plant.densityMultiplier}
+              onInput={(e) => onUpdate({ densityMultiplier: parseFloat((e.target as HTMLInputElement).value) })}
+            />
+            <span class={styles.propertyValue}>{plant.densityMultiplier.toFixed(1)}×</span>
           </div>
           
           {/* Biome Threshold */}
@@ -243,12 +316,14 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas }: PlantItemProps)
           <div class={styles.propertyRow}>
             <label>Max Distance (m)</label>
             <input 
-              type="number"
-              step="10"
-              min="10"
+              type="range"
+              min="0"
+              max="200"
+              step="1"
               value={plant.maxDistance}
               onInput={(e) => onUpdate({ maxDistance: parseFloat((e.target as HTMLInputElement).value) })}
             />
+            <span class={styles.propertyValue}>{plant.maxDistance.toFixed(1)}</span>
           </div>
           
           {/* LOD Bias */}
@@ -263,6 +338,20 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas }: PlantItemProps)
               onInput={(e) => onUpdate({ lodBias: parseFloat((e.target as HTMLInputElement).value) })}
             />
             <span class={styles.propertyValue}>{plant.lodBias.toFixed(1)}</span>
+          </div>
+          
+          {/* Min Terrain LOD (maxVegetationLOD) */}
+          <div class={styles.propertyRow}>
+            <label>Min Terrain LOD</label>
+            <input 
+              type="range"
+              min="0"
+              max="9"
+              step="1"
+              value={plant.maxVegetationLOD}
+              onInput={(e) => onUpdate({ maxVegetationLOD: parseInt((e.target as HTMLInputElement).value) })}
+            />
+            <span class={styles.propertyValue}>{plant.maxVegetationLOD}</span>
           </div>
           
           {/* Color (fallback) */}
@@ -295,6 +384,7 @@ export function VegetationContent({ registry }: VegetationContentProps) {
   const [config, setConfig] = useState<VegetationConfig>(registry.getConfig());
   const [wind, setWind] = useState<WindParams>(registry.getWind());
   const [isAtlasPickerOpen, setAtlasPickerOpen] = useState(false);
+  const [isModelPickerOpen, setModelPickerOpen] = useState(false);
   const [selectedPlantId, setSelectedPlantId] = useState<string | null>(null);
   
   // Load plants for selected biome
@@ -333,6 +423,50 @@ export function VegetationContent({ registry }: VegetationContentProps) {
     setSelectedPlantId(plantId);
     setAtlasPickerOpen(true);
   }, []);
+  
+  const handleSelectModel = useCallback((plantId: string) => {
+    setSelectedPlantId(plantId);
+    setModelPickerOpen(true);
+  }, []);
+  
+  const handleModelSelected = useCallback(async (asset: Asset) => {
+    if (!selectedPlantId) return;
+    
+    // Find standard GLTF file (non-UE version preferred)
+    const gltfFile = asset.files.find(f => 
+      f.path.includes('nonUE') && (f.path.endsWith('.gltf') || f.path.endsWith('.glb'))
+    ) ?? asset.files.find(f => 
+      f.path.endsWith('.gltf') || f.path.endsWith('.glb')
+    );
+    
+    // Find billboard textures (Quixel naming convention)
+    const billboardBO = asset.files.find(f => 
+      f.path.toLowerCase().includes('billboard') && f.path.includes('B-O')
+    );
+    const billboardNT = asset.files.find(f => 
+      f.path.toLowerCase().includes('billboard') && f.path.includes('N-T')
+    );
+    
+    if (!gltfFile) {
+      console.error('[VegetationContent] No GLTF file found for asset:', asset.name);
+      return;
+    }
+    
+    const modelRef: ModelReference = {
+      assetId: asset.id,
+      assetName: asset.name,
+      modelPath: gltfFile.path,
+      billboardTexturePath: billboardBO?.path ?? null,
+      billboardNormalPath: billboardNT?.path ?? null,
+      variantCount: 1,
+    };
+    
+    registry.setPlantModel(selectedBiome, selectedPlantId, modelRef);
+    console.log(`[VegetationContent] Assigned model "${asset.name}" to plant`, 
+      billboardBO ? '(with billboard texture)' : '(no billboard texture)');
+    
+    setSelectedPlantId(null);
+  }, [registry, selectedBiome, selectedPlantId]);
   
   const handleAtlasSelected = useCallback(async (asset: Asset) => {
     if (!selectedPlantId) return;
@@ -483,8 +617,63 @@ export function VegetationContent({ registry }: VegetationContentProps) {
                 />
                 <span>{wind.frequency.toFixed(1)}</span>
               </div>
+              
+              <div class={styles.configRow}>
+                <label>Wind Direction</label>
+                <input 
+                  type="range"
+                  min="0"
+                  max="360"
+                  step="5"
+                  value={Math.round(Math.atan2(wind.direction[1], wind.direction[0]) * 180 / Math.PI + 360) % 360}
+                  onInput={(e) => {
+                    const deg = parseFloat((e.target as HTMLInputElement).value);
+                    const rad = deg * Math.PI / 180;
+                    handleWindChange({ direction: [Math.cos(rad), Math.sin(rad)] as [number, number] });
+                  }}
+                />
+                <span>{(Math.round(Math.atan2(wind.direction[1], wind.direction[0]) * 180 / Math.PI + 360) % 360)}°</span>
+              </div>
+              
+              <div class={styles.configRow}>
+                <label>Gust Strength</label>
+                <input 
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={wind.gustStrength}
+                  onInput={(e) => handleWindChange({ gustStrength: parseFloat((e.target as HTMLInputElement).value) })}
+                />
+                <span>{(wind.gustStrength * 100).toFixed(0)}%</span>
+              </div>
+              
+              <div class={styles.configRow}>
+                <label>Gust Frequency</label>
+                <input 
+                  type="range"
+                  min="0.1"
+                  max="3"
+                  step="0.1"
+                  value={wind.gustFrequency}
+                  onInput={(e) => handleWindChange({ gustFrequency: parseFloat((e.target as HTMLInputElement).value) })}
+                />
+                <span>{wind.gustFrequency.toFixed(1)}</span>
+              </div>
             </>
           )}
+          
+          <div class={styles.configRow}>
+            <label>Spawn Seed</label>
+            <input 
+              type="number"
+              min="0"
+              max="99999"
+              step="1"
+              value={config.spawnSeed}
+              onInput={(e) => handleConfigChange({ spawnSeed: parseInt((e.target as HTMLInputElement).value) || 0 })}
+            />
+          </div>
           
           <div class={styles.statsRow}>
             <span>Total plants: {stats.totalPlants}</span>
@@ -514,6 +703,7 @@ export function VegetationContent({ registry }: VegetationContentProps) {
               onUpdate={(updates) => handleUpdatePlant(plant.id, updates)}
               onDelete={() => handleDeletePlant(plant.id)}
               onSelectAtlas={() => handleSelectAtlas(plant.id)}
+              onSelectModel={() => handleSelectModel(plant.id)}
             />
           ))
         )}
@@ -535,6 +725,15 @@ export function VegetationContent({ registry }: VegetationContentProps) {
         title="Select Texture Atlas"
         filterType="texture"
         filterSubtype="atlas"
+      />
+      
+      {/* Model Picker Modal */}
+      <AssetPickerModal
+        isOpen={isModelPickerOpen}
+        onClose={() => setModelPickerOpen(false)}
+        onSelect={handleModelSelected}
+        title="Select Vegetation Model"
+        filterType="model"
       />
     </div>
   );

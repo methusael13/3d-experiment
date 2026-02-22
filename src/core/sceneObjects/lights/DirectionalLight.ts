@@ -241,4 +241,42 @@ export class DirectionalLight extends Light {
     light.deserialize(data);
     return light;
   }
+  
+  /**
+   * Construct a DirectionalLight from renderer output params.
+   * Inverts getDirection() using light color luminance to detect night mode,
+   * then recovers the true elevation/azimuth for correct light param computation.
+   * 
+   * @param direction - Upper-hemisphere light direction from renderer (mirrored during night)
+   * @param lightColor - Effective light color (includes atmospheric tinting / moonlight)
+   * @param ambientIntensity - Ambient intensity multiplier
+   */
+  static fromRendererParams(
+    direction: [number, number, number],
+    lightColor: [number, number, number],
+    ambientIntensity: number = 1.0,
+  ): DirectionalLight {
+    const light = new DirectionalLight('_proxy');
+    light.ambientIntensity = ambientIntensity;
+    
+    // Detect night: moonlight total luminance is very low (~0.048)
+    // Daytime is ~2.95, twilight is intermediate
+    const luminance = lightColor[0] + lightColor[1] + lightColor[2];
+    const isNight = luminance < 0.15;
+    
+    // Elevation from direction Y (always positive since night mirrors to upper hemisphere)
+    const elevRad = Math.asin(Math.max(-1, Math.min(1, direction[1])));
+    
+    if (isNight) {
+      // Night: getDirection() mirrors the direction (azimuth + 180°, elevation = |original|)
+      // Reverse: true elevation = -|elevRad|, azimuth = atan2(x,z) - 180°
+      light.elevation = -Math.abs(elevRad * 180 / Math.PI);
+      light.azimuth = (Math.atan2(direction[0], direction[2]) * 180 / Math.PI) - 180;
+    } else {
+      light.elevation = elevRad * 180 / Math.PI;
+      light.azimuth = Math.atan2(direction[0], direction[2]) * 180 / Math.PI;
+    }
+    
+    return light;
+  }
 }

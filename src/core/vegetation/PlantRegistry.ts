@@ -12,6 +12,8 @@ import {
   type VegetationConfig,
   type WindParams,
   type AtlasReference,
+  type ModelReference,
+  type RenderMode,
   DEFAULT_BIOME_CONFIGS,
   GRASSLAND_PLANT_PRESETS,
   FOREST_PLANT_PRESETS,
@@ -265,6 +267,41 @@ export class PlantRegistry {
     
     plant.atlasRef = atlasRef;
     plant.atlasRegionIndex = null; // Reset region selection
+    
+    this.emit({ type: 'plant-updated', biome, plant });
+    return true;
+  }
+
+  /**
+   * Associate a 3D model with a plant.
+   * Optionally auto-detects billboard textures for hybrid mode.
+   */
+  setPlantModel(
+    biome: BiomeChannel,
+    plantId: string,
+    modelRef: ModelReference | null
+  ): boolean {
+    const biomeConfig = this.biomes.get(biome);
+    if (!biomeConfig) return false;
+    
+    const plant = biomeConfig.plants.find(p => p.id === plantId);
+    if (!plant) return false;
+    
+    plant.modelRef = modelRef;
+    
+    // Auto-set render mode based on what's available
+    if (modelRef) {
+      if (modelRef.billboardTexturePath) {
+        // Model has billboard texture → hybrid mode
+        plant.renderMode = 'hybrid';
+      } else {
+        // Model only → mesh mode
+        plant.renderMode = 'mesh';
+      }
+    } else {
+      // No model → billboard mode
+      plant.renderMode = 'billboard';
+    }
     
     this.emit({ type: 'plant-updated', biome, plant });
     return true;
