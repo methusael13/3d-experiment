@@ -5,6 +5,7 @@
 
 import { useState, useCallback, useMemo } from 'preact/hooks';
 import type { Asset } from '../../hooks/useAssetLibrary';
+import { generateBillboard } from '../../hooks/useAssetLibrary';
 import styles from './AssetPreviewGrid.module.css';
 
 // ==================== Constants ====================
@@ -60,6 +61,7 @@ function AssetThumbnail({ asset, isSelected, onClick, onDoubleClick, onDragStart
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isBaking, setIsBaking] = useState(false);
   
   // Use direct preview image URL (served at /api/previews/:filename)
   const previewUrl = asset.previewPath 
@@ -82,6 +84,23 @@ function AssetThumbnail({ asset, isSelected, onClick, onDoubleClick, onDragStart
   const handleDragEnd = useCallback(() => {
     setIsDragging(false);
   }, []);
+  
+  // Billboard generation
+  const hasBillboard = asset.metadata?.hasBillboard ?? false;
+  const isModel = asset.type === 'model';
+  
+  const handleGenerateBillboard = useCallback(async (e: MouseEvent) => {
+    e.stopPropagation(); // Don't trigger asset selection
+    e.preventDefault();
+    if (isBaking) return;
+    
+    setIsBaking(true);
+    try {
+      await generateBillboard(asset);
+    } finally {
+      setIsBaking(false);
+    }
+  }, [asset, isBaking]);
   
   return (
     <div 
@@ -122,6 +141,24 @@ function AssetThumbnail({ asset, isSelected, onClick, onDoubleClick, onDragStart
           <span class={styles.subtype}>{asset.subtype}</span>
         )}
       </div>
+      
+      {/* Billboard status badge / generate button for model assets */}
+      {isModel && (
+        hasBillboard ? (
+          <div class={styles.billboardBadge} title="Billboard atlas available">
+            BB
+          </div>
+        ) : (
+          <button
+            class={`${styles.billboardGenBtn} ${isBaking ? styles.baking : ''}`}
+            onClick={handleGenerateBillboard}
+            title={isBaking ? 'Generating billboard...' : 'Generate billboard atlas'}
+            disabled={isBaking}
+          >
+            {isBaking ? '⏳' : '🖼'}
+          </button>
+        )
+      )}
     </div>
   );
 }

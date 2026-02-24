@@ -109,6 +109,7 @@ export class VegetationSpawner {
     heightScale: number,
     densityMultiplier: number = 1.0,
     spawnSeed: number = 42,
+    lodDensityRatio: number = 1.0,
   ): SpawnResult {
     if (!this.pipeline || !this.bindGroupLayout || !this.paramsBuffer) {
       throw new Error('[VegetationSpawner] Not initialized');
@@ -123,7 +124,7 @@ export class VegetationSpawner {
     this.ctx.queue.submit([clearEncoder.finish()]);
     
     // Write params
-    this.writeSpawnParams(request, plant, terrainSize, heightScale, densityMultiplier, spawnSeed);
+    this.writeSpawnParams(request, plant, terrainSize, heightScale, densityMultiplier, spawnSeed, lodDensityRatio);
     
     // Create bind group
     const bindGroup = this.ctx.device.createBindGroup({
@@ -138,8 +139,10 @@ export class VegetationSpawner {
       ],
     });
     
-    // Dispatch compute
-    const gridSize = Math.ceil(request.tileSize * Math.sqrt(plant.spawnProbability * 4 * densityMultiplier * (plant.densityMultiplier ?? 1.0)));
+    // Dispatch compute — grid size based on fixed cell size (tile / cellSize)
+    const maxDensity = plant.spawnProbability * 4 * (plant.densityMultiplier ?? 1.0);
+    const cellSize = maxDensity > 0 ? 1.0 / Math.sqrt(maxDensity) : 1.0;
+    const gridSize = Math.ceil(request.tileSize / cellSize);
     const workgroups = calculateWorkgroupCount2D(gridSize, gridSize, 8, 8);
     
     const encoder = this.ctx.device.createCommandEncoder({ label: `spawn-${request.tileId}` });
@@ -167,6 +170,7 @@ export class VegetationSpawner {
     heightScale: number,
     densityMultiplier: number = 1.0,
     spawnSeed: number = 42,
+    lodDensityRatio: number = 1.0,
   ): void {
     const renderModeMap: Record<RenderMode, number> = { 'billboard': 0, 'mesh': 1, 'hybrid': 2, 'grass-blade': 3 };
     const biomeChannelMap: Record<string, number> = { 'r': 0, 'g': 1, 'b': 2, 'a': 3 };
@@ -175,10 +179,14 @@ export class VegetationSpawner {
     const f32 = new Float32Array(buffer);
     const u32 = new Uint32Array(buffer);
     
+    // Compute fixed world-space cell size from max density (finest LOD, densityMultiplier=1)
+    const maxDensity = plant.spawnProbability * 4 * (plant.densityMultiplier ?? 1.0);
+    const cellSize = maxDensity > 0 ? 1.0 / Math.sqrt(maxDensity) : 1.0;
+    
     f32[0] = request.tileOrigin[0];
     f32[1] = request.tileOrigin[1];
     f32[2] = request.tileSize;
-    f32[3] = plant.spawnProbability * 4 * densityMultiplier * (plant.densityMultiplier ?? 1.0);
+    f32[3] = cellSize;
     
     u32[4] = biomeChannelMap[plant.biomeChannel] ?? 0;
     f32[5] = plant.biomeThreshold;
@@ -202,7 +210,7 @@ export class VegetationSpawner {
     u32[18] = this.maxInstances;
     f32[19] = plant.clusterStrength ?? 0;
     f32[20] = plant.minSpacing ?? 0;
-    u32[21] = 0; // _padding
+    f32[21] = lodDensityRatio; // LOD density thinning ratio (0..1)
     
     this.paramsBuffer!.write(this.ctx, new Float32Array(buffer));
   }

@@ -87,6 +87,24 @@ export interface GLBMaterial {
 }
 
 /**
+ * A node from the glTF scene graph, grouping meshes with a transform.
+ * Used to split multi-object files (e.g., Polyhaven tree packs) into
+ * separate selectable objects.
+ */
+export interface GLBNode {
+  /** Node name from glTF (e.g., "japanese_maple_01") */
+  name: string;
+  /** Indices into the parent GLBModel.meshes[] array */
+  meshIndices: number[];
+  /** World-space translation (composed from node hierarchy) */
+  translation: [number, number, number];
+  /** World-space rotation as quaternion [x, y, z, w] */
+  rotation: [number, number, number, number];
+  /** World-space scale */
+  scale: [number, number, number];
+}
+
+/**
  * Complete GLB model data
  */
 export interface GLBModel {
@@ -96,6 +114,12 @@ export interface GLBModel {
   /** Textures with type metadata for gamma correction */
   texturesWithType: GLBTexture[];
   materials: GLBMaterial[];
+  /** 
+   * Scene graph nodes with their transforms and mesh references.
+   * Only populated when the glTF has a scene graph with nodes.
+   * Each node groups one or more meshes with a world transform.
+   */
+  nodes?: GLBNode[];
 }
 
 /**

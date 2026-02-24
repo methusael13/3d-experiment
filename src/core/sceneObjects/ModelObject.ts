@@ -7,7 +7,7 @@ import type {
 } from './types';
 
 // Import factory function and utilities from existing modules
-import { loadGLB, type GLBModel } from '../../loaders';
+import { loadGLB, loadGLBNodes, type GLBModel, type GLBNodeModel } from '../../loaders';
 import { computeBoundsFromGLB } from '../sceneGraph';
 
 // WebGPU imports
@@ -237,6 +237,7 @@ export class ModelObject extends RenderableObject {
         alphaMode: glbMaterial?.alphaMode ?? 'OPAQUE',  // glTF alpha mode (OPAQUE, MASK, BLEND)
         alphaCutoff: glbMaterial?.alphaCutoff ?? 0.5,   // Only used when alphaMode === 'MASK'
         emissive: glbMaterial?.emissiveFactor ?? [0, 0, 0],
+        doubleSided: glbMaterial?.doubleSided ?? false,
       };
       
       // Map texture indices to GPU textures
@@ -328,7 +329,10 @@ export class ModelObject extends RenderableObject {
   }
   
   /**
-   * Create a ModelObject by loading from a file path (async)
+   * Create a ModelObject by loading from a file path (async).
+   * For single-node files, returns one ModelObject.
+   * For multi-node files, still returns one ModelObject with all meshes
+   * (use createFromFile() for multi-object split).
    */
   static async create(
     modelPath: string,
@@ -352,6 +356,76 @@ export class ModelObject extends RenderableObject {
       .replace('.gltf', '') ?? 'Model';
     
     return new ModelObject(modelPath, displayName, model, bounds);
+  }
+  
+  /**
+   * Create a ModelObject from a pre-loaded GLBModel (no disk I/O).
+   * Used by the multi-node import flow to avoid re-loading the file per variant.
+   */
+  static createFromGLBModel(
+    modelPath: string,
+    name: string,
+    model: GLBModel,
+  ): ModelObject {
+    const bounds = computeBoundsFromGLB(model) as AABB;
+    return new ModelObject(modelPath, name, model, bounds);
+  }
+  
+  /**
+   * Load a GLB file and split it into separate ModelObjects per scene graph node.
+   * 
+   * For single-node files (e.g., FlightHelmet), returns an array with one ModelObject.
+   * For multi-node files (e.g., Polyhaven tree packs), returns one ModelObject per node,
+   * each named "{baseName} - variant N" and positioned at its node transform.
+   * 
+   * @param modelPath - Path to the model file
+   * @param baseName - Base name for the objects (node name or variant index appended)
+   * @param getModelUrl - Optional URL resolver
+   * @returns Array of ModelObjects, one per scene graph node
+   */
+  static async createFromFile(
+    modelPath: string,
+    baseName?: string,
+    getModelUrl?: (path: string) => string
+  ): Promise<ModelObject[]> {
+    const url = getModelUrl ? getModelUrl(modelPath) : modelPath;
+    const nodeModels = await loadGLBNodes(url);
+    
+    const defaultBaseName = baseName ?? modelPath
+      .split('/')
+      .pop()
+      ?.replace('.glb', '')
+      .replace('.gltf', '') ?? 'Model';
+    
+    // Single node — behave like create()
+    if (nodeModels.length === 1) {
+      const nm = nodeModels[0];
+      const obj = ModelObject.createFromGLBModel(modelPath, defaultBaseName, nm.model);
+      // Apply the node transform as the object's initial position/rotation/scale
+      obj.position[0] = nm.translation[0];
+      obj.position[1] = nm.translation[1];
+      obj.position[2] = nm.translation[2];
+      return [obj];
+    }
+    
+    // Multiple nodes — create one ModelObject per node
+    const results: ModelObject[] = [];
+    for (let i = 0; i < nodeModels.length; i++) {
+      const nm = nodeModels[i];
+      const variantName = `${defaultBaseName} - variant ${i}`;
+      const obj = ModelObject.createFromGLBModel(modelPath, variantName, nm.model);
+      
+      // Apply the node's world transform as the object's initial transform
+      obj.position[0] = nm.translation[0];
+      obj.position[1] = nm.translation[1];
+      obj.position[2] = nm.translation[2];
+      // Note: rotation and scale from node could be applied here if needed
+      // For most Polyhaven assets, the variants only differ in translation
+      
+      results.push(obj);
+    }
+    
+    return results;
   }
   
   /**

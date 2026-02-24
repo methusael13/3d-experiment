@@ -293,12 +293,14 @@ export class VegetationManager {
       const plantSeed = this.config.spawnSeed + plantIdx * 7919; // large prime offset
 
       // Synchronous spawn — no await!
+      // lodDensity is now passed as lodDensityRatio for world-space grid thinning
       const result = this.spawner.spawnForPlant(
         request, plant,
         this.biomeMask!, this.heightmap!,
         this.terrainSize, this.heightScale,
-        lodDensity,
+        1.0,          // densityMultiplier: always 1.0 (density handled by fixed cellSize)
         plantSeed,
+        lodDensity,   // lodDensityRatio: fraction of cells to keep at this LOD
       );
 
       // Compute atlas region
@@ -333,7 +335,11 @@ export class VegetationManager {
   // ==================== Asset Loading ====================
 
   async loadVegetationMesh(modelRef: ModelReference): Promise<VegetationMesh | null> {
-    const cacheKey = modelRef.modelPath;
+    // Include variant in cache key so different variants are cached separately
+    const variantSuffix = modelRef.selectedVariant !== undefined && modelRef.selectedVariant >= 0 
+      ? `#v${modelRef.selectedVariant}` 
+      : '#combined';
+    const cacheKey = modelRef.modelPath + variantSuffix;
     const cached = this.meshCache.get(cacheKey);
     if (cached) return cached;
 
@@ -351,17 +357,35 @@ export class VegetationManager {
 
   private async _loadMeshInternal(modelRef: ModelReference): Promise<VegetationMesh | null> {
     try {
-      const glbModel: GLBModel = await loadGLB(modelRef.modelPath, { normalize: true });
-      if (glbModel.meshes.length === 0) return null;
+      let meshesToConvert: GLBMesh[];
+      
+      // If a specific variant is selected and model has multiple nodes, load only that variant
+      if (modelRef.selectedVariant !== undefined && modelRef.selectedVariant >= 0 && modelRef.variantCount > 1) {
+        const { loadGLBNodes } = await import('../../loaders/GLBLoader');
+        const nodeModels = await loadGLBNodes(modelRef.modelPath, { normalize: true });
+        const variantIdx = Math.min(modelRef.selectedVariant, nodeModels.length - 1);
+        meshesToConvert = nodeModels[variantIdx].model.meshes;
+        console.log(`[VegetationManager] Loading variant ${variantIdx} "${nodeModels[variantIdx].name}" (${meshesToConvert.length} meshes)`);
+      } else {
+        // Combined: load all meshes
+        const glbModel: GLBModel = await loadGLB(modelRef.modelPath, { normalize: true });
+        meshesToConvert = glbModel.meshes;
+      }
+      
+      if (meshesToConvert.length === 0) return null;
 
       const subMeshes: VegetationSubMesh[] = [];
-      for (const glbMesh of glbModel.meshes) {
+      for (const glbMesh of meshesToConvert) {
         const subMesh = this._convertGLBMeshToSubMesh(glbMesh, modelRef);
         if (subMesh) subMeshes.push(subMesh);
       }
       if (subMeshes.length === 0) return null;
 
-      return { id: modelRef.assetId, name: modelRef.assetName, subMeshes };
+      // Include variant in cache key name
+      const variantLabel = modelRef.selectedVariant !== undefined && modelRef.selectedVariant >= 0
+        ? ` (variant ${modelRef.selectedVariant})`
+        : ' (combined)';
+      return { id: modelRef.assetId, name: modelRef.assetName + variantLabel, subMeshes };
     } catch (err) {
       console.error(`[VegetationManager] Failed to load mesh ${modelRef.modelPath}:`, err);
       return null;

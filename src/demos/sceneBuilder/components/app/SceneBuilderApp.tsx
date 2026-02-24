@@ -19,6 +19,7 @@ import { AssetLibraryPanel } from '../panels/AssetLibraryPanel';
 import { ConnectedObjectPanel, ConnectedEnvironmentPanel, ConnectedRenderingPanel, ConnectedMaterialPanel, ConnectedTerrainPanel, ConnectedWaterPanel, ConnectedMenuBar, ShaderDebugPanelContainer } from '../bridges';
 import { useKeyboardShortcuts } from '../hooks';
 import { DockingManagerProvider } from '../ui';
+import { ImportModeDialog } from '../ui/ImportModeDialog/ImportModeDialog';
 import { Viewport } from '../../Viewport';
 import styles from './SceneBuilderApp.module.css';
 
@@ -201,6 +202,9 @@ export function SceneBuilderApp({
       
         {/* Shader Debug Panel - Floating at root level to avoid viewport clipping */}
         <ShaderDebugPanelContainer />
+        
+        {/* Import mode dialog - shown when importing multi-node glTF files */}
+        <ImportModeDialog />
       </div>
     </DockingManagerProvider>
   );

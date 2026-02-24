@@ -34,6 +34,10 @@ export interface ModelReference {
   billboardNormalPath: string | null;
   /** Number of mesh variants (from GLTF sub-meshes or multiple files) */
   variantCount: number;
+  /** Names of each variant node (from glTF scene graph) */
+  variantNames?: string[];
+  /** Selected variant index, or -1 for combined/all meshes (default: -1) */
+  selectedVariant?: number;
 }
 
 // ==================== Atlas & Texture Types ====================

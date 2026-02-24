@@ -134,7 +134,8 @@ fn vertexMain(
   );
   
   // Apply scale and translate
-  var worldPos = worldPosBase + rotatedPos * scale;
+  // Offset Y by scale*0.5 so the base of the normalized model (Y=-0.5 to 0.5) sits on the terrain surface
+  var worldPos = worldPosBase + rotatedPos * scale + vec3f(0.0, scale * 0.5, 0.0);
   
   // Estimate vertex height for wind (normalize Y position relative to model)
   // Assumes model origin is at base, positive Y is up

@@ -18,7 +18,7 @@
 export * from './types';
 
 // Base classes
-export { SceneObject } from './SceneObject';
+export { SceneObject, type OriginPivot } from './SceneObject';
 export { RenderableObject } from './RenderableObject';
 // NOTE: PrimitiveObject is NOT exported here to avoid circular dependency with primitives
 // Import it directly from './PrimitiveObject' if needed

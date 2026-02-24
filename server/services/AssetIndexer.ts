@@ -301,9 +301,10 @@ export class AssetIndexer {
       }
 
       // Process other standalone files (HDR, EXR, etc.) that match EXTENSION_MAP
+      // Skip billboard files — they belong to existing model assets, not standalone
       for (const file of files) {
         const ext = path.extname(file.name).toLowerCase();
-        if (ext !== '.glb' && EXTENSION_MAP[ext]) {
+        if (ext !== '.glb' && EXTENSION_MAP[ext] && !file.name.toLowerCase().includes('billboard')) {
           const filePath = path.join(currentPath, file.name);
           const asset = await this.parseFile(filePath);
           if (asset) {
@@ -446,6 +447,24 @@ export class AssetIndexer {
         subtype = dirHint.subtype || null;
       }
 
+      // Compute metadata from collected files
+      const hasBillboard = files.some(f => f.fileType === 'billboard');
+      const hasLod = files.some(f => f.lodLevel !== null);
+      const lodCount = files.filter(f => f.lodLevel !== null).length;
+      
+      const metadata: AssetMetadata = {
+        biome: null,
+        physicalSize: null,
+        resolution: null,
+        hasBillboard,
+        hasLod,
+        lodCount,
+        variantCount: 1,
+        latinName: null,
+        averageColor: null,
+        rawJson: null,
+      };
+
       return {
         id,
         name: this.formatAssetName(assetName),
@@ -457,7 +476,7 @@ export class AssetIndexer {
         previewPath,
         fileSize: this.getDirSize(dirPath),
         modifiedAt: Math.floor(stat.mtimeMs),
-        metadata: null,
+        metadata,
         files,
         tags: [],
       };
@@ -634,6 +653,10 @@ export class AssetIndexer {
 
     // Skip .gltf files - they're handled as directories
     if (ext === '.gltf') return null;
+    
+    // Skip billboard files — they belong to existing model assets, not standalone
+    const fileName = path.basename(filePath).toLowerCase();
+    if (fileName.includes('billboard')) return null;
 
     const relativePath = path.relative(this.rootPath, filePath);
     const id = this.pathToAssetId(relativePath);
@@ -701,6 +724,9 @@ export class AssetIndexer {
           const nameLower = entry.name.toLowerCase();
 
           // Determine file type
+          // Skip binary data files that are loaded by the model loader
+          if (ext === '.bin') continue;
+          
           let fileType: 'model' | 'texture' | 'billboard' | 'preview' = 'texture';
           if (['.glb', '.gltf', '.obj', '.fbx'].includes(ext)) {
             fileType = 'model';

@@ -252,6 +252,15 @@ export function ConnectedObjectPanel() {
       onScaleChange={handleScaleChange}
       onGizmoModeChange={(mode: GizmoMode) => store.setGizmoMode(mode)}
       onGizmoOrientationChange={(orientation: GizmoOrientation) => store.setGizmoOrientation(orientation)}
+      originPivot={obj?.originPivot ?? 'center'}
+      onOriginPivotChange={(pivot: any) => {
+        const sceneObj = obj ? store.scene?.getObject(obj.id) : null;
+        if (sceneObj) {
+          sceneObj.originPivot = pivot;
+          store.scene?.updateObjectTransform(sceneObj.id);
+          store.syncFromScene();
+        }
+      }}
       onDelete={handleDelete}
       onPrimitiveConfigChange={handlePrimitiveConfigChange}
       onShowNormalsChange={handleShowNormalsChange}

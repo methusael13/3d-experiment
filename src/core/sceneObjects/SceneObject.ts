@@ -1,6 +1,14 @@
 import { mat4, vec3, quat } from 'gl-matrix';
-import type { SerializedSceneObject } from './types';
+import type { SerializedSceneObject, AABB } from './types';
 import { eulerToQuat, quatToEuler } from '../utils/mathUtils';
+
+/**
+ * Origin pivot point for Y-axis positioning.
+ * - 'top': Origin at the top of the bounding box
+ * - 'center': Origin at the center (default)
+ * - 'bottom': Origin at the bottom (base sits on ground)
+ */
+export type OriginPivot = 'top' | 'center' | 'bottom';
 
 /**
  * Base class for all objects in the scene.
@@ -34,6 +42,9 @@ export abstract class SceneObject {
   /** Whether this object casts shadows (used by shadow pass) */
   public castsShadow: boolean;
   
+  /** Origin pivot for Y-axis: 'top', 'center', or 'bottom' */
+  public originPivot: OriginPivot;
+  
   constructor(name: string = 'Object') {
     this.id = `object-${SceneObject.nextId++}`;
     this.name = name;
@@ -43,6 +54,7 @@ export abstract class SceneObject {
     this.visible = true;
     this.groupId = null;
     this.castsShadow = false; // Default: no shadows
+    this.originPivot = 'center'; // Default: center origin (existing behavior)
   }
   
   /**
@@ -61,6 +73,23 @@ export abstract class SceneObject {
     
     // Scale
     mat4.scale(modelMatrix, modelMatrix, this.scale);
+    
+    // Apply origin pivot offset (post-scale, in local space)
+    // Normalized models are centered at origin (Y from ~-0.5 to ~0.5).
+    // The pivot shifts vertices so the chosen anchor point aligns with object.position:
+    //   center: no offset (model already centered — default)
+    //   bottom: shift up by -bounds.min (moves bottom edge to Y=0)
+    //   top:    shift down by -bounds.max (moves top edge to Y=0)
+    const bounds = (this as any).getBounds?.() as AABB | null;
+    if (bounds && this.originPivot !== 'center') {
+      let yOffset = 0;
+      if (this.originPivot === 'bottom') {
+        yOffset = -bounds.min[1]; // e.g., -(-0.5) = +0.5
+      } else if (this.originPivot === 'top') {
+        yOffset = -bounds.max[1]; // e.g., -(0.5) = -0.5
+      }
+      mat4.translate(modelMatrix, modelMatrix, [0, yOffset, 0]);
+    }
     
     return modelMatrix;
   }

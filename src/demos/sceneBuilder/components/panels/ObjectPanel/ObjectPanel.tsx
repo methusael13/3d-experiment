@@ -5,6 +5,7 @@ import { EditTab, type PrimitiveConfig } from './EditTab';
 import { ModifiersTab, type WindSettings, type TerrainBlendSettings, type MaterialInfo } from './ModifiersTab';
 import type { GizmoMode } from '../../../gizmos';
 import type { GizmoOrientation } from '../../../gizmos/BaseGizmo';
+import { OriginPivot } from '@/core/sceneObjects/SceneObject';
 import styles from './ObjectPanel.module.css';
 
 // Import CSS variables
@@ -40,6 +41,8 @@ export interface ObjectPanelProps {
   onScaleChange: (value: [number, number, number]) => void;
   onGizmoModeChange: (mode: GizmoMode) => void;
   onGizmoOrientationChange: (orientation: GizmoOrientation) => void;
+  originPivot?: OriginPivot;
+  onOriginPivotChange?: (pivot: OriginPivot) => void;
   onDelete: () => void;
 
   // Primitive callbacks
@@ -71,6 +74,8 @@ export function ObjectPanel({
   onScaleChange,
   onGizmoModeChange,
   onGizmoOrientationChange,
+  originPivot,
+  onOriginPivotChange,
   onDelete,
   onPrimitiveConfigChange,
   onShowNormalsChange,
@@ -98,6 +103,8 @@ export function ObjectPanel({
             onScaleChange={onScaleChange}
             onGizmoModeChange={onGizmoModeChange}
             onGizmoOrientationChange={onGizmoOrientationChange}
+            originPivot={originPivot}
+            onOriginPivotChange={onOriginPivotChange}
             onDelete={onDelete}
           />
         ),

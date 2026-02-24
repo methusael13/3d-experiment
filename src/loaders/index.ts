@@ -18,7 +18,7 @@
 export { BaseLoader } from './BaseLoader';
 
 // GLB/glTF loader
-export { GLBLoader, loadGLB } from './GLBLoader';
+export { GLBLoader, loadGLB, loadGLBNodes, type GLBNodeModel } from './GLBLoader';
 
 // OBJ loader (wireframe)
 export { OBJLoader, loadOBJ } from './OBJLoader';
@@ -43,6 +43,7 @@ export type {
   GLBMesh,
   GLBMaterial,
   GLBTexture,
+  GLBNode,
   TextureType,
   TextureColorSpace,
   LoaderOptions,

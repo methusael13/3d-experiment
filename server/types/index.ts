@@ -58,6 +58,7 @@ export type TextureType = 'albedo' | 'ao' | 'bump' | 'cavity' | 'displacement'
  */
 export const TextureTypeValues: { pattern: string, type: TextureType }[] = [
   { pattern: 'basecolor', type: 'albedo' },
+  { pattern: 'albedo', type: 'albedo' },
   { pattern: 'ao', type: 'ao' },
   { pattern: 'bump', type: 'bump' },
   { pattern: 'cavity', type: 'cavity' },
@@ -67,7 +68,10 @@ export const TextureTypeValues: { pattern: string, type: TextureType }[] = [
   { pattern: 'opacity', type: 'opacity' },
   { pattern: 'roughness', type: 'roughness' },
   { pattern: 'specular', type: 'specular' },
-  { pattern: 'translucency', type: 'translucency' }
+  { pattern: 'translucency', type: 'translucency' },
+  // Quixel MegaScans billboard naming conventions
+  { pattern: 'b-o', type: 'albedo' },       // BaseColor+Opacity
+  { pattern: 'n-t', type: 'normal' },       // Normal+Translucency
 ]
 
 export interface AssetFile {

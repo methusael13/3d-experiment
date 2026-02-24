@@ -67,6 +67,7 @@ export interface GPUMaterial {
   alphaMode?: AlphaMode;      // glTF alpha mode: OPAQUE, MASK, or BLEND
   alphaCutoff?: number;       // Only used when alphaMode === 'MASK'
   emissive?: [number, number, number];
+  doubleSided?: boolean;      // glTF doubleSided: disable backface culling
   textures?: GPUMaterialTextures;
 }
 
@@ -158,11 +159,16 @@ export class ObjectRendererGPU {
   // Shader source (for hot-reloading)
   private currentShaderSource: string = objectShaderDefault;
   
-  // Pipelines (with/without textures, with/without IBL)
+  // Pipelines (with/without textures, with/without IBL, single/double-sided)
   private pipelineWithTextures!: RenderPipelineWrapper;
   private pipelineNoTextures!: RenderPipelineWrapper;
   private pipelineWithTexturesIBL!: RenderPipelineWrapper;
   private pipelineNoTexturesIBL!: RenderPipelineWrapper;
+  // Double-sided variants (cullMode: 'none')
+  private pipelineWithTexturesDS!: RenderPipelineWrapper;
+  private pipelineNoTexturesDS!: RenderPipelineWrapper;
+  private pipelineWithTexturesIBLDS!: RenderPipelineWrapper;
+  private pipelineNoTexturesIBLDS!: RenderPipelineWrapper;
   
   // Bind group layouts
   private globalBindGroupLayout!: GPUBindGroupLayout;
@@ -256,12 +262,18 @@ export class ObjectRendererGPU {
     
     // Create pipelines (4 bind group layouts max)
     // Non-IBL pipelines use fs_main/fs_notex
-    this.pipelineWithTextures = this.createPipeline('fs_main', true, false);
-    this.pipelineNoTextures = this.createPipeline('fs_notex', false, false);
+    this.pipelineWithTextures = this.createPipeline('fs_main', true, false, 'back');
+    this.pipelineNoTextures = this.createPipeline('fs_notex', false, false, 'back');
     
     // IBL pipelines use fs_main_ibl/fs_notex_ibl
-    this.pipelineWithTexturesIBL = this.createPipeline('fs_main_ibl', true, true);
-    this.pipelineNoTexturesIBL = this.createPipeline('fs_notex_ibl', false, true);
+    this.pipelineWithTexturesIBL = this.createPipeline('fs_main_ibl', true, true, 'back');
+    this.pipelineNoTexturesIBL = this.createPipeline('fs_notex_ibl', false, true, 'back');
+    
+    // Double-sided variants (no backface culling) for foliage/leaves
+    this.pipelineWithTexturesDS = this.createPipeline('fs_main', true, false, 'none');
+    this.pipelineNoTexturesDS = this.createPipeline('fs_notex', false, false, 'none');
+    this.pipelineWithTexturesIBLDS = this.createPipeline('fs_main_ibl', true, true, 'none');
+    this.pipelineNoTexturesIBLDS = this.createPipeline('fs_notex_ibl', false, true, 'none');
     
     // Create global bind group
     this.globalBindGroup = new BindGroupBuilder('object-global-bindgroup')
@@ -297,10 +309,14 @@ export class ObjectRendererGPU {
    */
   private rebuildPipelines(): void {
     try {
-      this.pipelineWithTextures = this.createPipeline('fs_main', true, false);
-      this.pipelineNoTextures = this.createPipeline('fs_notex', false, false);
-      this.pipelineWithTexturesIBL = this.createPipeline('fs_main_ibl', true, true);
-      this.pipelineNoTexturesIBL = this.createPipeline('fs_notex_ibl', false, true);
+      this.pipelineWithTextures = this.createPipeline('fs_main', true, false, 'back');
+      this.pipelineNoTextures = this.createPipeline('fs_notex', false, false, 'back');
+      this.pipelineWithTexturesIBL = this.createPipeline('fs_main_ibl', true, true, 'back');
+      this.pipelineNoTexturesIBL = this.createPipeline('fs_notex_ibl', false, true, 'back');
+      this.pipelineWithTexturesDS = this.createPipeline('fs_main', true, false, 'none');
+      this.pipelineNoTexturesDS = this.createPipeline('fs_notex', false, false, 'none');
+      this.pipelineWithTexturesIBLDS = this.createPipeline('fs_main_ibl', true, true, 'none');
+      this.pipelineNoTexturesIBLDS = this.createPipeline('fs_notex_ibl', false, true, 'none');
       console.log('[ObjectRendererGPU] Pipelines rebuilt successfully');
     } catch (error) {
       console.error('[ObjectRendererGPU] Failed to rebuild pipelines:', error);
@@ -355,7 +371,7 @@ export class ObjectRendererGPU {
    * Create render pipeline
    * All pipelines use same 4 bind group layouts for consistency
    */
-  private createPipeline(fragmentEntry: string, withTextures: boolean, withIBL: boolean): RenderPipelineWrapper {
+  private createPipeline(fragmentEntry: string, withTextures: boolean, withIBL: boolean, cullMode: GPUCullMode = 'back'): RenderPipelineWrapper {
     const layouts = [
       this.globalBindGroupLayout,      // group 0
       this.modelBindGroupLayout,       // group 1
@@ -364,7 +380,7 @@ export class ObjectRendererGPU {
     ];
     
     return RenderPipelineWrapper.create(this.ctx, {
-      label: `object-pipeline-${fragmentEntry}`,
+      label: `object-pipeline-${fragmentEntry}-${cullMode}`,
       vertexShader: this.currentShaderSource,
       fragmentShader: this.currentShaderSource,
       vertexEntryPoint: 'vs_main',
@@ -382,7 +398,7 @@ export class ObjectRendererGPU {
       ],
       bindGroupLayouts: layouts,
       topology: 'triangle-list',
-      cullMode: 'back',
+      cullMode,
       depthFormat: 'depth24plus',
       depthWriteEnabled: true,
       depthCompare: 'greater',  // Reversed-Z
@@ -768,15 +784,20 @@ export class ObjectRendererGPU {
       // 1. Whether mesh has textures
       // 2. Whether valid IBL is available (not just placeholders)
       // When IBL disabled, use fs_main/fs_notex which have hemisphere ambient fallback
+      const doubleSided = mesh.material.doubleSided ?? false;
       let targetPipeline: RenderPipelineWrapper;
       if (useIBL) {
-        targetPipeline = mesh.hasTextures 
-          ? this.pipelineWithTexturesIBL 
-          : this.pipelineNoTexturesIBL;
+        if (doubleSided) {
+          targetPipeline = mesh.hasTextures ? this.pipelineWithTexturesIBLDS : this.pipelineNoTexturesIBLDS;
+        } else {
+          targetPipeline = mesh.hasTextures ? this.pipelineWithTexturesIBL : this.pipelineNoTexturesIBL;
+        }
       } else {
-        targetPipeline = mesh.hasTextures 
-          ? this.pipelineWithTextures 
-          : this.pipelineNoTextures;
+        if (doubleSided) {
+          targetPipeline = mesh.hasTextures ? this.pipelineWithTexturesDS : this.pipelineNoTexturesDS;
+        } else {
+          targetPipeline = mesh.hasTextures ? this.pipelineWithTextures : this.pipelineNoTextures;
+        }
       }
       
       // Switch pipeline if needed

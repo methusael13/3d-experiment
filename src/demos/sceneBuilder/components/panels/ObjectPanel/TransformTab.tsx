@@ -2,6 +2,7 @@ import { useCallback } from 'preact/hooks';
 import { VectorInput } from '../../ui';
 import type { GizmoMode } from '../../../gizmos';
 import type { GizmoOrientation } from '../../../gizmos/BaseGizmo';
+import type { OriginPivot } from '../../../../../core/sceneObjects/SceneObject';
 import styles from './ObjectPanel.module.css';
 
 export interface TransformData {
@@ -22,6 +23,8 @@ export interface TransformTabProps {
   onScaleChange: (value: [number, number, number]) => void;
   onGizmoModeChange: (mode: GizmoMode) => void;
   onGizmoOrientationChange: (orientation: GizmoOrientation) => void;
+  originPivot?: OriginPivot;
+  onOriginPivotChange?: (pivot: OriginPivot) => void;
   onDelete: () => void;
 }
 
@@ -37,6 +40,8 @@ export function TransformTab({
   onScaleChange,
   onGizmoModeChange,
   onGizmoOrientationChange,
+  originPivot = 'center',
+  onOriginPivotChange,
   onDelete,
 }: TransformTabProps) {
   const isSingleSelection = selectionCount === 1;
@@ -131,6 +136,22 @@ export function TransformTab({
         onReset={() => onScaleChange([1, 1, 1])}
         disabled={!isSingleSelection}
       />
+
+      {/* Origin Pivot */}
+      {isSingleSelection && onOriginPivotChange && (
+        <div class={styles.controlGroup}>
+          <label class={styles.controlLabel}>Origin</label>
+          <select
+            class={styles.nameInput}
+            value={originPivot}
+            onChange={(e) => onOriginPivotChange?.((e.target as HTMLSelectElement).value as OriginPivot)}
+          >
+            <option value="top">Top</option>
+            <option value="center">Center</option>
+            <option value="bottom">Bottom</option>
+          </select>
+        </div>
+      )}
 
       {/* Delete Button */}
       <button class={styles.deleteBtn} onClick={onDelete} type="button">

@@ -526,24 +526,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   var N = normalize(input.worldNormal);
   
   if (hasNormalTex) {
-    // Always compute TBN and normal-mapped result
+    // Compute cotangent-frame TBN from screen-space derivatives (Mikkelsen's method)
+    // The inverseSqrt normalization in cotangentFrame handles all practical derivative magnitudes
     let TBN = cotangentFrame(N, input.worldPosition, input.uv);
     let normalSample = textureSample(normalTexture, normalSampler, input.uv).xyz;
     var tangentNormal = normalSample * 2.0 - 1.0;
     tangentNormal = vec3f(tangentNormal.xy * material.normalScale, tangentNormal.z);
-    let mappedN = normalize(TBN * tangentNormal);
-    
-    // Check if screen-space derivatives are large enough for reliable TBN calculation
-    // At large distances, derivatives become very small and cotangentFrame becomes unstable
-    // We already computed dpdx/dpdy inside cotangentFrame, so compute check here too
-    let dp1 = dpdx(input.worldPosition);
-    let dp2 = dpdy(input.worldPosition);
-    let derivativeMagnitude = max(dot(dp1, dp1), dot(dp2, dp2));
-    
-    // Blend between mapped normal and vertex normal based on derivative magnitude
-    // This avoids non-uniform control flow issues with dpdx/dpdy
-    let useMapping = step(0.000001, derivativeMagnitude);
-    N = mix(N, mappedN, useMapping);
+    N = normalize(TBN * tangentNormal);
   }
   
   // Get occlusion (from texture or default)
@@ -652,17 +641,12 @@ fn fs_main_ibl(input: VertexOutput) -> @location(0) vec4f {
   var N = normalize(input.worldNormal);
   
   if (hasNormalTex) {
+    // Compute cotangent-frame TBN from screen-space derivatives (Mikkelsen's method)
     let TBN = cotangentFrame(N, input.worldPosition, input.uv);
     let normalSample = textureSample(normalTexture, normalSampler, input.uv).xyz;
     var tangentNormal = normalSample * 2.0 - 1.0;
     tangentNormal = vec3f(tangentNormal.xy * material.normalScale, tangentNormal.z);
-    let mappedN = normalize(TBN * tangentNormal);
-    
-    let dp1 = dpdx(input.worldPosition);
-    let dp2 = dpdy(input.worldPosition);
-    let derivativeMagnitude = max(dot(dp1, dp1), dot(dp2, dp2));
-    let useMapping = step(0.000001, derivativeMagnitude);
-    N = mix(N, mappedN, useMapping);
+    N = normalize(TBN * tangentNormal);
   }
   
   // Get occlusion (from texture or default)

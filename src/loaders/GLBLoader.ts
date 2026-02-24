@@ -3,12 +3,14 @@
  */
 
 import { GltfLoader, GLTF_COMPONENT_TYPE_ARRAYS, GltfAsset } from 'gltf-loader-ts';
+import { mat4, vec3, quat } from 'gl-matrix';
 import { BaseLoader } from './BaseLoader';
 import type { 
   GLBModel, 
   GLBMesh, 
   GLBMaterial, 
   GLBTexture, 
+  GLBNode,
   TextureType, 
   LoaderOptions,
   TextureColorSpace,
@@ -137,6 +139,241 @@ function normalizeGLBModel(model: GLBModel): GLBModel {
   return model;
 }
 
+// ============ Scene Graph Parsing ============
+
+/**
+ * glTF node with TRS properties (from the gltf-loader-ts types)
+ */
+interface GltfNode {
+  name?: string;
+  mesh?: number;
+  children?: number[];
+  translation?: [number, number, number];
+  rotation?: [number, number, number, number]; // quaternion [x, y, z, w]
+  scale?: [number, number, number];
+  matrix?: number[]; // 4x4 column-major matrix
+}
+
+/**
+ * Get the local transform matrix for a glTF node.
+ * If the node has a `matrix` property, use it directly.
+ * Otherwise compose from TRS.
+ */
+function getNodeLocalMatrix(node: GltfNode): mat4 {
+  const out = mat4.create();
+  
+  if (node.matrix) {
+    // glTF matrix is column-major, same as gl-matrix
+    for (let i = 0; i < 16; i++) {
+      out[i] = node.matrix[i];
+    }
+    return out;
+  }
+  
+  const t = node.translation ?? [0, 0, 0];
+  const r = node.rotation ?? [0, 0, 0, 1]; // identity quaternion
+  const s = node.scale ?? [1, 1, 1];
+  
+  mat4.fromRotationTranslationScale(
+    out,
+    quat.fromValues(r[0], r[1], r[2], r[3]),
+    vec3.fromValues(t[0], t[1], t[2]),
+    vec3.fromValues(s[0], s[1], s[2]),
+  );
+  
+  return out;
+}
+
+/**
+ * Walk the glTF scene graph and collect all nodes that reference meshes,
+ * with their composed world transforms.
+ */
+function parseSceneGraph(
+  gltf: any,
+  meshIndexRanges: Array<{ start: number; count: number }>
+): GLBNode[] {
+  const nodes: GLBNode[] = [];
+  const gltfNodes: GltfNode[] = gltf.nodes ?? [];
+  
+  if (gltfNodes.length === 0) return nodes;
+  
+  // Get root node indices from the default scene (or all root nodes)
+  let rootIndices: number[] = [];
+  if (gltf.scenes && gltf.scene !== undefined && gltf.scenes[gltf.scene]) {
+    rootIndices = gltf.scenes[gltf.scene].nodes ?? [];
+  } else if (gltf.scenes && gltf.scenes.length > 0) {
+    rootIndices = gltf.scenes[0].nodes ?? [];
+  } else {
+    // No scene defined — treat all nodes without parents as roots
+    const hasParent = new Set<number>();
+    for (const node of gltfNodes) {
+      if (node.children) {
+        for (const child of node.children) {
+          hasParent.add(child);
+        }
+      }
+    }
+    rootIndices = gltfNodes.map((_, i) => i).filter(i => !hasParent.has(i));
+  }
+  
+  // Recursive walk
+  function walkNode(nodeIndex: number, parentWorldMatrix: mat4): void {
+    const node = gltfNodes[nodeIndex];
+    if (!node) return;
+    
+    const localMatrix = getNodeLocalMatrix(node);
+    const worldMatrix = mat4.create();
+    mat4.multiply(worldMatrix, parentWorldMatrix, localMatrix);
+    
+    // If this node references a mesh, record it
+    if (node.mesh !== undefined && node.mesh < meshIndexRanges.length) {
+      const range = meshIndexRanges[node.mesh];
+      const meshIndices: number[] = [];
+      for (let i = range.start; i < range.start + range.count; i++) {
+        meshIndices.push(i);
+      }
+      
+      // Decompose world matrix into TRS
+      const t = vec3.create();
+      const r = quat.create();
+      const s = vec3.create();
+      mat4.getTranslation(t, worldMatrix);
+      mat4.getRotation(r, worldMatrix);
+      mat4.getScaling(s, worldMatrix);
+      
+      nodes.push({
+        name: node.name ?? `Node_${nodeIndex}`,
+        meshIndices,
+        translation: [t[0], t[1], t[2]],
+        rotation: [r[0], r[1], r[2], r[3]],
+        scale: [s[0], s[1], s[2]],
+      });
+    }
+    
+    // Recurse into children
+    if (node.children) {
+      for (const childIndex of node.children) {
+        walkNode(childIndex, worldMatrix);
+      }
+    }
+  }
+  
+  const identity = mat4.create();
+  for (const rootIndex of rootIndices) {
+    walkNode(rootIndex, identity);
+  }
+  
+  return nodes;
+}
+
+/**
+ * Bake node world transforms into mesh vertex positions and normals.
+ * For each node, builds its world transform matrix from the decomposed TRS,
+ * then transforms all vertex positions (as points) and normals (as directions)
+ * of the node's associated meshes.
+ * 
+ * After baking, the node transforms are reset to identity (translation=[0,0,0],
+ * rotation=identity, scale=[1,1,1]) since the transforms are now in the vertices.
+ */
+function bakeNodeTransforms(model: GLBModel): void {
+  if (!model.nodes || model.nodes.length === 0) return;
+  
+  for (const node of model.nodes) {
+    // Check if this node has a non-identity transform
+    const hasTranslation = node.translation[0] !== 0 || node.translation[1] !== 0 || node.translation[2] !== 0;
+    const hasRotation = node.rotation[0] !== 0 || node.rotation[1] !== 0 || node.rotation[2] !== 0 || node.rotation[3] !== 1;
+    const hasScale = node.scale[0] !== 1 || node.scale[1] !== 1 || node.scale[2] !== 1;
+    
+    if (!hasTranslation && !hasRotation && !hasScale) continue;
+    
+    // Build world transform matrix from decomposed TRS
+    const worldMatrix = mat4.create();
+    mat4.fromRotationTranslationScale(
+      worldMatrix,
+      quat.fromValues(node.rotation[0], node.rotation[1], node.rotation[2], node.rotation[3]),
+      vec3.fromValues(node.translation[0], node.translation[1], node.translation[2]),
+      vec3.fromValues(node.scale[0], node.scale[1], node.scale[2]),
+    );
+    
+    // Extract the 3x3 normal matrix (inverse transpose of upper-left 3x3)
+    // For uniform scale this is just the rotation matrix
+    const normalMatrix = mat4.create();
+    mat4.invert(normalMatrix, worldMatrix);
+    mat4.transpose(normalMatrix, normalMatrix);
+    
+    // Transform each mesh associated with this node
+    for (const meshIdx of node.meshIndices) {
+      const mesh = model.meshes[meshIdx];
+      if (!mesh) continue;
+      
+      // Transform positions (as points: w=1)
+      if (mesh.positions) {
+        const pos = mesh.positions;
+        const v = vec3.create();
+        for (let i = 0; i < pos.length; i += 3) {
+          vec3.set(v, pos[i], pos[i + 1], pos[i + 2]);
+          vec3.transformMat4(v, v, worldMatrix);
+          pos[i] = v[0];
+          pos[i + 1] = v[1];
+          pos[i + 2] = v[2];
+        }
+      }
+      
+      // Transform normals (as directions: w=0, using normal matrix)
+      if (mesh.normals) {
+        const nrm = mesh.normals;
+        const n = vec3.create();
+        for (let i = 0; i < nrm.length; i += 3) {
+          vec3.set(n, nrm[i], nrm[i + 1], nrm[i + 2]);
+          vec3.transformMat4(n, n, normalMatrix);
+          vec3.normalize(n, n);
+          nrm[i] = n[0];
+          nrm[i + 1] = n[1];
+          nrm[i + 2] = n[2];
+        }
+      }
+      
+      // Transform tangents if present (direction, w=0)
+      if (mesh.tangents) {
+        const tan = mesh.tangents;
+        const t = vec3.create();
+        for (let i = 0; i < tan.length; i += 4) {
+          vec3.set(t, tan[i], tan[i + 1], tan[i + 2]);
+          vec3.transformMat4(t, t, normalMatrix);
+          vec3.normalize(t, t);
+          tan[i] = t[0];
+          tan[i + 1] = t[1];
+          tan[i + 2] = t[2];
+          // tan[i+3] (handedness) stays unchanged
+        }
+      }
+    }
+    
+    // Reset node transform to identity (transforms are now baked into vertices)
+    node.translation = [0, 0, 0];
+    node.rotation = [0, 0, 0, 1];
+    node.scale = [1, 1, 1];
+  }
+}
+
+/**
+ * Describes a single node extracted from a multi-node GLB file.
+ * Contains its own GLBModel with only the meshes belonging to this node,
+ * plus the node's name and world-space transform.
+ */
+export interface GLBNodeModel {
+  /** Node name from the glTF file */
+  name: string;
+  /** GLBModel containing only this node's meshes (shares textures/materials with siblings) */
+  model: GLBModel;
+  /** World-space translation from the scene graph */
+  translation: [number, number, number];
+  /** World-space rotation as quaternion [x, y, z, w] */
+  rotation: [number, number, number, number];
+  /** World-space scale */
+  scale: [number, number, number];
+}
+
 // ============ GLBLoader Class ============
 
 /**
@@ -217,9 +454,14 @@ export class GLBLoader extends BaseLoader<GLBModel> {
       }
     }
     
-    // Extract meshes
+    // Extract meshes (flat list of all primitives across all glTF meshes)
+    // Also build a mapping: gltf mesh index → range of result.meshes[] indices
+    const meshIndexRanges: Array<{ start: number; count: number }> = [];
+    
     if (gltf.meshes) {
       for (const mesh of gltf.meshes) {
+        const rangeStart = result.meshes.length;
+        
         for (const primitive of mesh.primitives) {
           const meshData: GLBMesh = {
             positions: null,
@@ -276,8 +518,21 @@ export class GLBLoader extends BaseLoader<GLBModel> {
           
           result.meshes.push(meshData);
         }
+        
+        meshIndexRanges.push({ 
+          start: rangeStart, 
+          count: result.meshes.length - rangeStart 
+        });
       }
     }
+    
+    // Parse scene graph nodes to build GLBNode[]
+    result.nodes = parseSceneGraph(gltf, meshIndexRanges);
+    
+    // Bake node world transforms into vertex positions and normals
+    // This ensures models exported from Z-up tools (Blender, 3ds Max) display correctly
+    // by applying the root node's coordinate system rotation to all vertices
+    bakeNodeTransforms(result);
     
     // Extract materials (PBR Metallic-Roughness workflow)
     result.materials = (gltf.materials || []).map(mat => {
@@ -340,4 +595,77 @@ export class GLBLoader extends BaseLoader<GLBModel> {
 export async function loadGLB(url: string, options?: LoaderOptions): Promise<GLBModel> {
   const loader = new GLBLoader(url, options);
   return loader.load();
+}
+
+/**
+ * Load a GLB file and split it into separate models per scene graph node.
+ * 
+ * For single-node files (e.g., FlightHelmet), returns an array with one entry.
+ * For multi-node files (e.g., Polyhaven tree packs with 3 variants), returns
+ * one entry per mesh-bearing node, each with its own GLBModel subset.
+ * 
+ * Textures and materials are shared (referenced) across all returned models
+ * to avoid duplicate GPU uploads.
+ * 
+ * @param url - URL to the GLB file
+ * @param options - Loader options
+ * @returns Array of node models, one per scene graph node that has meshes
+ * 
+ * @example
+ * ```ts
+ * const nodes = await loadGLBNodes('/models/trees.glb');
+ * // nodes[0].name === "pine_tree_01"
+ * // nodes[1].name === "pine_tree_02"
+ * // nodes[2].name === "pine_tree_03"
+ * // Each has its own .model with only that tree's meshes
+ * ```
+ */
+export async function loadGLBNodes(url: string, options?: LoaderOptions): Promise<GLBNodeModel[]> {
+  const fullModel = await loadGLB(url, options);
+  
+  // If no nodes parsed, or only one node, return the whole model as a single entry
+  if (!fullModel.nodes || fullModel.nodes.length <= 1) {
+    const nodeName = fullModel.nodes?.[0]?.name ?? 'Root';
+    const nodeTranslation = fullModel.nodes?.[0]?.translation ?? [0, 0, 0];
+    const nodeRotation = fullModel.nodes?.[0]?.rotation ?? [0, 0, 0, 1];
+    const nodeScale = fullModel.nodes?.[0]?.scale ?? [1, 1, 1];
+    
+    return [{
+      name: nodeName,
+      model: fullModel,
+      translation: nodeTranslation as [number, number, number],
+      rotation: nodeRotation as [number, number, number, number],
+      scale: nodeScale as [number, number, number],
+    }];
+  }
+  
+  // Split into separate models per node
+  const result: GLBNodeModel[] = [];
+  
+  for (const node of fullModel.nodes) {
+    // Extract only this node's meshes
+    const nodeMeshes = node.meshIndices.map(i => fullModel.meshes[i]);
+    
+    // Build a sub-model that shares textures/materials but has its own mesh subset
+    const nodeModel: GLBModel = {
+      meshes: nodeMeshes,
+      textures: fullModel.textures,           // shared reference
+      texturesWithType: fullModel.texturesWithType, // shared reference
+      materials: fullModel.materials,          // shared reference
+      nodes: [{
+        ...node,
+        meshIndices: nodeMeshes.map((_, i) => i), // re-index to local mesh array
+      }],
+    };
+    
+    result.push({
+      name: node.name,
+      model: nodeModel,
+      translation: node.translation,
+      rotation: node.rotation,
+      scale: node.scale,
+    });
+  }
+  
+  return result;
 }

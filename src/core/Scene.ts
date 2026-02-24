@@ -225,7 +225,9 @@ export class Scene {
   }
 
   /**
-   * Add a model object to the scene (async)
+   * Add a model object to the scene (async).
+   * For single-node files, adds one object.
+   * For multi-node files, still adds one combined object (use addObjects() for split).
    */
   async addObject(modelPath: string, name?: string | null): Promise<ModelObject | null> {
     try {
@@ -265,6 +267,65 @@ export class Scene {
     } catch (error) {
       console.error('Failed to load model:', error);
       return null;
+    }
+  }
+  
+  /**
+   * Add model objects from a file, splitting multi-node files into separate objects.
+   * 
+   * For single-node files (e.g., FlightHelmet), adds one object — identical to addObject().
+   * For multi-node files (e.g., Polyhaven tree packs with 3 variants), creates one
+   * ModelObject per scene graph node, each named "{name} - variant N" and placed
+   * at its original position from the file.
+   * 
+   * @param modelPath - Path to the model file
+   * @param name - Base name for the objects
+   * @returns Array of created ModelObjects (empty on failure)
+   */
+  async addObjects(modelPath: string, name?: string | null): Promise<ModelObject[]> {
+    try {
+      const displayName = name ?? modelPath
+        .split('/')
+        .pop()
+        ?.replace('.glb', '')
+        .replace('.gltf', '') ?? 'Model';
+      
+      // Use createFromFile which handles node splitting
+      const models = await ModelObject.createFromFile(
+        modelPath,
+        displayName,
+        getModelUrl
+      );
+      
+      const results: ModelObject[] = [];
+      
+      for (const model of models) {
+        const id = `object-${this.nextObjectId++}`;
+        
+        // Override the auto-generated ID
+        (model as any).id = id;
+        
+        // Add to internal map
+        this.objects.set(id, model);
+        
+        // Add to scene graph
+        const bounds = model.getBounds();
+        this.sceneGraph.add(id, {
+          position: [model.position[0], model.position[1], model.position[2]],
+          rotation: [model.rotation[0], model.rotation[1], model.rotation[2]],
+          scale: [model.scale[0], model.scale[1], model.scale[2]],
+          localBounds: bounds ?? undefined,
+          userData: { name: model.name, modelPath },
+        });
+        
+        this.callbacks.onObjectAdded?.(model);
+        results.push(model);
+      }
+      
+      return results;
+    } catch (error) {
+      console.error('Failed to load model:', error);
+      return [];
     }
   }
 

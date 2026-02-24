@@ -140,6 +140,92 @@ export async function getPreviewUrl(assetId: string): Promise<string | null> {
 }
 
 /**
+ * Generate billboard atlas for a model asset.
+ * Bakes the model from multiple angles on the client (Canvas 2D),
+ * then uploads the resulting PNG atlas to the asset server.
+ * 
+ * @param asset - The model asset to generate billboard for
+ * @returns true on success
+ */
+export async function generateBillboard(asset: Asset): Promise<boolean> {
+  if (asset.type !== 'model') {
+    console.warn('[AssetLibrary] Cannot generate billboard for non-model asset');
+    return false;
+  }
+  
+  try {
+    // Find the model file path
+    const modelFile = asset.files.find(f => f.fileType === 'model' && (f.lodLevel === null || f.lodLevel === 0))
+      ?? asset.files.find(f => f.path.endsWith('.gltf') || f.path.endsWith('.glb'));
+    
+    const modelPath = modelFile?.path ?? asset.path;
+    const modelUrl = modelPath.startsWith('/') ? modelPath : `/${modelPath}`;
+    
+    console.log(`[AssetLibrary] Generating billboard for "${asset.name}" from ${modelUrl}`);
+    
+    // Dynamically import BillboardBaker and loadGLBNodes to avoid circular deps & keep it lazy
+    const { BillboardBaker } = await import('../../../../core/vegetation/BillboardBaker');
+    const { loadGLBNodes } = await import('../../../../loaders');
+    
+    // Probe for multi-node content and bake first variant only
+    const nodeModels = await loadGLBNodes(modelUrl);
+    const firstNode = nodeModels[0];
+    
+    if (nodeModels.length > 1) {
+      console.log(`[AssetLibrary] Multi-node model detected (${nodeModels.length} nodes), baking first variant: "${firstNode.name}"`);
+    }
+    
+    // Try to get GPUContext from the scene builder store for WebGPU-based baking
+    let gpuContext: any = undefined;
+    try {
+      const { getSceneBuilderStore } = await import('../state');
+      const store = getSceneBuilderStore();
+      if (store.viewport) {
+        gpuContext = store.viewport.getWebGPUContext();
+      }
+    } catch {
+      // No GPU context available — will fall back to Canvas 2D
+    }
+    
+    // Bake the billboard atlas from the first node's sub-model
+    const result = await BillboardBaker.bakeFromModel(firstNode.model, {
+      viewCount: 8,
+      resolution: 1024,
+    }, gpuContext);
+    
+    console.log(`[AssetLibrary] Billboard baked: ${result.atlasWidth}×${result.atlasHeight}, ${(result.albedoAtlas.size / 1024).toFixed(0)}KB`);
+    
+    // Upload the albedo atlas to the server
+    const arrayBuffer = await result.albedoAtlas.arrayBuffer();
+    
+    const response = await fetch(
+      `${API_BASE}/assets/${asset.id}/billboard?type=albedo&resolution=${result.resolution}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'image/png' },
+        body: arrayBuffer,
+      }
+    );
+    
+    const data = await response.json();
+    
+    if (!data.success) {
+      throw new Error(data.error || 'Upload failed');
+    }
+    
+    console.log(`[AssetLibrary] Billboard uploaded for "${asset.name}" → ${data.data.path}`);
+    
+    // Refresh assets to get updated metadata
+    await fetchAssets();
+    
+    return true;
+  } catch (err) {
+    console.error(`[AssetLibrary] Failed to generate billboard for "${asset.name}":`, err);
+    return false;
+  }
+}
+
+/**
  * Connect to WebSocket for live updates
  */
 export function connectWebSocket(onUpdate?: (event: FileChangeEvent) => void): void {
@@ -272,6 +358,7 @@ export interface UseAssetLibraryResult {
   fetchServerStatus: typeof fetchServerStatus;
   triggerReindex: typeof triggerReindex;
   getPreviewUrl: typeof getPreviewUrl;
+  generateBillboard: typeof generateBillboard;
   connectWebSocket: typeof connectWebSocket;
   disconnectWebSocket: typeof disconnectWebSocket;
 }
@@ -304,6 +391,7 @@ export function useAssetLibrary(): UseAssetLibraryResult {
     fetchServerStatus,
     triggerReindex,
     getPreviewUrl,
+    generateBillboard,
     connectWebSocket,
     disconnectWebSocket,
   };

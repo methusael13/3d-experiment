@@ -174,6 +174,29 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas, onSelectModel }: 
             </div>
           )}
           
+          {/* Variant selector (only for mesh/hybrid with multi-node models) */}
+          {plant.modelRef && plant.modelRef.variantCount > 1 && 
+           (plant.renderMode === 'mesh' || plant.renderMode === 'hybrid') && (
+            <div class={styles.propertyRow}>
+              <label>Mesh Variant</label>
+              <select
+                value={plant.modelRef.selectedVariant ?? -1}
+                onChange={(e) => {
+                  if (!plant.modelRef) return;
+                  const val = parseInt((e.target as HTMLSelectElement).value);
+                  onUpdate({ 
+                    modelRef: { ...plant.modelRef, selectedVariant: val } 
+                  });
+                }}
+              >
+                <option value={-1}>Combined (all meshes)</option>
+                {(plant.modelRef.variantNames ?? []).map((name, idx) => (
+                  <option key={idx} value={idx}>{name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          
           {/* Billboard Distance (hybrid mode) */}
           {plant.renderMode === 'hybrid' && (
             <div class={styles.propertyRow}>
@@ -439,17 +462,37 @@ export function VegetationContent({ registry }: VegetationContentProps) {
       f.path.endsWith('.gltf') || f.path.endsWith('.glb')
     );
     
-    // Find billboard textures (Quixel naming convention)
-    const billboardBO = asset.files.find(f => 
-      f.path.toLowerCase().includes('billboard') && f.path.includes('B-O')
+    // Find billboard textures by fileType + fileSubType
+    // Matches both Quixel naming (B-O, N-T) and baker output (_billboard_albedo, _billboard_normal)
+    const billboardBO = asset.files.find(f =>
+      f.fileType === 'billboard' && f.fileSubType === 'albedo'
+    ) ?? asset.files.find(f =>
+      f.fileType === 'billboard' && f.path.toLowerCase().includes('billboard')
     );
-    const billboardNT = asset.files.find(f => 
-      f.path.toLowerCase().includes('billboard') && f.path.includes('N-T')
+    const billboardNT = asset.files.find(f =>
+      f.fileType === 'billboard' && f.fileSubType === 'normal'
     );
     
     if (!gltfFile) {
       console.error('[VegetationContent] No GLTF file found for asset:', asset.name);
       return;
+    }
+    
+    // Detect multi-node models (e.g., Polyhaven tree packs with multiple variants)
+    let variantCount = 1;
+    let variantNames: string[] = [];
+    try {
+      const { loadGLBNodes, getModelUrl } = await import('../../../../../loaders');
+      const modelUrl = getModelUrl(gltfFile.path.startsWith('/') ? gltfFile.path : `/${gltfFile.path}`);
+      const nodeModels = await loadGLBNodes(modelUrl);
+      variantCount = nodeModels.length;
+      variantNames = nodeModels.map(n => n.name);
+      
+      if (variantCount > 1) {
+        console.log(`[VegetationContent] Multi-node model: ${variantCount} variants detected: ${variantNames.join(', ')}`);
+      }
+    } catch (err) {
+      console.warn('[VegetationContent] Could not probe model nodes:', err);
     }
     
     const modelRef: ModelReference = {
@@ -458,11 +501,14 @@ export function VegetationContent({ registry }: VegetationContentProps) {
       modelPath: gltfFile.path,
       billboardTexturePath: billboardBO?.path ?? null,
       billboardNormalPath: billboardNT?.path ?? null,
-      variantCount: 1,
+      variantCount,
+      variantNames: variantCount > 1 ? variantNames : undefined,
+      selectedVariant: -1, // -1 = combined (all meshes)
     };
     
     registry.setPlantModel(selectedBiome, selectedPlantId, modelRef);
     console.log(`[VegetationContent] Assigned model "${asset.name}" to plant`, 
+      `(${variantCount} variant${variantCount > 1 ? 's' : ''})`,
       billboardBO ? '(with billboard texture)' : '(no billboard texture)');
     
     setSelectedPlantId(null);

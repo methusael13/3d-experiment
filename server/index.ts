@@ -6,6 +6,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { getDatabase, closeDatabase } from './db/database.js';
 import { AssetIndexer } from './services/AssetIndexer.js';
@@ -184,6 +185,127 @@ app.post('/api/watcher/start', (_req, res) => {
 app.post('/api/watcher/stop', async (_req, res) => {
   await fileWatcher.stop();
   res.json({ success: true, data: { message: 'Watcher stopped' } });
+});
+
+// ========== Billboard Generation ==========
+
+// Upload client-generated billboard atlas for an asset
+app.post('/api/assets/:id/billboard', express.raw({ type: 'image/png', limit: '20mb' }), (req, res) => {
+  const db = getDatabase();
+  const assetId = req.params.id;
+  const asset = db.getAsset(assetId);
+  
+  if (!asset) {
+    return res.status(404).json({ success: false, error: 'Asset not found' });
+  }
+  
+  if (!req.body || req.body.length === 0) {
+    return res.status(400).json({ success: false, error: 'No image data received' });
+  }
+  
+  try {
+    // Get existing files first (needed for both texture folder lookup and duplicate check)
+    const existingFiles = db.getFiles(assetId);
+    console.log('Existing files:', existingFiles);
+    
+    // Determine output path — save to the texture folder of the model
+    // Find an existing texture file to determine the textures directory
+    // Only consider actual image files as textures (not .bin or other model data)
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.tga', '.exr'];
+    const existingTextureFile = existingFiles.find(
+      f => (f.fileType === 'texture' || f.fileType === 'billboard') &&
+           imageExtensions.some(ext => f.path.toLowerCase().endsWith(ext))
+    );
+    
+    let assetDir: string;
+    if (existingTextureFile) {
+      // Use the directory of the first texture file
+      assetDir = path.dirname(path.join(PUBLIC_PATH, existingTextureFile.path));
+      console.log('Found texture directory:', assetDir);
+    } else {
+      // Fallback: look for a 'textures' subdirectory inside the asset folder
+      const assetFullPath = path.join(PUBLIC_PATH, asset.path);
+      const baseDir = fs.statSync(assetFullPath).isDirectory() 
+        ? assetFullPath 
+        : path.dirname(assetFullPath);
+      const texturesSubdir = path.join(baseDir, 'textures');
+      console.log('Looking up texture subdirectory:', texturesSubdir);
+      
+      if (fs.existsSync(texturesSubdir) && fs.statSync(texturesSubdir).isDirectory()) {
+        assetDir = texturesSubdir;
+        console.log('Found texture subdirectory:', texturesSubdir);
+      } else {
+        // Last resort: use the asset directory itself
+        assetDir = baseDir;
+        console.log('Could not find texture subdirectory:', texturesSubdir);
+      }
+    }
+    const safeName = asset.name.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+    
+    // Get the type from query param: 'albedo' or 'normal'
+    const billboardType = (req.query.type as string) || 'albedo';
+    const filename = `${safeName}_billboard_${billboardType}.png`;
+    const outputPath = path.join(assetDir, filename);
+    
+    // Write the PNG to disk
+    fs.writeFileSync(outputPath, req.body);
+    
+    // Compute relative path from public/ for the asset DB
+    const relativePath = path.relative(PUBLIC_PATH, outputPath).replace(/\\/g, '/');
+    
+    // Register in asset_files
+    const fileType = 'billboard' as const;
+    const existingBillboard = existingFiles.find(
+      f => f.fileType === 'billboard' && f.path.includes(`_billboard_${billboardType}`)
+    );
+    
+    if (!existingBillboard) {
+      db.insertFile({
+        assetId,
+        fileType,
+        fileSubType: billboardType === 'normal' ? 'normal' : 'albedo',
+        lodLevel: null,
+        resolution: req.query.resolution as string || '512',
+        format: 'png',
+        path: relativePath,
+        fileSize: req.body.length,
+      });
+    }
+    
+    // Update asset_metadata has_billboard flag
+    const meta = db.getMetadata(assetId);
+    if (meta) {
+      meta.hasBillboard = true;
+      db.insertMetadata(assetId, meta);
+    } else {
+      db.insertMetadata(assetId, {
+        biome: null,
+        physicalSize: null,
+        resolution: null,
+        hasBillboard: true,
+        hasLod: false,
+        lodCount: 0,
+        variantCount: 1,
+        latinName: null,
+        averageColor: null,
+        rawJson: null,
+      });
+    }
+    
+    console.log(`[Server] Billboard ${billboardType} saved for "${asset.name}" → ${relativePath}`);
+    
+    res.json({ 
+      success: true, 
+      data: { 
+        path: relativePath,
+        type: billboardType,
+        size: req.body.length,
+      } 
+    });
+  } catch (err) {
+    console.error(`[Server] Failed to save billboard for ${assetId}:`, err);
+    res.status(500).json({ success: false, error: String(err) });
+  }
 });
 
 // ========== Startup ==========

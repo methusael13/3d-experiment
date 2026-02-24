@@ -17,7 +17,7 @@ struct SpawnParams {
   // Tile info (vec4 aligned)
   tileOrigin: vec2f,         // World-space XZ origin of this tile
   tileSize: f32,             // World-space tile size
-  density: f32,              // Base instances per square unit
+  cellSize: f32,             // Fixed world-space cell size (LOD-invariant)
   
   // Plant info
   biomeChannel: u32,         // 0=R, 1=G, 2=B, 3=A
@@ -31,7 +31,7 @@ struct SpawnParams {
   
   // Hybrid parameters
   billboardDistance: f32,     // 3D→billboard transition distance
-  seed: f32,                 // Per-dispatch random seed
+  seed: f32,                 // Per-dispatch random seed (plant-specific, not LOD-dependent)
   
   // Terrain parameters
   terrainSize: f32,          // Total terrain world size
@@ -47,7 +47,9 @@ struct SpawnParams {
   // Clustering parameters
   clusterStrength: f32,      // 0 = uniform, 1 = highly clustered
   minSpacing: f32,           // Minimum distance between instances (world units)
-  _padding: u32,
+  
+  // LOD density thinning (0..1) — fraction of world-space cells to keep at this LOD
+  lodDensityRatio: f32,      // 1.0 = finest LOD (all cells), <1.0 = coarser (skip cells)
 }
 
 struct PlantInstance {
@@ -163,21 +165,40 @@ fn selectChannel(v: vec4f, channel: u32) -> f32 {
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
-  // Determine grid resolution from tile size and density
-  let gridSize = u32(ceil(params.tileSize * sqrt(params.density)));
+  // World-space fixed grid: cell positions are independent of tile boundaries and LOD level.
+  // The grid is aligned to world origin with a fixed cellSize derived from max plant density.
+  // LOD thinning: coarser LODs deterministically skip cells using lodDensityRatio.
+  // This ensures position invariance: a tree visible at LOD 3 stays at the same position at LOD 5.
+  
+  let gridSize = u32(ceil(params.tileSize / params.cellSize));
   
   // Bounds check
   if (gid.x >= gridSize || gid.y >= gridSize) {
     return;
   }
   
-  let cellSize = params.tileSize / f32(gridSize);
-  let cellOrigin = params.tileOrigin + vec2f(f32(gid.x), f32(gid.y)) * cellSize;
+  // Compute world-space cell origin (snapped to global grid, not tile-relative)
+  let tileGridStart = floor(params.tileOrigin / params.cellSize);
+  let worldCellX = tileGridStart.x + f32(gid.x);
+  let worldCellY = tileGridStart.y + f32(gid.y);
+  let worldCell = vec2f(worldCellX, worldCellY);
+  let cellOrigin = worldCell * params.cellSize;
   
-  // ---- Deterministic jitter within cell ----
-  let jitterSeed = cellOrigin * 7.13 + params.seed;
+  // ---- LOD density thinning ----
+  // Deterministic per-cell hash decides if this cell is active at this LOD level.
+  // If lodDensityRatio < 1.0, some cells are skipped. Cells that pass at a coarser LOD
+  // will always pass at a finer LOD (since the threshold only increases).
+  if (params.lodDensityRatio < 0.999) {
+    let lodHash = hash21(worldCell * 37.1 + params.seed * 0.13);
+    if (lodHash >= params.lodDensityRatio) {
+      return;
+    }
+  }
+  
+  // ---- Deterministic jitter within cell (uses world cell, not tile-relative) ----
+  let jitterSeed = worldCell * 7.13 + params.seed;
   let jitter = hash22(jitterSeed);
-  let worldXZ = cellOrigin + jitter * cellSize;
+  let worldXZ = cellOrigin + jitter * params.cellSize;
   
   // ---- Convert to UV and sample textures ----
   let uv = worldToUV(worldXZ);
@@ -222,11 +243,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // ---- MinSpacing enforcement ----
   // If cell size is smaller than minSpacing, probabilistically reject
   // to approximate minimum distance between instances.
-  if (params.minSpacing > 0.0 && cellSize < params.minSpacing) {
-    let spacingRatio = cellSize / params.minSpacing;
-    // Probability of keeping = (cellSize / minSpacing)^2 (area-based)
+  if (params.minSpacing > 0.0 && params.cellSize < params.minSpacing) {
+    let spacingRatio = params.cellSize / params.minSpacing;
     let keepProb = spacingRatio * spacingRatio;
-    let spacingRoll = hash21(cellOrigin * 23.7 + params.seed * 3.1);
+    let spacingRoll = hash21(worldCell * 23.7 + params.seed * 3.1);
     if (spacingRoll > keepProb) {
       return;
     }
@@ -234,7 +254,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   
   // ---- Density-based probability culling ----
   // Use biome value as spawn probability (higher biome = more likely)
-  let spawnRoll = hash21(cellOrigin * 17.3 + params.seed);
+  let spawnRoll = hash21(worldCell * 17.3 + params.seed);
   if (spawnRoll > biomeValue) {
     return;
   }
@@ -275,10 +295,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
   
-  // ---- Calculate instance properties ----
-  let scale = mix(params.minScale, params.maxScale, hash21(cellOrigin * 31.7 + params.seed * 2.1));
-  let rotation = hash21(cellOrigin * 41.3 + params.seed * 5.3) * 6.28318; // 0 to 2π
-  let variantIndex = f32(u32(hash21(cellOrigin * 53.9 + params.seed * 7.7) * f32(max(params.variantCount, 1u))));
+  // ---- Calculate instance properties (using world cell for consistency) ----
+  let scale = mix(params.minScale, params.maxScale, hash21(worldCell * 31.7 + params.seed * 2.1));
+  let rotation = hash21(worldCell * 41.3 + params.seed * 5.3) * 6.28318; // 0 to 2π
+  let variantIndex = f32(u32(hash21(worldCell * 53.9 + params.seed * 7.7) * f32(max(params.variantCount, 1u))));
   
   // ---- Emit instance ----
   let idx = atomicAdd(&counters[0], 1u);
