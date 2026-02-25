@@ -52,11 +52,28 @@ struct PlantInstance {
   rotationAndType: vec4f,
 }
 
+// ==================== CSM Shadow Structs ====================
+
+struct CSMUniforms {
+  lightSpaceMatrix0: mat4x4f,
+  lightSpaceMatrix1: mat4x4f,
+  lightSpaceMatrix2: mat4x4f,
+  lightSpaceMatrix3: mat4x4f,
+  cascadeSplits: vec4f,
+  config: vec4f,       // x=cascadeCount, y=csmEnabled, z=blendFraction, w=pad
+  cameraForward: vec4f, // xyz = normalized camera forward, w = 0
+}
+
 // ==================== Bindings ====================
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var<uniform> wind: WindParams;
 @group(0) @binding(2) var<storage, read> instances: array<PlantInstance>;
+
+// Group 1: Environment shadow (CSM)
+@group(1) @binding(1) var shadowSampler: sampler_comparison;
+@group(1) @binding(7) var shadowMapArray: texture_depth_2d_array;
+@group(1) @binding(8) var<uniform> csm: CSMUniforms;
 
 // ==================== Constants ====================
 
@@ -285,6 +302,108 @@ fn perlinNoise2D(p: vec2f) -> f32 {
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0;
 }
 
+// ==================== CSM Shadow Functions ====================
+
+const PCF_SAMPLES: i32 = 3;
+
+fn getCSMLightSpaceMatrix(cascadeIdx: u32) -> mat4x4f {
+  switch (cascadeIdx) {
+    case 0u: { return csm.lightSpaceMatrix0; }
+    case 1u: { return csm.lightSpaceMatrix1; }
+    case 2u: { return csm.lightSpaceMatrix2; }
+    case 3u: { return csm.lightSpaceMatrix3; }
+    default: { return csm.lightSpaceMatrix0; }
+  }
+}
+
+fn getCSMCascadeSplit(cascadeIdx: u32) -> f32 {
+  switch (cascadeIdx) {
+    case 0u: { return csm.cascadeSplits.x; }
+    case 1u: { return csm.cascadeSplits.y; }
+    case 2u: { return csm.cascadeSplits.z; }
+    case 3u: { return csm.cascadeSplits.w; }
+    default: { return csm.cascadeSplits.w; }
+  }
+}
+
+fn selectCascade(viewDepth: f32) -> u32 {
+  let cascadeCount = u32(csm.config.x);
+  for (var i = 0u; i < cascadeCount; i++) {
+    if (viewDepth < getCSMCascadeSplit(i)) {
+      return i;
+    }
+  }
+  return cascadeCount - 1u;
+}
+
+fn sampleCascadeShadow(
+  worldPos: vec3f,
+  lightSpaceMatrix: mat4x4f,
+  cascadeIdx: u32,
+  bias: f32,
+  texelSize: f32
+) -> f32 {
+  let lightSpacePos = lightSpaceMatrix * vec4f(worldPos, 1.0);
+  var shadowCoord = lightSpacePos.xyz / lightSpacePos.w;
+  shadowCoord.x = shadowCoord.x * 0.5 + 0.5;
+  shadowCoord.y = shadowCoord.y * -0.5 + 0.5;
+  
+  if (shadowCoord.x < 0.0 || shadowCoord.x > 1.0 ||
+      shadowCoord.y < 0.0 || shadowCoord.y > 1.0 ||
+      shadowCoord.z < 0.0 || shadowCoord.z > 1.0) {
+    return 1.0;
+  }
+  
+  let biasedDepth = shadowCoord.z - bias;
+  
+  var shadow = 0.0;
+  let halfKernel = f32(PCF_SAMPLES) / 2.0;
+  for (var y = 0; y < PCF_SAMPLES; y++) {
+    for (var x = 0; x < PCF_SAMPLES; x++) {
+      let offset = vec2f(
+        (f32(x) - halfKernel + 0.5) * texelSize,
+        (f32(y) - halfKernel + 0.5) * texelSize
+      );
+      shadow += textureSampleCompareLevel(
+        shadowMapArray, shadowSampler,
+        shadowCoord.xy + offset,
+        i32(cascadeIdx),
+        biasedDepth
+      );
+    }
+  }
+  return shadow / f32(PCF_SAMPLES * PCF_SAMPLES);
+}
+
+fn sampleCSMShadowGrass(worldPos: vec3f, viewDepth: f32) -> f32 {
+  let csmEnabled = csm.config.y > 0.5;
+  if (!csmEnabled) { return 1.0; }
+  
+  let cascadeCount = u32(csm.config.x);
+  let blendFraction = csm.config.z;
+  let bias = 0.002;
+  let texelSize = 1.0 / 2048.0;
+  
+  let cascadeIdx = selectCascade(viewDepth);
+  let lightSpaceMatrix = getCSMLightSpaceMatrix(cascadeIdx);
+  
+  var shadow = sampleCascadeShadow(worldPos, lightSpaceMatrix, cascadeIdx, bias, texelSize);
+  
+  if (cascadeIdx < cascadeCount - 1u) {
+    let currentSplit = getCSMCascadeSplit(cascadeIdx);
+    let blendZone = currentSplit * blendFraction;
+    let blendStart = currentSplit - blendZone;
+    if (viewDepth > blendStart) {
+      let nextMatrix = getCSMLightSpaceMatrix(cascadeIdx + 1u);
+      let nextShadow = sampleCascadeShadow(worldPos, nextMatrix, cascadeIdx + 1u, bias, texelSize);
+      let blend = smoothstep(0.0, 1.0, (viewDepth - blendStart) / blendZone);
+      shadow = mix(shadow, nextShadow, blend);
+    }
+  }
+  
+  return shadow;
+}
+
 // ==================== Fragment Shader ====================
 
 @fragment
@@ -293,8 +412,6 @@ fn fragmentMain(
   @builtin(front_facing) isFrontFace: bool,
 ) -> @location(0) vec4f {
   // ---- Self-shadow (concentrated at base) ----
-  // bladeT = 0 at root, 1 at tip. Shadow darkens the bottom ~20% of the blade.
-  // mix(0.2, 1.0, ...) ensures the base is darkened to 20% (not black).
   let selfShadow = mix(0.2, 1.0, pow(input.bladeT, 2.0));
   
   // ---- Base color in linear space ----
@@ -307,33 +424,37 @@ fn fragmentMain(
   
   // ---- Normal handling ----
   var normal = normalize(input.normal);
-  
-  // Flip normal for back faces
   if (!isFrontFace) {
     normal = -normal;
   }
-  
-  // Blend normal toward up (vertical) — grass blades mostly scatter light upward
   let upDir = vec3f(0.0, 1.0, 0.0);
   normal = normalize(mix(upDir, normal, 0.25));
+  
+  // ---- CSM shadow receiving (skip for distant fragments — beyond fade distance) ----
+  let camFwd = csm.cameraForward.xyz;
+  let viewDepth = abs(dot(input.worldPos - uniforms.cameraPosition, camFwd));
+  var shadowFactor = 1.0;
+  if (viewDepth < uniforms.maxFadeDistance) {
+    shadowFactor = sampleCSMShadowGrass(input.worldPos, viewDepth);
+  }
   
   // ---- Analytical sky-aware lighting ----
   let lightDir = normalize(uniforms.sunDirection);
   let NdotL = max(dot(normal, lightDir), 0.0);
   
-  // Hemisphere ambient: interpolate between skyColor (up) and groundColor (down)
+  // Hemisphere ambient
   let hemisphereBlend = normal.y * 0.5 + 0.5;
   let ambientColor = mix(uniforms.groundColor, uniforms.skyColor, hemisphereBlend);
   
-  // Direct sun/moon light
-  let diffuseColor = uniforms.sunColor * NdotL;
+  // Direct sun/moon light with shadow
+  let diffuseColor = uniforms.sunColor * NdotL * shadowFactor;
   
-  // Combine ambient + direct
+  // Combine ambient + shadowed direct
   let lighting = ambientColor + diffuseColor;
   
-  // Subsurface scattering approximation — light passing through blade
+  // Subsurface scattering (also attenuated by shadow)
   let viewDir = normalize(uniforms.cameraPosition - input.worldPos);
-  let sss = max(dot(-viewDir, lightDir), 0.0) * 0.2 * input.bladeT * uniforms.sunIntensityFactor;
+  let sss = max(dot(-viewDir, lightDir), 0.0) * 0.2 * input.bladeT * uniforms.sunIntensityFactor * shadowFactor;
   
   let finalColor = modulatedColor * (lighting + sss);
   

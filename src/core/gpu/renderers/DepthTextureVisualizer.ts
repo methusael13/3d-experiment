@@ -131,8 +131,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     size: number,
     screenWidth: number,
     screenHeight: number
-  ): void {
-    if (!this.pipelineWrapper) return;
+  ): number {
+    if (!this.pipelineWrapper) return 0;
     
     const bindGroup = this.getBindGroup(depthTextureView);
     
@@ -156,6 +156,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     passEncoder.draw(3); // Fullscreen triangle
     
     passEncoder.end();
+    return 1;
   }
   
   /**

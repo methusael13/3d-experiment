@@ -756,21 +756,21 @@ export class ObjectRendererGPU {
    * Render all meshes using SceneEnvironment for Group 3 (shadow + IBL)
    * This is the main rendering entry point for unified environment handling
    */
-  renderWithSceneEnvironment(passEncoder: GPURenderPassEncoder, params: ObjectRenderParams, sceneEnv: SceneEnvironment | null): void {
+  renderWithSceneEnvironment(passEncoder: GPURenderPassEncoder, params: ObjectRenderParams, sceneEnv: SceneEnvironment | null): number {
     // Use provided SceneEnvironment or fall back to default (with placeholders)
     const environment = sceneEnv ?? this.defaultSceneEnvironment;
     // Check if SceneEnvironment has valid IBL textures (not just placeholders)
     const useIBL = environment.hasIBL();
-    this.renderInternal(passEncoder, params, environment.bindGroup, useIBL);
+    return this.renderInternal(passEncoder, params, environment.bindGroup, useIBL);
   }
   
   /**
    * Internal render method with explicit environment bind group
    * @param useIBL - If true, use IBL pipelines; if false, use hemisphere ambient fallback
    */
-  private renderInternal(passEncoder: GPURenderPassEncoder, params: ObjectRenderParams, environmentBindGroup: GPUBindGroup, useIBL: boolean): void {
+  private renderInternal(passEncoder: GPURenderPassEncoder, params: ObjectRenderParams, environmentBindGroup: GPUBindGroup, useIBL: boolean): number {
     if (this.meshes.size === 0) {
-      return;
+      return 0;
     }
     
     // Update global uniforms
@@ -779,6 +779,7 @@ export class ObjectRendererGPU {
     // Render meshes grouped by pipeline type
     let currentPipeline: RenderPipelineWrapper | null = null;
 
+    let drawCalls = 0;
     for (const mesh of this.meshes.values()) {
       // Select pipeline based on:
       // 1. Whether mesh has textures
@@ -824,10 +825,14 @@ export class ObjectRendererGPU {
       if (mesh.indexBuffer) {
         passEncoder.setIndexBuffer(mesh.indexBuffer.buffer, mesh.indexFormat);
         passEncoder.drawIndexed(mesh.indexCount, 1, 0, 0, 0);
+        drawCalls++;
       } else {
         passEncoder.draw(mesh.vertexCount, 1, 0, 0);
+        drawCalls++;
       }
     }
+
+    return drawCalls;
   }
   
   /**
@@ -1030,14 +1035,14 @@ export class ObjectRendererGPU {
     slotIndex: number,
     lightPosition: vec3,
     shadowParams?: ShadowPassParams
-  ): void {
+  ): number {
     if (!this.shadowPipeline || !this.shadowUniformBuffer || !this.shadowBindGroup ||
         !this.shadowModelBindGroupLayout) {
-      return;
+      return 0;
     }
     
     if (this.meshes.size === 0) {
-      return;
+      return 0;
     }
     
     // Calculate dynamic offset for this slot (256-byte aligned)
@@ -1051,6 +1056,7 @@ export class ObjectRendererGPU {
     const useDistanceCulling = shadowParams && shadowParams.shadowRadius > 0;
     const radiusSq = useDistanceCulling ? shadowParams.shadowRadius * shadowParams.shadowRadius : 0;
     
+    let drawCalls = 0;
     // Render each mesh that passes culling
     for (const mesh of this.meshes.values()) {
       // Skip if castsShadow is disabled
@@ -1087,10 +1093,14 @@ export class ObjectRendererGPU {
       if (mesh.indexBuffer) {
         passEncoder.setIndexBuffer(mesh.indexBuffer.buffer, mesh.indexFormat);
         passEncoder.drawIndexed(mesh.indexCount, 1, 0, 0, 0);
+        drawCalls++;
       } else {
         passEncoder.draw(mesh.vertexCount, 1, 0, 0);
+        drawCalls++;
       }
     }
+
+    return drawCalls;
   }
   
   // ============ Selection Mask Pass ============
@@ -1190,11 +1200,11 @@ export class ObjectRendererGPU {
     passEncoder: GPURenderPassEncoder,
     viewProjectionMatrix: mat4 | Float32Array,
     cameraPosition: [number, number, number]
-  ): void {
-    if (this.selectedMeshIds.size === 0) return;
+  ): number {
+    if (this.selectedMeshIds.size === 0) return 0;
     
     this.ensureSelectionMaskPipeline();
-    if (!this.selectionMaskPipeline || !this.selectionMaskGlobalBuffer || !this.selectionMaskGlobalBindGroup) return;
+    if (!this.selectionMaskPipeline || !this.selectionMaskGlobalBuffer || !this.selectionMaskGlobalBindGroup) return 0;
     
     // Update global uniforms (viewProjection + cameraPosition)
     const data = new Float32Array(20); // 80 bytes
@@ -1208,6 +1218,7 @@ export class ObjectRendererGPU {
     passEncoder.setPipeline(this.selectionMaskPipeline);
     passEncoder.setBindGroup(0, this.selectionMaskGlobalBindGroup);
     
+    let drawCalls = 0;
     for (const meshId of this.selectedMeshIds) {
       const mesh = this.meshes.get(meshId);
       if (!mesh) continue;
@@ -1227,10 +1238,14 @@ export class ObjectRendererGPU {
       if (mesh.indexBuffer) {
         passEncoder.setIndexBuffer(mesh.indexBuffer.buffer, mesh.indexFormat);
         passEncoder.drawIndexed(mesh.indexCount, 1, 0, 0, 0);
+        drawCalls++;
       } else {
         passEncoder.draw(mesh.vertexCount, 1, 0, 0);
+        drawCalls++;
       }
     }
+
+    return drawCalls;
   }
   
   /**

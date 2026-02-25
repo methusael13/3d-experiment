@@ -112,9 +112,9 @@ export class SelectionOutlineRendererGPU {
    * @param encoder - Active command encoder
    * @param params - Mask texture, output view, dimensions, optional style overrides
    */
-  render(encoder: GPUCommandEncoder, params: SelectionOutlineParams): void {
+  render(encoder: GPUCommandEncoder, params: SelectionOutlineParams): number {
     this.ensurePipeline();
-    if (!this.pipeline || !this.sampler || !this.uniformBuffer) return;
+    if (!this.pipeline || !this.sampler || !this.uniformBuffer) return 0;
 
     const outlineWidth = params.outlineWidth ?? 2.0;
     const outlineColor = params.outlineColor ?? [1.0, 0.5, 0.0, 1.0];
@@ -155,6 +155,8 @@ export class SelectionOutlineRendererGPU {
     pass.setBindGroup(0, bindGroup);
     pass.draw(3); // Fullscreen triangle
     pass.end();
+    
+    return 1;
   }
 
   // ---- Cleanup ----

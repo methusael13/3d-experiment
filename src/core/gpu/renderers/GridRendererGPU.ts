@@ -395,13 +395,13 @@ export class GridRendererGPU {
     passEncoder: GPURenderPassEncoder,
     params: GridGroundRenderParams,
     sceneEnvironment: SceneEnvironment
-  ): void {
+  ): number {
     // Ensure ground pipeline is initialized
     if (!this.groundPipeline) {
       this.initGroundPipeline(sceneEnvironment);
     }
     
-    if (!this.groundPipeline || !this.groundBindGroup) return;
+    if (!this.groundPipeline || !this.groundBindGroup) return 0;
     
     // Update uniforms
     this.writeGroundUniforms(params);
@@ -419,6 +419,7 @@ export class GridRendererGPU {
     // Draw ground quad
     passEncoder.setVertexBuffer(0, this.groundVertexBuffer.buffer);
     passEncoder.draw(this.groundVertexCount);
+    return 1;
   }
   
   /**
@@ -430,7 +431,7 @@ export class GridRendererGPU {
   renderAxes(
     passEncoder: GPURenderPassEncoder,
     vpMatrix: mat4 | Float32Array,
-  ): void {
+  ): number {
     // Update uniform buffer with view-projection matrix
     // We reuse the same uniform struct layout; only viewProjection matters for axes
     const d = this.uniformData;
@@ -446,6 +447,7 @@ export class GridRendererGPU {
     // Draw axes
     passEncoder.setVertexBuffer(0, this.axisVertexBuffer.buffer);
     passEncoder.draw(this.axisVertexCount);
+    return 1;
   }
   
   /**

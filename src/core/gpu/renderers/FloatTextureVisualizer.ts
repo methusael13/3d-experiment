@@ -238,9 +238,9 @@ fn fs_viridis(input: VertexOutput) -> @location(0) vec4f {
     screenWidth: number,
     screenHeight: number,
     colormap: FloatTextureColormap = 'grayscale'
-  ): void {
+  ): number {
     const pipeline = this.getPipeline(colormap);
-    if (!pipeline) return;
+    if (!pipeline) return 0;
     
     const bindGroup = this.getBindGroup(textureView);
     
@@ -264,6 +264,7 @@ fn fs_viridis(input: VertexOutput) -> @location(0) vec4f {
     passEncoder.draw(3); // Fullscreen triangle
     
     passEncoder.end();
+    return 1;
   }
   
   /**

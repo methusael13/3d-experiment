@@ -28,6 +28,8 @@ interface PlantCacheEntry {
   mesh: VegetationMesh | null;
   renderMode: number;
   billboardDistance: number;
+  windInfluence: number;
+  castShadows: boolean;
 }
 
 /**
@@ -109,7 +111,7 @@ export class VegetationTileCache {
   /** Released instance buffers available for reuse */
   private bufferPool: UnifiedGPUBuffer[] = [];
   
-  constructor(maxCacheSize: number = 128, lodDensities?: LODDensityConfig[]) {
+  constructor(maxCacheSize: number = 48, lodDensities?: LODDensityConfig[]) {
     this.maxCacheSize = maxCacheSize;
     this.lodDensities = lodDensities ?? [...DEFAULT_LOD_DENSITIES];
   }
@@ -222,6 +224,8 @@ export class VegetationTileCache {
       mesh: null,
       renderMode: 0,
       billboardDistance: 50,
+      windInfluence: 1.0,
+      castShadows: false,
     });
     
     entry.lastUsedFrame = this.currentFrame;
@@ -291,6 +295,18 @@ export class VegetationTileCache {
     }
   }
   
+  /**
+   * Set per-plant wind influence and shadow casting parameters.
+   */
+  setPlantWindAndShadow(tileId: string, plantId: string, windInfluence: number, castShadows: boolean): void {
+    const entry = this.tiles.get(tileId);
+    const plant = entry?.plants.get(plantId);
+    if (plant) {
+      plant.windInfluence = windInfluence;
+      plant.castShadows = castShadows;
+    }
+  }
+  
   // ==================== Querying ====================
   
   /**
@@ -317,6 +333,8 @@ export class VegetationTileCache {
           mesh: plantEntry.mesh,
           renderMode: plantEntry.renderMode,
           billboardDistance: plantEntry.billboardDistance,
+          windInfluence: plantEntry.windInfluence,
+          castShadows: plantEntry.castShadows,
         });
       }
       

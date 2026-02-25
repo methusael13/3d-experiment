@@ -33,6 +33,7 @@ import type {
 } from './types';
 import { createDefaultVegetationConfig, createDefaultWindParams } from './types';
 import { DirectionalLight } from '../sceneObjects/lights/DirectionalLight';
+import type { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
 import { Vec3 } from '../types';
 
 // ==================== VegetationManager ====================
@@ -324,6 +325,12 @@ export class VegetationManager {
         plant.billboardDistance,
       );
 
+      this.tileCache.setPlantWindAndShadow(
+        tile.tileId, plant.id,
+        plant.windInfluence ?? 1.0,
+        plant.castShadows ?? false,
+      );
+
       // Mesh/texture loading is async but non-blocking — fire and forget
       this._ensurePlantMesh(tile.tileId, plant);
       this._ensurePlantBillboardOrAtlas(tile.tileId, plant);
@@ -357,26 +364,32 @@ export class VegetationManager {
 
   private async _loadMeshInternal(modelRef: ModelReference): Promise<VegetationMesh | null> {
     try {
+      let glbModel: GLBModel;
       let meshesToConvert: GLBMesh[];
+      console.log(`[VegetationManager] Selected variant: ${modelRef.selectedVariant}`);
       
       // If a specific variant is selected and model has multiple nodes, load only that variant
       if (modelRef.selectedVariant !== undefined && modelRef.selectedVariant >= 0 && modelRef.variantCount > 1) {
         const { loadGLBNodes } = await import('../../loaders/GLBLoader');
         const nodeModels = await loadGLBNodes(modelRef.modelPath, { normalize: true });
         const variantIdx = Math.min(modelRef.selectedVariant, nodeModels.length - 1);
-        meshesToConvert = nodeModels[variantIdx].model.meshes;
+        glbModel = nodeModels[variantIdx].model;
+        meshesToConvert = glbModel.meshes;
         console.log(`[VegetationManager] Loading variant ${variantIdx} "${nodeModels[variantIdx].name}" (${meshesToConvert.length} meshes)`);
       } else {
         // Combined: load all meshes
-        const glbModel: GLBModel = await loadGLB(modelRef.modelPath, { normalize: true });
+        glbModel = await loadGLB(modelRef.modelPath, { normalize: true });
         meshesToConvert = glbModel.meshes;
       }
       
       if (meshesToConvert.length === 0) return null;
 
+      // Upload textures from the GLB model (cached per model path)
+      const textureMap = await this._uploadGLBTextures(glbModel, modelRef.modelPath);
+
       const subMeshes: VegetationSubMesh[] = [];
       for (const glbMesh of meshesToConvert) {
-        const subMesh = this._convertGLBMeshToSubMesh(glbMesh, modelRef);
+        const subMesh = this._convertGLBMeshToSubMesh(glbMesh, modelRef, glbModel, textureMap);
         if (subMesh) subMeshes.push(subMesh);
       }
       if (subMeshes.length === 0) return null;
@@ -392,7 +405,58 @@ export class VegetationManager {
     }
   }
 
-  private _convertGLBMeshToSubMesh(glbMesh: GLBMesh, modelRef: ModelReference): VegetationSubMesh | null {
+  /**
+   * Upload GLB model textures to GPU, with caching per model path.
+   * Returns a map from GLB texture index → GPU texture.
+   */
+  private async _uploadGLBTextures(
+    model: GLBModel,
+    modelPath: string,
+  ): Promise<Map<number, UnifiedGPUTexture>> {
+    const textureMap = new Map<number, UnifiedGPUTexture>();
+    
+    for (let i = 0; i < model.texturesWithType.length; i++) {
+      const texInfo = model.texturesWithType[i];
+      if (!texInfo.image) continue;
+      
+      // Cache key includes model path and texture index
+      const cacheKey = `vegmesh:${modelPath}:tex${i}`;
+      const cached = this.textureCache.get(cacheKey);
+      if (cached) {
+        textureMap.set(i, cached);
+        continue;
+      }
+      
+      try {
+        const bitmap = await createImageBitmap(texInfo.image);
+        const gpuTexture = UnifiedGPUTexture.create2D(this.ctx, {
+          label: `vegetation-mesh-tex-${i}`,
+          width: bitmap.width,
+          height: bitmap.height,
+          format: 'rgba8unorm',
+          mipLevelCount: Math.floor(Math.log2(Math.max(bitmap.width, bitmap.height))) + 1,
+          renderTarget: true,
+        });
+        gpuTexture.uploadImageBitmap(this.ctx, bitmap);
+        gpuTexture.generateMipmaps(this.ctx);
+        bitmap.close();
+        
+        this.textureCache.set(cacheKey, gpuTexture);
+        textureMap.set(i, gpuTexture);
+      } catch (err) {
+        console.warn(`[VegetationManager] Failed to upload mesh texture ${i} from ${modelPath}:`, err);
+      }
+    }
+    
+    return textureMap;
+  }
+
+  private _convertGLBMeshToSubMesh(
+    glbMesh: GLBMesh,
+    modelRef: ModelReference,
+    glbModel: GLBModel,
+    textureMap: Map<number, UnifiedGPUTexture>,
+  ): VegetationSubMesh | null {
     if (!glbMesh.positions || !glbMesh.indices) return null;
 
     const positions = glbMesh.positions;
@@ -431,11 +495,20 @@ export class VegetationManager {
     alignedIndexData.set(new Uint8Array(indices.buffer, indices.byteOffset, indices.byteLength));
     this.ctx.queue.writeBuffer(indexBuffer, 0, alignedIndexData);
 
+    // Look up base color texture from material
+    let baseColorTexture: UnifiedGPUTexture | null = null;
+    if (glbMesh.materialIndex !== undefined && glbMesh.materialIndex < glbModel.materials.length) {
+      const material = glbModel.materials[glbMesh.materialIndex];
+      if (material.baseColorTextureIndex !== undefined) {
+        baseColorTexture = textureMap.get(material.baseColorTextureIndex) ?? null;
+      }
+    }
+
     return {
       vertexBuffer, indexBuffer,
       indexCount: indices.length,
       indexFormat: is32Bit ? 'uint32' : 'uint16',
-      baseColorTexture: null,
+      baseColorTexture,
       windMultiplier: 1.0,
     };
   }
@@ -457,7 +530,10 @@ export class VegetationManager {
     if (plant.modelRef && (plant.renderMode === 'mesh' || plant.renderMode === 'hybrid')) {
       if (this.tileCache.getPlantMesh(tileId, plant.id)) return true;
       const mesh = await this.loadVegetationMesh(plant.modelRef);
-      if (mesh) { this.tileCache.setPlantMesh(tileId, plant.id, mesh); return true; }
+      if (mesh) {
+        this.tileCache.setPlantMesh(tileId, plant.id, mesh);
+        return true;
+      }
     }
     return false;
   }
@@ -466,7 +542,10 @@ export class VegetationManager {
     if (plant.modelRef?.billboardTexturePath && (plant.renderMode === 'billboard' || plant.renderMode === 'hybrid')) {
       if (this.tileCache.getPlantTexture(tileId, plant.id)) return true;
       const tex = await this.loadBillboardTexture(plant.modelRef.billboardTexturePath);
-      if (tex) { this.tileCache.setPlantTexture(tileId, plant.id, tex); return true; }
+      if (tex) {
+        this.tileCache.setPlantTexture(tileId, plant.id, tex);
+        return true;
+      }
     } else if (plant.atlasRef && plant.renderMode === 'billboard') {
       if (this.tileCache.getPlantTexture(tileId, plant.id)) return true;
       try {
@@ -511,6 +590,9 @@ export class VegetationManager {
 
     this._visibleTilesCache = allTileData;
 
+    // Store camera position for shadow pass distance culling
+    this._lastCameraPosition = cameraPosition;
+    
     this.renderer.prepareFrame(
       this._visibleTilesCache,
       viewProjection,
@@ -523,6 +605,45 @@ export class VegetationManager {
   private _visibleTilesCache: VegetationTileData[] = [];
 
   /**
+   * Set scene environment for shadow receiving.
+   * Called each frame before render by TerrainManager.
+   */
+  setSceneEnvironment(env: SceneEnvironment | null): void {
+    this.renderer.setSceneEnvironment(env);
+  }
+  
+  /**
+   * Pre-write shadow uniforms for all cascade passes (ShadowCaster pattern).
+   * Called ONCE before any renderDepthOnly calls in a frame.
+   * Uses the camera position from the last prepareFrame() call for distance culling.
+   */
+  prepareShadowPasses(
+    matrices: { lightSpaceMatrix: Float32Array | ArrayLike<number>; lightPosition: [number, number, number] }[]
+  ): void {
+    if (!this.enabled || !this.config.enabled || !this.initialized) return;
+    this.renderer.prepareShadowPasses(matrices, this._lastCameraPosition, this.config.shadowCastDistance);
+  }
+  
+  private _lastCameraPosition: [number, number, number] = [0, 0, 0];
+  
+  /**
+   * Render vegetation depth-only for shadow casting (ShadowCaster pattern).
+   * Only renders mesh/hybrid plants with castShadows=true.
+   * Must be called within an active shadow render pass, after prepareFrame().
+   * 
+   * @param passEncoder Active shadow render pass encoder
+   * @param slotIndex Cascade slot index
+   * @returns Number of draw calls issued
+   */
+  renderDepthOnly(
+    passEncoder: GPURenderPassEncoder,
+    slotIndex: number,
+  ): number {
+    if (!this.enabled || !this.config.enabled || !this.initialized) return 0;
+    return this.renderer.renderDepthOnly(passEncoder, slotIndex);
+  }
+  
+  /**
    * Render vegetation. Call within a render pass after prepareFrame.
    */
   render(
@@ -530,21 +651,22 @@ export class VegetationManager {
     viewProjection: Float32Array,
     cameraPosition: [number, number, number],
     light?: VegetationLightParams,
-  ): void {
-    if (!this.enabled || !this.config.enabled || !this.initialized) return;
+  ): number {
+    if (!this.enabled || !this.config.enabled || !this.initialized) return 0;
 
-    this.renderer.render(
+    const drawCalls = this.renderer.render(
       passEncoder,
       viewProjection,
       cameraPosition,
       this._visibleTilesCache,
       this.wind,
       this._getTime(),
-      200,
+      this.config.shadowCastDistance,
       light ?? this.light ?? undefined,
     );
 
     this._visibleTilesCache = [];
+    return drawCalls;
   }
 
   // ==================== Configuration ====================

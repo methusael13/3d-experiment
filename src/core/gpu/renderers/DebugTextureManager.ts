@@ -170,12 +170,13 @@ export class DebugTextureManager {
     targetView: GPUTextureView,
     screenWidth: number,
     screenHeight: number
-  ): void {
+  ): number {
     const { thumbnailSize, margin, spacing } = this.layout;
     
     // Calculate position for each enabled texture
     let xOffset = margin;
     
+    let drawCalls = 0;
     for (const config of this.textures.values()) {
       if (!config.enabled) continue;
       
@@ -184,7 +185,7 @@ export class DebugTextureManager {
       
       // Render based on type
       if (config.type === 'depth') {
-        this.depthVisualizer.render(
+        drawCalls += this.depthVisualizer.render(
           encoder,
           targetView,
           textureView,
@@ -195,7 +196,7 @@ export class DebugTextureManager {
           screenHeight
         );
       } else if (config.type === 'float') {
-        this.floatVisualizer.render(
+        drawCalls += this.floatVisualizer.render(
           encoder,
           targetView,
           textureView,
@@ -211,6 +212,8 @@ export class DebugTextureManager {
       // Move to next position
       xOffset += thumbnailSize + spacing;
     }
+
+    return drawCalls;
   }
   
   /**

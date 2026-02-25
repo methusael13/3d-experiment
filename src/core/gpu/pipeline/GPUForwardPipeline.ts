@@ -161,6 +161,9 @@ export class GPUForwardPipeline {
   // Animation time
   private time = 0;
   private lastFrameTime = performance.now();
+
+  // Stats
+  private lastDrawCallsCount = 0;
   
   constructor(ctx: GPUContext, options: GPUForwardPipelineOptions) {
     this.ctx = ctx;
@@ -677,9 +680,14 @@ export class GPUForwardPipeline {
     
     // Submit commands
     this.ctx.queue.submit([encoder.finish()]);
+    this.lastDrawCallsCount = renderCtx.getDrawCalls();
   }
-  
+
   // ========== Public API ==========
+
+  getLastDrawCallsCount(): number {
+    return this.lastDrawCallsCount;
+  }
   
   setHDRTexture(texture: UnifiedGPUTexture): void {
     this.skyRenderer.setHDRTexture(texture);

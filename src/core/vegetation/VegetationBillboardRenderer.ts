@@ -237,11 +237,11 @@ export class VegetationBillboardRenderer {
     time: number,
     maxDistance: number = 200,
     lodLevel: number = 0,
-  ): void {
-    if (!this.initialized || !this.pipeline || !this.bindGroupLayout || !this.uniformsBuffer) return;
+  ): number {
+    if (!this.initialized || !this.pipeline || !this.bindGroupLayout || !this.uniformsBuffer) return 0;
     if (this.currentSlot >= MAX_DRAW_SLOTS) {
       console.warn('[VegetationBillboardRenderer] Max draw slots exceeded, skipping indirect draw');
-      return;
+      return 0;
     }
     
     const hasRealTexture = texture !== null;
@@ -267,6 +267,7 @@ export class VegetationBillboardRenderer {
     passEncoder.drawIndirect(drawArgsBuffer, 0); // Billboard draw args at offset 0
     
     this.currentSlot++;
+    return 1;
   }
   
   // ==================== Uniform Writing ====================

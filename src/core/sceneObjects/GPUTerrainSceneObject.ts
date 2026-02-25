@@ -104,6 +104,7 @@ export class GPUTerrainSceneObject extends SceneObject implements ShadowCaster {
   /**
    * Pre-write all shadow uniforms for multiple passes (CSM cascades + single map).
    * Delegates to CDLODRenderer's writeShadowUniforms for dynamic offset support.
+   * Also prepares vegetation shadow passes.
    */
   prepareShadowPasses(matrices: { lightSpaceMatrix: mat4; lightPosition: vec3 }[]): void {
     if (!this._terrainManager?.isReady) return;
@@ -114,11 +115,22 @@ export class GPUTerrainSceneObject extends SceneObject implements ShadowCaster {
     if (renderer) {
       renderer.writeShadowUniforms(matrices, config.worldSize, config.heightScale);
     }
+    
+    // Also prepare vegetation shadow passes
+    const vegManager = this._terrainManager.getVegetationManager();
+    if (vegManager) {
+      const vegMatrices = matrices.map(m => ({
+        lightSpaceMatrix: m.lightSpaceMatrix as Float32Array,
+        lightPosition: [m.lightPosition[0], m.lightPosition[1], m.lightPosition[2]] as [number, number, number],
+      }));
+      vegManager.prepareShadowPasses(vegMatrices);
+    }
   }
   
   /**
    * Render terrain depth to shadow map
-   * Delegates to CDLODRenderer's shadow pass with slot index for dynamic offset
+   * Delegates to CDLODRenderer's shadow pass with slot index for dynamic offset.
+   * Also renders vegetation mesh shadows for plants with castShadows=true.
    */
   renderDepthOnly(passEncoder: GPURenderPassEncoder, lightSpaceMatrix: mat4, lightPosition: vec3, slotIndex: number): void {
     if (!this._terrainManager?.isReady) return;
@@ -134,6 +146,12 @@ export class GPUTerrainSceneObject extends SceneObject implements ShadowCaster {
         lightPosition,
         heightmap ?? undefined
       );
+    }
+    
+    // Also render vegetation shadow depth (mesh/hybrid plants with castShadows=true)
+    const vegManager = this._terrainManager.getVegetationManager();
+    if (vegManager) {
+      vegManager.renderDepthOnly(passEncoder, slotIndex);
     }
   }
   

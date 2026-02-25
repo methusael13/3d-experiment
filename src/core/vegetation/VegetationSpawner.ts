@@ -45,6 +45,8 @@ const SPAWN_PARAMS_SIZE = 96;
 const DEFAULT_MAX_INSTANCES_PER_TILE = 65536;
 const INSTANCE_STRIDE = 32;
 const COUNTER_BUFFER_SIZE = 16; // 3 x u32 + padding
+/** Maximum spawn grid dimension to prevent runaway GPU dispatches */
+const MAX_GRID_SIZE = 1024;
 
 // ==================== VegetationSpawner ====================
 
@@ -140,9 +142,11 @@ export class VegetationSpawner {
     });
     
     // Dispatch compute — grid size based on fixed cell size (tile / cellSize)
-    const maxDensity = plant.spawnProbability * 4 * (plant.densityMultiplier ?? 1.0);
-    const cellSize = maxDensity > 0 ? 1.0 / Math.sqrt(maxDensity) : 1.0;
-    const gridSize = Math.ceil(request.tileSize / cellSize);
+    // densityMultiplier is treated as "target instances per square meter"
+    // spawnProbability is only used inside the shader for probabilistic rejection
+    const instancesPerM2 = Math.max(0.01, plant.densityMultiplier ?? 1.0);
+    const cellSize = 1.0 / Math.sqrt(instancesPerM2);
+    const gridSize = Math.min(Math.ceil(request.tileSize / cellSize), MAX_GRID_SIZE);
     const workgroups = calculateWorkgroupCount2D(gridSize, gridSize, 8, 8);
     
     const encoder = this.ctx.device.createCommandEncoder({ label: `spawn-${request.tileId}` });
@@ -179,9 +183,9 @@ export class VegetationSpawner {
     const f32 = new Float32Array(buffer);
     const u32 = new Uint32Array(buffer);
     
-    // Compute fixed world-space cell size from max density (finest LOD, densityMultiplier=1)
-    const maxDensity = plant.spawnProbability * 4 * (plant.densityMultiplier ?? 1.0);
-    const cellSize = maxDensity > 0 ? 1.0 / Math.sqrt(maxDensity) : 1.0;
+    // Compute fixed world-space cell size from density (instances per m²)
+    const instancesPerM2 = Math.max(0.01, plant.densityMultiplier ?? 1.0);
+    const cellSize = 1.0 / Math.sqrt(instancesPerM2);
     
     f32[0] = request.tileOrigin[0];
     f32[1] = request.tileOrigin[1];

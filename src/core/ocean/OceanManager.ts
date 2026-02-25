@@ -95,17 +95,17 @@ export class OceanManager {
   render(
     passEncoder: GPURenderPassEncoder,
     params: OceanRenderParams
-  ): void {
+  ): number {
     if (!this.waterRenderer) {
       console.warn('[OceanManager] Not initialized');
-      return;
+      return 0;
     }
     
     // Create identity model matrix (water is always at origin)
     const modelMatrix = mat4.create();
     
     // Delegate to water renderer
-    this.waterRenderer.render(passEncoder, {
+    return this.waterRenderer.render(passEncoder, {
       viewProjectionMatrix: params.viewProjectionMatrix,
       modelMatrix,
       cameraPosition: params.cameraPosition,

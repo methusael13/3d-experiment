@@ -22,6 +22,7 @@ export interface MenuBarProps {
   menus: MenuDefinition[];
   title?: string;
   fps?: number;
+  drawCalls?: number;
 }
 
 interface SubmenuState {
@@ -29,7 +30,7 @@ interface SubmenuState {
   path: string[];
 }
 
-export function MenuBar({ menus, title = 'Pyro Engine', fps }: MenuBarProps) {
+export function MenuBar({ menus, title = 'Pyro Engine', fps, drawCalls }: MenuBarProps) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [hoverPath, setHoverPath] = useState<string[]>([]);
   const menuBarRef = useRef<HTMLDivElement>(null);
@@ -124,10 +125,13 @@ export function MenuBar({ menus, title = 'Pyro Engine', fps }: MenuBarProps) {
       {/* Spacer to push FPS to the right */}
       <div class={styles.spacer} />
 
-      {/* Right section: FPS display */}
+      {/* Right section: Stats display */}
       <div class={styles.fpsSection}>
         {fps !== undefined && (
           <span class={styles.fps}>{fps} FPS</span>
+        )}
+        {drawCalls !== undefined && (
+          <span class={styles.drawCalls}>{drawCalls} DC</span>
         )}
       </div>
     </div>

@@ -560,15 +560,15 @@ export class TerrainManager {
   render(
     passEncoder: GPURenderPassEncoder,
     params: Omit<CDLODRenderParams, 'heightmapTexture' | 'normalMapTexture' | 'terrainSize' | 'heightScale' | 'island'>
-  ): void {
+  ): number {
     if (!this.renderer) {
       console.warn('TerrainManager not initialized');
-      return;
+      return 0;
     }
     
     const islandConfig = this.config.islandConfig || createDefaultIslandConfig();
-    
-    this.renderer.render(passEncoder, {
+
+    let drawCalls = this.renderer.render(passEncoder, {
       ...params,
       terrainSize: this.config.worldSize,
       heightScale: this.config.heightScale,
@@ -610,9 +610,12 @@ export class TerrainManager {
           [lc[0], lc[1], lc[2]],
           params.ambientIntensity ?? 1.0,
         );
-        this.vegetationManager.render(passEncoder, vpMatrix, camPosArr);
+        this.vegetationManager.setSceneEnvironment(params.sceneEnvironment ?? null);
+        drawCalls += this.vegetationManager.render(passEncoder, vpMatrix, camPosArr);
       }
     }
+
+    return drawCalls;
   }
   
   // ============ Getters ============

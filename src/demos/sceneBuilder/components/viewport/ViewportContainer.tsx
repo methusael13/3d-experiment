@@ -9,7 +9,7 @@ import { Viewport, type ViewportOptions } from '../../Viewport';
 import { getSceneBuilderStore } from '../state';
 import { ViewportToolbar } from '../layout';
 import { useFileDrop } from '../hooks';
-import { setCurrentFps } from '../bridges/MenuBarBridge';
+import { setCurrentFps, setCurrentDrawCalls } from '../bridges/MenuBarBridge';
 import type { Vec3 } from '../../../../core/types';
 import type { quat } from 'gl-matrix';
 import styles from './ViewportContainer.module.css';
@@ -84,6 +84,10 @@ export function ViewportContainer({
         setCurrentFps(fps);
         // Also call the prop callback if provided
         onFps?.(fps);
+      },
+      onDrawCalls: (count: number) => {
+        // Update the menu bar draw calls display
+        setCurrentDrawCalls(count);
       },
       onUpdate: (dt: number) => {
         // Wind update callback - will be connected when windManager is set

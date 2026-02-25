@@ -15,14 +15,19 @@
  *     [1] instanceCount   = atomic counter (filled by this shader)
  *     [2] firstVertex     = 0
  *     [3] firstInstance   = 0
- *   Mesh (drawIndexedIndirect args):
- *     [4] indexCount       = meshIndexCount (pre-filled by CPU)
+ *   Mesh sub-mesh 0 (drawIndexedIndirect args):
+ *     [4] indexCount       = subMesh0 indexCount (pre-filled by CPU)
  *     [5] instanceCount   = atomic counter (filled by this shader)
  *     [6] firstIndex      = 0
  *     [7] baseVertex      = 0
  *     [8] firstInstance   = 0
- *   Padding:
- *     [9-11] = 0
+ *   Mesh sub-mesh 1 (drawIndexedIndirect args):
+ *     [9] indexCount       = subMesh1 indexCount (pre-filled by CPU)
+ *     [10] instanceCount  = atomic counter (filled by this shader)
+ *     [11] firstIndex     = 0
+ *     [12] baseVertex     = 0
+ *     [13] firstInstance  = 0
+ *   ... (up to MAX_MESH_SUBMESHES entries)
  */
 
 // Must match PlantInstance in spawn.wgsl and TypeScript (32 bytes)
@@ -48,7 +53,8 @@ struct CullParams {
   renderMode: u32,
   // Distance threshold for hybrid mode: < billboardDistance = mesh, >= billboardDistance = billboard
   billboardDistanceSq: f32,
-  _pad0: f32,
+  // Number of mesh sub-mesh entries in drawArgs (each is 5 u32s starting at offset 4)
+  meshSubMeshCount: u32,
 }
 
 // Bindings
@@ -120,8 +126,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   
   // 4. Route to correct output based on render type
   if (isMesh) {
-    let outIdx = atomicAdd(&drawArgs[5], 1u); // drawArgs[5] = mesh instanceCount
+    // Write mesh instance to compacted buffer (single shared buffer for all sub-meshes)
+    let outIdx = atomicAdd(&drawArgs[5], 1u); // drawArgs[5] = sub-mesh 0 instanceCount
     meshOutput[outIdx] = instance;
+    // Replicate instanceCount to all additional sub-mesh entries
+    // Each sub-mesh entry is 5 u32s: [indexCount, instanceCount, firstIndex, baseVertex, firstInstance]
+    for (var s = 1u; s < params.meshSubMeshCount; s++) {
+      atomicAdd(&drawArgs[5u + s * 5u], 1u);
+    }
   } else {
     let outIdx = atomicAdd(&drawArgs[1], 1u); // drawArgs[1] = billboard instanceCount
     billboardOutput[outIdx] = instance;

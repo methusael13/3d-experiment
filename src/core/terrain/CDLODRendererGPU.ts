@@ -760,10 +760,10 @@ export class CDLODRendererGPU {
   render(
     passEncoder: GPURenderPassEncoder,
     params: CDLODRenderParams
-  ): void {
+  ): number {
     if (!this.pipeline || !this.uniformBuffer || !this.materialBuffer || 
         !this.gridVertexBuffer || !this.gridIndexBuffer || !this.instanceBuffer) {
-      return;
+      return 0;
     }
     
     // Update quadtree config if terrain size changed
@@ -788,7 +788,7 @@ export class CDLODRendererGPU {
     vec3.copy(this.lastCameraPosition, cameraPos);
     
     if (selection.nodes.length === 0) {
-      return;
+      return 0;
     }
     
     // Update buffers
@@ -806,7 +806,7 @@ export class CDLODRendererGPU {
     );
     
     if (!this.bindGroup) {
-      return;
+      return 0;
     }
     
     // Choose between solid and wireframe rendering
@@ -858,6 +858,8 @@ export class CDLODRendererGPU {
       // Draw instanced
       passEncoder.drawIndexed(this.gridIndexCount, selection.nodes.length);
     }
+
+    return 1;
   }
   
   /**

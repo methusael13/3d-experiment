@@ -21,7 +21,11 @@ import prepareDispatchShader from '../gpu/shaders/vegetation/prepare-cull-dispat
 
 const CULL_PARAMS_SIZE = 128;
 const INSTANCE_STRIDE = 32;
-const DRAW_ARGS_SIZE = 48;
+/** Billboard draw args (4 u32) + per-submesh mesh draw args (5 u32 each) */
+const BILLBOARD_DRAW_ARGS_U32 = 4;
+const MESH_DRAW_ARGS_U32 = 5; // per sub-mesh: indexCount, instanceCount, firstIndex, baseVertex, firstInstance
+const MAX_MESH_SUBMESHES = 16;
+const DRAW_ARGS_SIZE = (BILLBOARD_DRAW_ARGS_U32 + MESH_DRAW_ARGS_U32 * MAX_MESH_SUBMESHES) * 4; // bytes
 const BILLBOARD_VERTICES = 12;
 const WORKGROUP_SIZE = 256;
 /** Indirect dispatch args: 3 × u32 = 12 bytes */
@@ -146,7 +150,7 @@ export class VegetationCullingPipeline {
     frustumPlanes: Float32Array,
     cameraPosition: [number, number, number],
     maxDistance: number,
-    meshIndexCount: number = 0,
+    meshIndexCounts: number[] = [],
     renderMode: number = 0,
     billboardDistance: number = 50,
     spawnCounterBuffer?: GPUBuffer,
@@ -156,12 +160,22 @@ export class VegetationCullingPipeline {
     const result = this.acquireBuffers(maxInstances);
     const dispatchArgs = this.acquireDispatchArgs();
     
-    this.writeParams(frustumPlanes, cameraPosition, maxDistance, maxInstances, renderMode, billboardDistance);
+    const meshSubMeshCount = Math.max(1, meshIndexCounts.length);
+    this.writeParams(frustumPlanes, cameraPosition, maxDistance, maxInstances, renderMode, billboardDistance, meshSubMeshCount);
     
-    // Pre-fill draw args
-    const drawArgsData = new Uint32Array(12);
-    drawArgsData[0] = BILLBOARD_VERTICES;
-    drawArgsData[4] = meshIndexCount;
+    // Pre-fill draw args: billboard + per-submesh mesh entries
+    const totalU32 = BILLBOARD_DRAW_ARGS_U32 + MESH_DRAW_ARGS_U32 * meshSubMeshCount;
+    const drawArgsData = new Uint32Array(totalU32);
+    drawArgsData[0] = BILLBOARD_VERTICES; // billboard vertexCount
+    // Fill per-submesh mesh draw args with correct indexCount
+    for (let s = 0; s < meshSubMeshCount; s++) {
+      const base = BILLBOARD_DRAW_ARGS_U32 + s * MESH_DRAW_ARGS_U32;
+      drawArgsData[base + 0] = meshIndexCounts[s] ?? 0; // indexCount for this sub-mesh
+      // instanceCount [base+1] = 0 (filled by cull shader)
+      // firstIndex [base+2] = 0
+      // baseVertex [base+3] = 0
+      // firstInstance [base+4] = 0
+    }
     this.ctx.queue.writeBuffer(result.drawArgsBuffer.buffer, 0, drawArgsData);
     
     if (spawnCounterBuffer) {
@@ -236,6 +250,7 @@ export class VegetationCullingPipeline {
     totalInstances: number,
     renderMode: number,
     billboardDistance: number,
+    meshSubMeshCount: number = 1,
   ): void {
     const data = new Float32Array(CULL_PARAMS_SIZE / 4);
     data.set(frustumPlanes.subarray(0, 24), 0);
@@ -247,7 +262,7 @@ export class VegetationCullingPipeline {
     u32View[28] = totalInstances;
     u32View[29] = renderMode;
     data[30] = billboardDistance * billboardDistance;
-    data[31] = 0;
+    u32View[31] = meshSubMeshCount;
     this.paramsBuffer!.write(this.ctx, data);
   }
   

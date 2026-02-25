@@ -377,6 +377,34 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas, onSelectModel }: 
             <span class={styles.propertyValue}>{plant.maxVegetationLOD}</span>
           </div>
           
+          {/* Wind Influence */}
+          <div class={styles.propertyRow}>
+            <label>Wind Influence</label>
+            <input 
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={plant.windInfluence ?? 1.0}
+              onInput={(e) => onUpdate({ windInfluence: parseFloat((e.target as HTMLInputElement).value) })}
+            />
+            <span class={styles.propertyValue}>{((plant.windInfluence ?? 1.0) * 100).toFixed(0)}%</span>
+          </div>
+          
+          {/* Cast Shadows (mesh/hybrid only) */}
+          {(plant.renderMode === 'mesh' || plant.renderMode === 'hybrid') && (
+            <div class={styles.configRow}>
+              <label>
+                <input 
+                  type="checkbox"
+                  checked={plant.castShadows ?? false}
+                  onChange={(e) => onUpdate({ castShadows: (e.target as HTMLInputElement).checked })}
+                />
+                Cast Shadows
+              </label>
+            </div>
+          )}
+          
           {/* Color (fallback) */}
           <div class={styles.propertyRow}>
             <label>Fallback Color</label>

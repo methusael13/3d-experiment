@@ -90,6 +90,7 @@ export interface RenderContext {
   getDepthAttachment(loadOp: 'clear' | 'load'): GPURenderPassDepthStencilAttachment;
   copyDepthForReading(): void;
   copySceneColorForReading(): void;
+  addDrawCalls(calls: number): void;
 }
 
 /**
@@ -187,6 +188,7 @@ export class RenderContextImpl implements RenderContext {
   
   private depthCopied = false;
   private sceneColorCopied = false;
+  private drawCalls = 0;
   
   constructor(opts: RenderContextOptions) {
     this.encoder = opts.encoder;
@@ -298,7 +300,13 @@ export class RenderContextImpl implements RenderContext {
       this.sceneCameraForward = scFwd;
     }
   }
-  
+
+  getDrawCalls() { return this.drawCalls; }
+
+  addDrawCalls(calls: number) {
+    this.drawCalls += calls;
+  }
+
   /**
    * Get color attachment for render pass
    * Handles MSAA and HDR intermediate buffer selection

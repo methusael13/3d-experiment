@@ -16,6 +16,7 @@ import { VegetationMeshRenderer, type VegetationMesh } from './VegetationMeshRen
 import { VegetationGrassBladeRenderer } from './VegetationGrassBladeRenderer';
 import { VegetationCullingPipeline, type CullResult } from './VegetationCullingPipeline';
 import type { WindParams, VegetationLightParams } from './types';
+import type { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
 import { extractFrustumPlanes } from '../utils/mathUtils';
 
 // ==================== Types ====================
@@ -45,6 +46,10 @@ export interface PlantTileData {
   renderMode: number;
   /** Distance threshold for hybrid mode: closer = mesh, farther = billboard */
   billboardDistance: number;
+  /** Per-plant wind influence factor (0 = static, 1 = full wind). Default: 1.0 */
+  windInfluence: number;
+  /** Whether this plant casts shadows (mesh/hybrid only). Default: false */
+  castShadows: boolean;
 }
 
 /**
@@ -148,11 +153,11 @@ export class VegetationRenderer {
     
     for (const tile of tiles) {
       for (const plant of tile.plants) {
-        // Determine mesh index count for indirect draw args
-        let meshIndexCount = 0;
+        // Collect per-submesh index counts for indirect draw args
+        const meshIndexCounts: number[] = [];
         if (plant.mesh) {
           for (const sub of plant.mesh.subMeshes) {
-            meshIndexCount = Math.max(meshIndexCount, sub.indexCount);
+            meshIndexCounts.push(sub.indexCount);
           }
         }
         
@@ -164,7 +169,7 @@ export class VegetationRenderer {
           frustumPlanes,
           cameraPosition,
           maxDistance,
-          meshIndexCount,
+          meshIndexCounts,
           plant.renderMode ?? 0,
           plant.billboardDistance ?? 50,
           plant.counterBuffer,
@@ -197,20 +202,22 @@ export class VegetationRenderer {
     time: number,
     maxDistance: number = 200,
     light?: VegetationLightParams,
-  ): void {
-    if (!this.initialized) return;
+  ): number {
+    if (!this.initialized) return 0;
+    
+    // Set scene environment on sub-renderers for shadow receiving
+    this.meshRenderer.setSceneEnvironment(this._sceneEnvironment);
+    this.grassBladeRenderer.setSceneEnvironment(this._sceneEnvironment);
     
     // Reset dynamic uniform buffer slot counters for this frame
     this.billboardRenderer.resetFrame();
     this.meshRenderer.resetFrame();
     this.grassBladeRenderer.resetFrame();
     
+    let drawCalls = 0;
     if (this.hasPreparedFrame && this.preparedPlants.length > 0) {
       // === Indirect draw path (GPU-culled) ===
-      this._renderIndirect(passEncoder, viewProjection, cameraPosition, wind, time, maxDistance, light);
-    } else {
-      // === Legacy direct draw path (fallback) ===
-      this._renderDirect(passEncoder, viewProjection, cameraPosition, tiles, wind, time, maxDistance, light);
+      drawCalls += this._renderIndirect(passEncoder, viewProjection, cameraPosition, wind, time, maxDistance, light);
     }
     
     // Debug stats (throttled)
@@ -219,8 +226,10 @@ export class VegetationRenderer {
       this._logDebugStats(tiles);
     }
 
-    // Clear prepared state for next frame
-    this.hasPreparedFrame = false;
+    // Note: hasPreparedFrame is NOT cleared here — it persists until next prepareFrame().
+    // This allows renderDepthOnly() (called during shadow pass BEFORE next prepareFrame)
+    // to reuse the previous frame's culled buffers for shadow casting.
+    return drawCalls;
   }
   
   /**
@@ -234,18 +243,24 @@ export class VegetationRenderer {
     time: number,
     maxDistance: number,
     light?: VegetationLightParams,
-  ): void {
+  ): number {
+    let drawCalls = 0;
     for (const { plant, cullResult, lodLevel } of this.preparedPlants) {
+      // Scale wind by per-plant windInfluence (0 = static rock, 1 = full wind)
+      const plantWind: WindParams = plant.windInfluence < 0.999
+        ? { ...wind, strength: wind.strength * plant.windInfluence, gustStrength: wind.gustStrength * plant.windInfluence }
+        : wind;
+      
       // Grass blade mode: renderMode 3 — use grass blade renderer instead of billboard
       if (plant.renderMode === 3) {
-        this.grassBladeRenderer.renderIndirect(
+        drawCalls += this.grassBladeRenderer.renderIndirect(
           passEncoder,
           viewProjection,
           cameraPosition,
           cullResult.billboardBuffer.buffer,
           cullResult.drawArgsBuffer.buffer,
           plant.fallbackColor,
-          wind,
+          plantWind,
           time,
           maxDistance,
           lodLevel,
@@ -257,7 +272,7 @@ export class VegetationRenderer {
       // Always dispatch billboard indirect draw — the GPU draw args contain the
       // actual instance count (0 if none survived culling). We can't rely on
       // spawn-time billboardCount because the cull shader re-evaluates hybrid LOD.
-      this.billboardRenderer.renderIndirect(
+      drawCalls += this.billboardRenderer.renderIndirect(
         passEncoder,
         viewProjection,
         cameraPosition,
@@ -266,7 +281,7 @@ export class VegetationRenderer {
         plant.billboardTexture,
         plant.fallbackColor,
         plant.atlasRegion,
-        wind,
+        plantWind,
         time,
         maxDistance,
         lodLevel,
@@ -275,19 +290,22 @@ export class VegetationRenderer {
       // Always dispatch mesh indirect draw if the plant has a mesh loaded.
       // GPU draw args will have instanceCount=0 if no mesh instances survived culling.
       if (plant.mesh) {
-        this.meshRenderer.renderIndirect(
+        drawCalls += this.meshRenderer.renderIndirect(
           passEncoder,
           viewProjection,
           cameraPosition,
           plant.mesh,
           cullResult.meshBuffer.buffer,
           cullResult.drawArgsBuffer.buffer,
-          wind,
+          plantWind,
           time,
           maxDistance,
+          light,
         );
       }
     }
+
+    return drawCalls;
   }
   
   /**
@@ -354,6 +372,63 @@ export class VegetationRenderer {
         `Tiles: ${tiles.length} | Prepared: ${this.preparedPlants.length}`
       );
     }
+  }
+  
+  /**
+   * Set the scene environment for shadow receiving on sub-renderers.
+   */
+  setSceneEnvironment(env: SceneEnvironment | null): void {
+    this._sceneEnvironment = env;
+  }
+  
+  private _sceneEnvironment: SceneEnvironment | null = null;
+  
+  // ==================== Shadow Casting ====================
+  
+  /**
+   * Pre-write shadow uniforms for all cascade passes.
+   * Delegates to mesh renderer's prepareShadowPasses.
+   */
+  prepareShadowPasses(
+    matrices: { lightSpaceMatrix: Float32Array | ArrayLike<number>; lightPosition: [number, number, number] }[],
+    cameraPosition?: [number, number, number],
+    shadowCastDistance?: number,
+  ): void {
+    this.meshRenderer.prepareShadowPasses(matrices, cameraPosition, shadowCastDistance);
+  }
+  
+  /**
+   * Render vegetation depth-only for shadow casting.
+   * Only renders plants with castShadows=true and mesh/hybrid render mode.
+   * Uses the culled mesh instance buffers from prepareFrame().
+   * 
+   * @param passEncoder Active shadow render pass encoder
+   * @param slotIndex Cascade slot index (for pre-written shadow uniforms)
+   * @returns Number of draw calls issued
+   */
+  renderDepthOnly(
+    passEncoder: GPURenderPassEncoder,
+    slotIndex: number,
+  ): number {
+    if (!this.initialized || !this.hasPreparedFrame) return 0;
+    
+    let drawCalls = 0;
+    for (const { plant, cullResult } of this.preparedPlants) {
+      // Only cast shadows for plants that have castShadows=true and are mesh/hybrid
+      if (!plant.castShadows) continue;
+      if (!plant.mesh) continue;
+      if (plant.renderMode !== 1 && plant.renderMode !== 2) continue; // 1=mesh, 2=hybrid
+      
+      drawCalls += this.meshRenderer.renderDepthOnly(
+        passEncoder,
+        plant.mesh,
+        cullResult.meshBuffer.buffer,
+        cullResult.drawArgsBuffer.buffer,
+        slotIndex,
+      );
+    }
+    
+    return drawCalls;
   }
   
   /**

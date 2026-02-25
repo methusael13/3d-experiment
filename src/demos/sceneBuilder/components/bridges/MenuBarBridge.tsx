@@ -18,9 +18,17 @@ export const debugCameraModeActive = signal(false);
 // Signal to track current FPS
 export const currentFps = signal<number | undefined>(undefined);
 
+// Signal to track current draw call count
+export const currentDrawCalls = signal<number | undefined>(undefined);
+
 // Function to update FPS from external components (ViewportContainer)
 export function setCurrentFps(fps: number): void {
   currentFps.value = fps;
+}
+
+// Function to update draw call count from external components (ViewportContainer)
+export function setCurrentDrawCalls(count: number): void {
+  currentDrawCalls.value = count;
 }
 
 export function ConnectedMenuBar() {
@@ -416,5 +424,5 @@ export function ConnectedMenuBar() {
     hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value, fpsModeActive.value, debugCameraModeActive.value,
   ]);
   
-  return <MenuBar menus={menus} fps={currentFps.value} />;
+  return <MenuBar menus={menus} fps={currentFps.value} drawCalls={currentDrawCalls.value} />;
 }

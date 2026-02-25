@@ -19,6 +19,8 @@ import {
 } from '../gpu';
 import type { WindParams, VegetationLightParams } from './types';
 import { DEFAULT_VEGETATION_LIGHT } from './types';
+import { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
+import { ENV_BINDING_MASK } from '../gpu/renderers/shared/types';
 
 import grassBladeShader from '../gpu/shaders/vegetation/grass-blade.wgsl?raw';
 
@@ -44,6 +46,9 @@ export type GrassLightParams = VegetationLightParams;
 
 // ==================== VegetationGrassBladeRenderer ====================
 
+/** Bitmask for grass CSM shadow bindings: comparison sampler + CSM array + CSM uniforms */
+const GRASS_CSM_MASK = ENV_BINDING_MASK.CSM_SHADOW;
+
 export class VegetationGrassBladeRenderer {
   private ctx: GPUContext;
 
@@ -57,6 +62,9 @@ export class VegetationGrassBladeRenderer {
 
   // Current slot index (reset each frame)
   private currentSlot = 0;
+
+  // Scene environment for shadow receiving
+  private sceneEnvironment: SceneEnvironment | null = null;
 
   private initialized = false;
 
@@ -92,13 +100,20 @@ export class VegetationGrassBladeRenderer {
       ],
     });
 
+    // Group 1: Environment shadow (CSM) — uses SceneEnvironment masked layout
+    const envLayout = SceneEnvironment.getBindGroupLayoutEntriesForMask(GRASS_CSM_MASK);
+    const envBindGroupLayout = this.ctx.device.createBindGroupLayout({
+      label: 'vegetation-grass-blade-env-layout-g1',
+      entries: envLayout,
+    });
+
     // Render pipeline
     this.pipeline = RenderPipelineWrapper.create(this.ctx, {
       label: 'vegetation-grass-blade-pipeline',
       vertexShader: grassBladeShader,
       vertexEntryPoint: 'vertexMain',
       fragmentEntryPoint: 'fragmentMain',
-      bindGroupLayouts: [this.bindGroupLayout],
+      bindGroupLayouts: [this.bindGroupLayout, envBindGroupLayout],
       vertexBuffers: [], // No vertex buffers — all data from storage buffer + vertex index
       colorFormats: [colorFormat],
       blendStates: [CommonBlendStates.alpha()],
@@ -128,6 +143,23 @@ export class VegetationGrassBladeRenderer {
 
   resetFrame(): void {
     this.currentSlot = 0;
+  }
+
+  /**
+   * Set the scene environment for shadow receiving.
+   */
+  setSceneEnvironment(env: SceneEnvironment | null): void {
+    this.sceneEnvironment = env;
+  }
+
+  /**
+   * Set environment bind group (group 1) on the pass encoder.
+   */
+  private _setEnvBindGroup(passEncoder: GPURenderPassEncoder): void {
+    if (this.sceneEnvironment) {
+      const envBindGroup = this.sceneEnvironment.getBindGroupForMask(GRASS_CSM_MASK);
+      passEncoder.setBindGroup(1, envBindGroup);
+    }
   }
 
   // ==================== Rendering ====================
@@ -166,6 +198,7 @@ export class VegetationGrassBladeRenderer {
     });
 
     passEncoder.setPipeline(this.pipeline.pipeline);
+    this._setEnvBindGroup(passEncoder);
     passEncoder.setBindGroup(0, bindGroup, [slotOffset]);
     passEncoder.draw(VERTICES_PER_BLADE, instanceCount);
 
@@ -190,9 +223,9 @@ export class VegetationGrassBladeRenderer {
     maxDistance: number = 200,
     lodLevel: number = 0,
     light?: VegetationLightParams,
-  ): void {
-    if (!this.initialized || !this.pipeline || !this.bindGroupLayout || !this.uniformsBuffer) return;
-    if (this.currentSlot >= MAX_DRAW_SLOTS) return;
+  ): number {
+    if (!this.initialized || !this.pipeline || !this.bindGroupLayout || !this.uniformsBuffer) return 0;
+    if (this.currentSlot >= MAX_DRAW_SLOTS) return 0;
 
     const slotOffset = this.currentSlot * UNIFORM_ALIGNMENT;
     this.writeUniformsAtOffset(viewProjection, cameraPosition, time, maxDistance, fallbackColor, slotOffset, lodLevel, light);
@@ -209,10 +242,12 @@ export class VegetationGrassBladeRenderer {
     });
 
     passEncoder.setPipeline(this.pipeline.pipeline);
+    this._setEnvBindGroup(passEncoder);
     passEncoder.setBindGroup(0, bindGroup, [slotOffset]);
     passEncoder.drawIndirect(drawArgsBuffer, 0); // Billboard draw args at offset 0
 
     this.currentSlot++;
+    return 1;
   }
 
   // ==================== Uniform Writing ====================

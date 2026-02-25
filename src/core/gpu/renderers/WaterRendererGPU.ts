@@ -459,13 +459,13 @@ export class WaterRendererGPU {
   /**
    * Render water surface
    */
-  render(passEncoder: GPURenderPassEncoder, params: WaterRenderParams): void {
+  render(passEncoder: GPURenderPassEncoder, params: WaterRenderParams): number {
     // Rebuild mesh if grid dimensions changed
     this.rebuildMeshIfNeeded();
 
     if (!this.pipeline || !this.uniformBuffer || 
         !this.materialBuffer || !this.vertexBuffer || !this.indexBuffer) {
-      return;
+      return 0;
     }
 
     // Update uniforms
@@ -477,7 +477,7 @@ export class WaterRendererGPU {
     this.updateBindGroup(params.depthTexture, sceneColorView);
     
     if (!this.bindGroup) {
-      return;
+      return 0;
     }
     
     // Render
@@ -492,6 +492,7 @@ export class WaterRendererGPU {
     passEncoder.setVertexBuffer(0, this.vertexBuffer.buffer);
     passEncoder.setIndexBuffer(this.indexBuffer.buffer, 'uint32');
     passEncoder.drawIndexed(this.indexCount);
+    return 1;
   }
   
   /**

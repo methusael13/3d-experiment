@@ -31,6 +31,7 @@ import { CameraObject } from '@/core/sceneObjects';
  */
 export interface ViewportCallbacks {
   onFps?: (fps: number) => void;
+  onDrawCalls?: (count: number) => void;
   onUpdate?: (deltaTime: number) => void;
   /** For rotation, value is quat; for position/scale, value is Vec3 */
   onGizmoTransform?: (type: 'position' | 'rotation' | 'scale', value: Vec3 | quat) => void;
@@ -173,6 +174,7 @@ export class Viewport {
 
   // Callbacks (all optional)
   private readonly onFps: (fps: number) => void;
+  private readonly onDrawCalls: (count: number) => void;
   private readonly onUpdate: (deltaTime: number) => void;
   private readonly onGizmoTransform: (type: 'position' | 'rotation' | 'scale', value: Vec3 | quat) => void;
   private readonly onGizmoDragEnd: () => void;
@@ -194,6 +196,7 @@ export class Viewport {
 
     // Callbacks
     this.onFps = options.onFps ?? (() => {});
+    this.onDrawCalls = options.onDrawCalls ?? (() => {});
     this.onUpdate = options.onUpdate ?? (() => {});
     this.onGizmoTransform = options.onGizmoTransform ?? (() => {});
     this.onGizmoDragEnd = options.onGizmoDragEnd ?? (() => {});
@@ -658,6 +661,11 @@ export class Viewport {
     }
     
     this.renderWebGPU();
+    
+    // Emit draw call count from last pipeline render
+    if (this.gpuPipeline) {
+      this.onDrawCalls(this.gpuPipeline.getLastDrawCallsCount());
+    }
   }
 
   // ==================== Public API ====================

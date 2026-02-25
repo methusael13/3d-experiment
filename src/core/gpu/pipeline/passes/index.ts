@@ -50,6 +50,7 @@ export class SkyPass extends BaseRenderPass {
     }
     
     pass.end();
+    ctx.addDrawCalls(1);
   }
 }
 
@@ -105,12 +106,15 @@ export class ShadowPass extends BaseRenderPass {
     const shadowConfig = this.shadowRenderer.getConfig();
     const lightPos = this.shadowRenderer.getDirectionalLightPos();
     
+    let drawCalls = 0;
     // Check if CSM is enabled
     if (shadowConfig.csmEnabled) {
-      this.executeCSM(ctx, shadowConfig, lightPos);
+      drawCalls = this.executeCSM(ctx, shadowConfig, lightPos);
     } else {
-      this.executeSingleMap(ctx, shadowConfig, lightPos);
+      drawCalls = this.executeSingleMap(ctx, shadowConfig, lightPos);
     }
+
+    ctx.addDrawCalls(drawCalls);
   }
   
   /** Render single shadow map (non-CSM mode) */
@@ -119,12 +123,12 @@ export class ShadowPass extends BaseRenderPass {
     shadowConfig: ReturnType<ShadowRendererGPU['getConfig']>,
     lightPos: ArrayLike<number>,
     slotIndex: number = 0
-  ): void {
+  ): number {
     const lightPosArray = [lightPos[0], lightPos[1], lightPos[2]] as [number, number, number];
     const shadowMap = this.shadowRenderer.getShadowMap();
     const lightSpaceMatrix = this.shadowRenderer.getLightSpaceMatrix();
     
-    if (!shadowMap) return;
+    if (!shadowMap) return 0;
     
     // Pre-write single matrix when called standalone (not from executeCSM)
     if (slotIndex === 0) {
@@ -145,18 +149,21 @@ export class ShadowPass extends BaseRenderPass {
     
     passEncoder.setViewport(0, 0, shadowConfig.resolution, shadowConfig.resolution, 0, 1);
     
+    let drawCalls = 0;
     // Render shadow casters via ShadowCaster interface
     const shadowCasters = ctx.scene?.getShadowCasters() ?? [];
     for (const caster of shadowCasters) {
       if (caster.canCastShadows) {
         caster.renderDepthOnly(passEncoder, lightSpaceMatrix, lightPosArray, slotIndex);
+        drawCalls++;
       }
     }
 
     // Render batched object shadows via ObjectRendererGPU (using dynamic offset slot)
-    this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPosArray);
+    drawCalls += this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPosArray);
     
     passEncoder.end();
+    return drawCalls;
   }
   
   /** Render multiple cascade shadow maps (CSM mode) */
@@ -164,7 +171,7 @@ export class ShadowPass extends BaseRenderPass {
     ctx: RenderContext,
     shadowConfig: ReturnType<ShadowRendererGPU['getConfig']>,
     lightPos: ArrayLike<number>
-  ): void {
+  ): number {
     const lightPosArray = [lightPos[0], lightPos[1], lightPos[2]] as [number, number, number];
     const shadowCasters = ctx.scene?.getShadowCasters() ?? [];
     
@@ -191,6 +198,7 @@ export class ShadowPass extends BaseRenderPass {
       }
     }
     
+    let drawCalls = 0;
     // Render each cascade using its pre-written slot
     for (let cascadeIdx = 0; cascadeIdx < shadowConfig.cascadeCount; cascadeIdx++) {
       const cascadeView = this.shadowRenderer.getCascadeView(cascadeIdx);
@@ -216,19 +224,17 @@ export class ShadowPass extends BaseRenderPass {
       for (const caster of shadowCasters) {
         if (caster.canCastShadows) {
           caster.renderDepthOnly(passEncoder, cascadeLightMatrix, lightPosArray, cascadeIdx);
+          drawCalls++;
         }
       }
 
       // Render batched object shadows for this cascade (uses dynamic offset slot)
-      this.objectRenderer.renderShadowPass(passEncoder, cascadeIdx, lightPosArray);
+      drawCalls += this.objectRenderer.renderShadowPass(passEncoder, cascadeIdx, lightPosArray);
       
       passEncoder.end();
     }
-    
-    // Also render single shadow map for fallback/compatibility
-    // This ensures non-CSM aware receivers still work
-    // Uses the pre-written slot after cascade slots
-    this.executeSingleMap(ctx, shadowConfig, lightPos, singleMapSlot);
+
+    return drawCalls;
   }
 }
 
@@ -285,6 +291,7 @@ export class OpaquePass extends BaseRenderPass {
       depthStencilAttachment: ctx.getDepthAttachment('load'),
     });
 
+    let drawCalls = 0;
     // Render terrain (terrain uses its own SceneEnvironment integration)
     if (terrainManager?.isReady) {
       // Build shadow params for terrain (terrain has its own shadow implementation)
@@ -297,7 +304,7 @@ export class OpaquePass extends BaseRenderPass {
         csmEnabled: this.shadowRenderer.isCSMEnabled(),
       } : undefined;
 
-      terrainManager.render(pass, {
+      const dc = terrainManager.render(pass, {
         viewProjectionMatrix: ctx.viewProjectionMatrix,
         modelMatrix: this.identityMatrix,
         cameraPosition: ctx.cameraPosition,
@@ -311,6 +318,7 @@ export class OpaquePass extends BaseRenderPass {
         sceneEnvironment: ctx.sceneEnvironment,
         isSelected: ctx.scene?.getSelectedIds().has(terrain!.id)
       });
+      drawCalls += dc;
     }
     
     // Common render parameters for objects
@@ -329,9 +337,11 @@ export class OpaquePass extends BaseRenderPass {
     
     // Render objects with unified SceneEnvironment (shadow + IBL)
     // Falls back to standard render if no environment provided
-    this.objectRenderer.renderWithSceneEnvironment(pass, renderParams, ctx.sceneEnvironment ?? null);
+    const dc = this.objectRenderer.renderWithSceneEnvironment(pass, renderParams, ctx.sceneEnvironment ?? null);
+    drawCalls += dc;
     
     pass.end();
+    ctx.addDrawCalls(drawCalls);
   }
 }
 
@@ -381,7 +391,7 @@ export class TransparentPass extends BaseRenderPass {
       depthStencilAttachment: ctx.getDepthAttachment('load'),
     });
     
-    oceanManager.render(pass, {
+    const dc = oceanManager.render(pass, {
       viewProjectionMatrix: ctx.viewProjectionMatrix,
       cameraPosition: ctx.cameraPosition,
       terrainSize: terrainConfig?.worldSize ?? 1000,
@@ -401,6 +411,7 @@ export class TransparentPass extends BaseRenderPass {
     });
     
     pass.end();
+    ctx.addDrawCalls(dc);
   }
 }
 
@@ -447,6 +458,7 @@ export class GroundPass extends BaseRenderPass {
       depthStencilAttachment: ctx.getDepthAttachment('clear'),
     });
     
+    let drawCalls = 0;
     if (showGrid && ctx.sceneEnvironment) {
       // Get light space matrix for shadow receiving
       const lightSpaceMatrix = shadowEnabled ? this.shadowRenderer.getLightSpaceMatrix() : null;
@@ -462,10 +474,11 @@ export class GroundPass extends BaseRenderPass {
         shadowResolution: this.shadowRenderer.getConfig().resolution,
       };
       
-      this.gridRenderer.renderGround(pass, params, ctx.sceneEnvironment);
+      drawCalls += this.gridRenderer.renderGround(pass, params, ctx.sceneEnvironment);
     }
     
     pass.end();
+    ctx.addDrawCalls(drawCalls);
   }
 }
 
@@ -501,9 +514,10 @@ export class OverlayPass extends BaseRenderPass {
       depthStencilAttachment: ctx.getDepthAttachment('load'),
     });
     
-    this.gridRenderer.renderAxes(pass, ctx.viewProjectionMatrix);
+    const dc = this.gridRenderer.renderAxes(pass, ctx.viewProjectionMatrix);
     
     pass.end();
+    ctx.addDrawCalls(dc);
   }
 }
 
@@ -539,14 +553,17 @@ export class DebugPass extends BaseRenderPass {
   }
   
   execute(ctx: RenderContext): void {
+    let drawCalls = 0;
     // Render all enabled debug textures via the manager
     if (this.deps.debugTextureManager.hasEnabledTextures()) {
-      this.deps.debugTextureManager.render(
+      const drawCalls = this.deps.debugTextureManager.render(
         ctx.encoder,
         ctx.outputView,
         ctx.width,
         ctx.height
       );
+
+      ctx.addDrawCalls(drawCalls);
     }
   }
 }
@@ -624,13 +641,14 @@ export class SelectionMaskPass extends BaseRenderPass {
       },
     });
 
-    this.objectRenderer.renderSelectionMask(
+    const drawCalls = this.objectRenderer.renderSelectionMask(
       pass,
       ctx.viewProjectionMatrix,
       ctx.cameraPosition
     );
     
     pass.end();
+    ctx.addDrawCalls(drawCalls);
   }
 }
 
@@ -667,12 +685,13 @@ export class SelectionOutlinePass extends BaseRenderPass {
       return;
     }
     
-    this.outlineRenderer.render(ctx.encoder, {
+    const drawCalls = this.outlineRenderer.render(ctx.encoder, {
       maskTexture: ctx.selectionMaskTexture,
       outputView: ctx.outputView,
       width: ctx.width,
       height: ctx.height,
     });
+    ctx.addDrawCalls(drawCalls);
   }
 }
 

@@ -123,9 +123,9 @@ export interface PlantType {
   maxSize: [number, number];
   
   // Spawn distribution
-  /** Base spawn probability (0-1) */
+  /** Base spawn probability (0-1), used for shader-side probabilistic rejection */
   spawnProbability: number;
-  /** Per-plant density multiplier (1.0 = normal, >1 = denser, <1 = sparser) */
+  /** Target instances per square meter. Grass: 20-50, wildflowers: 1-5, trees: 0.01-0.1 */
   densityMultiplier: number;
   /** Which biome channel this plant spawns in */
   biomeChannel: BiomeChannel;
@@ -143,6 +143,10 @@ export interface PlantType {
   maxDistance: number;
   /** LOD priority bias (higher = more important, render at greater distance) */
   lodBias: number;
+  /** How much this plant is affected by global wind (0 = static/rock, 1 = full wind). Default: 1.0 */
+  windInfluence: number;
+  /** Whether this plant type casts shadows (only effective for mesh/hybrid render modes). Default: false */
+  castShadows: boolean;
   /**
    * Maximum CDLOD quadtree level at which this plant spawns.
    * Uses quadtree convention: 0 = root (coarsest, farthest), N = leaf (finest, closest).
@@ -169,14 +173,16 @@ export function createDefaultPlantType(id: string, name: string): PlantType {
     minSize: [0.3, 0.5],
     maxSize: [0.5, 1.0],
     spawnProbability: 0.5,
-    densityMultiplier: 1.0,
+    densityMultiplier: 4.0, // 4 instances/m² — reasonable default for generic plants
     biomeChannel: 'r',
     biomeThreshold: 0.3,
     clusterStrength: 0.3,
     minSpacing: 0.2,
     maxDistance: 200,
     lodBias: 1.0,
-    maxVegetationLOD: 8, // Default: only spawn on the 2 closest LOD levels (8 and 9 out of 0-9)
+    windInfluence: 1.0,
+    castShadows: false,
+    maxVegetationLOD: 8,
   };
 }
 
@@ -224,6 +230,8 @@ export interface VegetationConfig {
   debugMode: boolean;
   /** Global spawn seed for deterministic placement (shared by all plant types) */
   spawnSeed: number;
+  /** Maximum distance from camera for vegetation shadow casting (meters). Default: 200 */
+  shadowCastDistance: number;
 }
 
 /**
@@ -236,6 +244,7 @@ export function createDefaultVegetationConfig(): VegetationConfig {
     windEnabled: true,
     debugMode: false,
     spawnSeed: 42,
+    shadowCastDistance: 200,
   };
 }
 
@@ -328,13 +337,15 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     minSize: [0.3, 0.5],
     maxSize: [0.5, 1.2],
     spawnProbability: 0.6,
-    densityMultiplier: 1.0,
+    densityMultiplier: 25.0,
     biomeChannel: 'r',
     biomeThreshold: 0.3,
     clusterStrength: 0.4,
-    minSpacing: 0.2,
+    minSpacing: 0.1,
     maxDistance: 200,
     lodBias: 1.0,
+    windInfluence: 1.0,
+    castShadows: false,
     maxVegetationLOD: 8,
   },
   {
@@ -349,13 +360,15 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     minSize: [0.2, 0.15],
     maxSize: [0.3, 0.3],
     spawnProbability: 0.8,
-    densityMultiplier: 1.0,
+    densityMultiplier: 30.0,
     biomeChannel: 'r',
     biomeThreshold: 0.2,
     clusterStrength: 0.2,
-    minSpacing: 0.1,
+    minSpacing: 0.05,
     maxDistance: 100,
     lodBias: 0.8,
+    windInfluence: 1.0,
+    castShadows: false,
     maxVegetationLOD: 8,
   },
   {
@@ -370,13 +383,15 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     minSize: [0.15, 0.2],
     maxSize: [0.25, 0.4],
     spawnProbability: 0.15,
-    densityMultiplier: 1.0,
+    densityMultiplier: 3.0,
     biomeChannel: 'r',
     biomeThreshold: 0.5,
     clusterStrength: 0.7,
     minSpacing: 0.3,
     maxDistance: 150,
     lodBias: 1.2,
+    windInfluence: 0.8,
+    castShadows: false,
     maxVegetationLOD: 8,
   },
   {
@@ -391,13 +406,15 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     minSize: [0.12, 0.18],
     maxSize: [0.22, 0.35],
     spawnProbability: 0.1,
-    densityMultiplier: 1.0,
+    densityMultiplier: 2.0,
     biomeChannel: 'r',
     biomeThreshold: 0.5,
     clusterStrength: 0.6,
     minSpacing: 0.35,
     maxDistance: 150,
     lodBias: 1.2,
+    windInfluence: 0.8,
+    castShadows: false,
     maxVegetationLOD: 8,
   },
   {
@@ -412,13 +429,15 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     minSize: [0.4, 0.3],
     maxSize: [0.8, 0.6],
     spawnProbability: 0.05,
-    densityMultiplier: 1.0,
+    densityMultiplier: 0.2,
     biomeChannel: 'r',
     biomeThreshold: 0.6,
     clusterStrength: 0.3,
     minSpacing: 1.0,
     maxDistance: 300,
     lodBias: 1.5,
+    windInfluence: 0.5,
+    castShadows: false,
     maxVegetationLOD: 8,
   },
 ];
@@ -439,13 +458,15 @@ export const FOREST_PLANT_PRESETS: PlantType[] = [
     minSize: [0.3, 0.25],
     maxSize: [0.6, 0.5],
     spawnProbability: 0.5,
-    densityMultiplier: 1.0,
+    densityMultiplier: 4.0,
     biomeChannel: 'b',
     biomeThreshold: 0.3,
     clusterStrength: 0.5,
     minSpacing: 0.4,
     maxDistance: 200,
     lodBias: 1.0,
+    windInfluence: 0.7,
+    castShadows: false,
     maxVegetationLOD: 8,
   },
   {
@@ -460,13 +481,15 @@ export const FOREST_PLANT_PRESETS: PlantType[] = [
     minSize: [0.2, 0.3],
     maxSize: [0.4, 0.6],
     spawnProbability: 0.4,
-    densityMultiplier: 1.0,
+    densityMultiplier: 15.0,
     biomeChannel: 'b',
     biomeThreshold: 0.25,
     clusterStrength: 0.3,
-    minSpacing: 0.2,
+    minSpacing: 0.1,
     maxDistance: 150,
     lodBias: 0.9,
+    windInfluence: 1.0,
+    castShadows: false,
     maxVegetationLOD: 8,
   },
 ];
