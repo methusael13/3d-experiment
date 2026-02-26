@@ -1,0 +1,142 @@
+/* ComponentsTab styles */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* "Add Component" dropdown trigger */
+.addBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--sb-bg-hover);
+  border: 1px dashed var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  color: var(--sb-text-secondary);
+  font-size: var(--sb-font-sm);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.addBtn:hover {
+  background: var(--sb-bg-input);
+  border-color: var(--sb-accent);
+  color: var(--sb-text-primary);
+}
+
+/* Dropdown menu */
+.dropdown {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+.dropdownMenu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  margin-top: 2px;
+  background: var(--sb-bg-panel);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.dropdownItem {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  color: var(--sb-text-secondary);
+  font-size: var(--sb-font-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.dropdownItem:hover {
+  background: var(--sb-bg-hover);
+  color: var(--sb-text-primary);
+}
+
+.dropdownItemDesc {
+  font-size: var(--sb-font-xs);
+  color: var(--sb-text-muted);
+}
+
+/* Component subpanel card */
+.subpanel {
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  overflow: hidden;
+}
+
+.subpanelHeader {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  background: var(--sb-bg-dark);
+  cursor: pointer;
+  user-select: none;
+}
+
+.subpanelArrow {
+  font-size: 9px;
+  color: var(--sb-text-muted);
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.subpanelTitle {
+  flex: 1;
+  font-size: var(--sb-font-sm);
+  font-weight: 600;
+  color: var(--sb-text-primary);
+  margin: 0;
+}
+
+.removeBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--sb-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: color 0.1s, background 0.1s;
+  flex-shrink: 0;
+}
+
+.removeBtn:hover {
+  background: #c44;
+  color: #fff;
+}
+
+.subpanelBody {
+  padding: 8px;
+  background: var(--sb-bg-panel);
+}
+
+.empty {
+  padding: 8px;
+  font-size: var(--sb-font-sm);
+  color: var(--sb-text-muted);
+  opacity: 0.5;
+}

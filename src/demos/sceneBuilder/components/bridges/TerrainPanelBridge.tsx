@@ -10,10 +10,11 @@ import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, ty
 import type { Asset } from '../hooks/useAssetLibrary';
 import { BiomeMaskPanelBridge } from './BiomeMaskPanelBridge';
 import { VegetationPanelBridge } from './VegetationPanelBridge';
-import { isGPUTerrainObject, type GPUTerrainSceneObject } from '../../../../core/sceneObjects';
+import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
 import { debounce } from '../../../../core/utils/debounce';
 import { TerrainManager, TextureType } from '@/core/terrain';
 import { AssetFile } from 'server/types';
+import { BoundsComponent } from '@/core/ecs';
 
 // ==================== Default Parameter Sets ====================
 
@@ -159,18 +160,14 @@ export function ConnectedTerrainPanel({
 }: ConnectedTerrainPanelProps = {}) {
   const store = getSceneBuilderStore();
   
-  // Get terrain reference from selected scene object (like legacy ObjectPanel)
+  // Get terrain reference from selected entity's TerrainComponent
   const selectedTerrainInfo = useComputed<SelectedTerrainInfo>(() => {
-    const selectedObj = store.firstSelectedObject.value;
-    if (!selectedObj || !store.scene) return null;
+    const entity = store.firstSelectedObject.value;
+    if (!entity) return null;
     
-    const sceneObj = store.scene.getObject(selectedObj.id);
-    if (!sceneObj) return null;
-
-    if (isGPUTerrainObject(sceneObj)) {
-      const gpuTerrain = sceneObj as GPUTerrainSceneObject;
-      const manager = gpuTerrain.getTerrainManager();
-      return { type: 'webgpu', manager } as GPUTerrainInfo;
+    const terrainComp = entity.getComponent<TerrainComponent>('terrain');
+    if (terrainComp) {
+      return { type: 'webgpu', manager: terrainComp.manager } as GPUTerrainInfo;
     }
     
     return null;
@@ -232,8 +229,17 @@ export function ConnectedTerrainPanel({
   useEffect(() => () => debouncedFullRegen.cancel(), [debouncedFullRegen]);
 
   const handleTerrainBoundsChange = useCallback(() => {
-    // Use centralized store method for camera bounds update
-    store.updateCameraFromSceneBounds();
+    // Recompute terrain worldBounds from updated config
+    const entity = store.firstSelectedObject.value;
+    if (entity) {
+      const terrainComp = entity.getComponent?.('terrain') as TerrainComponent;
+      const boundsComp = entity.getComponent?.('bounds') as BoundsComponent;
+      if (terrainComp?.computeWorldBounds && boundsComp) {
+        boundsComp.worldBounds = terrainComp.computeWorldBounds();
+        boundsComp.dirty = false;
+      }
+    }
+    // BoundsSystem callback will trigger camera update automatically
   }, [store]);
 
   // Handlers

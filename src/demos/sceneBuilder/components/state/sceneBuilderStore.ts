@@ -1,17 +1,20 @@
 /**
- * SceneBuilder State Store
+ * SceneBuilder State Store — Entity/World-based (ECS Step 3)
  * Central reactive state management using @preact/signals
+ * 
+ * All object state is read from World/Entity, not Scene/SceneObject.
  */
 
-import { signal, computed, effect, batch, type Signal } from '@preact/signals';
-import type { Scene } from '../../../../core/Scene';
+import { signal, computed, batch, type Signal } from '@preact/signals';
 import type { Viewport } from '../../Viewport';
 import type { LightingManager } from '../../lightingManager';
-import type { WindManager, ObjectWindSettings } from '../../wind';
+import type { World } from '@/core/ecs/World';
+import type { Entity } from '@/core/ecs/Entity';
 import type { GizmoMode, GizmoOrientation } from '../../gizmos';
 import type { Vec3 } from '../../../../core/types';
-import { AnySceneObject, ModelObject, isModelObject, isPrimitiveObject } from '../../../../core/sceneObjects';
-import { PrimitiveObject } from '../../../../core/sceneObjects/PrimitiveObject';
+import type { ObjectWindSettings } from '../../wind';
+import type { MeshComponent } from '@/core/ecs/components/MeshComponent';
+import type { PrimitiveGeometryComponent } from '@/core/ecs/components/PrimitiveGeometryComponent';
 import { debounce } from '@/core/utils';
 import { sceneSerializer } from '../../../../loaders';
 
@@ -39,13 +42,13 @@ export interface ViewportState {
 // ==================== Store ====================
 
 export interface SceneBuilderStore {
-  // Scene state
-  objects: Signal<AnySceneObject[]>;
+  // Scene state — Entity-based
+  objects: Signal<Entity[]>;
   groups: Signal<Map<string, ObjectGroupData>>;
   selectedIds: Signal<Set<string>>;
   expandedGroupIds: Signal<Set<string>>;
   sceneBoundsVersion: Signal<number>;
-  transformVersion: Signal<number>;  // Incremented when object transforms change
+  transformVersion: Signal<number>;
   
   // Viewport state
   viewportInitialized: Signal<boolean>;
@@ -57,21 +60,22 @@ export interface SceneBuilderStore {
   objectWindSettings: Signal<Map<string, ObjectWindSettings>>;
   
   // Computed
-  selectedObjects: Signal<AnySceneObject[]>;
-  firstSelectedObject: Signal<AnySceneObject | null>;
+  selectedObjects: Signal<Entity[]>;
+  firstSelectedObject: Signal<Entity | null>;
   selectionCount: Signal<number>;
   
   // References (not reactive, just stored)
-  scene: Scene | null;
   viewport: Viewport | null;
   lightingManager: LightingManager | null;
-  windManager: WindManager | null;
   
-  // Terrain references (WebGL vs WebGPU mode)
+  /** ECS World — accessed via viewport.world. Available after viewport init. */
+  readonly world: World | null;
+  
+  // WebGPU mode (always true now)
   isWebGPU: Signal<boolean>;
   
   // Actions
-  syncFromScene(): void;
+  syncFromWorld(): void;
   select(id: string, additive?: boolean): void;
   selectAll(ids: string[]): void;
   clearSelection(): void;
@@ -86,14 +90,17 @@ export interface SceneBuilderStore {
   
   // Camera bounds management
   updateCameraFromSceneBounds(): void;
-  setupSceneCallbacks(): void;
+  setupWorldCallbacks(): void;
+  
+  // Entity GPU initialization
+  initEntityWebGPU(entity: Entity): void;
 }
 
 // ==================== Create Store ====================
 
 export function createSceneBuilderStore(): SceneBuilderStore {
   // Core signals
-  const objects = signal<AnySceneObject[]>([]);
+  const objects = signal<Entity[]>([]);
   const groups = signal<Map<string, ObjectGroupData>>(new Map());
   const selectedIds = signal<Set<string>>(new Set());
   const expandedGroupIds = signal<Set<string>>(new Set());
@@ -112,39 +119,54 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   const objectWindSettings = signal<Map<string, ObjectWindSettings>>(new Map());
   const isWebGPU = signal<boolean>(true);
   const sceneBoundsVersion = signal<number>(0);
-  const transformVersion = signal<number>(0);  // Incremented when object transforms change
+  const transformVersion = signal<number>(0);
   
   // Debounced camera bounds update function (100ms delay)
   const debouncedCameraUpdate = debounce(() => {
-    if (!scene || !viewport) return;
+    const w = viewport?.world;
+    if (!w || !viewport) return;
     
-    const bounds = scene.getSceneBounds();
-    if (!bounds) return;
+    // Calculate bounds from all entities with bounds components
+    const entities = w.getAllEntities();
+    if (entities.length === 0) return;
     
-    // Calculate scene radius from AABB
-    const sizeX = bounds.max[0] - bounds.min[0];
-    const sizeY = bounds.max[1] - bounds.min[1];
-    const sizeZ = bounds.max[2] - bounds.min[2];
-    const radius = Math.max(
-      // Make sure radius is at least a minimum of 10 units
-      10,
-      Math.sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ) / 2
-    );
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    let hasBounds = false;
+    
+    for (const entity of entities) {
+      const bounds = entity.getComponent<any>('bounds');
+      if (bounds?.worldBounds) {
+        const b = bounds.worldBounds;
+        minX = Math.min(minX, b.min[0]);
+        minY = Math.min(minY, b.min[1]);
+        minZ = Math.min(minZ, b.min[2]);
+        maxX = Math.max(maxX, b.max[0]);
+        maxY = Math.max(maxY, b.max[1]);
+        maxZ = Math.max(maxZ, b.max[2]);
+        hasBounds = true;
+      }
+    }
+    
+    if (!hasBounds) return;
+    
+    const sizeX = maxX - minX;
+    const sizeY = maxY - minY;
+    const sizeZ = maxZ - minZ;
+    const radius = Math.max(10, Math.sqrt(sizeX * sizeX + sizeY * sizeY + sizeZ * sizeZ) / 2);
 
-    // Only update if radius is meaningful
     if (radius > 0.1) {
       viewport.updateCameraForSceneBounds(radius);
       console.log('[SceneBuilderStore] Camera updated for scene bounds, radius:', radius.toFixed(1));
     }
     
-    // Increment version to signal bounds changed
     sceneBoundsVersion.value++;
   }, 100);
   
   // Computed values
   const selectedObjects = computed(() => {
     const ids = selectedIds.value;
-    return objects.value.filter(obj => ids.has(obj.id));
+    return objects.value.filter(entity => ids.has(entity.id));
   });
   
   const firstSelectedObject = computed(() => {
@@ -155,37 +177,33 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   const selectionCount = computed(() => selectedIds.value.size);
   
   // References (not signals)
-  let scene: Scene | null = null;
   let viewport: Viewport | null = null;
   let lightingManager: LightingManager | null = null;
-  let windManager: WindManager | null = null;
   
   // ==================== Actions ====================
   
-  function syncFromScene(): void {
-    const currentScene = scene;
-    if (!currentScene) return;
+  function syncFromWorld(): void {
+    const world = viewport?.world;
+    if (!world) return;
     
     batch(() => {
-      // Sync objects
-      const allObjects = currentScene.getAllObjects();
-      objects.value = allObjects;
+      // Sync objects from World entities
+      objects.value = world.getAllEntities();
       
-      // Sync groups
-      const sceneGroups = currentScene.getAllGroups();
+      // Sync selection from World
+      selectedIds.value = new Set(world.getSelectedIds());
+      
+      // Sync groups from World
+      const worldGroups = world.getAllGroups();
       const groupsMap = new Map<string, ObjectGroupData>();
-      for (const [groupId, groupData] of sceneGroups) {
+      for (const [groupId, groupData] of worldGroups) {
         groupsMap.set(groupId, {
           id: groupId,
           name: groupData.name,
-          childIds: [...groupData.childIds],
+          childIds: Array.from(groupData.childIds),
         });
       }
       groups.value = groupsMap;
-      
-      // Sync selection
-      const selectedIdsList = currentScene.getSelectedIds();
-      selectedIds.value = new Set(selectedIdsList);
       
       // Increment transform version to force computed values to re-run
       transformVersion.value++;
@@ -193,23 +211,24 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   }
 
   function select(id: string, additive = false): void {
-    if (!scene) return;
-    scene.select(id, { additive });
-    syncFromScene();
+    const world = viewport?.world;
+    if (!world) return;
+    world.select(id, { additive });
+    syncFromWorld();
   }
   
   function selectAll(ids: string[]): void {
-    if (!scene) return;
-    for (const id of ids) {
-      scene.select(id, { additive: true });
-    }
-    syncFromScene();
+    const world = viewport?.world;
+    if (!world) return;
+    world.selectAll(ids);
+    syncFromWorld();
   }
   
   function clearSelection(): void {
-    if (!scene) return;
-    scene.clearSelection();
-    syncFromScene();
+    const world = viewport?.world;
+    if (!world) return;
+    world.clearSelection();
+    syncFromWorld();
   }
   
   function toggleGroup(groupId: string): void {
@@ -254,118 +273,96 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   function setIsWebGPU(enabled: boolean): void {
     isWebGPU.value = enabled;
     
-    // When switching to WebGPU mode, initialize all existing objects
     if (enabled) {
-      // Small delay to ensure GPUContext is ready
-      setTimeout(() => initAllObjectsWebGPU(), 100);
+      setTimeout(() => initAllEntitiesWebGPU(), 100);
     }
   }
   
-  /**
-   * Update camera clip planes based on current scene bounds.
-   * Debounced to prevent excessive updates during rapid changes.
-   */
   function updateCameraFromSceneBounds(): void {
     debouncedCameraUpdate();
   }
   
   /**
-   * Setup scene callbacks for automatic camera bounds updates.
-   * Should be called after scene is assigned.
+   * Setup World callbacks for automatic sync on entity add/remove.
    */
-  function setupSceneCallbacks(): void {
-    if (!scene) return;
+  function setupWorldCallbacks(): void {
+    const world = viewport?.world;
+    if (!world) return;
     
-    scene.onSelectionChanged = () => {
-      syncFromScene();
-    }
-
-    // Hook into object added callback
-    scene.onObjectAdded = (obj) => {
-      syncFromScene();
-      updateCameraFromSceneBounds();
-      
-      // Initialize WebGPU resources for the object if in WebGPU mode
-      initObjectWebGPU(obj);
+    world.onEntityAdded = (entity) => {
+      syncFromWorld();
+      initEntityWebGPU(entity);
     };
     
-    // Hook into object removed callback
-    scene.onObjectRemoved = (id) => {
-      // Unregister asset reference if this object was from the asset library
+    world.onEntityRemoved = (id) => {
       sceneSerializer.unregisterAssetRef(id);
-      
-      syncFromScene();
-      updateCameraFromSceneBounds();
+      syncFromWorld();
     };
 
-    scene.onGroupChanged = () => {
-      syncFromScene();
+    world.onSelectionChanged = () => {
+      syncFromWorld();
+    };
+    
+    // Hook BoundsSystem callback for automatic camera plane updates
+    const boundsSystem = world.getSystem<any>('bounds');
+    if (boundsSystem) {
+      boundsSystem.onSceneBoundsChanged = (_sceneBounds: any) => {
+        updateCameraFromSceneBounds();
+      };
     }
     
-    console.log('[SceneBuilderStore] Scene callbacks setup for auto camera bounds update');
+    console.log('[SceneBuilderStore] World callbacks setup');
   }
   
   /**
-   * Initialize WebGPU resources for a scene object if in WebGPU mode.
-   * Called automatically when objects are added to the scene.
+   * Initialize WebGPU resources for an entity.
    */
-  function initObjectWebGPU(obj: AnySceneObject): void {
-    console.log(`[SceneBuilderStore] initObjectWebGPU called for: ${obj.name}, isWebGPU: ${isWebGPU.value}`);
-    
-    // Skip if not in WebGPU mode
-    if (!isWebGPU.value) {
-      console.log(`[SceneBuilderStore] Skipping - not in WebGPU mode`);
-      return;
-    }
-    
-    // Get GPU context from viewport
-    const gpuContext = viewport?.getWebGPUContext();
-    console.log(`[SceneBuilderStore] GPUContext:`, gpuContext ? 'available' : 'NOT AVAILABLE');
-    if (!gpuContext) return;
-    
-    // Handle PrimitiveObject (cube, sphere, plane)
-    // Use type guard + cast to access initWebGPU method
-    if (isPrimitiveObject(obj)) {
-      const primitive = obj as unknown as PrimitiveObject;
-      console.log(`[SceneBuilderStore] Calling initWebGPU on primitive: ${obj.name}`);
-      primitive.initWebGPU(gpuContext);
-      console.log('[SceneBuilderStore] meshId after init:', primitive.meshId);
-      return;
-    }
-    
-    if (isModelObject(obj)) {
-      const model = obj as unknown as ModelObject;
-      console.log(`[SceneBuilderStore] Calling initWebGPU on model: ${obj.name}`);
-      model.initWebGPU(gpuContext);
-      console.log('[SceneBuilderStore] meshIds after init:', model.meshIds);
-      return;
-    }
-  }
-  
-  /**
-   * Initialize WebGPU resources for all existing objects.
-   * Called when switching to WebGPU mode.
-   */
-  function initAllObjectsWebGPU(): void {
+  function initEntityWebGPU(entity: Entity): void {
     if (!isWebGPU.value) return;
     
     const gpuContext = viewport?.getWebGPUContext();
     if (!gpuContext) return;
     
-    for (const obj of objects.value) {
-      if (isPrimitiveObject(obj)) {
-        const primitive = obj as unknown as PrimitiveObject;
-        if (!primitive.isGPUInitialized) {
-          primitive.initWebGPU(gpuContext);
-          console.log(`[SceneBuilderStore] Initialized WebGPU for existing primitive: ${obj.name}`);
-        }
-      } else if (isModelObject(obj)) {
-        const model = obj as unknown as ModelObject;
-        if (!model.isGPUInitialized) {
-          model.initWebGPU(gpuContext);
-          console.log(`[SceneBuilderStore] Initialized WebGPU for existing model: ${obj.name}`);
-        }
-      }
+    // Handle MeshComponent (model entities) - initWebGPU is async
+    const mesh = entity.getComponent<MeshComponent>('mesh');
+    if (mesh && !mesh.isGPUInitialized) {
+      console.log(`[SceneBuilderStore] Calling initWebGPU on mesh entity: ${entity.name}`);
+      mesh.initWebGPU(gpuContext).then(() => {
+        console.log('[SceneBuilderStore] meshIds after init:', mesh.meshIds);
+        // Mark transform dirty so MeshRenderSystem uploads the GPU transform next frame
+        const tc = entity.getComponent<any>('transform');
+        if (tc) tc.dirty = true;
+      });
+      return;
+    }
+    
+    // Handle PrimitiveGeometryComponent (primitive entities) - initWebGPU is sync
+    const prim = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
+    if (prim && !prim.isGPUInitialized) {
+      console.log(`[SceneBuilderStore] Calling initWebGPU on primitive entity: ${entity.name}`);
+      prim.initWebGPU(gpuContext);
+      console.log('[SceneBuilderStore] meshId after init:', prim.meshId);
+      // Mark transform dirty so MeshRenderSystem uploads the GPU transform next frame
+      const tc = entity.getComponent<any>('transform');
+      if (tc) tc.dirty = true;
+      return;
+    }
+  }
+  
+  /**
+   * Initialize WebGPU resources for all existing entities.
+   */
+  function initAllEntitiesWebGPU(): void {
+    if (!isWebGPU.value) return;
+    
+    const gpuContext = viewport?.getWebGPUContext();
+    if (!gpuContext) return;
+    
+    const world = viewport?.world;
+    if (!world) return;
+    
+    for (const entity of world.getAllEntities()) {
+      initEntityWebGPU(entity);
     }
   }
   
@@ -390,17 +387,16 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     selectionCount,
     
     // References (using getters to allow mutation)
-    get scene() { return scene; },
-    set scene(s) { scene = s; },
     get viewport() { return viewport; },
     set viewport(v) { viewport = v; },
     get lightingManager() { return lightingManager; },
     set lightingManager(l) { lightingManager = l; },
-    get windManager() { return windManager; },
-    set windManager(w) { windManager = w; },
+    
+    // ECS World — delegates to viewport (single source of truth)
+    get world() { return viewport?.world ?? null; },
     
     // Actions
-    syncFromScene,
+    syncFromWorld,
     select,
     selectAll,
     clearSelection,
@@ -413,7 +409,8 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     setShowAxes,
     setIsWebGPU,
     updateCameraFromSceneBounds,
-    setupSceneCallbacks
+    setupWorldCallbacks,
+    initEntityWebGPU,
   };
 }
 

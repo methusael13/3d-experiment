@@ -23,6 +23,8 @@ struct Uniforms {
   params: vec4f,                  // 36-39: x = terrainSize, y = waterLevel, z = heightScale, w = sunIntensity
   gridCenter: vec4f,              // 40-43: xy = center XZ in world coords, zw = unused
   gridScale: vec4f,               // 44-47: xy = scale XZ in world units, z = near, w = far
+  lightSpaceMatrix: mat4x4f,      // 48-63 (64 bytes): for single shadow map
+  shadowParams: vec4f,            // 64-67: x = shadowEnabled, y = shadowBias, z = csmEnabled, w = unused
 }
 
 struct WaterMaterial {
@@ -49,7 +51,7 @@ struct WaterMaterial {
 // Bindings - Group 3 (SceneEnvironment: Shadow + IBL)
 // ============================================================================
 
-// Shadow resources (bindings 0-1) - available but water typically doesn't receive shadows
+// Shadow resources (bindings 0-1)
 @group(3) @binding(0) var env_shadowMap: texture_depth_2d;
 @group(3) @binding(1) var env_shadowSampler: sampler_comparison;
 
@@ -59,6 +61,18 @@ struct WaterMaterial {
 @group(3) @binding(4) var env_brdfLut: texture_2d<f32>;
 @group(3) @binding(5) var env_cubeSampler: sampler;
 @group(3) @binding(6) var env_lutSampler: sampler;
+
+// CSM shadow resources (bindings 7-8)
+@group(3) @binding(7) var env_csmShadowArray: texture_depth_2d_array;
+
+struct CSMUniforms {
+  viewProjectionMatrices: array<mat4x4f, 4>,
+  cascadeSplits: vec4f,
+  config: vec4f,
+  cameraForward: vec4f,
+}
+
+@group(3) @binding(8) var<uniform> env_csmUniforms: CSMUniforms;
 
 // ============================================================================
 // Vertex Structures
@@ -76,6 +90,7 @@ struct VertexOutput {
   @location(2) viewDir: vec3f,
   @location(3) distanceToCamera: f32,
   @location(4) gerstnerNormal: vec3f,  // Analytically computed normal from Gerstner waves
+  @location(5) lightSpacePos: vec4f,   // Position in light space for shadow mapping
 }
 
 // ============================================================================
@@ -376,8 +391,115 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   output.viewDir = normalize(cameraPosition - worldPos.xyz);
   output.distanceToCamera = length(cameraPosition - worldPos.xyz);
   output.gerstnerNormal = normal;
+  output.lightSpacePos = uniforms.lightSpaceMatrix * vec4f(worldPos.xyz, 1.0);
   
   return output;
+}
+
+// ============================================================================
+// Shadow Sampling Functions (Single + CSM)
+// ============================================================================
+
+fn waterSampleSingleShadow(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f) -> f32 {
+  let projCoords = lightSpacePos.xyz / lightSpacePos.w;
+  let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
+  let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
+
+  let NdotL = max(dot(normal, lightDir), 0.001);
+  let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
+  let baseBias = uniforms.shadowParams.y;
+  let slopeBias = 0.002;
+  let shadowBias = baseBias + clamp(slopeFactor, 0.0, 5.0) * slopeBias;
+  let clampedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
+
+  let shadowValue = textureSampleCompare(env_shadowMap, env_shadowSampler, clampedUV, clampedDepth);
+
+  let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
+  let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
+  let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
+  let inBounds = inBoundsX * inBoundsY * inBoundsZ;
+
+  return mix(1.0, shadowValue, inBounds);
+}
+
+fn waterSelectCascade(viewDepth: f32) -> i32 {
+  let cascadeCount = i32(env_csmUniforms.config.x);
+  if (viewDepth < env_csmUniforms.cascadeSplits.x) { return 0; }
+  if (viewDepth < env_csmUniforms.cascadeSplits.y && cascadeCount > 1) { return 1; }
+  if (viewDepth < env_csmUniforms.cascadeSplits.z && cascadeCount > 2) { return 2; }
+  if (cascadeCount > 3) { return 3; }
+  return cascadeCount - 1;
+}
+
+fn waterSampleCascadeShadow(worldPos: vec4f, cascade: i32, normal: vec3f, lightDir: vec3f) -> f32 {
+  let lightSpacePos = env_csmUniforms.viewProjectionMatrices[cascade] * worldPos;
+  let projCoords = lightSpacePos.xyz / lightSpacePos.w;
+  let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
+  let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
+
+  let NdotL = max(dot(normal, lightDir), 0.001);
+  let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
+  let cascadeBias = 0.001 * (1.0 + f32(cascade) * 0.5);
+  let shadowBias = cascadeBias + clamp(slopeFactor, 0.0, 5.0) * cascadeBias * 2.0;
+  let biasedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
+
+  let cascadeSize = textureDimensions(env_csmShadowArray);
+  let texelSize = vec2f(1.0 / f32(cascadeSize.x), 1.0 / f32(cascadeSize.y));
+
+  var shadowVal = 0.0;
+  for (var x = -1; x <= 1; x++) {
+    for (var y = -1; y <= 1; y++) {
+      let offset = vec2f(f32(x), f32(y)) * texelSize;
+      let sampleUV = clamp(clampedUV + offset, vec2f(0.001), vec2f(0.999));
+      shadowVal += textureSampleCompareLevel(env_csmShadowArray, env_shadowSampler, sampleUV, cascade, biasedDepth);
+    }
+  }
+  shadowVal /= 9.0;
+
+  let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
+  let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
+  let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
+  let inBounds = inBoundsX * inBoundsY * inBoundsZ;
+
+  return mix(1.0, shadowVal, inBounds);
+}
+
+fn waterSampleCSMShadow(worldPos: vec4f, viewDepth: f32, normal: vec3f, lightDir: vec3f) -> f32 {
+  let cascade = waterSelectCascade(viewDepth);
+  let cascadeCount = i32(env_csmUniforms.config.x);
+
+  var cascadeSplit = env_csmUniforms.cascadeSplits.x;
+  if (cascade == 1) { cascadeSplit = env_csmUniforms.cascadeSplits.y; }
+  else if (cascade == 2) { cascadeSplit = env_csmUniforms.cascadeSplits.z; }
+  else if (cascade == 3) { cascadeSplit = env_csmUniforms.cascadeSplits.w; }
+
+  let shadow0 = waterSampleCascadeShadow(worldPos, cascade, normal, lightDir);
+
+  let blendRegion = cascadeSplit * env_csmUniforms.config.z;
+  let blendStart = cascadeSplit - blendRegion;
+
+  if (viewDepth > blendStart && cascade < cascadeCount - 1) {
+    let shadow1 = waterSampleCascadeShadow(worldPos, cascade + 1, normal, lightDir);
+    let blendFactor = smoothstep(blendStart, cascadeSplit, viewDepth);
+    return mix(shadow0, shadow1, blendFactor);
+  }
+
+  return shadow0;
+}
+
+fn waterSampleShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDir: vec3f) -> f32 {
+  if (uniforms.shadowParams.x < 0.5) {
+    return 1.0;
+  }
+
+  if (uniforms.shadowParams.z > 0.5) {
+    let cameraFwd = normalize(env_csmUniforms.cameraForward.xyz);
+    let cameraPos = uniforms.cameraPositionTime.xyz;
+    let viewDepth = abs(dot(worldPos - cameraPos, cameraFwd));
+    return waterSampleCSMShadow(vec4f(worldPos, 1.0), viewDepth, normal, lightDir);
+  } else {
+    return waterSampleSingleShadow(lightSpacePos, normal, lightDir);
+  }
 }
 
 // ============================================================================
@@ -538,8 +660,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     baseColor = mix(baseColor, refractedColor, refractionMix);
   }
   
+  // ===== Shadow =====
+  // Sample shadow for this water pixel (supports CSM + single map)
+  let waterNormalUp = vec3f(0.0, 1.0, 0.0); // Use upward normal for shadow bias (wave normal would cause artifacts)
+  let shadow = waterSampleShadow(input.lightSpacePos, input.worldPosition, waterNormalUp, sunDir);
+  
+  // Apply shadow to sun-dependent color: darken base color in shadow, keep ambient
+  // Shadow affects the direct sun contribution but not ambient/IBL reflection
+  baseColor *= mix(0.4, 1.0, shadow); // 0.4 = ambient remains in shadow (water still has scattered light)
+  
   // The 0.4 reflection multiplier ensures water tint shows through even at glancing angles
-  var finalColor = mix(baseColor, reflection, fresnel * 0.4) + fresnel * reflection * 0.3;
+  // Darken sun reflection in shadow areas
+  let shadowedReflection = reflection * mix(0.3, 1.0, shadow);
+  var finalColor = mix(baseColor, shadowedReflection, fresnel * 0.4) + fresnel * shadowedReflection * 0.3;
   
   // Add ambient (slightly stronger for deep ocean richness)
   // Scale by sunIntensityFactor so water doesn't glow at night

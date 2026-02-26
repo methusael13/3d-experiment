@@ -1,15 +1,14 @@
 /**
  * SceneBuilderApp - Root Preact component for Scene Builder
  * Orchestrates the entire UI using signals-based state management
+ * 
+ * ECS Step 3: No Scene — World is the authority for all objects.
  */
 
-import { useEffect, useCallback, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useCallback, useState } from 'preact/hooks';
 import { render } from 'preact';
-import { createSceneGraph, type SceneGraph } from '../../../../core/sceneGraph';
-import { createScene, type Scene } from '../../../../core/Scene';
 import { createLightingManager, type LightingManager } from '../../lightingManager';
-import { WindManager } from '../../wind';
-import { clearImportedModels, sceneSerializer } from '../../../../loaders';
+import { clearImportedModels } from '../../../../loaders';
 import type { Asset } from '../hooks/useAssetLibrary';
 import { useAssetImport } from '../hooks';
 import { getSceneBuilderStore, resetSceneBuilderStore } from '../state';
@@ -21,6 +20,8 @@ import { useKeyboardShortcuts } from '../hooks';
 import { DockingManagerProvider } from '../ui';
 import { ImportModeDialog } from '../ui/ImportModeDialog/ImportModeDialog';
 import { Viewport } from '../../Viewport';
+import type { Entity } from '@/core/ecs/Entity';
+import type { GroupComponent } from '@/core/ecs/components/GroupComponent';
 import styles from './SceneBuilderApp.module.css';
 
 // Import CSS variables
@@ -44,59 +45,39 @@ export function SceneBuilderApp({
 }: SceneBuilderAppProps) {
   const store = getSceneBuilderStore();
   
-  // Track sceneGraph separately for cleanup
-  const sceneGraphRef = useRef<SceneGraph | null>(null);
-  
   // ==================== Initialize Core Systems ====================
   
   const handleViewportInitialized = useCallback((viewport: Viewport) => {
-    // Create core systems
-    const sceneGraph = createSceneGraph();
-    sceneGraphRef.current = sceneGraph;
-    const scene = createScene(sceneGraph);
     const lightingManager = createLightingManager();
-    const windManager = new WindManager();
     
     // Store references
-    store.scene = scene;
     store.viewport = viewport;
     store.lightingManager = lightingManager;
-    store.windManager = windManager;
     
-    // Set viewport scene graph and scene reference
-    viewport.setSceneGraph(sceneGraph);
-    viewport.setScene(scene);
+    // Set viewport scene graph to World's internal sceneGraph
+    viewport.setSceneGraph(viewport.world.sceneGraph);
     
-    store.setupSceneCallbacks();
+    // Setup World callbacks (entity add/remove → sync store)
+    store.setupWorldCallbacks();
+    
     // Initial sync
-    store.syncFromScene();
+    store.syncFromWorld();
     
     // Initial lighting setup
     const lightParams = lightingManager.getLightParams();
     viewport.setLightParams(lightParams);
-    viewport.setWindParams(windManager.getShaderUniforms());
     store.setViewportInitialized();
 
-    console.log('[SceneBuilderApp] Initialized');
+    console.log('[SceneBuilderApp] Initialized (ECS World-based)');
   }, [store]);
   
   // ==================== Cleanup ====================
   
   useEffect(() => {
     return () => {
-      // Cleanup viewport (WebGL context, animation loop)
+      // Cleanup viewport (WebGPU context, animation loop, World)
       if (store.viewport) {
         store.viewport.destroy();
-      }
-      
-      // Cleanup scene (all scene objects)
-      if (store.scene) {
-        store.scene.destroy();
-      }
-      
-      // Clear scene graph
-      if (sceneGraphRef.current) {
-        sceneGraphRef.current.clear();
       }
       
       // Clear cached imported models
@@ -125,15 +106,17 @@ export function SceneBuilderApp({
   
   const { importAsset } = useAssetImport();
   
-  /**
-   * Handle adding an asset from the library to the scene
-   * Called when user double-clicks an asset in the Asset Library
-   */
   const handleAddAssetToScene = useCallback(async (asset: Asset) => {
     await importAsset(asset);
   }, [importAsset]);
 
   // ==================== Render ====================
+  
+  // Map entities to ObjectsPanel-compatible format
+  const objectsForPanel = store.objects.value.map((e: Entity) => {
+    const group = e.getComponent<GroupComponent>('group');
+    return { id: e.id, name: e.name, groupId: group?.groupId };
+  });
   
   return (
     <DockingManagerProvider>
@@ -148,8 +131,7 @@ export function SceneBuilderApp({
         {/* Left Sidebar */}
         <div class={styles.sidebarLeft}>
           <ObjectsPanel
-            scene={store.scene!}
-            objects={store.objects.value.map(o => ({ id: o.id, name: o.name, groupId: o.groupId }))}
+            objects={objectsForPanel}
             groups={store.groups.value}
             selectedIds={store.selectedIds.value}
             expandedGroupIds={store.expandedGroupIds.value}
@@ -159,7 +141,7 @@ export function SceneBuilderApp({
             onToggleGroup={store.toggleGroup}
           />
           
-          {/* Object Panel - shows when object selected (includes Edit tab for primitives) */}
+          {/* Object Panel - shows when object selected */}
           <ConnectedObjectPanel />
 
           {/* Terrain Panel */}
@@ -200,10 +182,10 @@ export function SceneBuilderApp({
         </div>
       </div>
       
-        {/* Shader Debug Panel - Floating at root level to avoid viewport clipping */}
+        {/* Shader Debug Panel - Floating at root level */}
         <ShaderDebugPanelContainer />
         
-        {/* Import mode dialog - shown when importing multi-node glTF files */}
+        {/* Import mode dialog */}
         <ImportModeDialog />
       </div>
     </DockingManagerProvider>
@@ -212,9 +194,6 @@ export function SceneBuilderApp({
 
 // ==================== Mount Function ====================
 
-/**
- * Mount SceneBuilderApp to a container element
- */
 export function mountSceneBuilderApp(
   container: HTMLElement,
   props: SceneBuilderAppProps = {}

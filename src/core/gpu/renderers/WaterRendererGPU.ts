@@ -92,6 +92,14 @@ export interface WaterRenderParams {
   screenWidth?: number;
   /** Screen height in pixels (for refraction UV calculation) */
   screenHeight?: number;
+  /** Light-space matrix for shadow mapping */
+  lightSpaceMatrix?: mat4 | Float32Array;
+  /** Whether shadows are enabled */
+  shadowEnabled?: boolean;
+  /** Shadow bias */
+  shadowBias?: number;
+  /** Whether CSM is enabled */
+  csmEnabled?: boolean;
 }
 
 /**
@@ -154,7 +162,7 @@ export class WaterRendererGPU {
   private currentCellsX: number = 0;
   private currentCellsZ: number = 0;
   
-  // Uniform builders (48 floats for uniforms, 28 floats for material)
+  // Uniform builders (68 floats for uniforms, 28 floats for material)
   private uniformBuilder: UniformBuilder;
   private materialBuilder: UniformBuilder;
   
@@ -172,9 +180,8 @@ export class WaterRendererGPU {
     this.ctx = ctx;
     this.config = { ...createDefaultWaterConfig(), ...config };
     
-    // Uniform builders (48 floats for uniforms, 28 floats for material)
-    // 2 mat4 (32) + 4 vec4 (16) = 48 floats
-    this.uniformBuilder = new UniformBuilder(48);
+    // Uniform builders: 3 mat4 (48) + 5 vec4 (20) = 68 floats for uniforms, 28 for material
+    this.uniformBuilder = new UniformBuilder(68);
     this.materialBuilder = new UniformBuilder(28); // 7 vec4 = 28 floats
     
     // Create default SceneEnvironment for Group 3 layout and placeholder bind group
@@ -288,10 +295,10 @@ export class WaterRendererGPU {
    * Create uniform buffers
    */
   private createBuffers(): void {
-    // Uniform buffer: mat4(16) + mat4(16) + vec4(cameraPos+time) + vec4(params) + vec4(gridCenter) + vec4(gridScale) = 48 floats
+    // Uniform buffer: mat4(16) + mat4(16) + vec4 + vec4 + vec4 + vec4 + mat4(16) + vec4 = 68 floats
     this.uniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'water-uniforms',
-      size: 192, // 48 * 4 bytes
+      size: 272, // 68 * 4 bytes
     });
     
     // Material buffer: 7 vec4s = 28 floats = 112 bytes
@@ -505,20 +512,30 @@ export class WaterRendererGPU {
     const near = params.near ?? 0.1;
     const far = params.far ?? 2000;
     
-    // WGSL struct layout (48 floats = 192 bytes):
+    // WGSL struct layout (68 floats = 272 bytes):
     // mat4 viewProjectionMatrix (64 bytes, indices 0-15)
     // mat4 modelMatrix (64 bytes, indices 16-31)
     // vec4 cameraPositionTime (16 bytes, indices 32-35): xyz = camera, w = time
     // vec4 params (16 bytes, indices 36-39): x = terrainSize, y = waterLevel, z = heightScale, w = sunIntensity
     // vec4 gridCenter (16 bytes, indices 40-43): xy = center XZ, zw = unused
     // vec4 gridScale (16 bytes, indices 44-47): xy = scale XZ, z = near, w = far
+    // mat4 lightSpaceMatrix (64 bytes, indices 48-63): for single shadow map
+    // vec4 shadowParams (16 bytes, indices 64-67): x = shadowEnabled, y = shadowBias, z = csmEnabled, w = unused
+    
+    // Build lightSpaceMatrix (identity if not provided)
+    const lightSpaceMatrix = params.lightSpaceMatrix 
+      ? params.lightSpaceMatrix as Float32Array
+      : new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+    
     this.uniformBuilder.reset()
       .mat4(params.viewProjectionMatrix as Float32Array)  // 0-15
       .mat4(params.modelMatrix as Float32Array)           // 16-31
       .vec4(params.cameraPosition[0], params.cameraPosition[1], params.cameraPosition[2], params.time) // 32-35: cameraPos + time
       .vec4(params.terrainSize, waterLevelWorld, params.heightScale, sunIntensity) // 36-39: params
       .vec4(this.config.gridCenterX, this.config.gridCenterZ, 0.0, 0.0) // 40-43: gridCenter
-      .vec4(this.config.gridSizeX, this.config.gridSizeZ, near, far);    // 44-47: gridScale + near/far
+      .vec4(this.config.gridSizeX, this.config.gridSizeZ, near, far)    // 44-47: gridScale + near/far
+      .mat4(lightSpaceMatrix)                             // 48-63: lightSpaceMatrix
+      .vec4(params.shadowEnabled ? 1.0 : 0.0, params.shadowBias ?? 0.002, params.csmEnabled ? 1.0 : 0.0, 0.0); // 64-67: shadowParams
     
     this.uniformBuffer!.write(this.ctx, this.uniformBuilder.build());
   }

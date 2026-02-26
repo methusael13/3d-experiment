@@ -35,7 +35,9 @@ import {
   type EffectUniforms,
 } from '../postprocess';
 import { RenderContextImpl, type RenderContextOptions } from './RenderContext';
+import type { World } from '../../ecs/World';
 import type { RenderPass } from './RenderPass';
+import { MeshRenderSystem } from '../../ecs/systems/MeshRenderSystem';
 import { 
   SkyPass, 
   ShadowPass, 
@@ -48,7 +50,6 @@ import {
   SelectionOutlinePass,
 } from './passes';
 import { SelectionOutlineRendererGPU } from '../renderers/SelectionOutlineRendererGPU';
-import type { Scene } from '../../Scene';
 
 /**
  * Simple camera interface for WebGPU pipeline
@@ -489,17 +490,17 @@ export class GPUForwardPipeline {
   
   /**
    * Render a frame using pass-based architecture
-   * @param scene The scene to render
    * @param camera The view camera (what appears on screen - may be debug camera)
    * @param options Render options
    * @param sceneCamera Optional separate scene camera for shadows/culling/shader uniforms.
    *                    If not provided, `camera` is used for everything.
+   * @param world ECS World — passes query entities from this
    */
   render(
-    scene: Scene | null,
     camera: GPUCamera,
     options: RenderOptions = {},
-    sceneCamera?: GPUCamera
+    sceneCamera?: GPUCamera,
+    world?: World
   ): void {
     // Calculate delta time
     const now = performance.now();
@@ -598,7 +599,7 @@ export class GPUForwardPipeline {
       encoder,
       camera,
       sceneCamera,
-      scene,
+      world,
       options: mergedOptions,
       width: this.width,
       height: this.height,
@@ -620,6 +621,8 @@ export class GPUForwardPipeline {
       selectionMaskTexture: this.selectionMaskTexture ?? undefined,
       // Unified SceneEnvironment (shadow + IBL) for all renderers
       sceneEnvironment: this.sceneEnvironment,
+      // MeshRenderSystem — provides per-frame variant groups for composed rendering
+      meshRenderSystem: world ? this.findMeshRenderSystem(world) : undefined,
     };
     
     const renderCtx = new RenderContextImpl(contextOptions);
@@ -856,5 +859,19 @@ export class GPUForwardPipeline {
    */
   getDebugTextureManager(): DebugTextureManager {
     return this.debugTextureManager;
+  }
+  
+  /**
+   * Find the MeshRenderSystem from the ECS World.
+   * Cached result per-frame since World.getSystems() is cheap.
+   */
+  private findMeshRenderSystem(world: World): MeshRenderSystem | undefined {
+    // World stores systems; look up by name
+    for (const system of world.getSystems()) {
+      if (system instanceof MeshRenderSystem) {
+        return system;
+      }
+    }
+    return undefined;
   }
 }

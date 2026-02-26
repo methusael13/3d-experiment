@@ -3,7 +3,6 @@
  * Creates a context object that panels use to interact with scene state
  */
 
-import type { Scene } from '../../../core/Scene';
 import type { WindManager, ObjectWindSettings } from '../wind';
 import { createObjectWindSettings } from '../wind';
 import type { LightingManager } from '../lightingManager';
@@ -28,7 +27,6 @@ export interface TerrainBlendSettings {
 export interface PanelContext {
   // Core references
   container: HTMLElement;
-  scene: Scene;
   windManager: WindManager;
   lightingManager: LightingManager;
   cameraController: CameraController | null;
@@ -81,7 +79,6 @@ export interface PanelContext {
  */
 export interface PanelContextConfig {
   container: HTMLElement;
-  scene: Scene;
   windManager: WindManager;
   lightingManager: LightingManager;
   cameraController: CameraController | null;
@@ -144,7 +141,6 @@ export interface Panel {
 export function createPanelContext(config: PanelContextConfig): PanelContext {
   const {
     container,
-    scene,
     windManager,
     lightingManager,
     cameraController,
@@ -167,7 +163,6 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
   return {
     // Core references
     container,
-    scene,
     windManager,
     lightingManager,
     cameraController,

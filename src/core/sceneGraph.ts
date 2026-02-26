@@ -385,6 +385,20 @@ export class SceneGraph<T = unknown> {
   }
 
   /**
+   * Set a node's worldBounds directly (bypasses local transform computation).
+   * Used by BoundsSystem which has the authoritative worldBounds from ECS.
+   */
+  setWorldBounds(id: string, worldBounds: AABB): boolean {
+    const node = this.nodes.get(id);
+    if (!node) return false;
+    node.worldBounds = worldBounds instanceof BoundingBox
+      ? worldBounds
+      : BoundingBox.fromAABB(worldBounds);
+    this.bvhDirty = true;
+    return true;
+  }
+
+  /**
    * Update a node's properties
    */
   update(id: string, updates: Partial<SceneNodeOptions<T>>): SceneGraphNode<T> | null {

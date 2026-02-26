@@ -1,5 +1,6 @@
 /**
- * MenuBarBridge - Connects MenuBar to the store
+ * MenuBarBridge - Connects MenuBar to the store (ECS Step 3)
+ * Uses ECS factories for entity creation, World for selection/deletion.
  */
 
 import { useComputed, signal } from '@preact/signals';
@@ -8,6 +9,14 @@ import { getSceneBuilderStore } from '../state';
 import { MenuBar, type MenuDefinition, type MenuAction } from '../layout';
 import { shaderPanelVisible, toggleShaderPanel } from './ShaderDebugPanelBridge';
 import { FPSCameraController } from '../../FPSCameraController';
+import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity } from '@/core/ecs/factories';
+import { PrimitiveGeometryComponent } from '@/core/ecs/components/PrimitiveGeometryComponent';
+import { TransformComponent } from '@/core/ecs/components/TransformComponent';
+import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
+import { TerrainManager } from '@/core/terrain/TerrainManager';
+import { OceanManager } from '@/core/ocean/OceanManager';
+import { generatePrimitiveGeometry } from '@/core/utils/primitiveGeometry';
+import { MeshComponent, BoundsComponent } from '@/core/ecs';
 
 // Signal to track FPS mode state
 export const fpsModeActive = signal(false);
@@ -42,33 +51,64 @@ export function ConnectedMenuBar() {
   // ==================== File Menu Actions ====================
   
   const handleSaveScene = useCallback(() => {
-    const scene = store.scene;
-    if (!scene) return;
+    const world = store.world;
+    if (!world) return;
     
-    // Use scene's serialize method which returns the data we need
-    const sceneData = scene.serialize();
-    
-    import('../../../../loaders/SceneSerializer').then(({ SceneSerializer }) => {
-      const serializer = new SceneSerializer();
-      // Get camera state from viewport if available
-      const cameraState = {
-        angleX: 0.5,
-        angleY: 0.3,
-        distance: 5,
-        originX: 0,
-        originY: 0,
-        originZ: 0,
-        offsetX: 0,
-        offsetY: 0,
-        offsetZ: 0,
+    // Serialize all entities
+    const serializedEntities: any[] = [];
+    for (const entity of world.getAllEntities()) {
+      const transform = entity.getComponent<TransformComponent>('transform');
+      const prim = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
+      const mesh = entity.getComponent<MeshComponent>('mesh');
+      const group = entity.getComponent<any>('group');
+      
+      const entry: any = {
+        id: entity.id,
+        name: entity.name,
+        transform: transform?.serialize(),
+        groupId: group?.groupId,
       };
       
-      serializer.saveScene({
-        sceneObjects: sceneData.objects,
-        cameraState: store.viewport?.getCameraState() ?? cameraState,
-        groupsArray: sceneData.groups,
-      });
-    });
+      if (mesh) {
+        entry.type = 'model';
+        entry.modelPath = mesh.modelPath;
+      } else if (prim) {
+        entry.type = 'primitive';
+        entry.primitiveType = prim.primitiveType;
+        entry.primitiveConfig = { ...prim.config };
+      } else if (entity.hasComponent('terrain')) {
+        entry.type = 'terrain';
+      } else if (entity.hasComponent('ocean')) {
+        entry.type = 'ocean';
+      }
+      
+      serializedEntities.push(entry);
+    }
+    
+    // Serialize groups
+    const serializedGroups: any[] = [];
+    for (const [id, group] of world.getAllGroups()) {
+      serializedGroups.push({ id, name: group.name, childIds: Array.from(group.childIds) });
+    }
+    
+    const sceneData = {
+      version: 2,
+      entities: serializedEntities,
+      groups: serializedGroups,
+      camera: store.viewport?.getCameraState(),
+    };
+    
+    // Download as JSON
+    const json = JSON.stringify(sceneData, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `scene-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    console.log('[MenuBar] Scene saved');
   }, [store]);
   
   const handleLoadScene = useCallback(() => {
@@ -77,14 +117,69 @@ export function ConnectedMenuBar() {
     input.accept = '.json';
     input.onchange = async (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file || !store.scene) return;
+      if (!file) return;
       
-      const text = await file.text();
-      const data = JSON.parse(text);
+      const world = store.world;
+      if (!world) return;
       
-      // Use scene's deserialize method
-      await store.scene.deserialize(data);
-      store.syncFromScene();
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        
+        // Clear existing entities
+        for (const entity of world.getAllEntities()) {
+          world.destroyEntity(entity.id);
+        }
+        
+        // Load entities
+        if (data.entities) {
+          for (const entry of data.entities) {
+            if (entry.type === 'primitive') {
+              const entity = createPrimitiveEntity(world, {
+                primitiveType: entry.primitiveType,
+                name: entry.name,
+                config: entry.primitiveConfig,
+              });
+              const newPrim = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
+              if (newPrim) {
+                newPrim.geometryData = generatePrimitiveGeometry(entry.primitiveType, entry.primitiveConfig ?? {});
+              }
+              if (entry.transform) {
+                entity.getComponent<TransformComponent>('transform')?.deserialize(entry.transform);
+              }
+            } else if (entry.type === 'model' && entry.modelPath) {
+              const { loadGLB, getModelUrl } = await import('../../../../loaders');
+              const url = getModelUrl(entry.modelPath);
+              const model = await loadGLB(url);
+              if (model) {
+                const entity = createModelEntity(world, {
+                  name: entry.name,
+                  modelPath: entry.modelPath,
+                });
+                const newMesh = entity.getComponent<MeshComponent>('mesh');
+                if (newMesh) {
+                  newMesh.modelPath = entry.modelPath;
+                  newMesh.model = model;
+                }
+                if (entry.transform) {
+                  entity.getComponent<TransformComponent>('transform')?.deserialize(entry.transform);
+                }
+              }
+            }
+            // terrain and ocean need their managers, skip for now
+          }
+        }
+        
+        // Load camera
+        if (data.camera) {
+          store.viewport?.setCameraState(data.camera);
+        }
+        
+        store.syncFromWorld();
+        console.log('[MenuBar] Scene loaded');
+      } catch (err) {
+        console.error('[MenuBar] Failed to load scene:', err);
+      }
     };
     input.click();
   }, [store]);
@@ -92,48 +187,98 @@ export function ConnectedMenuBar() {
   // ==================== Edit Menu Actions ====================
   
   const handleGroupSelection = useCallback(() => {
-    const scene = store.scene;
-    if (!scene || store.selectionCount.value < 2) return;
-    scene.createGroupFromSelection();
-    store.syncFromScene();
+    const world = store.world;
+    if (!world || store.selectionCount.value < 2) return;
+    world.createGroupFromSelection();
+    store.syncFromWorld();
   }, [store]);
   
   const handleUngroup = useCallback(() => {
-    const scene = store.scene;
-    if (!scene || store.selectionCount.value === 0) return;
-    scene.ungroupSelection();
-    store.syncFromScene();
+    const world = store.world;
+    if (!world || store.selectionCount.value === 0) return;
+    world.ungroupSelection();
+    store.syncFromWorld();
   }, [store]);
   
   const handleDeleteSelected = useCallback(() => {
-    const scene = store.scene;
-    if (!scene) return;
-    const selectedIds = store.selectedIds.value;
+    const world = store.world;
+    if (!world) return;
+    const selectedIds = new Set(world.getSelectedIds());
     for (const id of selectedIds) {
-      scene.removeObject(id);
+      world.destroyEntity(id);
     }
-    store.syncFromScene();
+    // syncFromWorld is called automatically via world.onEntityRemoved callback
   }, [store]);
   
   const handleDuplicate = useCallback(() => {
-    const scene = store.scene;
-    if (!scene) return;
-    const selectedIds = store.selectedIds.value;
-    for (const id of selectedIds) {
-      scene.duplicateObject(id);
+    const world = store.world;
+    if (!world) return;
+    
+    const selected = world.getSelectedEntities();
+    const newIds: string[] = [];
+    
+    for (const entity of selected) {
+      const transform = entity.getComponent<TransformComponent>('transform');
+      const prim = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
+      const mesh = entity.getComponent<MeshComponent>('mesh');
+      
+      if (prim && transform) {
+        // Duplicate primitive entity
+        const newEntity = createPrimitiveEntity(world, {
+          primitiveType: prim.primitiveType,
+          name: entity.name + ' Copy',
+          config: { ...prim.config },
+        });
+        
+        const newTransform = newEntity.getComponent<TransformComponent>('transform');
+        if (newTransform) {
+          newTransform.setPosition([transform.position[0] + 1, transform.position[1], transform.position[2]]);
+          newTransform.setRotationQuat(transform.rotationQuat);
+          newTransform.setScale(transform.scale);
+        }
+        
+        const newPrim = newEntity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
+        if (newPrim) {
+          newPrim.geometryData = generatePrimitiveGeometry(prim.primitiveType, prim.config);
+        }
+        
+        newIds.push(newEntity.id);
+      } else if (mesh && transform) {
+        // Duplicate model entity — share the same GLBModel data, get new GPU meshes
+        const newEntity = createModelEntity(world, {
+          name: entity.name + ' Copy',
+          modelPath: mesh.modelPath,
+        });
+        
+        const newTransform = newEntity.getComponent<TransformComponent>('transform');
+        if (newTransform) {
+          newTransform.setPosition([transform.position[0] + 1, transform.position[1], transform.position[2]]);
+          newTransform.setRotationQuat(transform.rotationQuat);
+          newTransform.setScale(transform.scale);
+        }
+        
+        // Share model data (GLBModel is read-only, safe to share)
+        const newMesh = newEntity.getComponent<MeshComponent>('mesh');
+        if (newMesh && mesh.model) {
+          newMesh.modelPath = mesh.modelPath;
+          newMesh.model = mesh.model;
+          // GPU init happens via onEntityAdded callback
+        }
+        
+        newIds.push(newEntity.id);
+      }
     }
-    store.syncFromScene();
+    
+    if (newIds.length > 0) {
+      world.selectAll(newIds);
+    }
   }, [store]);
   
   const handleSelectAll = useCallback(() => {
-    const scene = store.scene;
-    if (!scene) return;
-    // Select all objects by iterating through them
-    const allObjects = scene.getAllObjects();
-    for (const obj of allObjects) {
-      scene.select(obj.id, { additive: true });
-    }
-    store.syncFromScene();
+    const world = store.world;
+    if (!world) return;
+    const allEntities = world.getAllEntities();
+    world.selectAll(allEntities.map(e => e.id));
   }, [store]);
   
   // ==================== View Menu Actions ====================
@@ -151,18 +296,17 @@ export function ConnectedMenuBar() {
   }, [store]);
   
   const handleExpandView = useCallback(() => {
-    // TODO: Implement fullscreen
     console.log('[MenuBar] Expand View - TODO');
   }, []);
   
-  // FPS camera controller ref (persists across renders)
+  // FPS camera controller ref
   const fpsControllerRef = useRef<FPSCameraController | null>(null);
   
   const handleFPSCamera = useCallback(() => {
     const viewport = store.viewport;
-    const scene = store.scene;
-    if (!viewport || !scene) {
-      console.warn('[MenuBar] FPS Camera - viewport or scene not available');
+    const world = store.world;
+    if (!viewport || !world) {
+      console.warn('[MenuBar] FPS Camera - viewport or world not available');
       return;
     }
     
@@ -174,25 +318,25 @@ export function ConnectedMenuBar() {
       return;
     }
     
-    // Get terrain from scene
-    const gpuTerrain = scene.getWebGPUTerrain();
-    if (!gpuTerrain) {
-      console.warn('[MenuBar] FPS Camera - no terrain in scene');
+    // Get terrain entity and its manager
+    const terrainEntity = world.queryFirst('terrain');
+    if (!terrainEntity) {
+      console.warn('[MenuBar] FPS Camera - no terrain entity in world');
       return;
     }
     
-    const terrainManager = gpuTerrain.getTerrainManager();
+    const terrainComp = terrainEntity.getComponent<TerrainComponent>('terrain');
+    const terrainManager = terrainComp?.manager;
     if (!terrainManager) {
       console.warn('[MenuBar] FPS Camera - no TerrainManager available');
       return;
     }
     
     if (!terrainManager.hasCPUHeightfield()) {
-      console.warn('[MenuBar] FPS Camera - terrain CPU heightfield not ready (terrain may still be generating)');
+      console.warn('[MenuBar] FPS Camera - terrain CPU heightfield not ready');
       return;
     }
     
-    // Create FPS controller if needed
     if (!fpsControllerRef.current) {
       fpsControllerRef.current = new FPSCameraController();
     }
@@ -203,14 +347,12 @@ export function ConnectedMenuBar() {
       return;
     }
     
-    // Get WebGPU canvas (or fall back to main canvas)
-    const canvas = (viewport as any).webgpuCanvas || (viewport as any).canvas;
+    const canvas = (viewport as any).canvas;
     if (!canvas) {
       console.warn('[MenuBar] FPS Camera - canvas not available');
       return;
     }
     
-    // Activate FPS mode
     const activated = fpsControllerRef.current.activate(
       canvas,
       terrainManager,
@@ -228,8 +370,6 @@ export function ConnectedMenuBar() {
       fpsModeActive.value = true;
       viewport.setFPSMode(true, fpsControllerRef.current);
       console.log('[MenuBar] FPS Camera mode activated');
-    } else {
-      console.warn('[MenuBar] FPS Camera - failed to activate');
     }
   }, [store]);
   
@@ -238,16 +378,12 @@ export function ConnectedMenuBar() {
     if (!viewport) return;
     
     const newState = !debugCameraModeActive.value;
-    
-    // Exit FPS mode if entering debug camera mode
     if (newState && fpsModeActive.value) {
       fpsModeActive.value = false;
     }
     
     viewport.setDebugCameraMode(newState);
     debugCameraModeActive.value = newState;
-    
-    console.log(`[MenuBar] Debug Camera mode ${newState ? 'enabled' : 'disabled'}`);
   }, [store]);
   
   const handleToggleShaderEditor = useCallback(() => {
@@ -258,98 +394,112 @@ export function ConnectedMenuBar() {
     const viewport = store.viewport;
     if (!viewport) return;
     
-    // Camera presets: 0=perspective, 1=front, 2=top, 3=side
-    // Access camera controller via viewport's public property
     const controller = (viewport as any).cameraController;
-    if (!controller || typeof controller.setAngles !== 'function') {
-      console.log('[MenuBar] Camera preset - controller not available');
-      return;
-    }
+    if (!controller || typeof controller.setAngles !== 'function') return;
     
     switch (preset) {
-      case 0: // Perspective
-        controller.setAngles(0.5, 0.3);
-        break;
-      case 1: // Front
-        controller.setAngles(0, 0);
-        break;
-      case 2: // Top
-        controller.setAngles(0, Math.PI / 2);
-        break;
-      case 3: // Side
-        controller.setAngles(Math.PI / 2, 0);
-        break;
+      case 0: controller.setAngles(0.5, 0.3); break;
+      case 1: controller.setAngles(0, 0); break;
+      case 2: controller.setAngles(0, Math.PI / 2); break;
+      case 3: controller.setAngles(Math.PI / 2, 0); break;
     }
   }, [store]);
   
   // ==================== Add Menu Actions ====================
   
   const handleAddPrimitive = useCallback((type: 'cube' | 'plane' | 'sphere') => {
-    const scene = store.scene;
-    if (!scene) return;
-    scene.addPrimitive(type);
-    store.syncFromScene();
+    const world = store.world;
+    if (!world) return;
+    
+    const entity = createPrimitiveEntity(world, { primitiveType: type });
+    
+    // Generate geometry data, compute bounds, then init GPU
+    const prim = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
+    if (prim) {
+      prim.geometryData = generatePrimitiveGeometry(type, prim.config);
+      
+      // Each component computes its own bounds
+      const boundsComp = entity.getComponent<BoundsComponent>('bounds');
+      if (boundsComp) {
+        boundsComp.localBounds = prim.computeLocalBounds();
+        boundsComp.dirty = true;
+      }
+    }
+    
+    // Explicitly init GPU resources (onEntityAdded fires before geometryData is set)
+    store.initEntityWebGPU(entity);
+    world.select(entity.id);
   }, [store]);
   
   const handleAddTerrain = useCallback(async () => {
-    const scene = store.scene;
+    const world = store.world;
     const gpuContext = store.viewport?.getWebGPUContext();
-    if (!scene || !gpuContext) {
-      console.warn('[MenuBar] Cannot add terrain - scene or GPU context not available. Enable WebGPU mode first.');
-      return;
-    }
-
-    if (!store.viewport?.isWebGPUTestMode()) {
-      console.warn('[MenuBar] Cannot add terrain when not in WebGPU mode');
+    if (!world || !gpuContext) {
+      console.warn('[MenuBar] Cannot add terrain - world or GPU context not available');
       return;
     }
     
     // Check if terrain already exists
-    if (scene.getWebGPUTerrain()) {
-      console.warn('[MenuBar] Terrain already exists in scene');
+    if (world.queryFirst('terrain')) {
+      console.warn('[MenuBar] Terrain already exists in world');
       return;
     }
     
-    // Add terrain to scene
-    const terrainObj = await scene.addWebGPUTerrain(gpuContext, {
+    // Create TerrainManager, initialize and generate
+    const terrainManager = new TerrainManager(gpuContext, {
       worldSize: 400,
-      heightScale: 136
+      heightScale: 136,
     });
+    await terrainManager.initialize();
+    await terrainManager.generate((stage, progress) => {
+      console.log(`[MenuBar] Terrain ${stage}: ${progress.toFixed(0)}%`);
+    });
+    console.log('[MenuBar] Terrain generation complete');
     
-    if (terrainObj) {
-      // Select the new terrain object
-      scene.select(terrainObj.id);
-      store.syncFromScene();
-      // Camera bounds updated automatically via scene.onObjectAdded callback
+    // Create terrain entity
+    const entity = createTerrainEntity(world, terrainManager);
+    
+    // Terrain sets its own worldBounds (no transform)
+    const terrainComp = entity.getComponent<TerrainComponent>('terrain');
+    const boundsComp = entity.getComponent<BoundsComponent>('bounds');
+    if (terrainComp && boundsComp) {
+      boundsComp.worldBounds = terrainComp.computeWorldBounds();
+      boundsComp.dirty = false;
     }
+    
+    world.select(entity.id);
   }, [store]);
   
   const handleAddWater = useCallback(async () => {
-    const scene = store.scene;
+    const world = store.world;
     const gpuContext = store.viewport?.getWebGPUContext();
-    if (!scene || !gpuContext) {
-      console.warn('[MenuBar] Cannot add water - scene or GPU context not available');
-      return;
-    }
-
-    if (!store.viewport?.isWebGPUTestMode()) {
-      console.warn('[MenuBar] Cannot add water when not in WebGPU mode');
+    if (!world || !gpuContext) {
+      console.warn('[MenuBar] Cannot add water - world or GPU context not available');
       return;
     }
     
-    // Check if water already exists
-    if (scene.hasOcean()) {
-      console.warn('[MenuBar] Water already exists in scene');
+    // Check if ocean already exists
+    if (world.queryFirst('ocean')) {
+      console.warn('[MenuBar] Water already exists in world');
       return;
     }
     
-    // Add ocean to scene
-    const oceanObj = await scene.addOcean(gpuContext);
-    if (oceanObj) {
-      // Select the new ocean object
-      scene.select(oceanObj.id);
-      store.syncFromScene();
+    // Create OceanManager and initialize
+    const oceanManager = new OceanManager(gpuContext);
+    await oceanManager.initialize();
+    
+    // Create ocean entity
+    const entity = createOceanEntity(world, oceanManager);
+    
+    // Ocean sets its own worldBounds (no transform)
+    const oceanComp = entity.getComponent<any>('ocean');
+    const oceanBounds = entity.getComponent<BoundsComponent>('bounds');
+    if (oceanComp?.computeWorldBounds && oceanBounds) {
+      oceanBounds.worldBounds = oceanComp.computeWorldBounds();
+      oceanBounds.dirty = false;
     }
+    
+    world.select(entity.id);
   }, [store]);
   
   // ==================== Menu Definitions ====================

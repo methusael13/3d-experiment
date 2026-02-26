@@ -10,6 +10,7 @@ import { VegetationContent } from '../panels/VegetationPanel';
 import { DockableWindow } from '../ui/DockableWindow';
 import { isGPUTerrainObject, type GPUTerrainSceneObject } from '../../../../core/sceneObjects';
 import type { PlantRegistry } from '../../../../core/vegetation/PlantRegistry';
+import { TerrainComponent } from '@/core/ecs';
 
 // ==================== Types ====================
 
@@ -38,14 +39,12 @@ export function VegetationPanelBridge({
   // Get plant registry from selected GPU terrain object's terrain manager
   const plantRegistry = useComputed<PlantRegistry | null>(() => {
     const selectedObj = store.firstSelectedObject.value;
-    if (!selectedObj || !store.scene) return null;
+    if (!selectedObj) return null;
     
-    const sceneObj = store.scene.getObject(selectedObj.id);
-    if (!sceneObj || !isGPUTerrainObject(sceneObj)) return null;
+    const terrainComp = selectedObj.getComponent?.('terrain') as TerrainComponent;
+    if (!terrainComp?.manager) return null;
     
-    const gpuTerrain = sceneObj as GPUTerrainSceneObject;
-    const terrainManager = gpuTerrain.getTerrainManager();
-    return terrainManager?.getPlantRegistry() ?? null;
+    return terrainComp.manager.getPlantRegistry() ?? null;
   });
   
   if (!visible) return null;

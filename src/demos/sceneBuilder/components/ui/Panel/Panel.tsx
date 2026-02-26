@@ -15,7 +15,7 @@ export function Panel({
   children, 
   visible = true, 
   defaultCollapsed = false,
-  maxHeight = 400,
+  maxHeight = 600,
 }: PanelProps) {
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
   

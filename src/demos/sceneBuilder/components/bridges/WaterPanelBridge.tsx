@@ -1,89 +1,94 @@
 /**
- * WaterPanelBridge - Connects WaterPanel Preact component to the store
- * Shows only when an OceanSceneObject is selected
+ * WaterPanelBridge - Connects WaterPanel to the store (ECS Step 3)
+ * Shows only when an entity with OceanComponent is selected
  */
 
 import { useCallback, useState, useEffect } from 'preact/hooks';
 import { useComputed } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
 import { WaterPanel, type WaterParams } from '../panels/WaterPanel';
-import { isOceanObject, type OceanSceneObject } from '../../../../core/sceneObjects';
+import { OceanComponent } from '@/core/ecs/components/OceanComponent';
+import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
 import { createDefaultWaterConfig } from '../../../../core/gpu/renderers';
+import type { OceanManager } from '@/core/ocean/OceanManager';
+import { BoundsComponent } from '@/core/ecs';
 
 // ==================== Connected Component ====================
 
 export function ConnectedWaterPanel() {
   const store = getSceneBuilderStore();
   
-  // Get ocean reference from selected scene object
-  const selectedOcean = useComputed<OceanSceneObject | null>(() => {
-    const selectedObj = store.firstSelectedObject.value;
-    if (!selectedObj || !store.scene) return null;
+  // Get ocean manager from selected entity's OceanComponent
+  const selectedOceanManager = useComputed<OceanManager | null>(() => {
+    const entity = store.firstSelectedObject.value;
+    if (!entity) return null;
     
-    const sceneObj = store.scene.getObject(selectedObj.id);
-    if (!sceneObj) return null;
-    
-    // Check for Ocean scene object
-    if (isOceanObject(sceneObj)) {
-      return sceneObj as OceanSceneObject;
+    const oceanComp = entity.getComponent<OceanComponent>('ocean');
+    if (oceanComp) {
+      return oceanComp.manager;
     }
     
     return null;
   });
   
-  // Local state for water params - needed for reactivity since manager.getConfig() is not reactive
+  // Local state for water params
   const [waterParams, setWaterParams] = useState<WaterParams>(createDefaultWaterConfig);
   
   // Sync local state when selection changes
   useEffect(() => {
-    const ocean = selectedOcean.value;
-    if (!ocean) {
+    const manager = selectedOceanManager.value;
+    if (!manager) {
       setWaterParams(createDefaultWaterConfig());
       return;
     }
     
-    const manager = ocean.getOceanManager();
-    if (manager) {
-      setWaterParams(manager.getConfig());
-    }
-  }, [selectedOcean.value]);
+    setWaterParams(manager.getConfig());
+  }, [selectedOceanManager.value]);
   
-  // Handler for param changes - update both manager AND local state
+  // Handler for param changes
   const handleParamsChange = useCallback((changes: Partial<WaterParams>) => {
-    const ocean = selectedOcean.value;
-    if (!ocean) return;
-    
-    const manager = ocean.getOceanManager();
+    const manager = selectedOceanManager.value;
     if (!manager) return;
     
-    // Compute new config
     const currentConfig = manager.getConfig();
     const newConfig = { ...currentConfig, ...changes };
     
-    // Update the ocean manager config
     manager.setConfig(newConfig);
-    
-    // Update local state for UI reactivity
     setWaterParams(newConfig);
     
-    // If grid dimensions/position or water level changed, update camera bounds (debounced in store)
-    // Water level affects the Y position of the AABB
+    // Recompute ocean worldBounds when grid dimensions change
     const boundsAffectingParams = 'gridCenterX' in changes || 'gridCenterZ' in changes || 
                                   'gridSizeX' in changes || 'gridSizeZ' in changes ||
                                   'waterLevel' in changes;
     if (boundsAffectingParams) {
-      store.updateCameraFromSceneBounds();
+      const entity = store.firstSelectedObject.value;
+      if (entity) {
+        const oceanComp = entity.getComponent?.('ocean') as OceanComponent;
+        const boundsComp = entity.getComponent?.('bounds') as BoundsComponent;
+        if (oceanComp?.computeWorldBounds && boundsComp) {
+          boundsComp.worldBounds = oceanComp.computeWorldBounds();
+          boundsComp.dirty = false;
+        }
+      }
+      // BoundsSystem callback will trigger camera update automatically
     }
-  }, [selectedOcean, store]);
+  }, [selectedOceanManager, store]);
   
   // Only render if an ocean is selected
-  if (!selectedOcean.value) {
+  if (!selectedOceanManager.value) {
     return null;
   }
   
-  // Get terrain size for slider ranges (use default if no terrain)
-  const terrain = store.scene?.getWebGPUTerrain();
-  const terrainSize = terrain?.getWorldSize() ?? 1024;
+  // Get terrain size from World (query for terrain entity)
+  const world = store.world;
+  let terrainSize = 1024;
+  if (world) {
+    const terrainEntity = world.queryFirst('terrain');
+    if (terrainEntity) {
+      const tc = terrainEntity.getComponent<TerrainComponent>('terrain');
+      terrainSize = tc?.manager?.getConfig()?.worldSize ?? 1024;
+    }
+  }
   
   return (
     <WaterPanel

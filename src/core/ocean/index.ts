@@ -8,3 +8,8 @@ export {
   type OceanRenderParams,
   createDefaultOceanManagerConfig 
 } from './OceanManager';
+
+export {
+  evaluateGerstnerHeight,
+  type GerstnerHeightResult,
+} from './GerstnerWaves';

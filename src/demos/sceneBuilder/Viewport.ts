@@ -21,8 +21,17 @@ import { CameraFrustumRendererGPU, type CSMDebugInfo } from '../../core/gpu/rend
 import { WebGPUShadowSettings } from './components/panels/RenderingPanel';
 import type { SSAOSettings } from './components/panels/RenderingPanel';
 import type { CompositeEffectConfig } from '../../core/gpu/postprocess';
-import type { Scene } from '../../core/Scene';
 import { CameraObject } from '@/core/sceneObjects';
+import { World } from '../../core/ecs/World';
+import {
+  TransformSystem,
+  BoundsSystem,
+  WindSystem,
+  ShadowCasterSystem,
+  MeshRenderSystem,
+  LODSystem,
+  WetnessSystem,
+} from '../../core/ecs/systems';
 
 // ==================== Type Definitions ====================
 
@@ -134,8 +143,8 @@ export class Viewport {
   // Scene graph reference (for raycasting)
   private sceneGraph: SceneGraph | null = null;
   
-  // Scene reference (for WebGPU pipeline rendering)
-  private scene: Scene | null = null;
+  // ECS World (self-contained, owns its systems)
+  private _world: World;
 
   // Light params (reference from LightingManager via controller)
   private lightParams: SceneLightingParams | null = null;
@@ -156,6 +165,9 @@ export class Viewport {
 
   // Mouse tracking
   private lastMousePos: Vec2 = [0, 0];
+  
+  // Animation time (for ECS systems)
+  private time = 0;
   
   // FPS Camera mode
   private fpsMode = false;
@@ -193,6 +205,22 @@ export class Viewport {
     this.logicalHeight = options.height ?? 600;
     this.renderWidth = Math.floor(this.logicalWidth * this.dpr);
     this.renderHeight = Math.floor(this.logicalHeight * this.dpr);
+
+    // Initialize ECS World with all systems
+    this._world = new World();
+    const transformSystem = new TransformSystem();
+    transformSystem.world = this._world;
+    this._world.addSystem(transformSystem);              // priority 0
+    const boundsSystem = new BoundsSystem();
+    boundsSystem.world = this._world;
+    this._world.addSystem(boundsSystem);                 // priority 10
+    this._world.addSystem(new LODSystem());               // priority 10 — LOD from camera distance
+    this._world.addSystem(new WindSystem());              // priority 50 — owns its own WindManager
+    const wetnessSystem = new WetnessSystem();            // priority 55 — wetness from ocean
+    wetnessSystem.setWorld(this._world);
+    this._world.addSystem(wetnessSystem);
+    this._world.addSystem(new ShadowCasterSystem());     // priority 90
+    this._world.addSystem(new MeshRenderSystem());       // priority 100
 
     // Callbacks
     this.onFps = options.onFps ?? (() => {});
@@ -449,7 +477,7 @@ export class Viewport {
   /**
    * Render using WebGPU (full pipeline with grid/sky)
    */
-  private renderWebGPU(): void {
+  private renderWebGPU(dt: number): void {
     if (!this.gpuContext || !this.gpuPipeline || !this.cameraController) return;
     
     // Scene camera adapter (always the orbit camera — drives shadows, culling, shader uniforms)
@@ -517,7 +545,39 @@ export class Viewport {
     };
     
     // Use render with scene and camera adapter (pass separate scene camera if in debug mode)
-    this.gpuPipeline.render(this.scene, cameraAdapter as any, options, separateSceneCamera as any);
+    // Run ECS systems before rendering
+    if (this.gpuContext) {
+      // Feed per-frame data to systems
+      const shadowCasterSystem = this._world.getSystem<ShadowCasterSystem>('shadow-caster');
+      if (shadowCasterSystem) {
+        const camPos = sceneCameraAdapter.getPosition();
+        shadowCasterSystem.cameraPosition = [camPos[0], camPos[1], camPos[2]] as [number, number, number];
+      }
+
+      // LODSystem: provide camera position for distance-based LOD computation
+      const lodSystem = this._world.getSystem<LODSystem>('lod');
+      if (lodSystem) {
+        const camPos = sceneCameraAdapter.getPosition();
+        lodSystem.setCameraPosition(camPos[0], camPos[1], camPos[2]);
+      }
+
+      const meshRenderSystem = this._world.getSystem<MeshRenderSystem>('mesh-render');
+      if (meshRenderSystem) {
+        meshRenderSystem.iblActive = this.dynamicIBLEnabled;
+        meshRenderSystem.shadowsActive = options.shadowEnabled ?? true;
+      }
+
+      // Run all ECS systems
+      this.time += dt;
+      this._world.update(dt, {
+        ctx: this.gpuContext,
+        time: this.time,
+        deltaTime: dt,
+        sceneEnvironment: this.gpuPipeline!.getSceneEnvironment(),
+      });
+    }
+
+    this.gpuPipeline.render(cameraAdapter as any, options, separateSceneCamera as any, this._world);
     
     // Render debug camera frustum visualization when in debug camera mode
     if (this.debugCameraMode && this.debugCameraController && this.cameraFrustumRenderer) {
@@ -660,7 +720,7 @@ export class Viewport {
       this.fpsController.update(dt);
     }
     
-    this.renderWebGPU();
+    this.renderWebGPU(dt);
     
     // Emit draw call count from last pipeline render
     if (this.gpuPipeline) {
@@ -679,8 +739,11 @@ export class Viewport {
     this.sceneGraph = sg;
   }
   
-  setScene(scene: Scene): void {
-    this.scene = scene;
+  /**
+   * Get the ECS World.
+   */
+  get world(): World {
+    return this._world;
   }
 
   // ==================== Gizmo Control ====================

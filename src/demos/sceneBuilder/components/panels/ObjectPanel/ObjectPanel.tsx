@@ -1,11 +1,14 @@
 import { useMemo } from 'preact/hooks';
-import { Panel, Tabs } from '../../ui';
+import { Panel, SidebarTabs } from '../../ui';
 import { TransformTab, type TransformData } from './TransformTab';
 import { EditTab, type PrimitiveConfig } from './EditTab';
 import { ModifiersTab, type WindSettings, type TerrainBlendSettings, type MaterialInfo } from './ModifiersTab';
+import { ComponentsTab, type ComponentsTabProps } from './ComponentsTab';
 import type { GizmoMode } from '../../../gizmos';
 import type { GizmoOrientation } from '../../../gizmos/BaseGizmo';
 import { OriginPivot } from '@/core/sceneObjects/SceneObject';
+import type { Entity } from '@/core/ecs/Entity';
+import type { ComponentType } from '@/core/ecs/types';
 import styles from './ObjectPanel.module.css';
 
 // Import CSS variables
@@ -53,6 +56,11 @@ export interface ObjectPanelProps {
   onWindSettingsChange: (settings: Partial<WindSettings>) => void;
   onToggleLeafMaterial: (index: number) => void;
   onToggleBranchMaterial: (index: number) => void;
+
+  // Components tab
+  entity: Entity | null;
+  activeComponents: ComponentType[];
+  onComponentsChanged: () => void;
 }
 
 export function ObjectPanel({
@@ -82,6 +90,9 @@ export function ObjectPanel({
   onWindSettingsChange,
   onToggleLeafMaterial,
   onToggleBranchMaterial,
+  entity,
+  activeComponents,
+  onComponentsChanged,
 }: ObjectPanelProps) {
   const showEditTab = objectType === 'primitive' && selectionCount === 1;
 
@@ -89,6 +100,7 @@ export function ObjectPanel({
     () => [
       {
         id: 'transform',
+        icon: '⊞',
         label: 'Transform',
         content: (
           <TransformTab
@@ -111,6 +123,7 @@ export function ObjectPanel({
       },
       {
         id: 'edit',
+        icon: '✎',
         label: 'Edit',
         visible: showEditTab,
         content: showEditTab && primitiveType && primitiveConfig ? (
@@ -125,6 +138,7 @@ export function ObjectPanel({
       },
       {
         id: 'modifiers',
+        icon: '⚙',
         label: 'Modifiers',
         content: (
           <ModifiersTab
@@ -135,6 +149,19 @@ export function ObjectPanel({
             onToggleBranchMaterial={onToggleBranchMaterial}
           />
         ),
+      },
+      {
+        id: 'components',
+        icon: '⧉',
+        label: 'Components',
+        visible: selectionCount === 1,
+        content: selectionCount === 1 ? (
+          <ComponentsTab
+            entity={entity}
+            activeComponents={activeComponents}
+            onChanged={onComponentsChanged}
+          />
+        ) : null,
       },
     ],
     [
@@ -149,12 +176,14 @@ export function ObjectPanel({
       showNormals,
       windSettings,
       materials,
+      entity,
+      activeComponents,
     ]
   );
 
   return (
     <Panel title="Object" visible={visible}>
-      <Tabs tabs={tabs} defaultTab="transform" />
+      <SidebarTabs tabs={tabs} defaultTab="transform" />
     </Panel>
   );
 }

@@ -8,6 +8,7 @@ import { sceneSerializer } from '../../../../loaders/SceneSerializer';
 import { importAssetToScene } from './useAssetImport';
 import { ASSET_LIBRARY_MIME_TYPE } from '../panels/AssetLibraryPanel/AssetPreviewGrid';
 import type { Asset } from './useAssetLibrary';
+import { MeshComponent } from '@/core/ecs';
 
 export interface FileDropState {
   isDragging: boolean;
@@ -57,10 +58,10 @@ export function useFileDrop(containerRef: { current: HTMLElement | null }) {
     
     setState(s => ({ ...s, isDragging: false, isProcessing: true, lastError: null }));
     
-    const scene = store.scene;
+    const world = store.world;
     
-    if (!scene) {
-      setState(s => ({ ...s, isProcessing: false, lastError: 'Scene not initialized' }));
+    if (!world) {
+      setState(s => ({ ...s, isProcessing: false, lastError: 'World not initialized' }));
       return;
     }
     
@@ -96,29 +97,39 @@ export function useFileDrop(containerRef: { current: HTMLElement | null }) {
         const ext = file.name.split('.').pop()?.toLowerCase();
         
         if (ext === 'glb' || ext === 'gltf') {
-          // Import GLB/GLTF model
+          // Import GLB/GLTF model via ECS factories
           const result = await sceneSerializer.importModelFile(file);
           const modelUrl = sceneSerializer.getModelUrl(result.modelPath);
           
-          // Add model to scene - use loadModel which exists on Scene
-          await scene.addObject(modelUrl, result.displayName);
+          const { createModelEntity } = await import('@/core/ecs/factories');
+          const { loadGLB } = await import('../../../../loaders');
+          
+          const model = await loadGLB(modelUrl);
+          if (model) {
+            const entity = createModelEntity(world, {
+              name: result.displayName,
+              modelPath: result.modelPath,
+            });
+            const mesh = entity.getComponent<MeshComponent>('mesh');
+            if (mesh) {
+              mesh.modelPath = result.modelPath;
+              mesh.model = model;
+            }
+          }
           console.log(`[FileDrop] Imported model: ${result.displayName}`);
         } else if (ext === 'hdr') {
           // Import HDR for environment lighting
           await handleHDRImport(file, store);
           console.log(`[FileDrop] Imported HDR: ${file.name}`);
         } else if (ext === 'json') {
-          // Load scene file
-          const text = await file.text();
-          const data = JSON.parse(text);
-          await scene.deserialize(data);
-          console.log(`[FileDrop] Loaded scene: ${file.name}`);
+          // TODO: Implement ECS-based scene deserialization
+          console.log(`[FileDrop] JSON scene load not yet implemented for ECS`);
         } else {
           console.warn(`[FileDrop] Unsupported file type: ${ext}`);
         }
       }
       
-      store.syncFromScene();
+      store.syncFromWorld();
     } catch (err) {
       console.error('[FileDrop] Import error:', err);
       setState(s => ({ ...s, lastError: String(err) }));

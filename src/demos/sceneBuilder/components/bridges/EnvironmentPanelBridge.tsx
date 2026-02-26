@@ -1,18 +1,28 @@
 /**
- * EnvironmentPanelBridge - Connects EnvironmentPanel Preact component to the store
+ * EnvironmentPanelBridge - Connects EnvironmentPanel to the store (ECS Step 3)
+ * Wind is managed by WindSystem in ECS. Lighting via LightingManager.
  */
 
 import { useMemo } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
 import { EnvironmentPanel } from '../panels';
 import { createPanelContext, type PanelContext } from '../../componentPanels/panelContext';
-import { createObjectWindSettings } from '../../wind';
+import type { WindSystem } from '@/core/ecs/systems/WindSystem';
 
 // ==================== Types ====================
 
 export interface ConnectedEnvironmentPanelProps {
-  // Optional external context override
   externalContext?: PanelContext;
+}
+
+/**
+ * Get the WindManager from the ECS WindSystem.
+ */
+function getWindManagerFromWorld(store: ReturnType<typeof getSceneBuilderStore>) {
+  const world = store.world;
+  if (!world) return null;
+  const windSystem = world.getSystem<WindSystem>('wind');
+  return windSystem?.getWindManager() ?? null;
 }
 
 // ==================== Connected Component ====================
@@ -20,52 +30,53 @@ export interface ConnectedEnvironmentPanelProps {
 export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironmentPanelProps = {}) {
   const store = getSceneBuilderStore();
   
-  // Check if managers are available
-  if (!store.lightingManager || !store.windManager || !store.scene) {
+  if (!store.lightingManager) {
     return <div style={{ padding: '8px', color: 'var(--text-secondary)' }}>Loading...</div>;
   }
   
-  // Create panel context if not provided externally
+  // Get WindManager from ECS WindSystem
+  const windManager = getWindManagerFromWorld(store);
+  
+  // Create panel context
   const context = useMemo(() => {
     if (externalContext) return externalContext;
     
-    // Create a minimal container for the context
     const container = document.createElement('div');
+    const wm = getWindManagerFromWorld(store);
     
     return createPanelContext({
       container,
-      scene: store.scene!,
-      windManager: store.windManager!,
+      windManager: wm!, // WindManager from ECS WindSystem
       lightingManager: store.lightingManager!,
       cameraController: null,
       objectWindSettings: store.objectWindSettings.value,
       
-      // Wire up callbacks
       onLightingChanged: () => {
         if (store.lightingManager && store.viewport) {
           const params = store.lightingManager.getLightParams();
           store.viewport.setLightParams(params);
         }
       },
-      setHDRTexture: (texture) => {
-        // Todo
+      setHDRTexture: (_texture) => {
+        // TODO: HDR texture via ECS
       },
       onWindChanged: () => {
-        if (store.windManager && store.viewport) {
-          store.viewport.setWindParams(store.windManager.getShaderUniforms());
+        // WindSystem updates automatically each frame; just sync wind params to viewport
+        const wm = getWindManagerFromWorld(store);
+        if (wm && store.viewport) {
+          store.viewport.setWindParams(wm.getShaderUniforms());
         }
       },
-      // Dynamic IBL callback - only provided in WebGPU mode
       onDynamicIBLChanged: store.isWebGPU.value ? (enabled: boolean) => {
         store.viewport?.setDynamicIBL?.(enabled);
       } : undefined,
     });
-  }, [store.scene, store.windManager, store.lightingManager, store.isWebGPU.value, externalContext]);
+  }, [store.lightingManager, store.isWebGPU.value, store.world, externalContext]);
   
   return (
     <EnvironmentPanel
       lightingManager={store.lightingManager}
-      windManager={store.windManager}
+      windManager={windManager!}
       context={context}
     />
   );

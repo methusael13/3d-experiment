@@ -12,6 +12,7 @@ import { isGPUTerrainObject, type GPUTerrainSceneObject } from '../../../../core
 import { createDefaultBiomeParams, type BiomeParams } from '../../../../core/vegetation';
 import { debounce } from '../../../../core/utils/debounce';
 import type { TerrainManager } from '../../../../core/terrain';
+import { TerrainComponent } from '@/core/ecs';
 
 export interface BiomeMaskPanelBridgeProps {
   /** Window visibility */
@@ -36,13 +37,12 @@ export function BiomeMaskPanelBridge({
   // Get terrain manager from selected GPU terrain object
   const terrainManager = useComputed<TerrainManager | null>(() => {
     const selectedObj = store.firstSelectedObject.value;
-    if (!selectedObj || !store.scene) return null;
+    if (!selectedObj) return null;
     
-    const sceneObj = store.scene.getObject(selectedObj.id);
-    if (!sceneObj || !isGPUTerrainObject(sceneObj)) return null;
+    const terrainComp = selectedObj.getComponent?.('terrain') as TerrainComponent;
+    if (!terrainComp) return null;
     
-    const gpuTerrain = sceneObj as GPUTerrainSceneObject;
-    return gpuTerrain.getTerrainManager() ?? null;
+    return terrainComp.manager ?? null;
   });
   
   // Get GPU device from GPUContext

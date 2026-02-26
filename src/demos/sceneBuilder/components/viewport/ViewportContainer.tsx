@@ -5,11 +5,13 @@
 
 import { useRef, useEffect, useCallback } from 'preact/hooks';
 import { useSignalEffect } from '@preact/signals';
+import { vec3, quat as quatType } from 'gl-matrix';
 import { Viewport, type ViewportOptions } from '../../Viewport';
 import { getSceneBuilderStore } from '../state';
 import { ViewportToolbar } from '../layout';
 import { useFileDrop } from '../hooks';
 import { setCurrentFps, setCurrentDrawCalls } from '../bridges/MenuBarBridge';
+import { TransformComponent } from '@/core/ecs/components/TransformComponent';
 import type { Vec3 } from '../../../../core/types';
 import type { quat } from 'gl-matrix';
 import styles from './ViewportContainer.module.css';
@@ -50,11 +52,8 @@ export function ViewportContainer({
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
         if (width > 0 && height > 0 && viewportRef.current && canvasRef.current) {
-          // Update canvas dimensions
           canvasRef.current.width = Math.floor(width);
           canvasRef.current.height = Math.floor(height);
-          
-          // Notify viewport of resize
           viewportRef.current.resize(Math.floor(width), Math.floor(height));
         }
       }
@@ -72,7 +71,6 @@ export function ViewportContainer({
   useEffect(() => {
     if (!canvasRef.current) return;
     
-    // Get initial size from container
     const containerWidth = containerRef.current?.clientWidth ?? width;
     const containerHeight = containerRef.current?.clientHeight ?? height;
     
@@ -80,55 +78,54 @@ export function ViewportContainer({
       width: containerWidth,
       height: containerHeight,
       onFps: (fps: number) => {
-        // Update the menu bar FPS display
         setCurrentFps(fps);
-        // Also call the prop callback if provided
         onFps?.(fps);
       },
       onDrawCalls: (count: number) => {
-        // Update the menu bar draw calls display
         setCurrentDrawCalls(count);
       },
-      onUpdate: (dt: number) => {
-        // Wind update callback - will be connected when windManager is set
-        const windManager = store.windManager;
-        if (windManager) {
-          windManager.update(dt);
-          for (const [_, settings] of store.objectWindSettings.value) {
-            windManager.updateObjectPhysics(settings, dt);
-          }
-          viewportRef.current?.setWindParams(windManager.getShaderUniforms());
-        }
+      onUpdate: (_dt: number) => {
+        // Wind is now handled by WindSystem inside ECS world.update()
       },
       onGizmoTransform: (type: 'position' | 'rotation' | 'scale', value: Vec3 | quat) => {
-        const scene = store.scene;
-        if (scene) {
-          scene.applyTransform(type, value as any);
-          store.syncFromScene();
+        // Apply transform delta to selected entities via TransformComponent
+        const world = store.world;
+        if (!world) return;
+        
+        const selected = world.getSelectedEntities();
+        for (const entity of selected) {
+          const transform = entity.getComponent<TransformComponent>('transform');
+          if (!transform) continue;
+          
+          if (type === 'position') {
+            transform.setPosition(value as Vec3);
+          } else if (type === 'rotation') {
+            transform.setRotationQuat(value as quatType);
+          } else if (type === 'scale') {
+            transform.setScale(value as Vec3);
+          }
         }
+        store.syncFromWorld();
       },
       onGizmoDragEnd: () => {
-        store.scene?.resetTransformTracking();
         updateGizmoTarget();
       },
       onUniformScaleChange: (newScale: Vec3) => {
-        const scene = store.scene;
-        if (scene && store.selectionCount.value === 1) {
-          const obj = scene.getFirstSelected();
-          if (obj) {
-            obj.scale = newScale;
-            scene.updateObjectTransform(obj.id);
-            store.syncFromScene();
-            updateGizmoTarget();
+        const world = store.world;
+        if (world && store.selectionCount.value === 1) {
+          const selected = world.getSelectedEntities();
+          if (selected.length === 1) {
+            const transform = selected[0].getComponent<TransformComponent>('transform');
+            if (transform) {
+              transform.setScale(newScale);
+              store.syncFromWorld();
+              updateGizmoTarget();
+            }
           }
         }
       },
-      onUniformScaleCommit: () => {
-        // Scale committed
-      },
-      onUniformScaleCancel: () => {
-        // Viewport already returned original scale
-      },
+      onUniformScaleCommit: () => {},
+      onUniformScaleCancel: () => {},
       onObjectClicked: (objectId: string, shiftKey: boolean) => {
         store.select(objectId, shiftKey);
       },
@@ -148,12 +145,10 @@ export function ViewportContainer({
       viewportRef.current = viewport;
       store.viewport = viewport;
       
-      // Set overlay container
       if (containerRef.current) {
         viewport.setOverlayContainer(containerRef.current);
       }
       
-      // Get GL context and notify
       if (onInitialized) {
         onInitialized(viewport);
       }
@@ -165,10 +160,9 @@ export function ViewportContainer({
       viewportRef.current = null;
       store.viewport = null;
     };
-  }, []); // Only run once on mount
+  }, []);
 
   useSignalEffect(() => {
-    // Update gizmo target on selection change
     const _ = store.selectedIds.value;
     updateGizmoTarget();
   });
@@ -176,17 +170,27 @@ export function ViewportContainer({
   // ==================== Sync State to Viewport ====================
   
   const updateGizmoTarget = useCallback(() => {
-    const scene = store.scene;
+    const world = store.world;
     const viewport = viewportRef.current;
-    if (!scene || !viewport) return;
+    if (!world || !viewport) return;
     
-    const target = scene.getGizmoTarget();
-    if (target.position && target.rotationQuat) {
-      viewport.setGizmoTargetWithQuat(target.position, target.rotationQuat, target.scale ?? undefined);
-    } else {
-      viewport.setGizmoTarget(target.position ?? null, target.rotation ?? undefined, target.scale ?? undefined);
+    const selected = world.getSelectedEntities();
+    if (selected.length === 0) {
+      viewport.setGizmoTarget(null);
+      return;
     }
-    scene.resetTransformTracking();
+    
+    // Use first selected entity's transform
+    const entity = selected[0];
+    const transform = entity.getComponent<TransformComponent>('transform');
+    if (!transform) {
+      viewport.setGizmoTarget(null);
+      return;
+    }
+    
+    const pos: Vec3 = [transform.position[0], transform.position[1], transform.position[2]];
+    const scl: Vec3 = [transform.scale[0], transform.scale[1], transform.scale[2]];
+    viewport.setGizmoTargetWithQuat(pos, transform.rotationQuat, scl);
   }, []);
   
   // Sync gizmo mode changes
@@ -215,7 +219,6 @@ export function ViewportContainer({
   
   // ==================== Event Handlers ====================
   
-  // Stop mouse events from bubbling to the document
   const handleMouseEvent = useCallback((e: MouseEvent) => {
     e.stopPropagation();
   }, []);

@@ -10,3 +10,6 @@ export type { PrimitiveConfig, EditTabProps } from './EditTab';
 
 export { ModifiersTab } from './ModifiersTab';
 export type { WindSettings, TerrainBlendSettings, MaterialInfo, ModifiersTabProps } from './ModifiersTab';
+
+export { ComponentsTab, OPTIONAL_COMPONENTS } from './ComponentsTab';
+export type { ComponentsTabProps } from './ComponentsTab';

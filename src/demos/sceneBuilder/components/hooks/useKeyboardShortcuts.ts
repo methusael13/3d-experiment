@@ -24,7 +24,7 @@ export function useKeyboardShortcuts() {
       return;
     }
     
-    const scene = store.scene;
+    const world = store.world;
     const viewport = store.viewport;
     const key = e.key;
     
@@ -52,21 +52,22 @@ export function useKeyboardShortcuts() {
     if (key === 's' || key === 'S') {
       if (!e.ctrlKey && !e.altKey) {
         // Uniform scale requires exactly 1 object selected and no active gizmo drag
-        if (scene && store.selectionCount.value === 1 && viewport) {
+        if (world && store.selectionCount.value === 1 && viewport) {
           const v = viewport;
           
           // Check if gizmo is already dragging or uniform scale is active
           if (!v.isGizmoDragging?.() && !v.isUniformScaleActive?.()) {
-            // Get the selected object
-            const selectedIds = Array.from(store.selectedIds.value);
-            const obj = scene.getObject(selectedIds[0]);
+            // Get selected entity's TransformComponent
+            const selected = world.getSelectedEntities();
+            const entity = selected[0];
+            const tc = entity?.getComponent?.('transform') as any;
             
-            if (obj) {
-              // Get object's current scale
-              const startScale = [...obj.scale] as [number, number, number];
+            if (tc) {
+              // Get entity's current scale
+              const startScale = [tc.scale[0], tc.scale[1], tc.scale[2]] as [number, number, number];
               
-              // Project object position to screen space
-              const objectScreenPos = v.projectObjectToScreen(obj.position as Vec3);
+              // Project entity position to screen space
+              const objectScreenPos = v.projectObjectToScreen([tc.position[0], tc.position[1], tc.position[2]] as Vec3);
               
               // Get current mouse position
               const mousePos = v.getLastMousePos();
@@ -91,12 +92,9 @@ export function useKeyboardShortcuts() {
     
     // D - Duplicate selected objects
     if ((key === 'd' || key === 'D') && !e.ctrlKey) {
-      if (scene && store.selectionCount.value > 0) {
-        const selectedIds = Array.from(store.selectedIds.value);
-        for (const id of selectedIds) {
-          scene.duplicateObject(id);
-        }
-        store.syncFromScene();
+      if (world && store.selectionCount.value > 0) {
+        // TODO: Implement entity duplication
+        console.log('[useKeyboardShortcuts] Duplicate - TODO');
         e.originalEvent.preventDefault();
         return;
       }
@@ -104,12 +102,11 @@ export function useKeyboardShortcuts() {
     
     // Delete or Backspace - Delete selected objects
     if (key === 'Delete' || key === 'Backspace') {
-      if (scene && store.selectionCount.value > 0) {
+      if (world && store.selectionCount.value > 0) {
         const selectedIds = Array.from(store.selectedIds.value);
         for (const id of selectedIds) {
-          scene.removeObject(id);
+          world.destroyEntity(id);
         }
-        store.syncFromScene();
         e.originalEvent.preventDefault();
         return;
       }
@@ -117,20 +114,15 @@ export function useKeyboardShortcuts() {
     
     // A - Select all toggle
     if ((key === 'a' || key === 'A') && !e.ctrlKey) {
-      if (scene) {
-        const allObjects = scene.getAllObjects();
-        const allSelected = store.selectionCount.value === allObjects.length;
+      if (world) {
+        const allEntities = world.getAllEntities();
+        const allSelected = store.selectionCount.value === allEntities.length;
         
         if (allSelected) {
-          // Deselect all
-          scene.clearSelection();
+          world.clearSelection();
         } else {
-          // Select all
-          for (const obj of allObjects) {
-            scene.select(obj.id, { additive: true });
-          }
+          world.selectAll(allEntities.map(e => e.id));
         }
-        store.syncFromScene();
         e.originalEvent.preventDefault();
         return;
       }
@@ -140,22 +132,22 @@ export function useKeyboardShortcuts() {
     
     // Ctrl+G - Group selection
     if ((key === 'g' || key === 'G') && e.ctrlKey && !e.shiftKey) {
-      if (scene && store.selectionCount.value >= 2) {
-        scene.createGroupFromSelection();
-        store.syncFromScene();
+      if (world && store.selectionCount.value >= 2) {
+        world.createGroupFromSelection();
+        store.syncFromWorld();
         e.originalEvent.preventDefault();
-        return;
       }
+      return;
     }
     
     // Ctrl+Shift+G - Ungroup
     if ((key === 'g' || key === 'G') && e.ctrlKey && e.shiftKey) {
-      if (scene && store.selectionCount.value > 0) {
-        scene.ungroupSelection();
-        store.syncFromScene();
+      if (world && store.selectionCount.value > 0) {
+        world.ungroupSelection();
+        store.syncFromWorld();
         e.originalEvent.preventDefault();
-        return;
       }
+      return;
     }
     
     // ==================== Camera Presets ====================

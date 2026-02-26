@@ -56,6 +56,14 @@ export interface OceanRenderParams {
   screenWidth?: number;
   /** Screen height in pixels (for refraction UV calculation) */
   screenHeight?: number;
+  /** Light-space matrix for shadow mapping */
+  lightSpaceMatrix?: mat4 | Float32Array;
+  /** Whether shadows are enabled */
+  shadowEnabled?: boolean;
+  /** Shadow bias */
+  shadowBias?: number;
+  /** Whether CSM is enabled */
+  csmEnabled?: boolean;
 }
 
 /**
@@ -123,6 +131,11 @@ export class OceanManager {
       sceneColorTexture: params.sceneColorTexture,
       screenWidth: params.screenWidth,
       screenHeight: params.screenHeight,
+      // Shadow support
+      lightSpaceMatrix: params.lightSpaceMatrix,
+      shadowEnabled: params.shadowEnabled,
+      shadowBias: params.shadowBias,
+      csmEnabled: params.csmEnabled,
     });
   }
   

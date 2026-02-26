@@ -13,8 +13,9 @@ import { GPUContext } from '../GPUContext';
 import { UnifiedGPUTexture } from '../GPUTexture';
 import type { GPUCamera, RenderOptions } from './GPUForwardPipeline';
 import { DEFAULT_RENDER_OPTIONS } from './GPUForwardPipeline';
-import type { Scene } from '../../Scene';
+import type { World } from '../../ecs/World';
 import type { SceneEnvironment } from '../renderers/shared';
+import type { MeshRenderSystem } from '../../ecs/systems/MeshRenderSystem';
 
 /**
  * Context passed to each render pass
@@ -23,7 +24,9 @@ export interface RenderContext {
   // Core references
   readonly encoder: GPUCommandEncoder;
   readonly ctx: GPUContext;
-  readonly scene: Scene | null;
+  
+  /** ECS World reference — passes query entities from this */
+  readonly world?: World;
   
   // Camera state for VIEWING (what appears on screen - may be debug camera)
   readonly camera: GPUCamera;
@@ -84,6 +87,9 @@ export interface RenderContext {
   // Unified environment (shadow + IBL)
   readonly sceneEnvironment?: SceneEnvironment;
   
+  /** MeshRenderSystem — provides per-frame variant groups for composed rendering */
+  readonly meshRenderSystem?: MeshRenderSystem;
+  
   // Helper methods
   getColorAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment;
   getBackbufferColorAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment;
@@ -102,7 +108,8 @@ export interface RenderContextOptions {
   camera: GPUCamera;
   /** Scene camera for shadows/culling. If omitted, same as camera. */
   sceneCamera?: GPUCamera;
-  scene: Scene | null;
+  /** ECS World reference — passes query entities from this */
+  world?: World;
   options: RenderOptions;
   width: number;
   height: number;
@@ -132,6 +139,9 @@ export interface RenderContextOptions {
   
   // Unified environment (shadow + IBL)
   sceneEnvironment?: SceneEnvironment;
+  
+  /** MeshRenderSystem — provides per-frame variant groups for composed rendering */
+  meshRenderSystem?: MeshRenderSystem;
 }
 
 /**
@@ -140,7 +150,7 @@ export interface RenderContextOptions {
 export class RenderContextImpl implements RenderContext {
   readonly encoder: GPUCommandEncoder;
   readonly ctx: GPUContext;
-  readonly scene: Scene | null;
+  readonly world?: World;
   readonly camera: GPUCamera;
   readonly options: Required<RenderOptions>;
   readonly width: number;
@@ -186,6 +196,9 @@ export class RenderContextImpl implements RenderContext {
   // Unified environment (shadow + IBL)
   readonly sceneEnvironment?: SceneEnvironment;
   
+  /** MeshRenderSystem — provides per-frame variant groups for composed rendering */
+  readonly meshRenderSystem?: MeshRenderSystem;
+  
   private depthCopied = false;
   private sceneColorCopied = false;
   private drawCalls = 0;
@@ -193,7 +206,7 @@ export class RenderContextImpl implements RenderContext {
   constructor(opts: RenderContextOptions) {
     this.encoder = opts.encoder;
     this.ctx = opts.ctx;
-    this.scene = opts.scene;
+    this.world = opts.world;
     this.camera = opts.camera;
     this.options = { ...DEFAULT_RENDER_OPTIONS, ...opts.options };
     this.width = opts.width;
@@ -220,6 +233,9 @@ export class RenderContextImpl implements RenderContext {
     
     // Unified environment (shadow + IBL)
     this.sceneEnvironment = opts.sceneEnvironment;
+    
+    // MeshRenderSystem for variant groups
+    this.meshRenderSystem = opts.meshRenderSystem;
     
     // Compute matrices
     const viewMat = this.camera.getViewMatrix();

@@ -23,6 +23,9 @@ export type { PanelProps } from './Panel/Panel';
 export { Tabs } from './Tabs/Tabs';
 export type { TabsProps, Tab } from './Tabs/Tabs';
 
+export { SidebarTabs } from './SidebarTabs/SidebarTabs';
+export type { SidebarTabsProps, SidebarTab } from './SidebarTabs/SidebarTabs';
+
 export { GPUTexturePreview } from './GPUTexturePreview';
 export type { GPUTexturePreviewProps } from './GPUTexturePreview';
 

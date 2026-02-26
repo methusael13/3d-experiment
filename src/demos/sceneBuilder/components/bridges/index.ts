@@ -1,7 +1,6 @@
 // Bridge component exports - connect Preact components to the global store
 
 // ObjectsPanel Bridge
-export { createObjectsPanelBridge, type ObjectsPanelBridge } from './ObjectsPanelBridge';
 
 // ObjectPanel Bridge
 export { ConnectedObjectPanel } from './ObjectPanelBridge';

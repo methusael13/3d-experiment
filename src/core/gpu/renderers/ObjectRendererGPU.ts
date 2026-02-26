@@ -135,6 +135,29 @@ export interface IBLResources {
   lutSampler?: GPUSampler;
 }
 
+/**
+ * Public mesh render data exposed for variant rendering path.
+ * Contains only the GPU resources needed to issue draw calls.
+ */
+export interface MeshRenderData {
+  id: number;
+  vertexBuffer: GPUBuffer;
+  indexBuffer: GPUBuffer | null;
+  indexCount: number;
+  vertexCount: number;
+  indexFormat: GPUIndexFormat;
+  /** Group 1 bind group (model matrix + material uniforms) */
+  modelBindGroup: GPUBindGroup;
+  /** Group 2 bind group (PBR textures) — null if mesh has no textures */
+  textureBindGroup: GPUBindGroup | null;
+  /** Placeholder texture bind group for monolithic pipeline's Group 2 */
+  placeholderTextureBindGroup: GPUBindGroup;
+  /** Whether this mesh has real textures bound */
+  hasTextures: boolean;
+  /** Whether material is double-sided (affects cull mode) */
+  doubleSided: boolean;
+}
+
 // ============ Default Values ============
 
 const DEFAULT_MATERIAL: GPUMaterial = {
@@ -213,6 +236,10 @@ export class ObjectRendererGPU {
   
   // Selection state: set of mesh IDs that are currently selected
   private selectedMeshIds: Set<number> = new Set();
+  
+  // Empty bind group for variants that need no textures/environment in a group slot
+  private _emptyBindGroupLayout: GPUBindGroupLayout | null = null;
+  private _emptyBindGroup: GPUBindGroup | null = null;
   
   constructor(ctx: GPUContext) {
     this.ctx = ctx;
@@ -545,10 +572,12 @@ export class ObjectRendererGPU {
     mat4.identity(modelMatrix as unknown as mat4);
     modelBuffer.write(this.ctx, modelMatrix);
     
-    // Create per-mesh material buffer (80 bytes - 5×vec4f)
+    // Create per-mesh material buffer (160 bytes - 10×vec4f)
+    // Base MaterialUniforms: 80 bytes (20 floats)
+    // Extra feature uniforms (wind: 6 floats, wetness: 4 floats, future): up to 80 bytes more
     const materialBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: `object-material-${id}`,
-      size: 80,
+      size: 160,
     });
     
     // Merge material with defaults
@@ -857,6 +886,108 @@ export class ObjectRendererGPU {
     return this.meshes.has(id);
   }
   
+  // ============ Variant Rendering Data Access ============
+  
+  /**
+   * Expose the global bind group layout (Group 0) for VariantPipelineManager.
+   */
+  getGlobalBindGroupLayout(): GPUBindGroupLayout {
+    return this.globalBindGroupLayout;
+  }
+  
+  /**
+   * Expose the model bind group layout (Group 1) for VariantPipelineManager.
+   */
+  getModelBindGroupLayout(): GPUBindGroupLayout {
+    return this.modelBindGroupLayout;
+  }
+  
+  /**
+   * Expose the texture bind group layout (Group 2) for VariantPipelineManager.
+   * Variant pipelines MUST use this layout for Group 2 when the textured feature
+   * is active, because existing per-mesh texture bind groups were created with it.
+   */
+  getTextureBindGroupLayout(): GPUBindGroupLayout {
+    return this.textureBindGroupLayout;
+  }
+  
+  /**
+   * Expose the global bind group for variant rendering.
+   */
+  getGlobalBindGroup(): GPUBindGroup {
+    return this.globalBindGroup;
+  }
+  
+  /**
+   * Expose the global uniform buffer writer for variant rendering.
+   * Call this before issuing variant draw calls.
+   */
+  writeGlobalUniforms(params: ObjectRenderParams): void {
+    this.updateGlobalUniforms(params);
+  }
+  
+  /**
+   * Get rendering data for a specific mesh by ID.
+   * Returns null if mesh not found.
+   */
+  getMeshRenderData(meshId: number): MeshRenderData | null {
+    const mesh = this.meshes.get(meshId);
+    if (!mesh) return null;
+    return {
+      id: mesh.id,
+      vertexBuffer: mesh.vertexBuffer.buffer,
+      indexBuffer: mesh.indexBuffer?.buffer ?? null,
+      indexCount: mesh.indexCount,
+      vertexCount: mesh.vertexCount,
+      indexFormat: mesh.indexFormat,
+      modelBindGroup: mesh.modelBindGroup,
+      textureBindGroup: mesh.textureBindGroup,
+      placeholderTextureBindGroup: this.placeholderTextureBindGroup,
+      hasTextures: mesh.hasTextures,
+      doubleSided: mesh.material.doubleSided ?? false,
+    };
+  }
+  
+  /**
+   * Iterate all mesh IDs. Used to render all meshes via the variant path.
+   */
+  getAllMeshIds(): IterableIterator<number> {
+    return this.meshes.keys();
+  }
+  
+  /**
+   * Get an empty bind group (0 entries) for pipeline slots with no bindings.
+   */
+  getEmptyBindGroup(): { layout: GPUBindGroupLayout; bindGroup: GPUBindGroup } {
+    if (!this._emptyBindGroupLayout) {
+      this._emptyBindGroupLayout = this.ctx.device.createBindGroupLayout({
+        label: 'empty-bind-group-layout',
+        entries: [],
+      });
+      this._emptyBindGroup = this.ctx.device.createBindGroup({
+        label: 'empty-bind-group',
+        layout: this._emptyBindGroupLayout,
+        entries: [],
+      });
+    }
+    return { layout: this._emptyBindGroupLayout, bindGroup: this._emptyBindGroup! };
+  }
+  
+  /**
+   * Write extra uniform data to a mesh's material buffer at a specific byte offset.
+   * Used by systems (Wind, Wetness) to write feature-specific data beyond the
+   * base 80-byte MaterialUniforms region.
+   *
+   * @param meshId - The mesh ID to write to
+   * @param data - Float32Array containing the data to write
+   * @param byteOffset - Byte offset within the material buffer (must be >= 80)
+   */
+  writeExtraUniforms(meshId: number, data: Float32Array, byteOffset: number): void {
+    const mesh = this.meshes.get(meshId);
+    if (!mesh) return;
+    this.ctx.queue.writeBuffer(mesh.materialBuffer.buffer, byteOffset, data.buffer, data.byteOffset, data.byteLength);
+  }
+
   /**
    * Get mesh material (for UI display)
    */

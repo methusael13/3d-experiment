@@ -1,87 +1,87 @@
 /**
- * MaterialPanelBridge - Connects MaterialPanel Preact component to the store
+ * MaterialPanelBridge - Connects MaterialPanel to the store (ECS Step 3)
+ * Reads/writes MaterialComponent on selected Entity.
  */
 
 import { useComputed } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
 import { MaterialPanel } from '../panels';
-import type { PBRMaterial } from '../../../../core/sceneObjects';
-import { isPrimitiveObject } from '../../../../core/sceneObjects';
-import { PrimitiveObject } from '../../../../core/sceneObjects/PrimitiveObject';
+import type { PBRMaterial } from '../../../../core/sceneObjects/types';
+import { MaterialComponent } from '@/core/ecs/components/MaterialComponent';
+import { PrimitiveGeometryComponent } from '@/core/ecs/components/PrimitiveGeometryComponent';
+import { MeshComponent } from '@/core/ecs/components/MeshComponent';
 
 // ==================== Connected Component ====================
 
 export function ConnectedMaterialPanel() {
   const store = getSceneBuilderStore();
   
-  // Get selected object info
-  const selectedObject = useComputed(() => store.firstSelectedObject.value);
+  const selectedEntity = useComputed(() => store.firstSelectedObject.value);
   
   const selectedObjectId = useComputed(() => {
-    return selectedObject.value?.id ?? null;
+    return selectedEntity.value?.id ?? null;
   });
   
-  const objectType = useComputed(() => {
-    return selectedObject.value?.objectType ?? null;
+  const objectType = useComputed<string | null>(() => {
+    const entity = selectedEntity.value;
+    if (!entity) return null;
+    if (entity.hasComponent('mesh')) return 'model';
+    if (entity.hasComponent('primitive-geometry')) return 'primitive';
+    if (entity.hasComponent('terrain')) return 'terrain';
+    if (entity.hasComponent('ocean')) return 'ocean';
+    return null;
   });
   
-  // Get material from scene object
+  // Get material from MaterialComponent
   const material = useComputed<PBRMaterial | null>(() => {
-    // Read transformVersion to force re-computation when scene state changes
     const _ = store.transformVersion.value;
     
-    const obj = selectedObject.value;
-    if (!obj || !store.scene) return null;
+    const entity = selectedEntity.value;
+    if (!entity) return null;
     
-    const sceneObj = store.scene.getObject(obj.id);
-    if (!sceneObj) return null;
+    const mat = entity.getComponent<MaterialComponent>('material');
+    if (!mat) return null;
     
-    // Use proper API for PrimitiveObject
-    if (isPrimitiveObject(sceneObj)) {
-      const primitive = sceneObj as unknown as PrimitiveObject;
-      return primitive.getMaterial();
-    }
-    
-    // Fallback for other object types with material property
-    if ('material' in sceneObj && sceneObj.material) {
-      const mat = sceneObj.material as any;
-      return {
-        albedo: mat.albedo ?? mat.baseColorFactor?.slice(0, 3) ?? [0.75, 0.75, 0.75],
-        metallic: mat.metallic ?? mat.metallicFactor ?? 0,
-        roughness: mat.roughness ?? mat.roughnessFactor ?? 0.5,
-      };
-    }
-    
-    return null;
+    return {
+      albedo: [...mat.albedo] as [number, number, number],
+      metallic: mat.metallic,
+      roughness: mat.roughness,
+    };
   });
   
   // Handle material change
   const handleMaterialChange = (changes: Partial<PBRMaterial>) => {
-    const obj = selectedObject.value;
-    if (!obj || !store.scene) return;
+    const entity = selectedEntity.value;
+    if (!entity) return;
     
-    const sceneObj = store.scene.getObject(obj.id);
-    if (!sceneObj) return;
+    const mat = entity.getComponent<MaterialComponent>('material');
+    if (!mat) return;
     
-    // Handle PrimitiveObject with proper API
-    if (isPrimitiveObject(sceneObj)) {
-      const primitive = sceneObj as unknown as PrimitiveObject;
-      primitive.setMaterial(changes);
-      // Sync GPU material if WebGPU is initialized
-      if (primitive.isGPUInitialized) {
-        primitive.updateGPUMaterial();
+    if (changes.albedo) mat.albedo = changes.albedo;
+    if (changes.metallic !== undefined) mat.metallic = changes.metallic;
+    if (changes.roughness !== undefined) mat.roughness = changes.roughness;
+    
+    // Sync GPU material buffer via ObjectRendererGPU
+    const gpuChanges: Record<string, unknown> = {};
+    if (changes.albedo) gpuChanges.albedo = changes.albedo;
+    if (changes.metallic !== undefined) gpuChanges.metallic = changes.metallic;
+    if (changes.roughness !== undefined) gpuChanges.roughness = changes.roughness;
+    
+    // Update primitive geometry meshes
+    const prim = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
+    if (prim?.isGPUInitialized && prim.meshId !== null && prim.gpuContext) {
+      prim.gpuContext.objectRenderer.setMaterial(prim.meshId, gpuChanges);
+    }
+    
+    // Update model meshes
+    const mesh = entity.getComponent<MeshComponent>('mesh');
+    if (mesh?.isGPUInitialized && mesh.gpuContext) {
+      for (const meshId of mesh.meshIds) {
+        mesh.gpuContext.objectRenderer.setMaterial(meshId, gpuChanges);
       }
-      store.syncFromScene();
-      return;
     }
     
-    // Fallback for other object types with material property
-    if ('material' in sceneObj) {
-      const currentMat = (sceneObj as any).material ?? {};
-      const updatedMat = { ...currentMat, ...changes };
-      (sceneObj as any).material = updatedMat;
-      store.syncFromScene();
-    }
+    store.syncFromWorld();
   };
   
   return (

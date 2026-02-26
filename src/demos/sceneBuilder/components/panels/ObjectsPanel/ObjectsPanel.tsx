@@ -1,6 +1,5 @@
 import { useCallback } from 'preact/hooks';
 import { Panel } from '../../ui';
-import type { Scene } from '../../../../../core/Scene';
 import styles from './ObjectsPanel.module.css';
 
 // Import CSS variables
@@ -19,7 +18,6 @@ interface ObjectGroup {
 }
 
 export interface ObjectsPanelProps {
-  scene: Scene;
   objects: SceneObject[];
   groups: Map<string, ObjectGroup>;
   selectedIds: Set<string>;
@@ -31,7 +29,6 @@ export interface ObjectsPanelProps {
 }
 
 export function ObjectsPanel({
-  scene,
   objects,
   groups,
   selectedIds,
