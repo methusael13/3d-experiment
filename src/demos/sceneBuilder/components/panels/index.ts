@@ -10,9 +10,6 @@ export type {
   ObjectPanelProps,
   TransformData,
   PrimitiveConfig,
-  WindSettings,
-  TerrainBlendSettings,
-  MaterialInfo,
 } from './ObjectPanel';
 
 export { MaterialPanel } from './MaterialPanel';

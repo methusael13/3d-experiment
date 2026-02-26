@@ -2,7 +2,6 @@ import { useMemo } from 'preact/hooks';
 import { Panel, SidebarTabs } from '../../ui';
 import { TransformTab, type TransformData } from './TransformTab';
 import { EditTab, type PrimitiveConfig } from './EditTab';
-import { ModifiersTab, type WindSettings, type TerrainBlendSettings, type MaterialInfo } from './ModifiersTab';
 import { ComponentsTab, type ComponentsTabProps } from './ComponentsTab';
 import type { GizmoMode } from '../../../gizmos';
 import type { GizmoOrientation } from '../../../gizmos/BaseGizmo';
@@ -33,10 +32,6 @@ export interface ObjectPanelProps {
   gizmoMode: GizmoMode;
   gizmoOrientation: GizmoOrientation;
 
-  // Modifier settings
-  windSettings: WindSettings;
-  materials: MaterialInfo[];
-
   // Callbacks
   onNameChange: (name: string) => void;
   onPositionChange: (value: [number, number, number]) => void;
@@ -51,11 +46,6 @@ export interface ObjectPanelProps {
   // Primitive callbacks
   onPrimitiveConfigChange?: (config: Partial<PrimitiveConfig>) => void;
   onShowNormalsChange?: (show: boolean) => void;
-
-  // Modifier callbacks
-  onWindSettingsChange: (settings: Partial<WindSettings>) => void;
-  onToggleLeafMaterial: (index: number) => void;
-  onToggleBranchMaterial: (index: number) => void;
 
   // Components tab
   entity: Entity | null;
@@ -74,8 +64,6 @@ export function ObjectPanel({
   showNormals = false,
   gizmoMode,
   gizmoOrientation,
-  windSettings,
-  materials,
   onNameChange,
   onPositionChange,
   onRotationChange,
@@ -87,9 +75,6 @@ export function ObjectPanel({
   onDelete,
   onPrimitiveConfigChange,
   onShowNormalsChange,
-  onWindSettingsChange,
-  onToggleLeafMaterial,
-  onToggleBranchMaterial,
   entity,
   activeComponents,
   onComponentsChanged,
@@ -137,20 +122,6 @@ export function ObjectPanel({
         ) : null,
       },
       {
-        id: 'modifiers',
-        icon: '⚙',
-        label: 'Modifiers',
-        content: (
-          <ModifiersTab
-            windSettings={windSettings}
-            materials={materials}
-            onWindSettingsChange={onWindSettingsChange}
-            onToggleLeafMaterial={onToggleLeafMaterial}
-            onToggleBranchMaterial={onToggleBranchMaterial}
-          />
-        ),
-      },
-      {
         id: 'components',
         icon: '⧉',
         label: 'Components',
@@ -174,8 +145,6 @@ export function ObjectPanel({
       primitiveType,
       primitiveConfig,
       showNormals,
-      windSettings,
-      materials,
       entity,
       activeComponents,
     ]

@@ -5,11 +5,9 @@
 
 import { useComputed } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
-import { ObjectPanel, type TransformData, type PrimitiveConfig, type WindSettings, type TerrainBlendSettings, type MaterialInfo } from '../panels';
+import { ObjectPanel, type TransformData, type PrimitiveConfig } from '../panels';
 import type { GizmoMode, GizmoOrientation } from '../../gizmos';
-import type { Vec3 } from '../../../../core/types';
 import { TransformComponent } from '@/core/ecs/components/TransformComponent';
-import { MeshComponent } from '@/core/ecs/components/MeshComponent';
 import { PrimitiveGeometryComponent } from '@/core/ecs/components/PrimitiveGeometryComponent';
 import { generatePrimitiveGeometry } from '@/core/utils/primitiveGeometry';
 import type { ComponentType } from '@/core/ecs/types';
@@ -57,21 +55,6 @@ export function ConnectedObjectPanel() {
       position: [tc.position[0], tc.position[1], tc.position[2]] as [number, number, number],
       rotation: [euler[0], euler[1], euler[2]] as [number, number, number],
       scale: [tc.scale[0], tc.scale[1], tc.scale[2]] as [number, number, number],
-    };
-  });
-  
-  const windSettings = useComputed<WindSettings>(() => {
-    const entity = selectedEntity.value;
-    if (!entity) return getDefaultWindSettings();
-    const objWindSettings = store.objectWindSettings.value.get(entity.id);
-    if (!objWindSettings) return getDefaultWindSettings();
-    return {
-      enabled: objWindSettings.enabled,
-      influence: objWindSettings.influence,
-      stiffness: objWindSettings.stiffness,
-      anchorHeight: objWindSettings.anchorHeight,
-      leafMaterialIndices: objWindSettings.leafMaterialIndices,
-      branchMaterialIndices: objWindSettings.branchMaterialIndices,
     };
   });
   
@@ -146,17 +129,6 @@ export function ConnectedObjectPanel() {
     }
   };
   
-  const handleWindSettingsChange = (settings: Partial<WindSettings>) => {
-    const entity = selectedEntity.value;
-    if (!entity) return;
-    
-    const current = store.objectWindSettings.value.get(entity.id) ?? getDefaultObjectWindSettings(entity.id);
-    const updated = { ...current, ...settings };
-    const newMap = new Map(store.objectWindSettings.value);
-    newMap.set(entity.id, updated);
-    store.objectWindSettings.value = newMap;
-  };
-  
   const handlePrimitiveConfigChange = (config: Partial<PrimitiveConfig>) => {
     const entity = selectedEntity.value;
     if (!entity) return;
@@ -174,56 +146,6 @@ export function ConnectedObjectPanel() {
   const handleShowNormalsChange = (_show: boolean) => {
     // TODO: implement via component
   };
-  
-  const handleToggleLeafMaterial = (index: number) => {
-    const entity = selectedEntity.value;
-    if (!entity) return;
-    
-    const current = store.objectWindSettings.value.get(entity.id) ?? getDefaultObjectWindSettings(entity.id);
-    const newSet = new Set(current.leafMaterialIndices);
-    if (newSet.has(index)) {
-      newSet.delete(index);
-    } else {
-      newSet.add(index);
-    }
-    const updated = { ...current, leafMaterialIndices: newSet };
-    const newMap = new Map(store.objectWindSettings.value);
-    newMap.set(entity.id, updated);
-    store.objectWindSettings.value = newMap;
-  };
-  
-  const handleToggleBranchMaterial = (index: number) => {
-    const entity = selectedEntity.value;
-    if (!entity) return;
-    
-    const current = store.objectWindSettings.value.get(entity.id) ?? getDefaultObjectWindSettings(entity.id);
-    const newSet = new Set(current.branchMaterialIndices);
-    if (newSet.has(index)) {
-      newSet.delete(index);
-    } else {
-      newSet.add(index);
-    }
-    const updated = { ...current, branchMaterialIndices: newSet };
-    const newMap = new Map(store.objectWindSettings.value);
-    newMap.set(entity.id, updated);
-    store.objectWindSettings.value = newMap;
-  };
-  
-  // Get materials from model entities
-  const materials = useComputed<MaterialInfo[]>(() => {
-    const entity = selectedEntity.value;
-    if (!entity) return [];
-    
-    const mesh = entity.getComponent<MeshComponent>('mesh');
-    if (!mesh?.model) return [];
-    
-    // Build material info from GLBModel materials
-    return mesh.model.materials.map((mat, i) => ({
-      name: `Material ${i}`,
-      index: i,
-      albedo: mat.baseColorFactor ? [mat.baseColorFactor[0], mat.baseColorFactor[1], mat.baseColorFactor[2]] as [number, number, number] : [0.7, 0.7, 0.7] as [number, number, number],
-    }));
-  });
   
   // Components tab data
   const activeComponents = useComputed<ComponentType[]>(() => {
@@ -252,8 +174,6 @@ export function ConnectedObjectPanel() {
       showNormals={showNormals.value}
       gizmoMode={gizmoMode.value}
       gizmoOrientation={gizmoOrientation.value}
-      windSettings={windSettings.value}
-      materials={materials.value}
       onNameChange={handleNameChange}
       onPositionChange={handlePositionChange}
       onRotationChange={handleRotationChange}
@@ -271,39 +191,9 @@ export function ConnectedObjectPanel() {
       onDelete={handleDelete}
       onPrimitiveConfigChange={handlePrimitiveConfigChange}
       onShowNormalsChange={handleShowNormalsChange}
-      onWindSettingsChange={handleWindSettingsChange}
-      onToggleLeafMaterial={handleToggleLeafMaterial}
-      onToggleBranchMaterial={handleToggleBranchMaterial}
       entity={entity ?? null}
       activeComponents={activeComponents.value}
       onComponentsChanged={handleComponentsChanged}
     />
   );
-}
-
-// ==================== Helpers ====================
-
-function getDefaultWindSettings(): WindSettings {
-  return {
-    enabled: false,
-    influence: 1.0,
-    stiffness: 0.5,
-    anchorHeight: 0,
-    leafMaterialIndices: new Set(),
-    branchMaterialIndices: new Set(),
-  };
-}
-
-function getDefaultObjectWindSettings(id: string) {
-  return {
-    id,
-    enabled: false,
-    influence: 1.0,
-    stiffness: 0.5,
-    anchorHeight: 0,
-    leafMaterialIndices: new Set<number>(),
-    branchMaterialIndices: new Set<number>(),
-    displacement: [0, 0] as [number, number],
-    velocity: [0, 0] as [number, number],
-  };
 }

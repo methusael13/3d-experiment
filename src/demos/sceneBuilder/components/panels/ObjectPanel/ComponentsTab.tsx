@@ -5,8 +5,10 @@ import type { Component } from '@/core/ecs/Component';
 import type { ComponentType } from '@/core/ecs/types';
 import { LODComponent } from '@/core/ecs/components/LODComponent';
 import { WetnessComponent } from '@/core/ecs/components/WetnessComponent';
+import { WindComponent } from '@/core/ecs/components/WindComponent';
 import { WetnessSubPanel } from './subpanels/WetnessSubPanel';
 import { LODSubPanel } from './subpanels/LODSubPanel';
+import { WindSubPanel } from './subpanels/WindSubPanel';
 import styles from './ComponentsTab.module.css';
 
 /**
@@ -37,6 +39,15 @@ export const OPTIONAL_COMPONENTS: {
     create: () => new WetnessComponent(),
     renderPanel: (entity, onChanged) => (
       <WetnessSubPanel entity={entity} onChanged={onChanged} />
+    ),
+  },
+  {
+    type: 'wind',
+    label: 'Wind',
+    description: 'Vegetation wind animation (sway & flutter)',
+    create: () => new WindComponent(),
+    renderPanel: (entity, onChanged) => (
+      <WindSubPanel entity={entity} onChanged={onChanged} />
     ),
   },
 ];
