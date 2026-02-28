@@ -59,10 +59,10 @@ struct MaterialUniforms {
 
   textureFlags: vec4f,
 
-  _reserved0: f32,
-  _reserved1: f32,
-  _reserved2: f32,
-  _reserved3: f32,
+  ior: f32,                  // Index of refraction (default 1.5); negative = unlit
+  clearcoatFactor: f32,      // KHR_materials_clearcoat factor [0-1]
+  clearcoatRoughness: f32,   // KHR_materials_clearcoat roughness [0-1]
+  hasEmissiveTex: f32,       // 1.0 if emissive texture is present
 
   /*{{EXTRA_UNIFORM_FIELDS}}*/
 }
@@ -147,7 +147,13 @@ fn pbrDirectional(
   }
 
   let clampedRoughness = clamp(roughness, 0.04, 1.0);
-  let F0 = mix(vec3f(0.04), albedo, metallic);
+
+  // F0 from IOR: F0 = ((ior - 1) / (ior + 1))^2
+  // For dielectrics, uses IOR-derived F0 instead of hardcoded 0.04
+  // For metals, uses albedo as F0 (per metallic workflow)
+  let iorVal = max(material.ior, 1.0);
+  let iorF0 = pow((iorVal - 1.0) / (iorVal + 1.0), 2.0);
+  let F0 = mix(vec3f(iorF0), albedo, metallic);
 
   let D = distributionGGX(NdotH, clampedRoughness);
   let G = geometrySmith(NdotV, NdotL, clampedRoughness);
@@ -264,6 +270,9 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
   // ---- Pre-lighting material modifications (wetness, etc.) ----
   /*{{FRAGMENT_PRE_LIGHTING}}*/
 
+  // ---- Unlit check: negative IOR signals KHR_materials_unlit ----
+  let isUnlit = material.ior < 0.0;
+
   // ---- Lighting ----
   let V = normalize(globals.cameraPosition - input.worldPosition);
   let L = normalize(globals.lightDirection);
@@ -272,15 +281,44 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
   var shadow = 1.0;
   /*{{FRAGMENT_SHADOW}}*/
 
-  // Direct lighting
-  let direct = pbrDirectional(N, V, L, albedo, metallic, roughness, globals.lightColor) * shadow;
+  var color: vec3f;
 
-  // Ambient lighting (IBL or hemisphere — injected by feature)
-  var ambient = hemisphereAmbient(N, albedo, globals.ambientIntensity) * ao;
-  /*{{FRAGMENT_AMBIENT}}*/
+  if (isUnlit) {
+    // KHR_materials_unlit: output albedo directly, no PBR lighting
+    color = albedo + emissive;
+  } else {
+    // Direct lighting
+    let direct = pbrDirectional(N, V, L, albedo, metallic, roughness, globals.lightColor) * shadow;
 
-  // Final color
-  var color = direct + ambient + emissive;
+    // Ambient lighting (IBL or hemisphere — injected by feature)
+    var ambient = hemisphereAmbient(N, albedo, globals.ambientIntensity) * ao;
+    /*{{FRAGMENT_AMBIENT}}*/
+
+    // Base PBR color
+    color = direct + ambient + emissive;
+
+    // ---- Clearcoat layer (KHR_materials_clearcoat) ----
+    if (material.clearcoatFactor > 0.0) {
+      let ccRoughness = clamp(material.clearcoatRoughness, 0.04, 1.0);
+      let H = normalize(V + L);
+      let NdotL_cc = max(dot(N, L), 0.0);
+      let NdotV_cc = max(dot(N, V), EPSILON);
+      let NdotH_cc = max(dot(N, H), 0.0);
+      let VdotH_cc = max(dot(V, H), 0.0);
+
+      // Clearcoat uses fixed F0=0.04 (polyurethane coating, IOR 1.5)
+      let F_cc = fresnelSchlick(VdotH_cc, vec3f(0.04));
+      let D_cc = distributionGGX(NdotH_cc, ccRoughness);
+      let G_cc = geometrySmith(NdotV_cc, NdotL_cc, ccRoughness);
+
+      let ccSpecular = (D_cc * G_cc * F_cc) / (4.0 * NdotV_cc * NdotL_cc + EPSILON);
+      let ccContrib = ccSpecular * globals.lightColor * NdotL_cc * shadow;
+
+      // Blend: clearcoat absorbs some of the base layer energy
+      let ccFresnel = fresnelSchlick(NdotV_cc, vec3f(0.04));
+      color = color * (1.0 - material.clearcoatFactor * ccFresnel) + ccContrib * material.clearcoatFactor;
+    }
+  }
 
   // Post-processing injection (snow, dissolve, etc.)
   /*{{FRAGMENT_POST}}*/

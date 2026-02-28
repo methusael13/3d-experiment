@@ -123,5 +123,11 @@ export const texturedFeature: ShaderFeature = {
     let aoSample = textureSample(occlusionTexture, occlusionSampler, input.uv).r;
     ao = 1.0 + material.occlusionStrength * (aoSample - 1.0);
   }
+
+  // Emissive texture
+  if (material.hasEmissiveTex > 0.5) {
+    let emissiveSample = textureSample(emissiveTexture, emissiveSampler, input.uv).rgb;
+    emissive = srgbToLinear(emissiveSample) * material.emissiveFactor;
+  }
 `,
 };

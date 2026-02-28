@@ -548,6 +548,15 @@ export class GLBLoader extends BaseLoader<GLBModel> {
       const iorExt = (mat.extensions as Record<string, unknown>)?.['KHR_materials_ior'] as {
         ior?: number;
       } | undefined;
+
+      // Parse KHR_materials_clearcoat extension
+      const clearcoatExt = (mat.extensions as Record<string, unknown>)?.['KHR_materials_clearcoat'] as {
+        clearcoatFactor?: number;
+        clearcoatRoughnessFactor?: number;
+      } | undefined;
+
+      // Parse KHR_materials_unlit extension (presence = unlit, no parameters)
+      const unlitExt = (mat.extensions as Record<string, unknown>)?.['KHR_materials_unlit'];
       
       return {
         baseColorFactor: (pbr.baseColorFactor || [1, 1, 1, 1]) as [number, number, number, number],
@@ -569,6 +578,11 @@ export class GLBLoader extends BaseLoader<GLBModel> {
         transmissionTextureIndex: transmissionExt?.transmissionTexture?.index,
         // KHR_materials_ior (default 1.5 per glTF spec)
         ior: iorExt?.ior ?? 1.5,
+        // KHR_materials_clearcoat
+        clearcoatFactor: clearcoatExt?.clearcoatFactor ?? 0.0,
+        clearcoatRoughness: clearcoatExt?.clearcoatRoughnessFactor ?? 0.0,
+        // KHR_materials_unlit
+        unlit: unlitExt !== undefined,
       };
     });
     

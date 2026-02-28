@@ -68,6 +68,10 @@ export interface GPUMaterial {
   alphaCutoff?: number;       // Only used when alphaMode === 'MASK'
   emissive?: [number, number, number];
   doubleSided?: boolean;      // glTF doubleSided: disable backface culling
+  ior?: number;               // Index of refraction (default 1.5; KHR_materials_ior)
+  clearcoatFactor?: number;   // KHR_materials_clearcoat factor [0-1]
+  clearcoatRoughness?: number; // KHR_materials_clearcoat roughness [0-1]
+  unlit?: boolean;            // KHR_materials_unlit — skip PBR, output albedo directly
   textures?: GPUMaterialTextures;
 }
 
@@ -724,10 +728,13 @@ export class ObjectRendererGPU {
     data[15] = tex?.occlusion ? 1.0 : 0.0;
     
     // Reserved (vec4f) - selection is now handled via separate outline pass
-    data[16] = 0.0; // _reserved0
-    data[17] = 0.0; // _reserved1
-    data[18] = 0.0; // pad
-    data[19] = 0.0; // pad
+    // IOR: negative value signals unlit mode in the shader
+    data[16] = material.unlit ? -1.0 : (material.ior ?? 1.5);
+    // KHR_materials_clearcoat
+    data[17] = material.clearcoatFactor ?? 0.0;
+    data[18] = material.clearcoatRoughness ?? 0.0;
+    // hasEmissiveTex flag
+    data[19] = tex?.emissive ? 1.0 : 0.0;
     
     buffer.write(this.ctx, data);
   }

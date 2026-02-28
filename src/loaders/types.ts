@@ -84,6 +84,11 @@ export interface GLBMaterial {
   transmissionTextureIndex?: number;
   // KHR_materials_ior extension
   ior: number;
+  // KHR_materials_clearcoat extension
+  clearcoatFactor: number;
+  clearcoatRoughness: number;
+  // KHR_materials_unlit extension
+  unlit: boolean;
 }
 
 /**

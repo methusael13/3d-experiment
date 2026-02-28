@@ -238,6 +238,10 @@ export class ModelObject extends RenderableObject {
         alphaCutoff: glbMaterial?.alphaCutoff ?? 0.5,   // Only used when alphaMode === 'MASK'
         emissive: glbMaterial?.emissiveFactor ?? [0, 0, 0],
         doubleSided: glbMaterial?.doubleSided ?? false,
+        ior: glbMaterial?.ior ?? 1.5,
+        clearcoatFactor: glbMaterial?.clearcoatFactor ?? 0.0,
+        clearcoatRoughness: glbMaterial?.clearcoatRoughness ?? 0.0,
+        unlit: glbMaterial?.unlit ?? false,
       };
       
       // Map texture indices to GPU textures
