@@ -1,9 +1,16 @@
 # Lighting System Migration Plan — ECS Edition
 
-> **Revision 2** — Updated for ECS architecture. The original plan targeted `Scene`/`SceneObject`.
-> The engine now uses Entity-Component-System (`World`, `Entity`, `LightComponent`).
+> **Revision 3** — Updated for ECS architecture with refined design decisions.
+> The engine uses Entity-Component-System (`World`, `Entity`, `LightComponent`).
 > This revision preserves all GPU-level design (shaders, buffers, shadow atlas, cookies)
 > and rewrites the architectural integration to use ECS primitives.
+>
+> **Key Design Decisions:**
+> - HDR environment lighting is excluded from `LightComponent` — it remains an IBL/environment setting
+> - The directional sun is a **global scene entity** (auto-created, always present, visible in Objects Panel)
+> - Individual lights (point, spot) are added to the scene as regular entities
+> - The `LightingSystem` handles shadow map orchestration for all visible lights
+> - Light properties are edited via a `LightSubPanel` in the Object Panel (same pattern as Wind, SSR, etc.)
 
 ---
 
