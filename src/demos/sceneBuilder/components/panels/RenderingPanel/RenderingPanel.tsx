@@ -2,6 +2,8 @@ import { useCallback } from 'preact/hooks';
 import { Panel, Slider, Checkbox, Select, Section } from '../../ui';
 import styles from './RenderingPanel.module.css';
 import type { SSAOEffectConfig, CompositeEffectConfig } from '@/core/gpu/postprocess';
+import type { SSRQualityLevel } from '@/core/gpu/pipeline/SSRConfig';
+import type { DebugViewMode } from '@/core/gpu/pipeline/passes/DebugViewPass';
 
 // Import CSS variables
 import '../../styles/variables.css';
@@ -26,6 +28,18 @@ export interface SSAOSettings extends Required<SSAOEffectConfig> {
   enabled: boolean;
 }
 
+/**
+ * SSR Settings for UI
+ */
+export interface SSRSettings {
+  /** Whether SSR is enabled */
+  enabled: boolean;
+  /** Quality preset */
+  quality: SSRQualityLevel;
+}
+
+export type { DebugViewMode };
+
 export interface RenderingPanelProps {
   // Shadow settings
   shadowSettings: WebGPUShadowSettings;
@@ -34,6 +48,14 @@ export interface RenderingPanelProps {
   // SSAO settings
   ssaoSettings: SSAOSettings;
   onSSAOSettingsChange: (settings: Partial<SSAOSettings>) => void;
+
+  // SSR settings
+  ssrSettings: SSRSettings;
+  onSSRSettingsChange: (settings: Partial<SSRSettings>) => void;
+
+  // Debug view
+  debugViewMode: DebugViewMode;
+  onDebugViewModeChange: (mode: DebugViewMode) => void;
 
   // Tonemapping settings
   compositeSettings: Required<CompositeEffectConfig>;
@@ -70,6 +92,20 @@ const tonemappingOptions = [
   { value: '3', label: 'ACES Filmic' },
 ];
 
+const debugViewOptions = [
+  { value: 'off', label: 'Off (Normal)' },
+  { value: 'depth', label: 'Depth Buffer' },
+  { value: 'normals', label: 'Normals' },
+  { value: 'ssr', label: 'SSR Result' },
+];
+
+const ssrQualityOptions = [
+  { value: 'low', label: 'Low (32 steps)' },
+  { value: 'medium', label: 'Medium (64 steps)' },
+  { value: 'high', label: 'High (128 steps)' },
+  { value: 'ultra', label: 'Ultra (256 steps)' },
+];
+
 export function RenderingPanel({
   shadowSettings,
   showShadowThumbnail,
@@ -77,6 +113,10 @@ export function RenderingPanel({
   onShadowSettingsChange,
   ssaoSettings,
   onSSAOSettingsChange,
+  ssrSettings,
+  onSSRSettingsChange,
+  debugViewMode,
+  onDebugViewModeChange,
   compositeSettings,
   onCompositeSettingsChange,
 }: RenderingPanelProps) {
@@ -201,8 +241,31 @@ export function RenderingPanel({
     [onCompositeSettingsChange]
   );
 
+  // SSR handlers
+  const handleSSREnabled = useCallback(
+    (enabled: boolean) => {
+      onSSRSettingsChange({ enabled });
+    },
+    [onSSRSettingsChange]
+  );
+
+  const handleSSRQualityChange = useCallback(
+    (value: string) => {
+      onSSRSettingsChange({ quality: value as SSRQualityLevel });
+    },
+    [onSSRSettingsChange]
+  );
+
   const controlsDisabled = !shadowSettings.enabled;
   const ssaoControlsDisabled = !ssaoSettings.enabled;
+  const handleDebugViewChange = useCallback(
+    (value: string) => {
+      onDebugViewModeChange(value as DebugViewMode);
+    },
+    [onDebugViewModeChange]
+  );
+
+  const ssrControlsDisabled = !ssrSettings.enabled;
 
   return (
     <Panel title="Rendering">
@@ -315,6 +378,39 @@ export function RenderingPanel({
           format={(v) => v.toFixed(2)}
           onChange={handleGammaChange}
         />
+      </Section>
+
+      {/* Debug View */}
+      <Section title="Debug View" defaultCollapsed={true}>
+        <div class={styles.controlGroup}>
+          <label class={styles.controlLabel}>View Mode</label>
+          <Select
+            value={debugViewMode}
+            options={debugViewOptions}
+            onChange={handleDebugViewChange}
+          />
+        </div>
+      </Section>
+
+      {/* Post Processing - SSR */}
+      <Section title="Screen Space Reflections" defaultCollapsed={false}>
+        <Checkbox
+          label="Enable SSR"
+          checked={ssrSettings.enabled}
+          onChange={handleSSREnabled}
+        />
+
+        <div class={`${styles.shadowControls} ${ssrControlsDisabled ? styles.disabled : ''}`}>
+          <div class={styles.controlGroup}>
+            <label class={styles.controlLabel}>Quality</label>
+            <Select
+              value={ssrSettings.quality}
+              options={ssrQualityOptions}
+              onChange={handleSSRQualityChange}
+              disabled={ssrControlsDisabled}
+            />
+          </div>
+        </div>
       </Section>
 
       {/* Post Processing - SSAO */}

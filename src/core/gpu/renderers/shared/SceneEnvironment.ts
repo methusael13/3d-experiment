@@ -47,6 +47,9 @@ export class SceneEnvironment {
   private currentShadowMapView: GPUTextureView | null = null;
   private currentIBL: IBLResources | null = null;
   private currentCSM: CSMResources | null = null;
+  private currentSSRView: GPUTextureView | null = null;
+  private currentProbeCubemapView: GPUTextureView | null = null;
+  private currentProbeSampler: GPUSampler | null = null;
 
   // Track if bind group needs rebuild
   private needsRebuild: boolean = false;
@@ -105,6 +108,9 @@ export class SceneEnvironment {
         { binding: ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER, resource: lutSampler },
         { binding: ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY, resource: csmArray },
         { binding: ENVIRONMENT_BINDINGS.CSM_UNIFORMS, resource: { buffer: csmBuffer } },
+        { binding: ENVIRONMENT_BINDINGS.SSR_TEXTURE, resource: this.currentSSRView ?? this.placeholders.ssrTextureView },
+        { binding: ENVIRONMENT_BINDINGS.REFLECTION_PROBE_CUBEMAP, resource: this.currentProbeCubemapView ?? this.placeholders.reflectionProbeCubemapView },
+        { binding: ENVIRONMENT_BINDINGS.REFLECTION_PROBE_SAMPLER, resource: this.currentProbeSampler ?? this.placeholders.reflectionProbeSampler },
       ],
     });
   }
@@ -141,6 +147,32 @@ export class SceneEnvironment {
   setCSM(csm: CSMResources | null): void {
     if (this.currentCSM !== csm) {
       this.currentCSM = csm;
+      this.needsRebuild = true;
+      this.invalidateMaskedBindGroups();
+    }
+  }
+
+  /**
+   * Set SSR texture view (from SSRPass output)
+   * @param view SSR texture view (null to clear/use placeholder)
+   */
+  setSSR(view: GPUTextureView | null): void {
+    if (this.currentSSRView !== view) {
+      this.currentSSRView = view;
+      this.needsRebuild = true;
+      this.invalidateMaskedBindGroups();
+    }
+  }
+
+  /**
+   * Set reflection probe cubemap (from baked ReflectionProbeComponent)
+   * @param view Cubemap texture view (null to clear/use placeholder)
+   * @param sampler Cubemap sampler (null to use placeholder)
+   */
+  setReflectionProbe(view: GPUTextureView | null, sampler: GPUSampler | null = null): void {
+    if (this.currentProbeCubemapView !== view || this.currentProbeSampler !== sampler) {
+      this.currentProbeCubemapView = view;
+      this.currentProbeSampler = sampler;
       this.needsRebuild = true;
       this.invalidateMaskedBindGroups();
     }
@@ -295,6 +327,31 @@ export class SceneEnvironment {
       });
     }
     
+    // SSR texture
+    if (mask & ENV_BINDING_MASK.SSR_TEXTURE) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.SSR_TEXTURE,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: 'float' },
+      });
+    }
+    
+    // Reflection probe resources
+    if (mask & ENV_BINDING_MASK.REFLECTION_PROBE_CUBEMAP) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.REFLECTION_PROBE_CUBEMAP,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: 'float', viewDimension: 'cube' },
+      });
+    }
+    if (mask & ENV_BINDING_MASK.REFLECTION_PROBE_SAMPLER) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.REFLECTION_PROBE_SAMPLER,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: 'filtering' },
+      });
+    }
+    
     // CSM resources
     if (mask & ENV_BINDING_MASK.CSM_SHADOW_ARRAY) {
       entries.push({
@@ -389,6 +446,19 @@ export class SceneEnvironment {
     }
     if (mask & ENV_BINDING_MASK.IBL_LUT_SAMPLER) {
       entries.push({ binding: ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER, resource: lutSampler });
+    }
+    
+    // SSR texture
+    if (mask & ENV_BINDING_MASK.SSR_TEXTURE) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.SSR_TEXTURE, resource: this.currentSSRView ?? this.placeholders.ssrTextureView });
+    }
+    
+    // Reflection probe resources
+    if (mask & ENV_BINDING_MASK.REFLECTION_PROBE_CUBEMAP) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.REFLECTION_PROBE_CUBEMAP, resource: this.currentProbeCubemapView ?? this.placeholders.reflectionProbeCubemapView });
+    }
+    if (mask & ENV_BINDING_MASK.REFLECTION_PROBE_SAMPLER) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.REFLECTION_PROBE_SAMPLER, resource: this.currentProbeSampler ?? this.placeholders.reflectionProbeSampler });
     }
     
     // CSM resources

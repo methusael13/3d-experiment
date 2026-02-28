@@ -56,6 +56,9 @@ export const iblFeature: ShaderFeature = {
   functions: `
 // ============ IBL Functions ============
 
+// Stores the IBL specular contribution separately so SSR can replace it
+var<private> iblSpecularTerm_: vec3f = vec3f(0.0);
+
 fn fresnelSchlickRoughness(cosTheta: f32, F0: vec3f, roughness: f32) -> vec3f {
   let oneMinusRoughness = vec3f(1.0 - roughness);
   return F0 + (max(oneMinusRoughness, F0) - F0) * pow(saturate(1.0 - cosTheta), 5.0);
@@ -86,6 +89,9 @@ fn sampleIBL(
   let brdf = textureSample(iblBrdfLut, iblLutSampler, vec2f(NdotV, roughness)).rg;
   let specular = prefilteredColor * (F0 * brdf.x + brdf.y);
 
+  // Store specular separately so SSR can replace it instead of double-counting
+  iblSpecularTerm_ = specular * ao;
+
   return (diffuse + specular) * ao;
 }
 
@@ -98,7 +104,10 @@ fn iblAmbient(
   ao: f32,
   ambientIntensity: f32
 ) -> vec3f {
-  return sampleIBL(N, V, albedo, metallic, roughness, ao) * ambientIntensity;
+  let result = sampleIBL(N, V, albedo, metallic, roughness, ao);
+  // Scale the stored specular term by the same ambientIntensity
+  iblSpecularTerm_ = iblSpecularTerm_ * ambientIntensity;
+  return result * ambientIntensity;
 }
 `,
 

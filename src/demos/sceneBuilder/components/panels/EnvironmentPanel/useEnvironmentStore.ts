@@ -20,7 +20,6 @@ export interface EnvironmentStore {
   windStrength: number;
   windTurbulence: number;
   windGustStrength: number;
-  windDebug: number;
   
   // HDR loading state
   isLoadingHdr: boolean;
@@ -37,7 +36,6 @@ export interface EnvironmentStore {
   setWindStrength: (value: number) => void;
   setWindTurbulence: (value: number) => void;
   setWindGustStrength: (value: number) => void;
-  setWindDebug: (value: number) => void;
   setHdrProgress: (progress: number) => void;
   setIsLoadingHdr: (loading: boolean) => void;
   setHdrFilename: (filename: string) => void;
@@ -64,7 +62,6 @@ export function useEnvironmentStore(
   const [windStrength, setWindStrengthState] = useState(windManager.strength);
   const [windTurbulence, setWindTurbulenceState] = useState(windManager.turbulence);
   const [windGustStrength, setWindGustStrengthState] = useState(windManager.gustStrength);
-  const [windDebug, setWindDebugState] = useState(windManager.debug);
   
   // HDR loading state
   const [isLoadingHdr, setIsLoadingHdr] = useState(false);
@@ -130,12 +127,6 @@ export function useEnvironmentStore(
     context.onWindChanged();
   }, [windManager, context]);
 
-  const setWindDebug = useCallback((value: number) => {
-    setWindDebugState(value);
-    windManager.debug = value;
-    context.onWindChanged();
-  }, [windManager, context]);
-
   const setHdrFilename = useCallback((filename: string) => {
     setHdrFilenameState(filename);
   }, []);
@@ -161,7 +152,6 @@ export function useEnvironmentStore(
     windStrength,
     windTurbulence,
     windGustStrength,
-    windDebug,
     isLoadingHdr,
     hdrProgress,
     setLightMode,
@@ -174,7 +164,6 @@ export function useEnvironmentStore(
     setWindStrength,
     setWindTurbulence,
     setWindGustStrength,
-    setWindDebug,
     setHdrProgress,
     setIsLoadingHdr,
     setHdrFilename,

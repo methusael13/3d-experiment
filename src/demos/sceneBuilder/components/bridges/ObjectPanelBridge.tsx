@@ -194,6 +194,7 @@ export function ConnectedObjectPanel() {
       entity={entity ?? null}
       activeComponents={activeComponents.value}
       onComponentsChanged={handleComponentsChanged}
+      debugTextureManager={store.viewport?.getDebugTextureManager() ?? null}
     />
   );
 }

@@ -294,6 +294,13 @@ export class PlaceholderTextures {
   get linearSampler(): GPUSampler { return this._linearSampler; }
   
   get sceneColorHDRView(): GPUTextureView { return this._sceneColorHDRView; }
+  /** SSR placeholder - same as sceneColorHDR (1x1 black = no SSR reflections) */
+  get ssrTextureView(): GPUTextureView { return this._sceneColorHDRView; }
+  
+  /** Reflection probe placeholder - reuses black cubemap (no probe = IBL fallback) */
+  get reflectionProbeCubemapView(): GPUTextureView { return this._cubemapView; }
+  /** Reflection probe sampler placeholder - reuses cubemap sampler */
+  get reflectionProbeSampler(): GPUSampler { return this._cubemapSampler; }
   
   get biomeMaskView(): GPUTextureView { return this._biomeMaskView; }
   

@@ -8,6 +8,7 @@ import type { GizmoOrientation } from '../../../gizmos/BaseGizmo';
 import { OriginPivot } from '@/core/sceneObjects/SceneObject';
 import type { Entity } from '@/core/ecs/Entity';
 import type { ComponentType } from '@/core/ecs/types';
+import type { DebugTextureManager } from '@/core/gpu/renderers/DebugTextureManager';
 import styles from './ObjectPanel.module.css';
 
 // Import CSS variables
@@ -51,6 +52,9 @@ export interface ObjectPanelProps {
   entity: Entity | null;
   activeComponents: ComponentType[];
   onComponentsChanged: () => void;
+
+  // Debug
+  debugTextureManager?: DebugTextureManager | null;
 }
 
 export function ObjectPanel({
@@ -78,6 +82,7 @@ export function ObjectPanel({
   entity,
   activeComponents,
   onComponentsChanged,
+  debugTextureManager,
 }: ObjectPanelProps) {
   const showEditTab = objectType === 'primitive' && selectionCount === 1;
 
@@ -131,6 +136,7 @@ export function ObjectPanel({
             entity={entity}
             activeComponents={activeComponents}
             onChanged={onComponentsChanged}
+            debugTextureManager={debugTextureManager}
           />
         ) : null,
       },

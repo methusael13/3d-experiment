@@ -232,10 +232,18 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   return output;
 }
 
+// ============ Fragment Output (MRT) ============
+
+struct FragmentOutput {
+  @location(0) color: vec4f,           // HDR scene color
+  @location(1) normals: vec4f,         // World-space normal packed [0,1] + metallic in .w
+}
+
 // ============ Fragment Shader ============
 
 @fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+fn fs_main(input: VertexOutput) -> FragmentOutput {
+  var output: FragmentOutput;
   // ---- Material setup ----
   let hasBaseColorTex = material.textureFlags.x > 0.5;
   let hasNormalTex = material.textureFlags.y > 0.5;
@@ -277,5 +285,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   // Post-processing injection (snow, dissolve, etc.)
   /*{{FRAGMENT_POST}}*/
 
-  return vec4f(color, alpha);
+  output.color = vec4f(color, alpha);
+  // Pack world-space normal from [-1,1] to [0,1] for G-buffer; metallic in .w
+  output.normals = vec4f(N * 0.5 + 0.5, metallic);
+  return output;
 }

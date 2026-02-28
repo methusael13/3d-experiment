@@ -9,7 +9,7 @@ import { GPUContext } from '../GPUContext';
 import { BindGroupLayoutBuilder, BindGroupBuilder } from '../GPUBindGroup';
 import { RenderPipelineWrapper } from '../GPURenderPipeline';
 
-export type FloatTextureColormap = 'grayscale' | 'grayscale-inverted' | 'heat' | 'viridis';
+export type FloatTextureColormap = 'grayscale' | 'grayscale-inverted' | 'heat' | 'viridis' | 'color';
 
 /**
  * Visualizes float textures as colored thumbnails
@@ -121,6 +121,39 @@ fn fs_viridis(input: VertexOutput) -> @location(0) vec4f {
   let v = clamp(value, 0.0, 1.0);
   return vec4f(viridisColormap(v), 1.0);
 }
+
+// Load full RGBA color at UV coordinate (for HDR color textures)
+fn loadColor(uv: vec2f) -> vec4f {
+  let texSize = textureDimensions(floatTexture, 0);
+  let clampedUV = clamp(uv, vec2f(0.0), vec2f(0.99999));
+  let texCoord = vec2u(clampedUV * vec2f(texSize));
+  return textureLoad(floatTexture, texCoord, 0);
+}
+
+// Simple Reinhard tonemapping for HDR → LDR display
+fn tonemap(c: vec3f) -> vec3f {
+  return c / (c + vec3f(1.0));
+}
+
+// Linear to sRGB gamma correction
+fn linearToSRGB_debug(c: f32) -> f32 {
+  if (c <= 0.0031308) { return c * 12.92; }
+  return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+@fragment
+fn fs_color(input: VertexOutput) -> @location(0) vec4f {
+  let rgba = loadColor(input.uv);
+  // Tonemap HDR to LDR
+  let ldr = tonemap(rgba.rgb);
+  // Apply gamma correction
+  let srgb = vec3f(
+    linearToSRGB_debug(ldr.x),
+    linearToSRGB_debug(ldr.y),
+    linearToSRGB_debug(ldr.z),
+  );
+  return vec4f(srgb, 1.0);
+}
 `;
   
   // Pipelines for different colormaps
@@ -128,6 +161,7 @@ fn fs_viridis(input: VertexOutput) -> @location(0) vec4f {
   private grayscaleInvertedPipeline: RenderPipelineWrapper | null = null;
   private heatPipeline: RenderPipelineWrapper | null = null;
   private viridisPipeline: RenderPipelineWrapper | null = null;
+  private colorPipeline: RenderPipelineWrapper | null = null;
   
   constructor(ctx: GPUContext) {
     this.ctx = ctx;
@@ -184,6 +218,17 @@ fn fs_viridis(input: VertexOutput) -> @location(0) vec4f {
       cullMode: 'none',
     });
     
+    // Create color pipeline (true color with tonemapping)
+    this.colorPipeline = RenderPipelineWrapper.create(this.ctx, {
+      label: 'float-visualizer-color-pipeline',
+      vertexShader: FloatTextureVisualizer.SHADER,
+      vertexEntryPoint: 'vs_main',
+      fragmentEntryPoint: 'fs_color',
+      bindGroupLayouts: [this.bindGroupLayout],
+      topology: 'triangle-list',
+      cullMode: 'none',
+    });
+
     // No sampler needed - textureLoad is used for unfilterable textures
   }
   
@@ -211,6 +256,7 @@ fn fs_viridis(input: VertexOutput) -> @location(0) vec4f {
       case 'grayscale-inverted': return this.grayscaleInvertedPipeline;
       case 'heat': return this.heatPipeline;
       case 'viridis': return this.viridisPipeline;
+      case 'color': return this.colorPipeline;
       default: return this.grayscalePipeline;
     }
   }
@@ -279,6 +325,7 @@ fn fs_viridis(input: VertexOutput) -> @location(0) vec4f {
     this.grayscaleInvertedPipeline = null;
     this.heatPipeline = null;
     this.viridisPipeline = null;
+    this.colorPipeline = null;
     this.bindGroupLayout = null;
     this.bindGroupCache = new WeakMap();
   }

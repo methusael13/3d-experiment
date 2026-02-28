@@ -1,8 +1,16 @@
-import { Slider, Checkbox } from '../../../ui';
+import { Slider, Checkbox, Select } from '../../../ui';
+import type { SelectOption } from '../../../ui';
 import type { Entity } from '@/core/ecs/Entity';
-import type { WindComponent } from '@/core/ecs/components/WindComponent';
+import type { WindComponent, WindDebugMode } from '@/core/ecs/components/WindComponent';
 import type { MeshComponent } from '@/core/ecs/components/MeshComponent';
 import styles from '../ObjectPanel.module.css';
+
+const WIND_DEBUG_OPTIONS: SelectOption<WindDebugMode>[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'wind-type', label: 'Wind Type' },
+  { value: 'height-factor', label: 'Height Factor' },
+  { value: 'displacement', label: 'Displacement' },
+];
 
 export interface WindSubPanelProps {
   entity: Entity;
@@ -82,7 +90,7 @@ export function WindSubPanel({ entity, onChanged }: WindSubPanelProps) {
         <Slider
           label="Anchor Height"
           value={wc.anchorHeight}
-          min={-2}
+          min={-1}
           max={5}
           step={0.1}
           format={(v) => v.toFixed(1)}
@@ -118,6 +126,17 @@ export function WindSubPanel({ entity, onChanged }: WindSubPanelProps) {
             </div>
           </div>
         )}
+
+        {/* Debug Mode */}
+        <Select
+          label="Debug Mode"
+          value={wc.debugMode}
+          options={WIND_DEBUG_OPTIONS}
+          onChange={(value) => {
+            wc.debugMode = value;
+            onChanged();
+          }}
+        />
 
         {/* Branch Materials */}
         {materials.length > 0 && (

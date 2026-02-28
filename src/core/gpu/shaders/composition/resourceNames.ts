@@ -37,9 +37,18 @@ export const RES = {
   WIND_STIFFNESS: 'windStiffness',
   WIND_TIME: 'windTime',
   WIND_TURBULENCE: 'windTurbulence',
+  WIND_DEBUG_MODE: 'windDebugMode',
+  WIND_DEBUG_MATERIAL_TYPE: 'windDebugMaterialType',
 
   // ==================== Wetness (per-object uniforms) ====================
   WETNESS_PARAMS: 'wetnessParams',
+
+  // ==================== SSR (textures group) ====================
+  SSR_PREV_FRAME_TEXTURE: 'ssrPrevFrameTexture',
+
+  // ==================== Reflection Probe (environment group) ====================
+  REFLECTION_PROBE_CUBEMAP: 'reflectionProbeCubemap',
+  REFLECTION_PROBE_SAMPLER: 'reflectionProbeSampler',
 
   // ==================== Terrain (shared by terrain + shadow) ====================
   TERRAIN_HEIGHTMAP: 'terrainHeightmap',

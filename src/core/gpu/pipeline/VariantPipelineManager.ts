@@ -44,6 +44,19 @@ export interface VariantPipelineEntry {
 }
 
 /**
+ * Cached depth-only pipeline entry (for shadow / depth pre-pass).
+ * Uses the same composed vs_main (with wind displacement) but no fragment stage.
+ */
+export interface DepthOnlyPipelineEntry {
+  /** GPU render pipeline (depth-only, no fragment) */
+  pipeline: GPURenderPipeline;
+  /** The composed shader metadata */
+  composed: ComposedShader;
+  /** The compiled GPU shader module (same as color variant) */
+  shaderModule: GPUShaderModule;
+}
+
+/**
  * Maps a composed shader's resource names to ENVIRONMENT_BINDINGS indices
  * and computes the ENV_BINDING_MASK for SceneEnvironment.
  */
@@ -74,6 +87,12 @@ function computeEnvironmentMask(composed: ComposedShader): EnvironmentBindingMas
     mask |= ENV_BINDING_MASK.BRDF_LUT;
     mask |= ENV_BINDING_MASK.IBL_CUBE_SAMPLER;
     mask |= ENV_BINDING_MASK.IBL_LUT_SAMPLER;
+  }
+  if (features.includes('ssr')) {
+    mask |= ENV_BINDING_MASK.SSR_TEXTURE;
+  }
+  if (features.includes('reflection-probe')) {
+    mask |= ENV_BINDING_MASK.REFLECTION_PROBE;
   }
 
   return mask;
@@ -262,7 +281,10 @@ export class VariantPipelineManager {
       fragment: {
         module: shaderModule,
         entryPoint: 'fs_main',
-        targets: [{ format: 'rgba16float' }],  // HDR intermediate
+        targets: [
+          { format: 'rgba16float' },  // @location(0): HDR scene color
+          { format: 'rgba16float' },  // @location(1): normals G-buffer (packed world normal + metallic)
+        ],
       },
       primitive: {
         topology: 'triangle-list',
@@ -287,11 +309,103 @@ export class VariantPipelineManager {
     };
   }
 
+  // ===================== Depth-Only Pipeline =====================
+
+  // Cache: key = `${featureKey}:depth` → depth-only pipeline
+  private depthOnlyCache = new Map<string, DepthOnlyPipelineEntry>();
+
+  /**
+   * Get or create a depth-only pipeline for shadow / depth pre-pass rendering.
+   * Uses the same composed vs_main (with wind vertex displacement) but no fragment.
+   *
+   * The depth-only pipeline reuses:
+   * - Group 0: globalBindGroupLayout (write light VP to globals.viewProjection)
+   * - Group 1: modelBindGroupLayout (per-mesh model matrix + material with wind uniforms)
+   * - Group 2: empty layout (textures not needed for depth)
+   * - Group 3: empty layout (environment not needed for depth)
+   */
+  getOrCreateDepthOnly(
+    featureIds: string[],
+    depthFormat: GPUTextureFormat = 'depth32float',
+    depthCompare: GPUCompareFunction = 'less',
+  ): DepthOnlyPipelineEntry {
+    const variantEntry = this.variantCache.getOrCreate(featureIds, this.ctx);
+    const cacheKey = `${variantEntry.composed.featureKey}:depth`;
+
+    const cached = this.depthOnlyCache.get(cacheKey);
+    if (cached) return cached;
+
+    const entry = this.createDepthOnlyPipeline(variantEntry, depthFormat, depthCompare);
+    this.depthOnlyCache.set(cacheKey, entry);
+    return entry;
+  }
+
+  /**
+   * Create a depth-only render pipeline from a composed shader variant.
+   */
+  private createDepthOnlyPipeline(
+    variantEntry: ShaderVariantEntry,
+    depthFormat: GPUTextureFormat,
+    depthCompare: GPUCompareFunction,
+  ): DepthOnlyPipelineEntry {
+    const { composed, shaderModule } = variantEntry;
+    const device = this.ctx.device;
+
+    // Empty layouts for Groups 2 and 3 (not needed for depth-only)
+    const emptyLayout2 = this.existingTextureBindGroupLayout;
+    const emptyLayout3 = device.createBindGroupLayout({
+      label: `variant-depth-env-empty-${composed.featureKey}`,
+      entries: [],
+    });
+
+    const pipelineLayout = device.createPipelineLayout({
+      label: `variant-depth-pipeline-layout-${composed.featureKey}`,
+      bindGroupLayouts: [
+        this.globalBindGroupLayout,     // group 0: global uniforms (light VP written here)
+        this.modelBindGroupLayout,      // group 1: model matrix + material (wind uniforms)
+        emptyLayout2,                   // group 2: textures (unused but declared in WGSL)
+        emptyLayout3,                   // group 3: environment (unused but declared in WGSL)
+      ],
+    });
+
+    const pipeline = device.createRenderPipeline({
+      label: `variant-depth-pipeline-${composed.featureKey}`,
+      layout: pipelineLayout,
+      vertex: {
+        module: shaderModule,
+        entryPoint: 'vs_main',
+        buffers: [
+          {
+            arrayStride: 32,
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: 'float32x3' },
+              { shaderLocation: 1, offset: 12, format: 'float32x3' },
+              { shaderLocation: 2, offset: 24, format: 'float32x2' },
+            ],
+          },
+        ],
+      },
+      // No fragment stage — depth-only rendering
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'none', // Shadow maps render both sides
+      },
+      depthStencil: {
+        format: depthFormat,
+        depthWriteEnabled: true,
+        depthCompare,
+      },
+    });
+
+    return { pipeline, composed, shaderModule };
+  }
+
   /**
    * Invalidate all cached pipelines (e.g., after shader hot-reload).
    */
   invalidateAll(): void {
     this.pipelineCache.clear();
+    this.depthOnlyCache.clear();
     this.variantCache.invalidate();
   }
 
@@ -310,6 +424,7 @@ export class VariantPipelineManager {
    */
   destroy(): void {
     this.pipelineCache.clear();
+    this.depthOnlyCache.clear();
     this.variantCache.destroy();
   }
 }

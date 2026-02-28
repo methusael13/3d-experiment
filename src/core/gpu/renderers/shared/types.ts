@@ -112,6 +112,9 @@ export const ENVIRONMENT_BINDINGS = {
   IBL_LUT_SAMPLER: 6,
   CSM_SHADOW_ARRAY: 7,
   CSM_UNIFORMS: 8,
+  SSR_TEXTURE: 9,
+  REFLECTION_PROBE_CUBEMAP: 10,
+  REFLECTION_PROBE_SAMPLER: 11,
 } as const;
 
 /**
@@ -129,6 +132,7 @@ export const ENV_BINDING_MASK = {
   IBL_LUT_SAMPLER: 1 << ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER,   // 64
   CSM_SHADOW_ARRAY: 1 << ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY, // 128
   CSM_UNIFORMS: 1 << ENVIRONMENT_BINDINGS.CSM_UNIFORMS,         // 256
+  SSR_TEXTURE: 1 << ENVIRONMENT_BINDINGS.SSR_TEXTURE,           // 512
   
   // Common presets
   /** Shadow resources only (shadow map + comparison sampler) */
@@ -147,8 +151,14 @@ export const ENV_BINDING_MASK = {
             (1 << ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER),
   /** All legacy resources - default for most renderers (without CSM) */
   ALL_LEGACY: 0x7F, // Original 7 bindings
+  /** SSR texture (for metallic object reflections) */
+  SSR: 1 << ENVIRONMENT_BINDINGS.SSR_TEXTURE,
+  /** Reflection probe cubemap + sampler */
+  REFLECTION_PROBE_CUBEMAP: 1 << ENVIRONMENT_BINDINGS.REFLECTION_PROBE_CUBEMAP,
+  REFLECTION_PROBE_SAMPLER: 1 << ENVIRONMENT_BINDINGS.REFLECTION_PROBE_SAMPLER,
+  REFLECTION_PROBE: (1 << ENVIRONMENT_BINDINGS.REFLECTION_PROBE_CUBEMAP) | (1 << ENVIRONMENT_BINDINGS.REFLECTION_PROBE_SAMPLER),
   /** All resources including CSM - for CSM-aware renderers */
-  ALL: 0x1FF, // All 9 bindings
+  ALL: 0xFFF, // All 12 bindings (0-11)
 } as const;
 
 export type EnvironmentBindingMask = number;

@@ -276,7 +276,7 @@ export class ObjectRendererGPU {
     
     this.modelBindGroupLayout = new BindGroupLayoutBuilder('object-model-layout')
       .uniformBuffer(0, 'vertex')   // Model matrix
-      .uniformBuffer(1, 'fragment') // Material uniforms (per-mesh)
+      .uniformBuffer(1, 'all')      // Material uniforms (per-mesh) — vertex needs wind fields, fragment needs PBR + debug
       .build(ctx);
     
     this.textureBindGroupLayout = this.createTextureBindGroupLayout();
@@ -1165,7 +1165,8 @@ export class ObjectRendererGPU {
     passEncoder: GPURenderPassEncoder,
     slotIndex: number,
     lightPosition: vec3,
-    shadowParams?: ShadowPassParams
+    shadowParams?: ShadowPassParams,
+    excludeMeshIds?: Set<number>,
   ): number {
     if (!this.shadowPipeline || !this.shadowUniformBuffer || !this.shadowBindGroup ||
         !this.shadowModelBindGroupLayout) {
@@ -1192,6 +1193,11 @@ export class ObjectRendererGPU {
     for (const mesh of this.meshes.values()) {
       // Skip if castsShadow is disabled
       if (!mesh.castsShadow) {
+        continue;
+      }
+      
+      // Skip excluded mesh IDs (e.g., wind entities rendered via composed path)
+      if (excludeMeshIds && excludeMeshIds.has(mesh.id)) {
         continue;
       }
       

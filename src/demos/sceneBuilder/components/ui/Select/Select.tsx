@@ -1,30 +1,31 @@
 import { useCallback } from 'preact/hooks';
 import styles from './Select.module.css';
+import { Signalish } from 'preact';
 
-export interface SelectOption {
-  value: string;
+export interface SelectOption<T = string> {
+  value: T;
   label: string;
 }
 
-export interface SelectProps {
+export interface SelectProps<T = string> {
   label?: string;
   value: string;
-  options: SelectOption[];
-  onChange: (value: string) => void;
+  options: SelectOption<T>[];
+  onChange: (value: T) => void;
   disabled?: boolean;
 }
 
-export function Select({
+export function Select<T = string>({
   label,
   value,
   options,
   onChange,
   disabled = false,
-}: SelectProps) {
+}: SelectProps<T>) {
   const handleChange = useCallback(
     (e: Event) => {
       const target = e.target as HTMLSelectElement;
-      onChange(target.value);
+      onChange(target.value as T);
     },
     [onChange]
   );
@@ -39,7 +40,7 @@ export function Select({
         disabled={disabled}
       >
         {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
+          <option key={opt.value} value={opt.value as Signalish<string>}>
             {opt.label}
           </option>
         ))}

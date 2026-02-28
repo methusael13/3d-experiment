@@ -13,18 +13,21 @@ import type { GridRendererGPU, GridGroundRenderParams } from '../../renderers/Gr
 import type { ShadowRendererGPU } from '../../renderers/ShadowRendererGPU';
 import type { DebugTextureManager } from '../../renderers/DebugTextureManager';
 import type { SelectionOutlineRendererGPU } from '../../renderers/SelectionOutlineRendererGPU';
+// SSR Pass re-export
+export { SSRPass } from './SSRPass';
+
+// Debug View Pass re-export
+export { DebugViewPass } from './DebugViewPass';
+export type { DebugViewMode } from './DebugViewPass';
+
 // ECS imports for World-based query paths
 import { TerrainComponent } from '../../../ecs/components/TerrainComponent';
 import { OceanComponent } from '../../../ecs/components/OceanComponent';
 import { MeshComponent } from '../../../ecs/components/MeshComponent';
 import { PrimitiveGeometryComponent } from '../../../ecs/components/PrimitiveGeometryComponent';
-import { ShadowComponent } from '../../../ecs/components/ShadowComponent';
-// Shader composition imports
-import { VariantPipelineManager } from '../VariantPipelineManager';
-import type { VariantPipelineEntry } from '../VariantPipelineManager';
-import type { ShaderVariantGroup } from '../../../ecs/systems/MeshRenderSystem';
-import type { Entity } from '../../../ecs/Entity';
-import type { SceneEnvironment } from '../../renderers/shared/SceneEnvironment';
+// Variant rendering (shared between opaque + shadow passes)
+import { VariantRenderer } from '../VariantRenderer';
+import { SSRConfig } from '../SSRConfig';
 
 // ============================================================================
 // SKY PASS
@@ -97,6 +100,16 @@ export class ShadowPass extends BaseRenderPass {
     this.objectRenderer = deps.objectRenderer;
   }
   
+  /** Shared variant renderer for composed depth-only shadow rendering */
+  private variantRenderer: VariantRenderer | null = null;
+
+  private ensureVariantRenderer(): VariantRenderer {
+    if (!this.variantRenderer) {
+      this.variantRenderer = new VariantRenderer(this.objectRenderer);
+    }
+    return this.variantRenderer;
+  }
+
   execute(ctx: RenderContext): void {
     const { shadowEnabled, lightDirection } = ctx.options;
     
@@ -172,7 +185,7 @@ export class ShadowPass extends BaseRenderPass {
       }
     }
 
-    // Render batched object shadows via ObjectRendererGPU (using dynamic offset slot)
+    // Render batched object shadows via legacy dynamic buffer path
     drawCalls += this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPosArray);
     
     passEncoder.end();
@@ -240,7 +253,7 @@ export class ShadowPass extends BaseRenderPass {
         drawCalls += terrainComponent.renderDepthOnly(passEncoder, cascadeIdx, cascadeLightMatrix, lightPosArray);
       }
 
-      // Render batched object shadows for this cascade (uses dynamic offset slot)
+      // Render batched object shadows via legacy dynamic buffer path
       drawCalls += this.objectRenderer.renderShadowPass(passEncoder, cascadeIdx, lightPosArray);
       
       passEncoder.end();
@@ -286,8 +299,8 @@ export class OpaquePass extends BaseRenderPass {
    */
   useComposedShaders = true;
   
-  /** Lazily created VariantPipelineManager */
-  private variantPipelineManager: VariantPipelineManager | null = null;
+  /** Shared variant renderer for composed shader rendering */
+  private variantRenderer: VariantRenderer | null = null;
   
   constructor(deps: OpaquePassDependencies) {
     super();
@@ -295,20 +308,11 @@ export class OpaquePass extends BaseRenderPass {
     this.shadowRenderer = deps.shadowRenderer;
   }
   
-  /**
-   * Lazy-init the VariantPipelineManager on first composed render.
-   * Needs ObjectRendererGPU's bind group layouts.
-   */
-  private ensureVariantPipelineManager(ctx: RenderContext): VariantPipelineManager {
-    if (!this.variantPipelineManager) {
-      this.variantPipelineManager = new VariantPipelineManager(
-        ctx.ctx,
-        this.objectRenderer.getGlobalBindGroupLayout(),
-        this.objectRenderer.getModelBindGroupLayout(),
-        this.objectRenderer.getTextureBindGroupLayout(),
-      );
+  private ensureVariantRenderer(): VariantRenderer {
+    if (!this.variantRenderer) {
+      this.variantRenderer = new VariantRenderer(this.objectRenderer);
     }
-    return this.variantPipelineManager;
+    return this.variantRenderer;
   }
   
   execute(ctx: RenderContext): void {
@@ -334,10 +338,21 @@ export class OpaquePass extends BaseRenderPass {
     const lightSpaceMatrix = shadowEnabled ? this.shadowRenderer.getLightSpaceMatrix() : null;
     const shadowMap = shadowEnabled ? this.shadowRenderer.getShadowMap() : null;
 
+    // Build color attachments - primary HDR color + normals G-buffer MRT
+    const colorAttachments: GPURenderPassColorAttachment[] = [ctx.getColorAttachment('load')];
+    
+    // Add normals G-buffer as 2nd color attachment (MRT @location(1))
+    // Clear normals to black on first use — SSR detects (0,0,0) as "no data" and
+    // falls back to depth-derivative normal reconstruction for those pixels.
+    const normalsAttachment = ctx.getNormalsAttachment('clear');
+    if (normalsAttachment) {
+      colorAttachments.push(normalsAttachment);
+    }
+    
     const pass = ctx.encoder.beginRenderPass({
       label: 'opaque-pass',
-      // Always load color (sky and/or ground already rendered)
-      colorAttachments: [ctx.getColorAttachment('load')],
+      // Load color (sky and/or ground already rendered), clear normals
+      colorAttachments,
       // Load depth from ground pass (ground clears depth, opaque loads it)
       depthStencilAttachment: ctx.getDepthAttachment('load'),
     });
@@ -389,7 +404,9 @@ export class OpaquePass extends BaseRenderPass {
     // Choose rendering path
     if (this.useComposedShaders && ctx.meshRenderSystem && ctx.sceneEnvironment) {
       // Composed shader path: iterate variant groups, use composed pipelines
-      drawCalls += this.renderComposed(pass, ctx, renderParams);
+      drawCalls += this.ensureVariantRenderer().renderColor(
+        pass, ctx.ctx, ctx.meshRenderSystem, ctx.sceneEnvironment, renderParams,
+      );
     } else {
       // Monolithic path: single shader with runtime uniform branches
       const dc = this.objectRenderer.renderWithSceneEnvironment(pass, renderParams, ctx.sceneEnvironment ?? null);
@@ -400,160 +417,6 @@ export class OpaquePass extends BaseRenderPass {
     ctx.addDrawCalls(drawCalls);
   }
   
-  /**
-   * Composed shader rendering path.
-   * Iterates MeshRenderSystem variant groups, selects a composed pipeline per group,
-   * and issues draw calls for each entity's meshes.
-   */
-  private renderComposed(
-    pass: GPURenderPassEncoder,
-    ctx: RenderContext,
-    renderParams: {
-      viewProjectionMatrix: mat4 | Float32Array;
-      cameraPosition: [number, number, number];
-      lightDirection: [number, number, number];
-      lightColor: [number, number, number];
-      ambientIntensity: number;
-      lightSpaceMatrix?: mat4 | Float32Array;
-      shadowEnabled: boolean;
-      shadowBias: number;
-      csmEnabled: boolean;
-    },
-  ): number {
-    const meshRenderSystem = ctx.meshRenderSystem!;
-    const sceneEnvironment = ctx.sceneEnvironment!;
-    const variantManager = this.ensureVariantPipelineManager(ctx);
-    
-    // Write global uniforms (shared across all variants — same Group 0 buffer)
-    this.objectRenderer.writeGlobalUniforms(renderParams);
-    
-    const variantGroups = meshRenderSystem.getVariantGroups();
-    let drawCalls = 0;
-    
-    for (const group of variantGroups) {
-      // Always include 'textured' in the feature set for the composed pipeline.
-      // The template shader checks textureFlags at runtime, so untextured meshes
-      // will simply skip texture sampling. This ensures the pipeline's Group 2
-      // layout always matches ObjectRendererGPU's texture bind group layout.
-      const featureIds = group.featureIds.includes('textured')
-        ? group.featureIds
-        : [...group.featureIds, 'textured'];
-      
-      // Get or create the pipeline for this variant
-      // For now, use 'back' cull mode; per-mesh doubleSided handled below
-      let pipelineBack: VariantPipelineEntry | null = null;
-      let pipelineNone: VariantPipelineEntry | null = null;
-      
-      // Get environment bind group for this variant's mask
-      let envBindGroupBack: GPUBindGroup | null = null;
-      let envBindGroupNone: GPUBindGroup | null = null;
-      
-      // Track current pipeline to minimize state changes
-      let currentPipeline: GPURenderPipeline | null = null;
-      
-      // Collect mesh IDs from entities in this group
-      for (const entity of group.entities) {
-        const meshIds = this.collectMeshIds(entity);
-        if (meshIds.length === 0) continue;
-        
-        for (const meshId of meshIds) {
-          const meshData = this.objectRenderer.getMeshRenderData(meshId);
-          if (!meshData) continue;
-          
-          // Select pipeline based on doubleSided
-          const cullMode: GPUCullMode = meshData.doubleSided ? 'none' : 'back';
-          let entry: VariantPipelineEntry;
-          let envBindGroup: GPUBindGroup;
-          
-          if (cullMode === 'none') {
-            if (!pipelineNone) {
-              pipelineNone = variantManager.getOrCreate(featureIds, 'none', sceneEnvironment);
-              envBindGroupNone = pipelineNone.hasEnvironmentBindings
-                ? sceneEnvironment.getBindGroupForMask(pipelineNone.environmentMask)
-                : this.objectRenderer.getEmptyBindGroup().bindGroup;
-            }
-            entry = pipelineNone;
-            envBindGroup = envBindGroupNone!;
-          } else {
-            if (!pipelineBack) {
-              pipelineBack = variantManager.getOrCreate(featureIds, 'back', sceneEnvironment);
-              envBindGroupBack = pipelineBack.hasEnvironmentBindings
-                ? sceneEnvironment.getBindGroupForMask(pipelineBack.environmentMask)
-                : this.objectRenderer.getEmptyBindGroup().bindGroup;
-            }
-            entry = pipelineBack;
-            envBindGroup = envBindGroupBack!;
-          }
-          
-          // Switch pipeline if needed
-          if (currentPipeline !== entry.pipeline) {
-            pass.setPipeline(entry.pipeline);
-            // Group 0: global uniforms (shared across all variants)
-            pass.setBindGroup(0, this.objectRenderer.getGlobalBindGroup());
-            // Group 3: environment (variant-specific)
-            pass.setBindGroup(3, envBindGroup);
-            currentPipeline = entry.pipeline;
-          }
-          
-          // Group 1: per-mesh model + material
-          pass.setBindGroup(1, meshData.modelBindGroup);
-          
-          // Group 2: textures
-          // The composed shader's Group 2 layout matches what texturedFeature declares.
-          // For textured variants, use the mesh's existing texture bind group (built by
-          // ObjectRendererGPU with the monolithic 10-binding layout). This works because
-          // the variant's textured feature declares the same textures in the same order.
-          // For non-textured variants (no 'textured' feature), Group 2 is empty layout.
-          if (entry.hasTextureBindings) {
-            // Use the mesh's existing texture bind group from ObjectRendererGPU
-            // This bind group was built with the monolithic layout, but the variant's
-            // Group 2 layout has the same bindings (texturedFeature matches).
-            if (meshData.hasTextures && meshData.textureBindGroup) {
-              pass.setBindGroup(2, meshData.textureBindGroup);
-            } else {
-              pass.setBindGroup(2, meshData.placeholderTextureBindGroup);
-            }
-          } else {
-            // No texture bindings in this variant — set empty bind group
-            pass.setBindGroup(2, this.objectRenderer.getEmptyBindGroup().bindGroup);
-          }
-          
-          // Issue draw call
-          pass.setVertexBuffer(0, meshData.vertexBuffer);
-          if (meshData.indexBuffer) {
-            pass.setIndexBuffer(meshData.indexBuffer, meshData.indexFormat);
-            pass.drawIndexed(meshData.indexCount, 1, 0, 0, 0);
-          } else {
-            pass.draw(meshData.vertexCount, 1, 0, 0);
-          }
-          drawCalls++;
-        }
-      }
-    }
-    
-    return drawCalls;
-  }
-  
-  /**
-   * Collect GPU mesh IDs from an entity via MeshComponent or PrimitiveGeometryComponent.
-   */
-  private collectMeshIds(entity: Entity): number[] {
-    const ids: number[] = [];
-    
-    const meshComp = entity.getComponent<MeshComponent>('mesh');
-    if (meshComp?.isGPUInitialized) {
-      for (const id of meshComp.meshIds) {
-        ids.push(id);
-      }
-    }
-    
-    const primComp = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
-    if (primComp?.isGPUInitialized && primComp.meshId !== null) {
-      ids.push(primComp.meshId);
-    }
-    
-    return ids;
-  }
 }
 
 // ============================================================================
@@ -573,6 +436,11 @@ export class TransparentPass extends BaseRenderPass {
   readonly name = 'transparent';
   readonly priority = PassPriority.TRANSPARENT;
   readonly category: PassCategory = 'scene';
+  
+  /** Whether SSR is globally enabled (set by pipeline each frame) */
+  ssrEnabled: boolean = false;
+  /** SSR config settings (set by pipeline when SSR quality changes) */
+  ssrConfig: Omit<SSRConfig, 'enabled' | 'quality'> | null = null;
   
   constructor() {
     super();
@@ -627,14 +495,21 @@ export class TransparentPass extends BaseRenderPass {
       near: ctx.near,
       far: ctx.far,
       sceneEnvironment: ctx.sceneEnvironment,
-      // Pass scene color copy for water refraction
+      // Pass scene color copy for water refraction + inline SSR
       sceneColorTexture: ctx.sceneColorTextureCopy,
       screenWidth: ctx.width,
       screenHeight: ctx.height,
       // Shadow params for water shadow receiving
       shadowEnabled,
       shadowBias: 0.003,
-      csmEnabled: shadowEnabled, // CSM is always used when shadows are on (ShadowRenderer manages this)
+      csmEnabled: shadowEnabled,
+      // Camera matrices for inline SSR ray marching
+      projectionMatrix: ctx.projectionMatrix,
+      inverseProjectionMatrix: ctx.inverseProjectionMatrix,
+      viewMatrix: ctx.viewMatrix,
+      // SSR enabled flag (respects global SSR toggle from UI)
+      ssrEnabled: this.ssrEnabled,
+      ssrConfig: this.ssrConfig ?? undefined,
     });
     
     pass.end();

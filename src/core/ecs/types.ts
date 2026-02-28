@@ -22,7 +22,9 @@ export type ComponentType =
   | 'light'
   | 'camera'
   | 'lod'
-  | 'wetness'; // Extensible for future/external components
+  | 'wetness'
+  | 'ssr'
+  | 'reflection-probe'; // Extensible for future/external components
 
 /**
  * Context provided to systems each frame.

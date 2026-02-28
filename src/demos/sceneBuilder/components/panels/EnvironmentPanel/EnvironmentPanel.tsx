@@ -133,13 +133,11 @@ export function EnvironmentPanel({
           windStrength={store.windStrength}
           windTurbulence={store.windTurbulence}
           windGustStrength={store.windGustStrength}
-          windDebug={store.windDebug}
           onWindEnabledChange={store.setWindEnabled}
           onWindDirectionChange={store.setWindDirection}
           onWindStrengthChange={store.setWindStrength}
           onWindTurbulenceChange={store.setWindTurbulence}
           onWindGustStrengthChange={store.setWindGustStrength}
-          onWindDebugChange={store.setWindDebug}
         />
       ),
     },

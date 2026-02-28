@@ -11,6 +11,9 @@ import type { ComponentType } from '../types';
  * The WindSystem runs the spring physics simulation each frame,
  * updating displacement/velocity from the global WindManager forces.
  */
+/** Wind debug visualization modes */
+export type WindDebugMode = 'off' | 'wind-type' | 'height-factor' | 'displacement';
+
 export class WindComponent extends Component {
   readonly type: ComponentType = 'wind';
 
@@ -18,6 +21,9 @@ export class WindComponent extends Component {
   influence: number = 1.0;
   stiffness: number = 0.5;
   anchorHeight: number = 0;
+
+  /** Debug visualization mode for viewport debugging */
+  debugMode: WindDebugMode = 'off';
 
   /** Material indices that receive leaf flutter */
   leafMaterialIndices: Set<number> = new Set();
@@ -39,6 +45,7 @@ export class WindComponent extends Component {
       anchorHeight: this.anchorHeight,
       leafMaterialIndices: [...this.leafMaterialIndices],
       branchMaterialIndices: [...this.branchMaterialIndices],
+      debugMode: this.debugMode,
     };
   }
 
@@ -54,6 +61,8 @@ export class WindComponent extends Component {
       this.branchMaterialIndices = new Set(
         data.branchMaterialIndices as number[],
       );
+    if (data.debugMode !== undefined)
+      this.debugMode = data.debugMode as WindDebugMode;
     // displacement and velocity are runtime state — not serialized
   }
 }

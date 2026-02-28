@@ -6,9 +6,14 @@ import type { ComponentType } from '@/core/ecs/types';
 import { LODComponent } from '@/core/ecs/components/LODComponent';
 import { WetnessComponent } from '@/core/ecs/components/WetnessComponent';
 import { WindComponent } from '@/core/ecs/components/WindComponent';
+import { SSRComponent } from '@/core/ecs/components/SSRComponent';
+import { ReflectionProbeComponent } from '@/core/ecs/components/ReflectionProbeComponent';
+import type { DebugTextureManager } from '@/core/gpu/renderers/DebugTextureManager';
 import { WetnessSubPanel } from './subpanels/WetnessSubPanel';
 import { LODSubPanel } from './subpanels/LODSubPanel';
 import { WindSubPanel } from './subpanels/WindSubPanel';
+import { SSRSubPanel } from './subpanels/SSRSubPanel';
+import { ReflectionProbeSubPanel } from './subpanels/ReflectionProbeSubPanel';
 import styles from './ComponentsTab.module.css';
 
 /**
@@ -21,7 +26,7 @@ export const OPTIONAL_COMPONENTS: {
   label: string;
   description: string;
   create: () => Component;
-  renderPanel: (entity: Entity, onChanged: () => void) => ComponentChildren;
+  renderPanel: (entity: Entity, onChanged: () => void, debugTextureManager?: DebugTextureManager | null) => ComponentChildren;
 }[] = [
   {
     type: 'lod',
@@ -50,6 +55,24 @@ export const OPTIONAL_COMPONENTS: {
       <WindSubPanel entity={entity} onChanged={onChanged} />
     ),
   },
+  {
+    type: 'ssr',
+    label: 'Screen Space Reflections',
+    description: 'Per-object SSR for metallic surfaces (LOD 0 only)',
+    create: () => new SSRComponent(),
+    renderPanel: (entity, onChanged) => (
+      <SSRSubPanel entity={entity} onChanged={onChanged} />
+    ),
+  },
+  {
+    type: 'reflection-probe',
+    label: 'Reflection Probe',
+    description: 'Baked cubemap probe for metallic reflections (replaces SSR)',
+    create: () => new ReflectionProbeComponent(),
+    renderPanel: (entity, onChanged, debugTextureManager) => (
+      <ReflectionProbeSubPanel entity={entity} onChanged={onChanged} debugTextureManager={debugTextureManager} />
+    ),
+  },
 ];
 
 export interface ComponentsTabProps {
@@ -59,6 +82,8 @@ export interface ComponentsTabProps {
   activeComponents: ComponentType[];
   /** Called after a component is added or removed (for store sync) */
   onChanged: () => void;
+  /** Optional debug texture manager for probe face visualization */
+  debugTextureManager?: DebugTextureManager | null;
 }
 
 // ---------- internal: collapsible subpanel wrapper ----------
@@ -103,6 +128,7 @@ export function ComponentsTab({
   entity,
   activeComponents,
   onChanged,
+  debugTextureManager,
 }: ComponentsTabProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
@@ -181,7 +207,7 @@ export function ComponentsTab({
           label={reg.label}
           onRemove={() => handleRemove(reg.type)}
         >
-          {reg.renderPanel(entity, onChanged)}
+          {reg.renderPanel(entity, onChanged, debugTextureManager)}
         </SubPanelCard>
       ))}
 

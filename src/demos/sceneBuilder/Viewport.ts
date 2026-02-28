@@ -19,7 +19,7 @@ import type { FPSCameraController } from './FPSCameraController';
 import { DebugCameraController } from './DebugCameraController';
 import { CameraFrustumRendererGPU, type CSMDebugInfo } from '../../core/gpu/renderers/CameraFrustumRendererGPU';
 import { WebGPUShadowSettings } from './components/panels/RenderingPanel';
-import type { SSAOSettings } from './components/panels/RenderingPanel';
+import type { SSAOSettings, SSRSettings } from './components/panels/RenderingPanel';
 import type { CompositeEffectConfig } from '../../core/gpu/postprocess';
 import { CameraObject } from '@/core/sceneObjects';
 import { World } from '../../core/ecs/World';
@@ -31,7 +31,10 @@ import {
   MeshRenderSystem,
   LODSystem,
   WetnessSystem,
+  SSRSystem,
+  ReflectionProbeSystem,
 } from '../../core/ecs/systems';
+import { ReflectionProbeCaptureRenderer } from '../../core/gpu/renderers/ReflectionProbeCaptureRenderer';
 
 // ==================== Type Definitions ====================
 
@@ -178,6 +181,9 @@ export class Viewport {
   private debugCameraController: DebugCameraController | null = null;
   private cameraFrustumRenderer: CameraFrustumRendererGPU | null = null;
 
+  // Reflection Probe capture renderer
+  private reflectionProbeCaptureRenderer: ReflectionProbeCaptureRenderer | null = null;
+
   private gpuContext: GPUContext | null = null;
   private gpuPipeline: GPUForwardPipeline | null = null;
   
@@ -220,6 +226,9 @@ export class Viewport {
     wetnessSystem.setWorld(this._world);
     this._world.addSystem(wetnessSystem);
     this._world.addSystem(new ShadowCasterSystem());     // priority 90
+    const ssrSystem = new SSRSystem();                   // priority 95 — LOD-gated SSR
+    this._world.addSystem(ssrSystem);
+    this._world.addSystem(new ReflectionProbeSystem());  // priority 96 — probe bake lifecycle
     this._world.addSystem(new MeshRenderSystem());       // priority 100
 
     // Callbacks
@@ -275,6 +284,19 @@ export class Viewport {
         height: this.renderHeight,
       });
       console.log('[Viewport] WebGPU Forward Pipeline created');
+
+      // Wire up ReflectionProbeSystem with its capture renderer
+      const probeSystem = this._world.getSystem<ReflectionProbeSystem>('reflection-probe');
+      if (probeSystem && !probeSystem.captureRenderer) {
+        if (!this.reflectionProbeCaptureRenderer) {
+          this.reflectionProbeCaptureRenderer = new ReflectionProbeCaptureRenderer(this.gpuContext);
+        }
+        // Wire up MeshRenderSystem so the capture renderer can use VariantRenderer.renderColor()
+        this.reflectionProbeCaptureRenderer.meshRenderSystem = 
+          this._world.getSystem<MeshRenderSystem>('mesh-render') ?? null;
+        probeSystem.captureRenderer = this.reflectionProbeCaptureRenderer;
+      }
+
       return true;
     } catch (error) {
       console.error('[Viewport] ❌ Failed to enable WebGPU test mode:', error);
@@ -454,6 +476,32 @@ export class Viewport {
       }
     }
   }
+
+  /**
+   * Set debug view mode (off, depth, normals, ssr) for RenderingPanel integration
+   */
+  setDebugViewMode(mode: string): void {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setDebugViewMode(mode as any);
+    }
+  }
+
+  /**
+   * Set SSR (Screen Space Reflections) settings (for RenderingPanel integration)
+   */
+  setSSRSettings(settings: SSRSettings): void {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setSSREnabled(settings.enabled);
+      if (settings.quality) {
+        this.gpuPipeline.setSSRQuality(settings.quality);
+      }
+    }
+    // Propagate global SSR enabled state to SSRSystem (gates per-entity SSR by LOD)
+    const ssrSystem = this._world.getSystem<SSRSystem>('ssr');
+    if (ssrSystem) {
+      ssrSystem.ssrGloballyEnabled = settings.enabled;
+    }
+  }
   
   /**
    * Set WebGPU composite/tonemapping settings (for RenderingPanel integration)
@@ -565,6 +613,21 @@ export class Viewport {
       if (meshRenderSystem) {
         meshRenderSystem.iblActive = this.dynamicIBLEnabled;
         meshRenderSystem.shadowsActive = options.shadowEnabled ?? true;
+
+        // Set WindSystem reference for wind uniform upload
+        if (!meshRenderSystem.windSystem) {
+          meshRenderSystem.windSystem = this._world.getSystem<WindSystem>('wind') ?? null;
+        }
+      }
+
+      // Update reflection probe capture renderer with current scene light params
+      // so probe bakes use real lighting (not hardcoded defaults)
+      if (this.reflectionProbeCaptureRenderer) {
+        this.reflectionProbeCaptureRenderer.sceneLightParams = {
+          lightDirection: (lightDirection ?? [0.3, 0.8, 0.5]) as [number, number, number],
+          lightColor: (lightColor ?? [1.0, 1.0, 0.95]) as [number, number, number],
+          ambientIntensity,
+        };
       }
 
       // Run all ECS systems

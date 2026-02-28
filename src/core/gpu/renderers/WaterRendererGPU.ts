@@ -20,6 +20,7 @@ import {
 import { SceneEnvironment, PlaceholderTextures } from './shared';
 import waterShaderSource from '../shaders/water.wgsl?raw';
 import { registerWGSLShader, unregisterWGSLShader, getWGSLShaderSource } from '@/demos/sceneBuilder/shaderManager';
+import { SSRConfig } from '../pipeline/SSRConfig';
 
 /**
  * Water configuration
@@ -100,6 +101,16 @@ export interface WaterRenderParams {
   shadowBias?: number;
   /** Whether CSM is enabled */
   csmEnabled?: boolean;
+  /** Camera projection matrix (for inline SSR ray marching) */
+  projectionMatrix?: Float32Array;
+  /** Inverse projection matrix (for inline SSR view-space reconstruction) */
+  inverseProjectionMatrix?: Float32Array;
+  /** Camera view matrix (for inline SSR world→view-space normal transform) */
+  viewMatrix?: Float32Array;
+  /** Whether SSR is globally enabled (user toggle) */
+  ssrEnabled?: boolean;
+  /** SSR ray march settings (from SSRConfig quality preset) */
+  ssrConfig?: Omit<SSRConfig, 'enabled' | 'quality'>
 }
 
 /**
@@ -162,7 +173,7 @@ export class WaterRendererGPU {
   private currentCellsX: number = 0;
   private currentCellsZ: number = 0;
   
-  // Uniform builders (68 floats for uniforms, 28 floats for material)
+  // Uniform builders (116 floats for uniforms, 28 floats for material)
   private uniformBuilder: UniformBuilder;
   private materialBuilder: UniformBuilder;
   
@@ -180,9 +191,9 @@ export class WaterRendererGPU {
     this.ctx = ctx;
     this.config = { ...createDefaultWaterConfig(), ...config };
     
-    // Uniform builders: 3 mat4 (48) + 5 vec4 (20) = 68 floats for uniforms, 28 for material
-    this.uniformBuilder = new UniformBuilder(68);
-    this.materialBuilder = new UniformBuilder(28); // 7 vec4 = 28 floats
+    // Uniform builders: 6 mat4 (96) + 5 vec4 (20) = 116 floats for uniforms, 36 for material
+    this.uniformBuilder = new UniformBuilder(116);
+    this.materialBuilder = new UniformBuilder(36); // 9 vec4 = 36 floats (7 base + 2 SSR params)
     
     // Create default SceneEnvironment for Group 3 layout and placeholder bind group
     this.defaultSceneEnvironment = new SceneEnvironment(ctx);
@@ -295,16 +306,16 @@ export class WaterRendererGPU {
    * Create uniform buffers
    */
   private createBuffers(): void {
-    // Uniform buffer: mat4(16) + mat4(16) + vec4 + vec4 + vec4 + vec4 + mat4(16) + vec4 = 68 floats
+    // Uniform buffer: 6 mat4 (96) + 5 vec4 (20) = 116 floats = 464 bytes
     this.uniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'water-uniforms',
-      size: 272, // 68 * 4 bytes
+      size: 464, // 116 * 4 bytes
     });
     
-    // Material buffer: 7 vec4s = 28 floats = 112 bytes
+    // Material buffer: 9 vec4s = 36 floats = 144 bytes (7 base + 2 SSR params)
     this.materialBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'water-material',
-      size: 112,
+      size: 144,
     });
   }
   
@@ -324,11 +335,11 @@ export class WaterRendererGPU {
    */
   private createBindGroupLayout(): void {
     this.bindGroupLayout = new BindGroupLayoutBuilder('water-bind-group-layout')
-      .uniformBuffer(0, 'all')        // Uniforms
+      .uniformBuffer(0, 'all')        // Uniforms (includes projection matrices for inline SSR)
       .uniformBuffer(1, 'all')        // Material
-      .depthTexture(2, 'fragment')    // Depth texture for depth-based effects
+      .depthTexture(2, 'fragment')    // Depth texture for depth-based effects + SSR ray march
       .sampler(3, 'fragment', 'filtering')  // Sampler
-      .texture(4, 'fragment', 'float')      // Scene color texture for refraction
+      .texture(4, 'fragment', 'float')      // Scene color texture for refraction + SSR
       .build(this.ctx);
   }
   
@@ -441,7 +452,7 @@ export class WaterRendererGPU {
     
     // Only rebuild if textures changed
     if (depthTexture === this.lastDepthTexture && 
-        effectiveSceneColorView === this.lastSceneColorTexture && 
+        effectiveSceneColorView === this.lastSceneColorTexture &&
         this.bindGroup) {
       return;
     }
@@ -449,7 +460,6 @@ export class WaterRendererGPU {
     this.lastDepthTexture = depthTexture;
     this.lastSceneColorTexture = effectiveSceneColorView;
     
-    // Create bind group with raw GPUTextureView for scene color
     this.bindGroup = this.ctx.device.createBindGroup({
       label: 'water-bind-group',
       layout: this.bindGroupLayout!,
@@ -512,30 +522,39 @@ export class WaterRendererGPU {
     const near = params.near ?? 0.1;
     const far = params.far ?? 2000;
     
-    // WGSL struct layout (68 floats = 272 bytes):
+    // WGSL struct layout (116 floats = 464 bytes):
     // mat4 viewProjectionMatrix (64 bytes, indices 0-15)
     // mat4 modelMatrix (64 bytes, indices 16-31)
-    // vec4 cameraPositionTime (16 bytes, indices 32-35): xyz = camera, w = time
-    // vec4 params (16 bytes, indices 36-39): x = terrainSize, y = waterLevel, z = heightScale, w = sunIntensity
-    // vec4 gridCenter (16 bytes, indices 40-43): xy = center XZ, zw = unused
-    // vec4 gridScale (16 bytes, indices 44-47): xy = scale XZ, z = near, w = far
-    // mat4 lightSpaceMatrix (64 bytes, indices 48-63): for single shadow map
-    // vec4 shadowParams (16 bytes, indices 64-67): x = shadowEnabled, y = shadowBias, z = csmEnabled, w = unused
+    // vec4 cameraPositionTime (16 bytes, indices 32-35)
+    // vec4 params (16 bytes, indices 36-39)
+    // vec4 gridCenter (16 bytes, indices 40-43)
+    // vec4 gridScale (16 bytes, indices 44-47)
+    // mat4 lightSpaceMatrix (64 bytes, indices 48-63)
+    // vec4 shadowParams (16 bytes, indices 64-67)
+    // mat4 projectionMatrix (64 bytes, indices 68-83)
+    // mat4 inverseProjectionMatrix (64 bytes, indices 84-99)
+    // mat4 viewMatrix (64 bytes, indices 100-115)
     
-    // Build lightSpaceMatrix (identity if not provided)
+    const identity = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
     const lightSpaceMatrix = params.lightSpaceMatrix 
       ? params.lightSpaceMatrix as Float32Array
-      : new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+      : identity;
+    const projectionMatrix = params.projectionMatrix ?? identity;
+    const inverseProjectionMatrix = params.inverseProjectionMatrix ?? identity;
+    const viewMatrix = params.viewMatrix ?? identity;
     
     this.uniformBuilder.reset()
       .mat4(params.viewProjectionMatrix as Float32Array)  // 0-15
       .mat4(params.modelMatrix as Float32Array)           // 16-31
-      .vec4(params.cameraPosition[0], params.cameraPosition[1], params.cameraPosition[2], params.time) // 32-35: cameraPos + time
-      .vec4(params.terrainSize, waterLevelWorld, params.heightScale, sunIntensity) // 36-39: params
-      .vec4(this.config.gridCenterX, this.config.gridCenterZ, 0.0, 0.0) // 40-43: gridCenter
-      .vec4(this.config.gridSizeX, this.config.gridSizeZ, near, far)    // 44-47: gridScale + near/far
-      .mat4(lightSpaceMatrix)                             // 48-63: lightSpaceMatrix
-      .vec4(params.shadowEnabled ? 1.0 : 0.0, params.shadowBias ?? 0.002, params.csmEnabled ? 1.0 : 0.0, 0.0); // 64-67: shadowParams
+      .vec4(params.cameraPosition[0], params.cameraPosition[1], params.cameraPosition[2], params.time) // 32-35
+      .vec4(params.terrainSize, waterLevelWorld, params.heightScale, sunIntensity) // 36-39
+      .vec4(this.config.gridCenterX, this.config.gridCenterZ, 0.0, 0.0) // 40-43
+      .vec4(this.config.gridSizeX, this.config.gridSizeZ, near, far)    // 44-47
+      .mat4(lightSpaceMatrix)                             // 48-63
+      .vec4(params.shadowEnabled ? 1.0 : 0.0, params.shadowBias ?? 0.002, params.csmEnabled ? 1.0 : 0.0, params.ssrEnabled ? 1.0 : 0.0) // 64-67: shadow + SSR enabled
+      .mat4(projectionMatrix)                             // 68-83
+      .mat4(inverseProjectionMatrix)                      // 84-99
+      .mat4(viewMatrix);                                  // 100-115
     
     this.uniformBuffer!.write(this.ctx, this.uniformBuilder.build());
   }
@@ -573,7 +592,21 @@ export class WaterRendererGPU {
       // params2: ambientIntensity, depthFalloff, wavelength, detailStrength
       .vec4(params.ambientIntensity ?? 0.3, this.config.depthFalloff, this.config.wavelength, this.config.detailStrength)
       // params3: refractionStrength, screenWidth, screenHeight, unused
-      .vec4(refractionStrength, screenWidth, screenHeight, 0.0);
+      .vec4(refractionStrength, screenWidth, screenHeight, 0.0)
+      // ssrParams1: maxSteps, refinementSteps, maxDistance, stepSize
+      .vec4(
+        params.ssrConfig?.maxSteps ?? 64,
+        params.ssrConfig?.refinementSteps ?? 4,
+        params.ssrConfig?.maxDistance ?? 200,
+        params.ssrConfig?.stepSize ?? 0.3
+      )
+      // ssrParams2: thickness, edgeFade, jitter, unused
+      .vec4(
+        params.ssrConfig?.thickness ?? 0.3,
+        params.ssrConfig?.edgeFade ?? 0.15,
+        (params.ssrConfig?.jitter ?? false) ? 1.0 : 0.0,
+        0.0
+      );
     
     this.materialBuffer!.write(this.ctx, this.materialBuilder.build());
   }

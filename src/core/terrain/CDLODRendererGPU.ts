@@ -660,6 +660,12 @@ export class CDLODRendererGPU {
       ],
     });
     
+    // MRT targets: HDR scene color + normals G-buffer
+    const mrtTargets: GPUColorTargetState[] = [
+      { format: HDR_FORMAT },           // @location(0): HDR scene color
+      { format: HDR_FORMAT },           // @location(1): normals G-buffer (packed world normal + metallic)
+    ];
+
     // Create solid render pipeline
     const solidPipeline = this.ctx.device.createRenderPipeline({
       label: 'cdlod-render-pipeline',
@@ -672,7 +678,7 @@ export class CDLODRendererGPU {
       fragment: {
         module: shaderModule,
         entryPoint: 'fs_main',
-        targets: [{ format: HDR_FORMAT }],
+        targets: mrtTargets,
       },
       primitive: {
         topology: 'triangle-list',
@@ -701,9 +707,7 @@ export class CDLODRendererGPU {
       fragment: {
         module: shaderModule,
         entryPoint: 'fs_main',
-        targets: [{
-          format: 'rgba16float' as GPUTextureFormat, // HDR intermediate format
-        }],
+        targets: mrtTargets,
       },
       primitive: {
         topology: 'line-list',
@@ -1237,6 +1241,12 @@ export class CDLODRendererGPU {
       });
     }
     
+    // MRT targets: HDR scene color + normals G-buffer
+    const mrtTargets: GPUColorTargetState[] = [
+      { format: HDR_FORMAT },           // @location(0): HDR scene color
+      { format: HDR_FORMAT },           // @location(1): normals G-buffer
+    ];
+
     // Create solid render pipeline
     const solidPipeline = this.ctx.device.createRenderPipeline({
       label: 'cdlod-render-pipeline',
@@ -1249,7 +1259,7 @@ export class CDLODRendererGPU {
       fragment: {
         module,
         entryPoint: 'fs_main',
-        targets: [{ format: HDR_FORMAT }],
+        targets: mrtTargets,
       },
       primitive: {
         topology: 'triangle-list',
@@ -1275,7 +1285,7 @@ export class CDLODRendererGPU {
       fragment: {
         module,
         entryPoint: 'fs_main',
-        targets: [{ format: HDR_FORMAT }],
+        targets: mrtTargets,
       },
       primitive: {
         topology: 'line-list',

@@ -34,6 +34,10 @@ export class WindSystem extends System {
   }
 
   update(entities: Entity[], deltaTime: number, _context: SystemContext): void {
+    if (!this.windManager.enabled) {
+      // Skip wind simulation if global wind is disabled
+      return;
+    }
     // Update global wind simulation (gusts, time)
     this.windManager.update(deltaTime);
 

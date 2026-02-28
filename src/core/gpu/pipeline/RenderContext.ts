@@ -84,6 +84,9 @@ export interface RenderContext {
   // Selection mask (r8unorm, written by OpaquePass MRT, read by SelectionOutlinePass)
   readonly selectionMaskTexture?: UnifiedGPUTexture;
   
+  // Normals G-buffer (rgba16float, written by OpaquePass MRT, read by SSR pass)
+  readonly normalsTexture?: UnifiedGPUTexture;
+  
   // Unified environment (shadow + IBL)
   readonly sceneEnvironment?: SceneEnvironment;
   
@@ -93,6 +96,7 @@ export interface RenderContext {
   // Helper methods
   getColorAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment;
   getBackbufferColorAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment;
+  getNormalsAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment | null;
   getDepthAttachment(loadOp: 'clear' | 'load'): GPURenderPassDepthStencilAttachment;
   copyDepthForReading(): void;
   copySceneColorForReading(): void;
@@ -133,6 +137,9 @@ export interface RenderContextOptions {
   
   // Selection mask texture
   selectionMaskTexture?: UnifiedGPUTexture;
+  
+  // Normals G-buffer texture
+  normalsTexture?: UnifiedGPUTexture;
   
   // Flags
   useHDR: boolean;
@@ -185,6 +192,9 @@ export class RenderContextImpl implements RenderContext {
   // Selection mask (written by OpaquePass, read by SelectionOutlinePass)
   readonly selectionMaskTexture?: UnifiedGPUTexture;
   
+  // Normals G-buffer (written by OpaquePass MRT, read by SSR pass)
+  readonly normalsTexture?: UnifiedGPUTexture;
+  
   // Scene camera (for shadows, culling, shader uniforms)
   readonly sceneCamera: GPUCamera;
   readonly sceneCameraPosition: [number, number, number];
@@ -230,6 +240,7 @@ export class RenderContextImpl implements RenderContext {
     this.msaaHdrColorTexture = opts.msaaHdrColorTexture;
     this.msaaColorTexture = opts.msaaColorTexture;
     this.selectionMaskTexture = opts.selectionMaskTexture;
+    this.normalsTexture = opts.normalsTexture;
     
     // Unified environment (shadow + IBL)
     this.sceneEnvironment = opts.sceneEnvironment;
@@ -382,6 +393,22 @@ export class RenderContextImpl implements RenderContext {
     };
   }
   
+  /**
+   * Get normals G-buffer color attachment for MRT rendering.
+   * Returns null if normalsTexture is not available.
+   * Clear value is black (0,0,0,0) = no normal data, which SSR's getViewNormal() detects
+   * and falls back to depth-derivative reconstruction.
+   */
+  getNormalsAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment | null {
+    if (!this.normalsTexture) return null;
+    return {
+      view: this.normalsTexture.view,
+      clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      loadOp,
+      storeOp: 'store',
+    };
+  }
+
   /**
    * Get depth attachment for render pass
    * Uses reversed-Z clear value (0.0) since near=1, far=0

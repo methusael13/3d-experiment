@@ -6,3 +6,5 @@ export { WetnessSystem } from './WetnessSystem';
 export { MeshRenderSystem } from './MeshRenderSystem';
 export type { ShaderVariantGroup } from './MeshRenderSystem';
 export { ShadowCasterSystem } from './ShadowCasterSystem';
+export { SSRSystem } from './SSRSystem';
+export { ReflectionProbeSystem } from './ReflectionProbeSystem';

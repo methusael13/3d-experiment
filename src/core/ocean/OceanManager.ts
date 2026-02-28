@@ -15,6 +15,7 @@ import {
 } from '../gpu/renderers/WaterRendererGPU';
 import { UnifiedGPUTexture } from '../gpu/GPUTexture';
 import type { SceneEnvironment } from '../gpu/renderers/shared';
+import { SSRConfig } from '../gpu/pipeline/SSRConfig';
 
 /**
  * Ocean manager configuration
@@ -64,6 +65,16 @@ export interface OceanRenderParams {
   shadowBias?: number;
   /** Whether CSM is enabled */
   csmEnabled?: boolean;
+  /** Camera projection matrix (for inline SSR ray marching) */
+  projectionMatrix?: Float32Array;
+  /** Inverse projection matrix (for inline SSR view-space reconstruction) */
+  inverseProjectionMatrix?: Float32Array;
+  /** Camera view matrix (for inline SSR world→view-space normal transform) */
+  viewMatrix?: Float32Array;
+  /** Whether SSR is globally enabled (user toggle) */
+  ssrEnabled?: boolean;
+  /** SSR ray march settings (from SSRConfig quality preset) */
+  ssrConfig?: Omit<SSRConfig, 'enabled' | 'quality'>;
 }
 
 /**
@@ -136,6 +147,11 @@ export class OceanManager {
       shadowEnabled: params.shadowEnabled,
       shadowBias: params.shadowBias,
       csmEnabled: params.csmEnabled,
+      projectionMatrix: params.projectionMatrix,
+      inverseProjectionMatrix: params.inverseProjectionMatrix,
+      viewMatrix: params.viewMatrix,
+      ssrEnabled: params.ssrEnabled,
+      ssrConfig: params.ssrConfig,
     });
   }
   

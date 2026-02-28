@@ -1,4 +1,4 @@
-import { Checkbox, Slider, Select } from '../../ui';
+import { Checkbox, Slider } from '../../ui';
 import styles from './EnvironmentPanel.module.css';
 
 interface WindTabProps {
@@ -7,21 +7,12 @@ interface WindTabProps {
   windStrength: number;
   windTurbulence: number;
   windGustStrength: number;
-  windDebug: number;
   onWindEnabledChange: (enabled: boolean) => void;
   onWindDirectionChange: (value: number) => void;
   onWindStrengthChange: (value: number) => void;
   onWindTurbulenceChange: (value: number) => void;
   onWindGustStrengthChange: (value: number) => void;
-  onWindDebugChange: (value: number) => void;
 }
-
-const windDebugOptions = [
-  { value: '0', label: 'Off' },
-  { value: '1', label: 'Wind Type' },
-  { value: '2', label: 'Height Factor' },
-  { value: '3', label: 'Displacement' },
-];
 
 export function WindTab({
   windEnabled,
@@ -29,13 +20,11 @@ export function WindTab({
   windStrength,
   windTurbulence,
   windGustStrength,
-  windDebug,
   onWindEnabledChange,
   onWindDirectionChange,
   onWindStrengthChange,
   onWindTurbulenceChange,
   onWindGustStrengthChange,
-  onWindDebugChange,
 }: WindTabProps) {
   return (
     <div class={styles.windTab}>
@@ -96,13 +85,6 @@ export function WindTab({
         step={0.1}
         format={(v) => v.toFixed(1)}
         onChange={onWindGustStrengthChange}
-      />
-
-      <Select
-        label="Debug"
-        value={String(windDebug)}
-        options={windDebugOptions}
-        onChange={(v) => onWindDebugChange(parseInt(v, 10))}
       />
     </div>
   );

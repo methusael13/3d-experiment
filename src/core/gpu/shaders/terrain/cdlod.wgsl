@@ -1114,7 +1114,13 @@ fn _applySelectionHighlight_REMOVED(color: vec3f, N: vec3f, worldPos: vec3f, cam
 }
 
 @fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+struct FragmentOutput {
+  @location(0) color: vec4f,           // HDR scene color
+  @location(1) normals: vec4f,         // World-space normal packed [0,1] + metallic in .w
+}
+
+fn fs_main(input: VertexOutput) -> FragmentOutput {
+  var fragOutput: FragmentOutput;
   // Get base normal from vertex shader (from normal map)
   let baseNormal = normalize(input.normal);
   
@@ -1144,7 +1150,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     // Mix with red tile boundary
     debugColor = mix(debugColor, vec3f(1.0, 0.0, 0.0), patchEdge * 0.5);
     
-    return vec4f(debugColor, 1.0);
+    fragOutput.color = vec4f(debugColor, 1.0);
+    fragOutput.normals = vec4f(0.0, 0.0, 0.0, 0.0);
+    return fragOutput;
   }
   
   // ===== Compute Detail Normal from Procedural Noise =====
@@ -1291,8 +1299,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   if (debugUV > 0.5) {
     let projCoords = input.lightSpacePos.xyz / input.lightSpacePos.w;
     let shadowUV = projCoords.xy * 0.5 + 0.5;
-    return vec4f(shadowUV.x, shadowUV.y, projCoords.z, 1.0);
+    fragOutput.color = vec4f(shadowUV.x, shadowUV.y, projCoords.z, 1.0);
+    fragOutput.normals = vec4f(0.0, 0.0, 0.0, 0.0);
+    return fragOutput;
   }
 
-  return vec4f(finalColor, 1.0);
+  fragOutput.color = vec4f(finalColor, 1.0);
+  // Pack world-space normal from [-1,1] to [0,1] for G-buffer; terrain metallic = 0
+  fragOutput.normals = vec4f(normal * 0.5 + 0.5, 0.0);
+  return fragOutput;
 }

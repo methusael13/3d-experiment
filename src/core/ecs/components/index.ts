@@ -11,4 +11,6 @@ export { OceanComponent } from './OceanComponent';
 export { WindComponent } from './WindComponent';
 export { LODComponent } from './LODComponent';
 export { WetnessComponent } from './WetnessComponent';
+export { SSRComponent } from './SSRComponent';
+export { ReflectionProbeComponent } from './ReflectionProbeComponent';
 export { PrimitiveGeometryComponent } from './PrimitiveGeometryComponent';

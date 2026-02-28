@@ -4,8 +4,9 @@
 
 import { useState, useCallback } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
-import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings } from '../panels';
+import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings, type SSRSettings, type DebugViewMode } from '../panels';
 import type { CompositeEffectConfig } from '@/core/gpu/postprocess';
+import type { SSRQualityLevel } from '@/core/gpu/pipeline/SSRConfig';
 
 // ==================== Local Rendering State ====================
 // These are rendering-specific settings that don't need to be in the global store
@@ -13,6 +14,7 @@ import type { CompositeEffectConfig } from '@/core/gpu/postprocess';
 interface RenderingState {
   shadowSettings: WebGPUShadowSettings;
   ssaoSettings: SSAOSettings;
+  ssrSettings: SSRSettings;
   compositeSettings: Required<CompositeEffectConfig>;
   webgpuEnabled: boolean;
   webgpuStatus: string;
@@ -36,6 +38,10 @@ const defaultRenderingState: RenderingState = {
     bias: 0.025,
     samples: 64,
     blur: true,
+  },
+  ssrSettings: {
+    enabled: false,
+    quality: 'medium' as SSRQualityLevel,
   },
   compositeSettings: {
     tonemapping: 3, // ACES
@@ -67,6 +73,10 @@ export function ConnectedRenderingPanel({
   const [ssaoSettings, setSSAOSettings] = useState<SSAOSettings>(
     defaultRenderingState.ssaoSettings
   );
+  const [ssrSettings, setSSRSettings] = useState<SSRSettings>(
+    defaultRenderingState.ssrSettings
+  );
+  const [debugViewMode, setDebugViewMode] = useState<DebugViewMode>('off');
   const [compositeSettings, setCompositeSettings] = useState<Required<CompositeEffectConfig>>(
     defaultRenderingState.compositeSettings
   );
@@ -129,6 +139,26 @@ export function ConnectedRenderingPanel({
     });
   }, [store]);
   
+  const handleSSRSettingsChange = useCallback((settings: Partial<SSRSettings>) => {
+    setSSRSettings(prev => {
+      const updated = { ...prev, ...settings };
+      // Update viewport SSR settings if available
+      const viewport = store.viewport;
+      if (viewport) {
+        viewport.setSSRSettings(updated);
+      }
+      return updated;
+    });
+  }, [store]);
+  
+  const handleDebugViewModeChange = useCallback((mode: DebugViewMode) => {
+    setDebugViewMode(mode);
+    const viewport = store.viewport;
+    if (viewport) {
+      viewport.setDebugViewMode(mode);
+    }
+  }, [store]);
+  
   const handleCompositeSettingsChange = useCallback((settings: Partial<CompositeEffectConfig>) => {
     setCompositeSettings(prev => {
       const updated = { ...prev, ...settings };
@@ -149,6 +179,10 @@ export function ConnectedRenderingPanel({
       onShadowSettingsChange={handleShadowSettingsChange}
       ssaoSettings={ssaoSettings}
       onSSAOSettingsChange={handleSSAOSettingsChange}
+      ssrSettings={ssrSettings}
+      onSSRSettingsChange={handleSSRSettingsChange}
+      debugViewMode={debugViewMode}
+      onDebugViewModeChange={handleDebugViewModeChange}
       compositeSettings={compositeSettings}
       onCompositeSettingsChange={handleCompositeSettingsChange}
     />

@@ -38,6 +38,7 @@ import { RenderContextImpl, type RenderContextOptions } from './RenderContext';
 import type { World } from '../../ecs/World';
 import type { RenderPass } from './RenderPass';
 import { MeshRenderSystem } from '../../ecs/systems/MeshRenderSystem';
+import { SSRSystem } from '../../ecs/systems/SSRSystem';
 import { 
   SkyPass, 
   ShadowPass, 
@@ -48,7 +49,11 @@ import {
   DebugPass,
   SelectionMaskPass,
   SelectionOutlinePass,
+  SSRPass,
+  DebugViewPass,
 } from './passes';
+import type { DebugViewMode } from './passes';
+import type { SSRConfig, SSRQualityLevel } from './SSRConfig';
 import { SelectionOutlineRendererGPU } from '../renderers/SelectionOutlineRendererGPU';
 
 /**
@@ -125,6 +130,7 @@ export class GPUForwardPipeline {
   private sceneColorTexture: UnifiedGPUTexture | null = null;
   private sceneColorTextureCopy: UnifiedGPUTexture | null = null;
   private selectionMaskTexture: UnifiedGPUTexture | null = null;
+  private normalsTexture: UnifiedGPUTexture | null = null;
   private selectionOutlineRenderer!: SelectionOutlineRendererGPU;
   
   // Post-processing pipeline (plugin-based)
@@ -153,6 +159,15 @@ export class GPUForwardPipeline {
   
   // Render passes (ordered by priority)
   private passes: RenderPass[] = [];
+  
+  // SSR pass reference (for direct config access)
+  private ssrPass: SSRPass | null = null;
+  
+  // Debug view pass reference
+  private debugViewPass: DebugViewPass | null = null;
+  
+  // Cached per-frame: whether SSRSystem found any consumers
+  private lastSSRSystemHasConsumers = false;
   
   // Default shadow settings
   private shadowEnabled = true;
@@ -207,6 +222,9 @@ export class GPUForwardPipeline {
     // Create selection mask texture (r8unorm, same size as viewport)
     this.selectionMaskTexture = this._createSelectionMaskTexture();
     
+    // Create normals G-buffer texture (rgba16float, for SSR)
+    this.normalsTexture = this._createNormalsTexture();
+    
     // Create debug texture manager
     this.debugTextureManager = new DebugTextureManager(ctx);
     
@@ -229,6 +247,13 @@ export class GPUForwardPipeline {
     
     // Create render passes
     this.initializePasses();
+    
+    // Register SSR texture for debug visualization
+    this.debugTextureManager.register(
+      'ssr',
+      'float',
+      () => this.ssrPass?.getSSRTexture()?.view ?? null
+    );
     
     // Initialize post-processing pipeline (always active for tonemapping)
     this.initializePostProcessing();
@@ -276,6 +301,21 @@ export class GPUForwardPipeline {
       outlineRenderer: this.selectionOutlineRenderer,
     });
     
+    // Create SSR pass (disabled by default - user enables via UI)
+    const ssrPass = new SSRPass(this.ctx, this.width, this.height, { enabled: false });
+    this.ssrPass = ssrPass;
+    
+    // Wire consumer check — SSR pass skips when no consumers exist (zero GPU cost)
+    // SSRSystem.hasConsumers is computed each frame before the pipeline renders
+    ssrPass.setConsumerCheck(() => {
+      return this.lastSSRSystemHasConsumers;
+    });
+    
+    // Create debug view pass (fullscreen depth/normals/SSR visualization)
+    const debugViewPass = new DebugViewPass(this.ctx);
+    this.debugViewPass = debugViewPass;
+    debugViewPass.setSSRTextureProvider(() => ssrPass.getSSRTexture());
+    
     // Store passes in priority order
     // Note: Gizmos are rendered by TransformGizmoManager, not by the pipeline
     this.passes = [
@@ -283,11 +323,13 @@ export class GPUForwardPipeline {
       skyPass,
       groundPass,
       opaquePass,
+      ssrPass,
       transparentPass,
       overlayPass,
       selectionMaskPass,
       selectionOutlinePass,
       debugPass,
+      debugViewPass,
     ].sort((a, b) => a.priority - b.priority);
   }
   
@@ -380,6 +422,21 @@ export class GPUForwardPipeline {
       width: this.width,
       height: this.height,
       format: 'r8unorm',
+      renderTarget: true,
+      sampled: true,
+    });
+  }
+  
+  /**
+   * Create normals G-buffer texture (rgba16float)
+   * Written by opaque pass MRT, read by SSR pass
+   */
+  private _createNormalsTexture(): UnifiedGPUTexture {
+    return UnifiedGPUTexture.create2D(this.ctx, {
+      label: 'normals-gbuffer',
+      width: this.width,
+      height: this.height,
+      format: 'rgba16float',
       renderTarget: true,
       sampled: true,
     });
@@ -481,6 +538,15 @@ export class GPUForwardPipeline {
       this.selectionMaskTexture.destroy();
       this.selectionMaskTexture = this._createSelectionMaskTexture();
     }
+    
+    // Recreate normals texture
+    if (this.normalsTexture) {
+      this.normalsTexture.destroy();
+      this.normalsTexture = this._createNormalsTexture();
+    }
+    
+    // Resize SSR pass
+    this.ssrPass?.resize(width, height);
     
     // Resize post-processing pipeline
     if (this.postProcessPipeline) {
@@ -619,6 +685,8 @@ export class GPUForwardPipeline {
       msaaColorTexture: this.msaaColorTexture ?? undefined,
       // Selection mask texture for outline pass
       selectionMaskTexture: this.selectionMaskTexture ?? undefined,
+      // Normals G-buffer for SSR
+      normalsTexture: this.normalsTexture ?? undefined,
       // Unified SceneEnvironment (shadow + IBL) for all renderers
       sceneEnvironment: this.sceneEnvironment,
       // MeshRenderSystem — provides per-frame variant groups for composed rendering
@@ -626,6 +694,20 @@ export class GPUForwardPipeline {
     };
     
     const renderCtx = new RenderContextImpl(contextOptions);
+    
+    // ========== UPDATE SSR TEXTURE FOR OPAQUE OBJECTS ==========
+    // Set SSR texture on SceneEnvironment so opaque objects can sample it (1-frame lag)
+    const ssrTexture = this.ssrPass?.getSSRTexture();
+    this.sceneEnvironment.setSSR(ssrTexture?.view ?? null);
+    
+    // ========== UPDATE SSR CONSUMER STATE ==========
+    // Read SSRSystem.hasConsumers so the SSR pass can skip when no consumers exist
+    if (world) {
+      const ssrSystem = this.findSSRSystem(world);
+      this.lastSSRSystemHasConsumers = ssrSystem?.hasConsumers ?? false;
+    } else {
+      this.lastSSRSystemHasConsumers = false;
+    }
     
     // ========== SCENE PASSES (render to HDR buffer) ==========
     // Execute scene category passes first (terrain, objects, water, sky)
@@ -775,6 +857,86 @@ export class GPUForwardPipeline {
     return this.postProcessPipeline;
   }
   
+  // ========== SSR Methods ==========
+  
+  /**
+   * Enable/disable SSR
+   */
+  setSSREnabled(enabled: boolean): void {
+    this.ssrPass?.setEnabled(enabled);
+    // Also propagate to water inline SSR (TransparentPass)
+    const transparentPass = this.passes.find(p => p.name === 'transparent') as TransparentPass | undefined;
+    if (transparentPass) {
+      transparentPass.ssrEnabled = enabled;
+      // Sync config too
+      const config = this.ssrPass?.getConfig();
+      if (config) {
+        const { enabled: _, quality: __, ...ssrParams } = config;
+        transparentPass.ssrConfig = ssrParams;
+      }
+    }
+  }
+  
+  /**
+   * Check if SSR is enabled
+   */
+  isSSREnabled(): boolean {
+    return this.ssrPass?.getConfig().enabled ?? false;
+  }
+  
+  /**
+   * Set SSR quality level
+   */
+  setSSRQuality(quality: SSRQualityLevel): void {
+    this.ssrPass?.setQuality(quality);
+    // Propagate new quality settings to water inline SSR
+    const transparentPass = this.passes.find(p => p.name === 'transparent') as TransparentPass | undefined;
+    if (transparentPass) {
+      const config = this.ssrPass?.getConfig();
+      if (config) {
+        const { enabled: _, quality: __, ...ssrParams } = config;
+        transparentPass.ssrConfig = ssrParams;
+      }
+    }
+  }
+  
+  /**
+   * Configure SSR parameters
+   */
+  setSSRConfig(config: Partial<SSRConfig>): void {
+    this.ssrPass?.setConfig(config);
+  }
+  
+  /**
+   * Get SSR configuration
+   */
+  getSSRConfig(): SSRConfig | null {
+    return this.ssrPass?.getConfig() ?? null;
+  }
+  
+  /**
+   * Get the SSR pass (for advanced access)
+   */
+  getSSRPass(): SSRPass | null {
+    return this.ssrPass;
+  }
+  
+  // ========== Debug View Methods ==========
+  
+  /**
+   * Set debug view mode (off, depth, normals, ssr)
+   */
+  setDebugViewMode(mode: DebugViewMode): void {
+    this.debugViewPass?.setMode(mode);
+  }
+  
+  /**
+   * Get current debug view mode
+   */
+  getDebugViewMode(): DebugViewMode {
+    return this.debugViewPass?.getMode() ?? 'off';
+  }
+  
   /**
    * Get a render pass by name (for external configuration)
    */
@@ -807,6 +969,7 @@ export class GPUForwardPipeline {
     // OceanManager is owned externally, not destroyed here
     this.postProcessPipeline?.destroy();
     this.selectionMaskTexture?.destroy();
+    this.normalsTexture?.destroy();
     this.selectionOutlineRenderer.destroy();
     this.debugTextureManager.destroy();
     
@@ -869,6 +1032,18 @@ export class GPUForwardPipeline {
     // World stores systems; look up by name
     for (const system of world.getSystems()) {
       if (system instanceof MeshRenderSystem) {
+        return system;
+      }
+    }
+    return undefined;
+  }
+  
+  /**
+   * Find the SSRSystem from the ECS World.
+   */
+  private findSSRSystem(world: World): SSRSystem | undefined {
+    for (const system of world.getSystems()) {
+      if (system instanceof SSRSystem) {
         return system;
       }
     }
