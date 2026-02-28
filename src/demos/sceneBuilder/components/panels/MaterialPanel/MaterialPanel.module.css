@@ -77,3 +77,20 @@
   font-size: var(--sb-font-xs);
   color: var(--sb-text-muted);
 }
+
+/* Checkbox row (Unlit toggle) */
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--sb-font-sm);
+  color: var(--sb-text-secondary);
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.checkboxRow input[type="checkbox"] {
+  accent-color: var(--sb-accent);
+  width: 14px;
+  height: 14px;
+}

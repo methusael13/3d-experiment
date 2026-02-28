@@ -26,6 +26,11 @@ export interface PBRMaterial {
   albedo: [number, number, number];
   metallic: number;
   roughness: number;
+  emissive?: [number, number, number];
+  ior?: number;
+  clearcoatFactor?: number;
+  clearcoatRoughness?: number;
+  unlit?: boolean;
 }
 
 /**

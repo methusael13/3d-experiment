@@ -671,6 +671,10 @@ export class ObjectRendererGPU {
     if (material.occlusionStrength !== undefined) mesh.material.occlusionStrength = material.occlusionStrength;
     if (material.alphaCutoff !== undefined) mesh.material.alphaCutoff = material.alphaCutoff;
     if (material.emissive) mesh.material.emissive = [...material.emissive];
+    if (material.ior !== undefined) mesh.material.ior = material.ior;
+    if (material.clearcoatFactor !== undefined) mesh.material.clearcoatFactor = material.clearcoatFactor;
+    if (material.clearcoatRoughness !== undefined) mesh.material.clearcoatRoughness = material.clearcoatRoughness;
+    if (material.unlit !== undefined) mesh.material.unlit = material.unlit;
     
     // Write updated material to GPU buffer
     this.writeMaterialToBuffer(mesh.materialBuffer, mesh.material);

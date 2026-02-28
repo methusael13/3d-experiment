@@ -46,6 +46,11 @@ export function ConnectedMaterialPanel() {
       albedo: [...mat.albedo] as [number, number, number],
       metallic: mat.metallic,
       roughness: mat.roughness,
+      emissive: [...mat.emissive] as [number, number, number],
+      ior: mat.ior,
+      clearcoatFactor: mat.clearcoatFactor,
+      clearcoatRoughness: mat.clearcoatRoughness,
+      unlit: mat.unlit,
     };
   });
   
@@ -60,12 +65,22 @@ export function ConnectedMaterialPanel() {
     if (changes.albedo) mat.albedo = changes.albedo;
     if (changes.metallic !== undefined) mat.metallic = changes.metallic;
     if (changes.roughness !== undefined) mat.roughness = changes.roughness;
+    if (changes.emissive) mat.emissive = changes.emissive;
+    if (changes.ior !== undefined) mat.ior = changes.ior;
+    if (changes.clearcoatFactor !== undefined) mat.clearcoatFactor = changes.clearcoatFactor;
+    if (changes.clearcoatRoughness !== undefined) mat.clearcoatRoughness = changes.clearcoatRoughness;
+    if (changes.unlit !== undefined) mat.unlit = changes.unlit;
     
     // Sync GPU material buffer via ObjectRendererGPU
     const gpuChanges: Record<string, unknown> = {};
     if (changes.albedo) gpuChanges.albedo = changes.albedo;
     if (changes.metallic !== undefined) gpuChanges.metallic = changes.metallic;
     if (changes.roughness !== undefined) gpuChanges.roughness = changes.roughness;
+    if (changes.emissive) gpuChanges.emissive = changes.emissive;
+    if (changes.ior !== undefined) gpuChanges.ior = changes.ior;
+    if (changes.clearcoatFactor !== undefined) gpuChanges.clearcoatFactor = changes.clearcoatFactor;
+    if (changes.clearcoatRoughness !== undefined) gpuChanges.clearcoatRoughness = changes.clearcoatRoughness;
+    if (changes.unlit !== undefined) gpuChanges.unlit = changes.unlit;
     
     // Update primitive geometry meshes
     const prim = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');

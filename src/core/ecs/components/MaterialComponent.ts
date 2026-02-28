@@ -19,6 +19,10 @@ export class MaterialComponent extends Component {
   alphaCutoff: number = 0.5;
   emissive: [number, number, number] = [0, 0, 0];
   doubleSided: boolean = false;
+  ior: number = 1.5;
+  clearcoatFactor: number = 0.0;
+  clearcoatRoughness: number = 0.0;
+  unlit: boolean = false;
 
   /** Texture flags: [hasBaseColor, hasNormal, hasMetallicRoughness, hasOcclusion] */
   textureFlags: [number, number, number, number] = [0, 0, 0, 0];
@@ -34,6 +38,10 @@ export class MaterialComponent extends Component {
       alphaCutoff: this.alphaCutoff,
       emissive: [...this.emissive],
       doubleSided: this.doubleSided,
+      ior: this.ior,
+      clearcoatFactor: this.clearcoatFactor,
+      clearcoatRoughness: this.clearcoatRoughness,
+      unlit: this.unlit,
     };
   }
 
@@ -52,5 +60,13 @@ export class MaterialComponent extends Component {
       this.emissive = data.emissive as [number, number, number];
     if (data.doubleSided !== undefined)
       this.doubleSided = data.doubleSided as boolean;
+    if (data.ior !== undefined)
+      this.ior = data.ior as number;
+    if (data.clearcoatFactor !== undefined)
+      this.clearcoatFactor = data.clearcoatFactor as number;
+    if (data.clearcoatRoughness !== undefined)
+      this.clearcoatRoughness = data.clearcoatRoughness as number;
+    if (data.unlit !== undefined)
+      this.unlit = data.unlit as boolean;
   }
 }
