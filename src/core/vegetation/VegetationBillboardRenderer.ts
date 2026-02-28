@@ -110,8 +110,8 @@ export class VegetationBillboardRenderer {
       fragmentEntryPoint: 'fragmentMain',
       bindGroupLayouts: [this.bindGroupLayout],
       vertexBuffers: [], // No vertex buffers — all data from storage buffer
-      colorFormats: [colorFormat],
-      blendStates: [CommonBlendStates.alpha()],
+      colorFormats: [colorFormat, colorFormat],
+      blendStates: [CommonBlendStates.alpha(), CommonBlendStates.alpha()],
       depthFormat,
       depthWriteEnabled: true,
       depthCompare: 'greater',  // Reversed-Z depth buffer

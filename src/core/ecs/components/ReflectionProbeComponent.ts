@@ -196,12 +196,16 @@ export class ReflectionProbeComponent extends Component {
 
   /**
    * Destroy GPU resources when component is removed.
+   * Safe to call cubemapTexture.destroy() — probe resources are now per-entity
+   * in Group 2 bind groups, not cached in the global SceneEnvironment (Group 3).
+   * The VariantRenderer's probeBindGroupCache will be invalidated on next access
+   * because the probeView reference will no longer match.
    */
   destroy(): void {
     if (this.cubemapTexture) {
       this.cubemapTexture.destroy();
-      this.cubemapTexture = null;
     }
+    this.cubemapTexture = null;
     this.cubemapView = null;
     this.cubemapSampler = null;
     this.bakeState = 'none';

@@ -3,7 +3,9 @@
  * Handles adapter/device acquisition and provides the core GPU resources
  */
 
-import { ObjectRendererGPU } from './renderers/ObjectRendererGPU';
+import { ObjectRendererGPU, type GPUMaterial, type GPUMaterialTextures, type GPUMeshData } from './renderers/ObjectRendererGPU';
+import { VariantMeshPool } from './pipeline/VariantMeshPool';
+import type { mat4 } from 'gl-matrix';
 
 export interface GPUContextOptions {
   powerPreference?: GPUPowerPreference;
@@ -26,6 +28,7 @@ export class GPUContext {
   
   // Shared renderers (lazy initialized)
   private _objectRenderer: ObjectRendererGPU | null = null;
+  private _variantMeshPool: VariantMeshPool | null = null;
 
   private constructor() {}
 
@@ -200,6 +203,82 @@ export class GPUContext {
   }
 
   /**
+   * Get the shared variant mesh pool (lazy initialized).
+   * Used by the composed shader variant rendering path (VariantRenderer).
+   * ECS components dual-register with both objectRenderer and variantMeshPool.
+   */
+  get variantMeshPool(): VariantMeshPool {
+    if (!this._variantMeshPool) {
+      this._variantMeshPool = new VariantMeshPool(this);
+    }
+    return this._variantMeshPool;
+  }
+
+  // ===================== Dual-Pool Facade =====================
+  // These methods delegate to both ObjectRendererGPU (legacy) and VariantMeshPool
+  // (composed shader path), keeping them in sync with a single call.
+
+  /**
+   * Add a mesh to both ObjectRendererGPU and VariantMeshPool.
+   * Returns the shared mesh ID.
+   */
+  addMesh(data: GPUMeshData): number {
+    const id = this.objectRenderer.addMesh(data);
+    this.variantMeshPool.addMeshWithId(id, data);
+    return id;
+  }
+
+  /**
+   * Remove a mesh from both pools.
+   */
+  removeMesh(id: number): void {
+    this.objectRenderer.removeMesh(id);
+    this.variantMeshPool.removeMesh(id);
+  }
+
+  /**
+   * Set the transform on both pools.
+   */
+  setMeshTransform(id: number, modelMatrix: mat4 | Float32Array): void {
+    this.objectRenderer.setTransform(id, modelMatrix);
+    this.variantMeshPool.setTransform(id, modelMatrix);
+  }
+
+  /**
+   * Set material properties on both pools.
+   */
+  setMeshMaterial(id: number, material: Partial<GPUMaterial>): void {
+    this.objectRenderer.setMaterial(id, material);
+    this.variantMeshPool.setMaterial(id, material);
+  }
+
+  /**
+   * Set textures on both pools.
+   * Passes explicit undefined for missing PBR slots so ObjectRendererGPU's merge
+   * replaces old references (prevents use-after-destroy when clearing textures).
+   */
+  setMeshTextures(id: number, textures: GPUMaterialTextures): void {
+    // Ensure all 5 PBR slots are present — undefined entries clear old refs via merge
+    const fullTextures: GPUMaterialTextures = {
+      baseColor: textures.baseColor ?? undefined,
+      normal: textures.normal ?? undefined,
+      metallicRoughness: textures.metallicRoughness ?? undefined,
+      occlusion: textures.occlusion ?? undefined,
+      emissive: textures.emissive ?? undefined,
+    };
+    this.objectRenderer.setTextures(id, fullTextures);
+    this.variantMeshPool.setPBRTextures(id, textures);
+  }
+
+  /**
+   * Write extra uniform data to both pools' material buffers.
+   */
+  writeMeshExtraUniforms(id: number, data: Float32Array, byteOffset: number): void {
+    this.objectRenderer.writeExtraUniforms(id, data, byteOffset);
+    this.variantMeshPool.writeExtraUniforms(id, data, byteOffset);
+  }
+
+  /**
    * Get device limits
    */
   get limits(): GPUSupportedLimits {
@@ -268,6 +347,10 @@ export class GPUContext {
    */
   destroy(): void {
     // Destroy shared renderers
+    if (this._variantMeshPool) {
+      this._variantMeshPool.destroy();
+      this._variantMeshPool = null;
+    }
     if (this._objectRenderer) {
       this._objectRenderer.destroy();
       this._objectRenderer = null;

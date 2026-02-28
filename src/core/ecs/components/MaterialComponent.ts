@@ -1,5 +1,9 @@
 import { Component } from '../Component';
 import type { ComponentType } from '../types';
+import type {
+  ProceduralTextureParams,
+  TextureTargetSlot,
+} from '../../gpu/renderers/ProceduralTextureGenerator';
 
 /**
  * Material component — PBR material properties.
@@ -25,9 +29,62 @@ export class MaterialComponent extends Component {
   unlit: boolean = false;
 
   /** Texture flags: [hasBaseColor, hasNormal, hasMetallicRoughness, hasOcclusion] */
-  textureFlags: [number, number, number, number] = [0, 0, 0, 0];
+  private _textureFlags: [number, number, number, number] = [0, 0, 0, 0];
+
+  /**
+   * Indicates if the textures come attached to the mesh (like imported models)
+   */
+  private _hasIntrinsicTextures: boolean = false;
+
+  /**
+   * Read-only access to texture flags.
+   * [hasBaseColor, hasNormal, hasMetallicRoughness, hasOcclusion]
+   */
+  get textureFlags(): readonly [number, number, number, number] {
+    return this._textureFlags;
+  }
+
+  /**
+   * Recompute texture flags from the proceduralTextures map.
+   * Call this after adding/removing procedural texture definitions.
+   */
+  updateTextureFlags(): void {
+    this._textureFlags = [
+      this.proceduralTextures.has('baseColor') ? 1 : 0,
+      0, // normal maps not supported via procedural textures currently
+      (this.proceduralTextures.has('metallic') || this.proceduralTextures.has('roughness')) ? 1 : 0,
+      this.proceduralTextures.has('occlusion') ? 1 : 0,
+    ];
+  }
+
+  /**
+   * Set texture flags directly (for model-loaded textures from GLB).
+   */
+  setTextureFlags(flags: [number, number, number, number]): void {
+    this._textureFlags = [...flags] as [number, number, number, number];
+  }
+
+  get hasIntrinsicTextures() {
+    return this._hasIntrinsicTextures;
+  }
+
+  set hasIntrinsicTextures(has: boolean) {
+    this._hasIntrinsicTextures = has;
+  }
+
+  /**
+   * Procedural texture definitions per PBR target slot.
+   * Params only — GPU textures are regenerated on load.
+   */
+  proceduralTextures: Map<TextureTargetSlot, ProceduralTextureParams> = new Map();
 
   serialize(): Record<string, unknown> {
+    // Serialize procedural textures as plain objects
+    const procTex: Record<string, ProceduralTextureParams> = {};
+    for (const [slot, params] of this.proceduralTextures) {
+      procTex[slot] = { ...params, colorRamp: { ...params.colorRamp } };
+    }
+
     return {
       albedo: [...this.albedo],
       metallic: this.metallic,
@@ -42,6 +99,7 @@ export class MaterialComponent extends Component {
       clearcoatFactor: this.clearcoatFactor,
       clearcoatRoughness: this.clearcoatRoughness,
       unlit: this.unlit,
+      proceduralTextures: Object.keys(procTex).length > 0 ? procTex : undefined,
     };
   }
 
@@ -68,5 +126,12 @@ export class MaterialComponent extends Component {
       this.clearcoatRoughness = data.clearcoatRoughness as number;
     if (data.unlit !== undefined)
       this.unlit = data.unlit as boolean;
+    if (data.proceduralTextures) {
+      const pt = data.proceduralTextures as Record<string, ProceduralTextureParams>;
+      this.proceduralTextures.clear();
+      for (const [slot, params] of Object.entries(pt)) {
+        this.proceduralTextures.set(slot as TextureTargetSlot, params);
+      }
+    }
   }
 }

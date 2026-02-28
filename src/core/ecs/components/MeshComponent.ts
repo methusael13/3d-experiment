@@ -4,6 +4,7 @@ import type { ComponentType } from '../types';
 import type { GPUContext } from '../../gpu/GPUContext';
 import { UnifiedGPUTexture } from '../../gpu/GPUTexture';
 import type { GPUMaterialTextures, GPUMaterial } from '../../gpu/renderers/ObjectRendererGPU';
+import { RES } from '../../gpu/shaders/composition/resourceNames';
 import type { GLBModel } from '../../../loaders';
 
 /**
@@ -120,13 +121,17 @@ export class MeshComponent extends Component {
         gpuMaterial.textures = textures;
       }
 
-      const meshId = ctx.objectRenderer.addMesh({
+      const meshData = {
         positions: mesh.positions,
         normals: mesh.normals,
         uvs: mesh.uvs ?? undefined,
         indices: mesh.indices ?? undefined,
         material: gpuMaterial,
-      });
+      };
+
+      // Register with both ObjectRendererGPU and VariantMeshPool via facade
+      const meshId = ctx.addMesh(meshData);
+      console.log(`[MeshComponent] Mesh data added to ${meshId}:`, meshData);
 
       this.gpuMeshIds.push(meshId);
     }
@@ -180,7 +185,7 @@ export class MeshComponent extends Component {
   updateGPUTransform(modelMatrix: mat4): void {
     if (!this.gpuContext) return;
     for (const meshId of this.gpuMeshIds) {
-      this.gpuContext.objectRenderer.setTransform(meshId, modelMatrix);
+      this.gpuContext.setMeshTransform(meshId, modelMatrix);
     }
   }
 
@@ -190,7 +195,7 @@ export class MeshComponent extends Component {
   destroyWebGPU(): void {
     if (this.gpuContext) {
       for (const meshId of this.gpuMeshIds) {
-        this.gpuContext.objectRenderer.removeMesh(meshId);
+        this.gpuContext.removeMesh(meshId);
       }
     }
     this.gpuMeshIds = [];

@@ -64,6 +64,12 @@ struct MaterialUniforms {
   clearcoatRoughness: f32,   // KHR_materials_clearcoat roughness [0-1]
   hasEmissiveTex: f32,       // 1.0 if emissive texture is present
 
+  // Triplanar mapping control
+  triplanarMode: f32,        // 0.0 = UV mapping, 1.0 = triplanar projection
+  triplanarScale: f32,       // World-space tiling scale (default 1.0)
+  _triPad0: f32,
+  _triPad1: f32,
+
   /*{{EXTRA_UNIFORM_FIELDS}}*/
 }
 
@@ -133,6 +139,7 @@ fn pbrDirectional(
   albedo: vec3f,
   metallic: f32,
   roughness: f32,
+  ior: f32,
   lightColor: vec3f
 ) -> vec3f {
   let H = normalize(V + L);
@@ -151,7 +158,7 @@ fn pbrDirectional(
   // F0 from IOR: F0 = ((ior - 1) / (ior + 1))^2
   // For dielectrics, uses IOR-derived F0 instead of hardcoded 0.04
   // For metals, uses albedo as F0 (per metallic workflow)
-  let iorVal = max(material.ior, 1.0);
+  let iorVal = max(ior, 1.0);
   let iorF0 = pow((iorVal - 1.0) / (iorVal + 1.0), 2.0);
   let F0 = mix(vec3f(iorF0), albedo, metallic);
 
@@ -263,6 +270,7 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
   var N = normalize(input.worldNormal);
   var ao = 1.0;
   var emissive = material.emissiveFactor;
+  var ior = material.ior;
 
   // ---- Texture sampling (injected by textured feature or inlined as no-ops) ----
   /*{{FRAGMENT_TEXTURE_SAMPLING}}*/
@@ -271,7 +279,7 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
   /*{{FRAGMENT_PRE_LIGHTING}}*/
 
   // ---- Unlit check: negative IOR signals KHR_materials_unlit ----
-  let isUnlit = material.ior < 0.0;
+  let isUnlit = ior < 0.0;
 
   // ---- Lighting ----
   let V = normalize(globals.cameraPosition - input.worldPosition);
@@ -288,7 +296,7 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     color = albedo + emissive;
   } else {
     // Direct lighting
-    let direct = pbrDirectional(N, V, L, albedo, metallic, roughness, globals.lightColor) * shadow;
+    let direct = pbrDirectional(N, V, L, albedo, metallic, roughness, ior, globals.lightColor) * shadow;
 
     // Ambient lighting (IBL or hemisphere — injected by feature)
     var ambient = hemisphereAmbient(N, albedo, globals.ambientIntensity) * ao;

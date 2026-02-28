@@ -72,6 +72,8 @@ export interface GPUMaterial {
   clearcoatFactor?: number;   // KHR_materials_clearcoat factor [0-1]
   clearcoatRoughness?: number; // KHR_materials_clearcoat roughness [0-1]
   unlit?: boolean;            // KHR_materials_unlit — skip PBR, output albedo directly
+  triplanarMode?: number;     // 0 = UV mapping (default), 1 = triplanar projection
+  triplanarScale?: number;    // World-space tiling scale for triplanar (default 1.0)
   textures?: GPUMaterialTextures;
 }
 
@@ -675,6 +677,8 @@ export class ObjectRendererGPU {
     if (material.clearcoatFactor !== undefined) mesh.material.clearcoatFactor = material.clearcoatFactor;
     if (material.clearcoatRoughness !== undefined) mesh.material.clearcoatRoughness = material.clearcoatRoughness;
     if (material.unlit !== undefined) mesh.material.unlit = material.unlit;
+    if (material.triplanarMode !== undefined) mesh.material.triplanarMode = material.triplanarMode;
+    if (material.triplanarScale !== undefined) mesh.material.triplanarScale = material.triplanarScale;
     
     // Write updated material to GPU buffer
     this.writeMaterialToBuffer(mesh.materialBuffer, mesh.material);
@@ -699,11 +703,11 @@ export class ObjectRendererGPU {
   }
   
   /**
-   * Write material data to a buffer (80 bytes = 20 floats)
-   * Layout must match MaterialUniforms in shader
+   * Write material data to a buffer (96 bytes = 24 floats)
+   * Layout must match MaterialUniforms in shader template
    */
   private writeMaterialToBuffer(buffer: UnifiedGPUBuffer, material: GPUMaterial): void {
-    const data = new Float32Array(20); // 80 bytes / 4
+    const data = new Float32Array(24); // 96 bytes / 4
     
     // albedo (vec3f) + metallic (f32)
     data[0] = material.albedo[0];
@@ -739,6 +743,12 @@ export class ObjectRendererGPU {
     data[18] = material.clearcoatRoughness ?? 0.0;
     // hasEmissiveTex flag
     data[19] = tex?.emissive ? 1.0 : 0.0;
+    
+    // Triplanar mapping (vec4 at offset 20-23)
+    data[20] = material.triplanarMode ?? 0.0;
+    data[21] = material.triplanarScale ?? 1.0;
+    data[22] = 0; // pad
+    data[23] = 0; // pad
     
     buffer.write(this.ctx, data);
   }

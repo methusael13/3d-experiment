@@ -58,6 +58,8 @@ export function createModelEntity(
   mesh.modelPath = options.modelPath;
 
   const material = entity.addComponent(new MaterialComponent());
+  // Indicate that the material comp has textures from the model
+  material.hasIntrinsicTextures = true;
 
   const bounds = entity.addComponent(new BoundsComponent());
   if (options.localBounds) {

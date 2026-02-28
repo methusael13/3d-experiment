@@ -18,7 +18,10 @@ import type { ComponentType, SystemContext } from '../types';
 import { ReflectionProbeComponent } from '../components/ReflectionProbeComponent';
 import { TransformComponent } from '../components/TransformComponent';
 import { BoundsComponent } from '../components/BoundsComponent';
+import { MeshComponent } from '../components/MeshComponent';
+import { PrimitiveGeometryComponent } from '../components/PrimitiveGeometryComponent';
 import { ReflectionProbeCaptureRenderer } from '@/core/gpu/renderers/ReflectionProbeCaptureRenderer';
+import { RES } from '@/core/gpu/shaders/composition/resourceNames';
 
 /**
  * Simple hash of a Float32Array for change detection.
@@ -71,11 +74,34 @@ export class ReflectionProbeSystem extends System {
         this.captureRenderer.bakeProbe(entity, probe, capturePos, ctx);
       }
 
-      // Note: Per-entity probe binding is handled by VariantRenderer.renderColor(),
-      // which reads the probe cubemap directly from the entity's ReflectionProbeComponent.
-      // We do NOT push to SceneEnvironment here since it's a global singleton and would
-      // overwrite probes from other entities.
+      // Push baked probe textures to VariantMeshPool as named resources.
+      // This replaces the old per-entity bind group approach in VariantRenderer.
+      // VariantMeshPool.buildTextureBindGroup() will pick them up by canonical name.
+      if (probe.bakeState === 'baked' && probe.cubemapView && probe.cubemapSampler && ctx.ctx) {
+        const meshPool = ctx.ctx.variantMeshPool;
+        const meshIds = this.collectMeshIds(entity);
+        for (const meshId of meshIds) {
+          meshPool.setTextureResource(meshId, RES.REFLECTION_PROBE_CUBEMAP, probe.cubemapView);
+          meshPool.setTextureResource(meshId, RES.REFLECTION_PROBE_SAMPLER, probe.cubemapSampler);
+        }
+      }
     }
+  }
+
+  /**
+   * Collect GPU mesh IDs from an entity via MeshComponent or PrimitiveGeometryComponent.
+   */
+  private collectMeshIds(entity: Entity): number[] {
+    const ids: number[] = [];
+    const meshComp = entity.getComponent<MeshComponent>('mesh');
+    if (meshComp?.isGPUInitialized) {
+      for (const id of meshComp.meshIds) ids.push(id);
+    }
+    const primComp = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
+    if (primComp?.isGPUInitialized && primComp.meshId !== null) {
+      ids.push(primComp.meshId);
+    }
+    return ids;
   }
 
   /**

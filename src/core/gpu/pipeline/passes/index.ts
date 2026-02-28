@@ -27,6 +27,7 @@ import { MeshComponent } from '../../../ecs/components/MeshComponent';
 import { PrimitiveGeometryComponent } from '../../../ecs/components/PrimitiveGeometryComponent';
 // Variant rendering (shared between opaque + shadow passes)
 import { VariantRenderer } from '../VariantRenderer';
+import type { VariantMeshPool } from '../VariantMeshPool';
 import { SSRConfig } from '../SSRConfig';
 
 // ============================================================================
@@ -75,6 +76,7 @@ export class SkyPass extends BaseRenderPass {
 export interface ShadowPassDependencies {
   shadowRenderer: ShadowRendererGPU;
   objectRenderer: ObjectRendererGPU;
+  meshPool: VariantMeshPool;
 }
 
 /**
@@ -93,11 +95,13 @@ export class ShadowPass extends BaseRenderPass {
   
   private shadowRenderer: ShadowRendererGPU;
   private objectRenderer: ObjectRendererGPU;
+  private meshPool: VariantMeshPool;
   
   constructor(deps: ShadowPassDependencies) {
     super();
     this.shadowRenderer = deps.shadowRenderer;
     this.objectRenderer = deps.objectRenderer;
+    this.meshPool = deps.meshPool;
   }
   
   /** Shared variant renderer for composed depth-only shadow rendering */
@@ -105,7 +109,7 @@ export class ShadowPass extends BaseRenderPass {
 
   private ensureVariantRenderer(): VariantRenderer {
     if (!this.variantRenderer) {
-      this.variantRenderer = new VariantRenderer(this.objectRenderer);
+      this.variantRenderer = new VariantRenderer(this.meshPool);
     }
     return this.variantRenderer;
   }
@@ -270,6 +274,7 @@ export class ShadowPass extends BaseRenderPass {
 export interface OpaquePassDependencies {
   objectRenderer: ObjectRendererGPU;
   shadowRenderer: ShadowRendererGPU;
+  meshPool: VariantMeshPool;
 }
 
 /**
@@ -291,6 +296,7 @@ export class OpaquePass extends BaseRenderPass {
   
   private objectRenderer: ObjectRendererGPU;
   private shadowRenderer: ShadowRendererGPU;
+  private meshPool: VariantMeshPool;
   private identityMatrix = mat4.create();
   
   /**
@@ -306,11 +312,12 @@ export class OpaquePass extends BaseRenderPass {
     super();
     this.objectRenderer = deps.objectRenderer;
     this.shadowRenderer = deps.shadowRenderer;
+    this.meshPool = deps.meshPool;
   }
   
   private ensureVariantRenderer(): VariantRenderer {
     if (!this.variantRenderer) {
-      this.variantRenderer = new VariantRenderer(this.objectRenderer);
+      this.variantRenderer = new VariantRenderer(this.meshPool);
     }
     return this.variantRenderer;
   }

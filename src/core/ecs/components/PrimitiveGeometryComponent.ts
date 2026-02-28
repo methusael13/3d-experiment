@@ -67,17 +67,20 @@ export class PrimitiveGeometryComponent extends Component {
 
     this.gpuContext = ctx;
 
-    this.gpuMeshId = ctx.objectRenderer.addMesh({
+    const meshData = {
       positions: this.geometryData.positions,
       normals: this.geometryData.normals,
       uvs: this.geometryData.uvs,
       indices: this.geometryData.indices,
       material: {
-        albedo: [0.7, 0.7, 0.7],
+        albedo: [0.7, 0.7, 0.7] as [number, number, number],
         metallic: 0.0,
         roughness: 0.5,
       },
-    });
+    };
+
+    // Register with both ObjectRendererGPU and VariantMeshPool via facade
+    this.gpuMeshId = ctx.addMesh(meshData);
   }
 
   /**
@@ -89,27 +92,32 @@ export class PrimitiveGeometryComponent extends Component {
     this.config = { ...this.config, ...newConfig };
     this.geometryData = newGeometry;
 
-    // If GPU-initialized, update the mesh in ObjectRendererGPU
+    // If GPU-initialized, update the mesh in both ObjectRendererGPU and VariantMeshPool
     if (this.gpuContext && this.gpuMeshId >= 0) {
       // Preserve material from old mesh before removing
       const oldMaterial = this.gpuContext.objectRenderer.getMaterial(this.gpuMeshId);
       
-      this.gpuContext.objectRenderer.removeMesh(this.gpuMeshId);
-      this.gpuMeshId = this.gpuContext.objectRenderer.addMesh({
+      // Remove from both pools via facade
+      this.gpuContext.removeMesh(this.gpuMeshId);
+
+      const meshData = {
         positions: newGeometry.positions,
         normals: newGeometry.normals,
         uvs: newGeometry.uvs,
         indices: newGeometry.indices,
         material: oldMaterial ?? {
-          albedo: [0.7, 0.7, 0.7],
+          albedo: [0.7, 0.7, 0.7] as [number, number, number],
           metallic: 0.0,
           roughness: 0.5,
         },
-      });
+      };
+
+      // Re-register with both pools via facade
+      this.gpuMeshId = this.gpuContext.addMesh(meshData);
       
       // Re-apply the entity's current transform to the new mesh
       if (transform) {
-        this.gpuContext.objectRenderer.setTransform(this.gpuMeshId, transform.modelMatrix);
+        this.gpuContext.setMeshTransform(this.gpuMeshId, transform.modelMatrix);
       }
     }
   }
@@ -119,7 +127,7 @@ export class PrimitiveGeometryComponent extends Component {
    */
   destroyWebGPU(): void {
     if (this.gpuContext && this.gpuMeshId >= 0) {
-      this.gpuContext.objectRenderer.removeMesh(this.gpuMeshId);
+      this.gpuContext.removeMesh(this.gpuMeshId);
     }
     this.gpuMeshId = -1;
     this.gpuContext = null;

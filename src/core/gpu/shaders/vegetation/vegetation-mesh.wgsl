@@ -269,8 +269,14 @@ fn vertexMain(
 
 // ==================== Fragment Shader ====================
 
+struct FragmentOutput {
+  @location(0) color: vec4f,
+  @location(1) normals: vec4f,
+}
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+fn fragmentMain(input: VertexOutput) -> FragmentOutput {
+  var fragOutput: FragmentOutput;
   let baseColor = textureSample(baseColorTexture, texSampler, input.uv);
   
   if (baseColor.a < 0.5) {
@@ -306,5 +312,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     finalColor = baseColor.rgb * lighting;
   }
   
-  return vec4f(finalColor, baseColor.a);
+  fragOutput.color = vec4f(finalColor, baseColor.a);
+  // Pack world-space normal from [-1,1] to [0,1] for G-buffer; vegetation metallic = 0
+  fragOutput.normals = vec4f(normal * 0.5 + 0.5, 0.0);
+  return fragOutput;
 }

@@ -180,10 +180,18 @@ fn vertexMain(
   return output;
 }
 
+// ==================== Fragment Output ====================
+
+struct FragmentOutput {
+  @location(0) color: vec4f,
+  @location(1) normals: vec4f,  // World-space normal packed [0,1] + metallic in .w
+}
+
 // ==================== Fragment Shader ====================
 
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
+fn fragmentMain(input: VertexOutput) -> FragmentOutput {
+  var fragOutput: FragmentOutput;
   // Sample texture
   let texColor = textureSample(plantTexture, plantSampler, input.uv);
   
@@ -226,5 +234,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
     finalColor = input.color;
   }
   
-  return vec4f(finalColor, texColor.a * input.alpha);
+  fragOutput.color = vec4f(finalColor, texColor.a * input.alpha);
+  // Billboard normal: approximate as up-facing (Y+); metallic = 0
+  fragOutput.normals = vec4f(0.5, 1.0, 0.5, 0.0);
+  return fragOutput;
 }

@@ -11,8 +11,10 @@ import { RES } from '../composition/resourceNames';
  * This feature REPLACES both SSR and IBL specular for geometry pixels.
  * When active, SSR should NOT be included in the same variant.
  *
- * The probe cubemap + sampler are bound in the environment group (Group 3)
- * and supplied by the VariantRenderer from the entity's ReflectionProbeComponent.
+ * The probe cubemap + sampler are bound in the textures group (Group 2)
+ * alongside PBR textures. This is per-entity data — the VariantRenderer
+ * builds a custom Group 2 bind group per entity that includes both the
+ * mesh's PBR textures and the probe's cubemap/sampler.
  */
 export const reflectionProbeFeature: ShaderFeature = {
   id: 'reflection-probe',
@@ -25,14 +27,14 @@ export const reflectionProbeFeature: ShaderFeature = {
       name: RES.REFLECTION_PROBE_CUBEMAP,
       kind: 'texture',
       textureType: 'texture_cube<f32>',
-      group: 'environment',
+      group: 'textures',
       provider: 'ReflectionProbeComponent',
     },
     {
       name: RES.REFLECTION_PROBE_SAMPLER,
       kind: 'sampler',
       samplerType: 'sampler',
-      group: 'environment',
+      group: 'textures',
       provider: 'ReflectionProbeComponent',
     },
   ],

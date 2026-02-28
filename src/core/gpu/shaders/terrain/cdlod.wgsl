@@ -1113,12 +1113,12 @@ fn _applySelectionHighlight_REMOVED(color: vec3f, N: vec3f, worldPos: vec3f, cam
   return result;
 }
 
-@fragment
 struct FragmentOutput {
   @location(0) color: vec4f,           // HDR scene color
   @location(1) normals: vec4f,         // World-space normal packed [0,1] + metallic in .w
 }
 
+@fragment
 fn fs_main(input: VertexOutput) -> FragmentOutput {
   var fragOutput: FragmentOutput;
   // Get base normal from vertex shader (from normal map)

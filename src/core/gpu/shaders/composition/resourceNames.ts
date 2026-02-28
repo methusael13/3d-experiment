@@ -46,7 +46,7 @@ export const RES = {
   // ==================== SSR (textures group) ====================
   SSR_PREV_FRAME_TEXTURE: 'ssrPrevFrameTexture',
 
-  // ==================== Reflection Probe (environment group) ====================
+  // ==================== Reflection Probe (textures group — per-entity in Group 2) ====================
   REFLECTION_PROBE_CUBEMAP: 'reflectionProbeCubemap',
   REFLECTION_PROBE_SAMPLER: 'reflectionProbeSampler',
 

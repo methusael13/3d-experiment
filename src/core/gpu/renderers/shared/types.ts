@@ -113,8 +113,6 @@ export const ENVIRONMENT_BINDINGS = {
   CSM_SHADOW_ARRAY: 7,
   CSM_UNIFORMS: 8,
   SSR_TEXTURE: 9,
-  REFLECTION_PROBE_CUBEMAP: 10,
-  REFLECTION_PROBE_SAMPLER: 11,
 } as const;
 
 /**
@@ -153,12 +151,8 @@ export const ENV_BINDING_MASK = {
   ALL_LEGACY: 0x7F, // Original 7 bindings
   /** SSR texture (for metallic object reflections) */
   SSR: 1 << ENVIRONMENT_BINDINGS.SSR_TEXTURE,
-  /** Reflection probe cubemap + sampler */
-  REFLECTION_PROBE_CUBEMAP: 1 << ENVIRONMENT_BINDINGS.REFLECTION_PROBE_CUBEMAP,
-  REFLECTION_PROBE_SAMPLER: 1 << ENVIRONMENT_BINDINGS.REFLECTION_PROBE_SAMPLER,
-  REFLECTION_PROBE: (1 << ENVIRONMENT_BINDINGS.REFLECTION_PROBE_CUBEMAP) | (1 << ENVIRONMENT_BINDINGS.REFLECTION_PROBE_SAMPLER),
   /** All resources including CSM - for CSM-aware renderers */
-  ALL: 0xFFF, // All 12 bindings (0-11)
+  ALL: 0x3FF, // All 10 bindings (0-9)
 } as const;
 
 export type EnvironmentBindingMask = number;

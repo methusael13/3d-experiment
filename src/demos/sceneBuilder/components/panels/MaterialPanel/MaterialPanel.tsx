@@ -1,6 +1,7 @@
 import { useCallback } from 'preact/hooks';
 import { Panel, Slider, ColorPicker } from '../../ui';
-import type { PBRMaterial } from '../../../../../core/sceneObjects';
+import type { PBRMaterial } from '@/core/sceneObjects';
+import type { TextureTargetSlot } from '@/core/gpu/renderers/ProceduralTextureGenerator';
 import styles from './MaterialPanel.module.css';
 
 // Import CSS variables
@@ -11,6 +12,10 @@ export interface MaterialPanelProps {
   objectType: string | null;
   material: PBRMaterial | null;
   onMaterialChange: (material: Partial<PBRMaterial>) => void;
+  /** Which PBR slots currently have procedural textures */
+  texturedSlots?: Set<TextureTargetSlot>;
+  /** Open procedural texture editor for a slot */
+  onOpenTextureEditor?: (slot: TextureTargetSlot) => void;
 }
 
 // Material presets (updated with new PBR properties)
@@ -25,14 +30,41 @@ const PRESETS: Record<string, PBRMaterial> = {
   diamond: { albedo: [0.97, 0.97, 0.97], metallic: 0.0, roughness: 0.0, ior: 2.42 },
 };
 
+/**
+ * Small button to open/indicate procedural texture for a PBR slot
+ */
+function TextureButton({
+  slot,
+  isTextured,
+  onClick,
+}: {
+  slot: TextureTargetSlot;
+  isTextured: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      class={`${styles.texBtn} ${isTextured ? styles.texBtnActive : ''}`}
+      onClick={onClick}
+      title={isTextured ? `Edit procedural texture (${slot})` : `Add procedural texture (${slot})`}
+    >
+      {isTextured ? '🔲' : '▪'}
+    </button>
+  );
+}
+
 export function MaterialPanel({
   selectedObjectId,
   objectType,
   material,
   onMaterialChange,
+  texturedSlots,
+  onOpenTextureEditor,
 }: MaterialPanelProps) {
   const isPrimitive = objectType === 'primitive';
   const hasSelection = !!selectedObjectId;
+  const slots = texturedSlots ?? new Set();
 
   const handleAlbedoChange = useCallback(
     (color: [number, number, number]) => {
@@ -101,6 +133,13 @@ export function MaterialPanel({
     [onMaterialChange]
   );
 
+  const openTexEditor = useCallback(
+    (slot: TextureTargetSlot) => () => {
+      onOpenTextureEditor?.(slot);
+    },
+    [onOpenTextureEditor]
+  );
+
   // Current values with defaults
   const albedo = material?.albedo ?? [0.75, 0.75, 0.75];
   const metallic = material?.metallic ?? 0;
@@ -110,6 +149,12 @@ export function MaterialPanel({
   const clearcoatFactor = material?.clearcoatFactor ?? 0;
   const clearcoatRoughness = material?.clearcoatRoughness ?? 0;
   const unlit = material?.unlit ?? false;
+
+  const isBaseColorTextured = slots.has('baseColor');
+  const isMetallicTextured = slots.has('metallic');
+  const isRoughnessTextured = slots.has('roughness');
+  const isOcclusionTextured = slots.has('occlusion');
+  const isEmissiveTextured = slots.has('emissive');
 
   return (
     <Panel title="Material">
@@ -131,39 +176,101 @@ export function MaterialPanel({
             <span>Unlit</span>
           </label>
 
-          <ColorPicker
-            label="Albedo"
-            value={albedo as [number, number, number]}
-            onChange={handleAlbedoChange}
-          />
+          {/* Albedo with texture button */}
+          <div class={styles.sliderWithTex}>
+            <div class={styles.sliderFlex}>
+              <ColorPicker
+                label={isBaseColorTextured ? 'Albedo (textured)' : 'Albedo'}
+                value={albedo as [number, number, number]}
+                onChange={handleAlbedoChange}
+              />
+            </div>
+            {onOpenTextureEditor && (
+              <TextureButton
+                slot="baseColor"
+                isTextured={isBaseColorTextured}
+                onClick={openTexEditor('baseColor')}
+              />
+            )}
+          </div>
 
           {!unlit && (
             <>
-              <Slider
-                label="Metallic"
-                value={metallic}
-                min={0}
-                max={1}
-                step={0.01}
-                format={(v) => v.toFixed(2)}
-                onChange={handleMetallicChange}
-              />
+              {/* Metallic with texture button */}
+              <div class={styles.sliderWithTex}>
+                <div class={styles.sliderFlex}>
+                  <Slider
+                    label={isMetallicTextured ? 'Metallic (textured)' : 'Metallic'}
+                    value={metallic}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    format={(v) => v.toFixed(2)}
+                    onChange={handleMetallicChange}
+                  />
+                </div>
+                {onOpenTextureEditor && (
+                  <TextureButton
+                    slot="metallic"
+                    isTextured={isMetallicTextured}
+                    onClick={openTexEditor('metallic')}
+                  />
+                )}
+              </div>
 
-              <Slider
-                label="Roughness"
-                value={roughness}
-                min={0.04}
-                max={1}
-                step={0.01}
-                format={(v) => v.toFixed(2)}
-                onChange={handleRoughnessChange}
-              />
+              {/* Roughness with texture button */}
+              <div class={styles.sliderWithTex}>
+                <div class={styles.sliderFlex}>
+                  <Slider
+                    label={isRoughnessTextured ? 'Roughness (textured)' : 'Roughness'}
+                    value={roughness}
+                    min={0.04}
+                    max={1}
+                    step={0.01}
+                    format={(v) => v.toFixed(2)}
+                    onChange={handleRoughnessChange}
+                  />
+                </div>
+                {onOpenTextureEditor && (
+                  <TextureButton
+                    slot="roughness"
+                    isTextured={isRoughnessTextured}
+                    onClick={openTexEditor('roughness')}
+                  />
+                )}
+              </div>
 
-              <ColorPicker
-                label="Emissive"
-                value={emissive as [number, number, number]}
-                onChange={handleEmissiveChange}
-              />
+              {/* Emissive with texture button */}
+              <div class={styles.sliderWithTex}>
+                <div class={styles.sliderFlex}>
+                  <ColorPicker
+                    label={isEmissiveTextured ? 'Emissive (textured)' : 'Emissive'}
+                    value={emissive as [number, number, number]}
+                    onChange={handleEmissiveChange}
+                  />
+                </div>
+                {onOpenTextureEditor && (
+                  <TextureButton
+                    slot="emissive"
+                    isTextured={isEmissiveTextured}
+                    onClick={openTexEditor('emissive')}
+                  />
+                )}
+              </div>
+
+              {/* Occlusion texture button (no slider — just the texture) */}
+              {onOpenTextureEditor && (
+                <div class={styles.sliderWithTex}>
+                  <span class={styles.occlusionLabel}>
+                    {isOcclusionTextured ? 'Occlusion (textured)' : 'Occlusion'}
+                  </span>
+                  <TextureButton
+                    slot="occlusion"
+                    isTextured={isOcclusionTextured}
+                    onClick={openTexEditor('occlusion')}
+                  />
+                </div>
+              )}
 
               <Slider
                 label="IOR"

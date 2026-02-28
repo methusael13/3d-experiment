@@ -12,6 +12,7 @@ import { VisibilityComponent } from '../components/VisibilityComponent';
 import { WindSystem } from './WindSystem';
 import { SSRComponent } from '../components';
 import { ReflectionProbeComponent } from '../components/ReflectionProbeComponent';
+import { GPUContext } from '@/core/gpu';
 
 /**
  * Byte offset for feature uniforms in the MaterialUniforms buffer.
@@ -20,9 +21,9 @@ import { ReflectionProbeComponent } from '../components/ReflectionProbeComponent
  *
  * Layout: wind fields (8 × f32 = 32 bytes) then wetness (vec4f = 16 bytes).
  * Wind: displacementX, displacementZ, anchorHeight, stiffness, time, turbulence, debugMode, debugMaterialType
- * When wind is not present, wetness starts at byte 80.
+ * When wind is not present, wetness starts at byte 96.
  */
-const FEATURE_UNIFORM_BASE = 80; // After base MaterialUniforms
+const FEATURE_UNIFORM_BASE = 96; // After base MaterialUniforms (6 × vec4f = 96 bytes)
 const WIND_UNIFORM_SIZE = 32;    // 8 × f32 (6 base + 2 debug)
 
 /** Byte offset of wind debug fields within the wind uniform block */
@@ -95,15 +96,15 @@ export class MeshRenderSystem extends System {
         if (meshComp?.isGPUInitialized) {
           meshComp.updateGPUTransform(transform.modelMatrix);
         }
-        
+
         const primComp = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
         if (primComp?.isGPUInitialized && primComp.gpuContext) {
           const meshId = primComp.gpuMeshId;
           if (meshId >= 0) {
-            primComp.gpuContext.objectRenderer.setTransform(meshId, transform.modelMatrix);
+            primComp.gpuContext.setMeshTransform(meshId, transform.modelMatrix);
           }
         }
-        
+
         transform._updatedThisFrame = false;
       }
       // Skip invisible entities
@@ -137,10 +138,11 @@ export class MeshRenderSystem extends System {
    * but before the render pass reads the buffers.
    */
   private uploadFeatureUniforms(entities: Entity[], context: SystemContext): void {
-    const objectRenderer = context.ctx.objectRenderer;
+    // Write feature uniforms to both pools via GPUContext facade.
+    const ctx = context.ctx;
     for (const entity of entities) {
-      this.uploadWindUniforms(entity, objectRenderer);
-      this.uploadWetnessUniforms(entity, objectRenderer);
+      this.uploadWindUniforms(entity, ctx);
+      this.uploadWetnessUniforms(entity, ctx);
     }
   }
 
@@ -162,7 +164,7 @@ export class MeshRenderSystem extends System {
    * Per-submesh: debugMaterialType varies by material slot (leaf/branch/untagged).
    * All other fields are shared across submeshes.
    */
-  private uploadWindUniforms(entity: Entity, objectRenderer: { writeExtraUniforms(id: number, data: Float32Array, offset: number): void }): void {
+  private uploadWindUniforms(entity: Entity, objectRenderer: { writeMeshExtraUniforms(id: number, data: Float32Array, offset: number): void }): void {
     const wind = entity.getComponent<WindComponent>('wind');
     if (!wind || !wind.enabled) return;
 
@@ -195,14 +197,14 @@ export class MeshRenderSystem extends System {
           materialType = 2;
         }
         buf[7] = materialType; // windDebugMaterialType
-        objectRenderer.writeExtraUniforms(gpuMeshIds[i], buf, FEATURE_UNIFORM_BASE);
+        objectRenderer.writeMeshExtraUniforms(gpuMeshIds[i], buf, FEATURE_UNIFORM_BASE);
       }
     }
 
     const primComp = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
     if (primComp?.isGPUInitialized && primComp.gpuMeshId >= 0) {
       buf[7] = 0; // primitives are untagged
-      objectRenderer.writeExtraUniforms(primComp.gpuMeshId, buf, FEATURE_UNIFORM_BASE);
+      objectRenderer.writeMeshExtraUniforms(primComp.gpuMeshId, buf, FEATURE_UNIFORM_BASE);
     }
   }
 
@@ -213,7 +215,7 @@ export class MeshRenderSystem extends System {
    * Upload wetness uniforms (waterLineY, factor, debug flag) for a single entity.
    * Byte offset depends on whether wind is also active (wetness sits after wind block).
    */
-  private uploadWetnessUniforms(entity: Entity, objectRenderer: { writeExtraUniforms(id: number, data: Float32Array, offset: number): void }): void {
+  private uploadWetnessUniforms(entity: Entity, objectRenderer: GPUContext): void {
     const wetness = entity.getComponent<WetnessComponent>('wetness');
     if (!wetness || !wetness.enabled || wetness.wetnessFactor <= 0) return;
 
@@ -229,13 +231,13 @@ export class MeshRenderSystem extends System {
     const meshComp = entity.getComponent<MeshComponent>('mesh');
     if (meshComp?.isGPUInitialized) {
       for (const gpuMeshId of meshComp.gpuMeshIds) {
-        objectRenderer.writeExtraUniforms(gpuMeshId, buf, wetnessOffset);
+        objectRenderer.writeMeshExtraUniforms(gpuMeshId, buf, wetnessOffset);
       }
     }
 
     const primComp = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
     if (primComp?.isGPUInitialized && primComp.gpuMeshId >= 0) {
-      objectRenderer.writeExtraUniforms(primComp.gpuMeshId, buf, wetnessOffset);
+      objectRenderer.writeMeshExtraUniforms(primComp.gpuMeshId, buf, wetnessOffset);
     }
   }
 
@@ -262,13 +264,17 @@ export class MeshRenderSystem extends System {
     // Textured feature (if entity has textures via material texture flags)
     const material = entity.getComponent<MaterialComponent>('material');
     if (material) {
-      const hasAnyTexture =
-        material.textureFlags[0] > 0 ||
-        material.textureFlags[1] > 0 ||
-        material.textureFlags[2] > 0 ||
-        material.textureFlags[3] > 0;
-      if (hasAnyTexture) {
+      if (material.hasIntrinsicTextures) {
         features.push('textured');
+      } else {
+        const hasAnyTexture =
+          material.textureFlags[0] > 0 ||
+          material.textureFlags[1] > 0 ||
+          material.textureFlags[2] > 0 ||
+          material.textureFlags[3] > 0;
+        if (hasAnyTexture) {
+          features.push('textured');
+        }
       }
     }
 

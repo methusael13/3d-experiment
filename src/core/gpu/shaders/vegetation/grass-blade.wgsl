@@ -404,13 +404,21 @@ fn sampleCSMShadowGrass(worldPos: vec3f, viewDepth: f32) -> f32 {
   return shadow;
 }
 
+// ==================== Fragment Output ====================
+
+struct FragmentOutput {
+  @location(0) color: vec4f,
+  @location(1) normals: vec4f,  // World-space normal packed [0,1] + metallic in .w
+}
+
 // ==================== Fragment Shader ====================
 
 @fragment
 fn fragmentMain(
   input: VertexOutput,
   @builtin(front_facing) isFrontFace: bool,
-) -> @location(0) vec4f {
+) -> FragmentOutput {
+  var fragOutput: FragmentOutput;
   // ---- Self-shadow (concentrated at base) ----
   let selfShadow = mix(0.2, 1.0, pow(input.bladeT, 2.0));
   
@@ -458,5 +466,8 @@ fn fragmentMain(
   
   let finalColor = modulatedColor * (lighting + sss);
   
-  return vec4f(finalColor, 1.0);
+  fragOutput.color = vec4f(finalColor, 1.0);
+  // Pack world-space normal from [-1,1] to [0,1] for G-buffer; grass metallic = 0
+  fragOutput.normals = vec4f(normal * 0.5 + 0.5, 0.0);
+  return fragOutput;
 }

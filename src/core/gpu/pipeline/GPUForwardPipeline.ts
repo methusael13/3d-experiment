@@ -269,6 +269,7 @@ export class GPUForwardPipeline {
     const shadowPass = new ShadowPass({
       shadowRenderer: this.shadowRenderer,
       objectRenderer: this.objectRenderer,
+      meshPool: this.ctx.variantMeshPool,
     });
     
     const skyPass = new SkyPass(this.skyRenderer);
@@ -276,6 +277,7 @@ export class GPUForwardPipeline {
     const opaquePass = new OpaquePass({
       objectRenderer: this.objectRenderer,
       shadowRenderer: this.shadowRenderer,
+      meshPool: this.ctx.variantMeshPool,
     });
     
     const transparentPass = new TransparentPass();

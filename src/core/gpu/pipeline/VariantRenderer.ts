@@ -9,36 +9,41 @@
  * Both modes iterate MeshRenderSystem variant groups and respect ECS components
  * (ShadowComponent for caster filtering, MeshComponent/PrimitiveGeometryComponent
  * for GPU mesh IDs).
+ *
+ * Since Phase 3 of the VariantMeshPool migration, this class reads mesh data
+ * from VariantMeshPool instead of ObjectRendererGPU. All bind groups (including
+ * Group 2 textures) are built dynamically from composed shader metadata via
+ * meshPool.buildTextureBindGroup() — no special cases for probe, SSR, etc.
  */
 
 import type { mat4 } from 'gl-matrix';
 import type { GPUContext } from '../GPUContext';
 import { VariantPipelineManager } from './VariantPipelineManager';
 import type { VariantPipelineEntry, DepthOnlyPipelineEntry } from './VariantPipelineManager';
-import type { ObjectRendererGPU, ObjectRenderParams, MeshRenderData } from '../renderers/ObjectRendererGPU';
+import type { VariantMeshPool } from './VariantMeshPool';
+import type { ObjectRenderParams } from '../renderers/ObjectRendererGPU';
 import type { MeshRenderSystem, ShaderVariantGroup } from '../../ecs/systems/MeshRenderSystem';
 import type { SceneEnvironment } from '../renderers/shared/SceneEnvironment';
 import { MeshComponent } from '../../ecs/components/MeshComponent';
 import { PrimitiveGeometryComponent } from '../../ecs/components/PrimitiveGeometryComponent';
 import { ShadowComponent } from '../../ecs/components/ShadowComponent';
-import { ReflectionProbeComponent } from '../../ecs/components/ReflectionProbeComponent';
 import type { Entity } from '../../ecs/Entity';
 
 export class VariantRenderer {
   private variantManager: VariantPipelineManager | null = null;
-  private objectRenderer: ObjectRendererGPU;
+  private meshPool: VariantMeshPool;
 
-  constructor(objectRenderer: ObjectRendererGPU) {
-    this.objectRenderer = objectRenderer;
+  constructor(meshPool: VariantMeshPool) {
+    this.meshPool = meshPool;
   }
 
   private ensureVariantManager(ctx: GPUContext): VariantPipelineManager {
     if (!this.variantManager) {
       this.variantManager = new VariantPipelineManager(
         ctx,
-        this.objectRenderer.getGlobalBindGroupLayout(),
-        this.objectRenderer.getModelBindGroupLayout(),
-        this.objectRenderer.getTextureBindGroupLayout(),
+        this.meshPool.getGlobalBindGroupLayout(),
+        this.meshPool.getModelBindGroupLayout(),
+        this.meshPool,
       );
     }
     return this.variantManager;
@@ -46,10 +51,6 @@ export class VariantRenderer {
 
   // ===================== Color Rendering =====================
 
-  /**
-   * Render all variant groups with full color (fragment) pipelines.
-   * Used by OpaquePass for the main scene rendering.
-   */
   /**
    * Render all variant groups with full color (fragment) pipelines.
    * Used by OpaquePass for the main scene rendering.
@@ -65,22 +66,19 @@ export class VariantRenderer {
     excludeEntitySet?: Set<string>,
   ): number {
     const variantManager = this.ensureVariantManager(ctx);
-    this.objectRenderer.writeGlobalUniforms(renderParams);
+    this.meshPool.writeGlobalUniforms(renderParams);
 
     const variantGroups = meshRenderSystem.getVariantGroups();
     let drawCalls = 0;
 
     for (const group of variantGroups) {
-      const featureIds = this.ensureTexturedFeature(group.featureIds);
+      const featureIds = group.featureIds;
 
       let pipelineBack: VariantPipelineEntry | null = null;
       let pipelineNone: VariantPipelineEntry | null = null;
       let envBindGroupBack: GPUBindGroup | null = null;
       let envBindGroupNone: GPUBindGroup | null = null;
       let currentPipeline: GPURenderPipeline | null = null;
-
-      // Check if this variant group uses reflection probes (per-entity cubemap)
-      const hasReflectionProbe = featureIds.includes('reflection-probe');
 
       for (const entity of group.entities) {
         if (excludeEntitySet?.has(entity.id)) {
@@ -90,26 +88,13 @@ export class VariantRenderer {
         const meshIds = this.collectMeshIds(entity);
         if (meshIds.length === 0) continue;
 
-        // Per-entity probe swap: if this group uses reflection probes,
-        // update SceneEnvironment with this entity's specific cubemap
-        // so the environment bind group includes the correct probe.
-        let entityEnvDirty = false;
-        if (hasReflectionProbe) {
-          const probe = entity.getComponent<ReflectionProbeComponent>('reflection-probe');
-          if (probe?.isBaked && probe.cubemapView && probe.cubemapSampler) {
-            sceneEnvironment.setReflectionProbe(probe.cubemapView, probe.cubemapSampler);
-            entityEnvDirty = true;
-            // Invalidate cached env bind groups so they're rebuilt with this entity's probe
-            envBindGroupBack = null;
-            envBindGroupNone = null;
-          }
-        }
-
         for (const meshId of meshIds) {
-          const meshData = this.objectRenderer.getMeshRenderData(meshId);
-          if (!meshData) continue;
+          const drawParams = this.meshPool.getDrawParams(meshId);
+          const modelBG = this.meshPool.getModelBindGroup(meshId);
+          if (!drawParams || !modelBG) continue;
 
-          const cullMode: GPUCullMode = meshData.doubleSided ? 'none' : 'back';
+          const doubleSided = this.meshPool.isDoubleSided(meshId);
+          const cullMode: GPUCullMode = doubleSided ? 'none' : 'back';
           let entry: VariantPipelineEntry;
           let envBindGroup: GPUBindGroup;
 
@@ -120,7 +105,7 @@ export class VariantRenderer {
             if (!envBindGroupNone) {
               envBindGroupNone = pipelineNone.hasEnvironmentBindings
                 ? sceneEnvironment.getBindGroupForMask(pipelineNone.environmentMask)
-                : this.objectRenderer.getEmptyBindGroup().bindGroup;
+                : this.meshPool.getEmptyBindGroup().bindGroup;
             }
             entry = pipelineNone;
             envBindGroup = envBindGroupNone;
@@ -131,7 +116,7 @@ export class VariantRenderer {
             if (!envBindGroupBack) {
               envBindGroupBack = pipelineBack.hasEnvironmentBindings
                 ? sceneEnvironment.getBindGroupForMask(pipelineBack.environmentMask)
-                : this.objectRenderer.getEmptyBindGroup().bindGroup;
+                : this.meshPool.getEmptyBindGroup().bindGroup;
             }
             entry = pipelineBack;
             envBindGroup = envBindGroupBack;
@@ -139,32 +124,31 @@ export class VariantRenderer {
 
           if (currentPipeline !== entry.pipeline) {
             pass.setPipeline(entry.pipeline);
-            pass.setBindGroup(0, this.objectRenderer.getGlobalBindGroup());
+            pass.setBindGroup(0, this.meshPool.getGlobalBindGroup());
             currentPipeline = entry.pipeline;
           }
 
-          // Always set Group 3 when env is dirty (per-entity probe swap)
-          // or when pipeline just changed
           pass.setBindGroup(3, envBindGroup);
+          pass.setBindGroup(1, modelBG);
 
-          pass.setBindGroup(1, meshData.modelBindGroup);
-
+          // Build Group 2 bind group dynamically from composed shader metadata.
+          // All texture resources (PBR, probe, SSR) are looked up by canonical name —
+          // no special cases needed.
           if (entry.hasTextureBindings) {
-            if (meshData.hasTextures && meshData.textureBindGroup) {
-              pass.setBindGroup(2, meshData.textureBindGroup);
-            } else {
-              pass.setBindGroup(2, meshData.placeholderTextureBindGroup);
-            }
+            const texBG = this.meshPool.buildTextureBindGroup(
+              meshId, entry.composed, entry.textureBindGroupLayout,
+            );
+            pass.setBindGroup(2, texBG);
           } else {
-            pass.setBindGroup(2, this.objectRenderer.getEmptyBindGroup().bindGroup);
+            pass.setBindGroup(2, this.meshPool.getEmptyBindGroup().bindGroup);
           }
 
-          pass.setVertexBuffer(0, meshData.vertexBuffer);
-          if (meshData.indexBuffer) {
-            pass.setIndexBuffer(meshData.indexBuffer, meshData.indexFormat);
-            pass.drawIndexed(meshData.indexCount, 1, 0, 0, 0);
+          pass.setVertexBuffer(0, drawParams.vertexBuffer);
+          if (drawParams.indexBuffer) {
+            pass.setIndexBuffer(drawParams.indexBuffer, drawParams.indexFormat);
+            pass.drawIndexed(drawParams.indexCount, 1, 0, 0, 0);
           } else {
-            pass.draw(meshData.vertexCount, 1, 0, 0);
+            pass.draw(drawParams.vertexCount, 1, 0, 0);
           }
           drawCalls++;
         }
@@ -195,12 +179,12 @@ export class VariantRenderer {
     const variantGroups = meshRenderSystem.getVariantGroups();
 
     // Write light VP matrix so composed vs_main transforms into light clip space
-    this.objectRenderer.writeGlobalUniforms({
+    this.meshPool.writeGlobalUniforms({
       viewProjectionMatrix: lightSpaceMatrix,
       cameraPosition: [0, 0, 0],
     });
 
-    const emptyBG = this.objectRenderer.getEmptyBindGroup().bindGroup;
+    const emptyBG = this.meshPool.getEmptyBindGroup().bindGroup;
     let drawCalls = 0;
 
     for (const group of variantGroups) {
@@ -209,7 +193,7 @@ export class VariantRenderer {
       const depthEntry = variantManager.getOrCreateDepthOnly(featureIds, 'depth32float', 'less');
 
       passEncoder.setPipeline(depthEntry.pipeline);
-      passEncoder.setBindGroup(0, this.objectRenderer.getGlobalBindGroup());
+      passEncoder.setBindGroup(0, this.meshPool.getGlobalBindGroup());
       passEncoder.setBindGroup(3, emptyBG);
 
       for (const entity of group.entities) {
@@ -219,18 +203,30 @@ export class VariantRenderer {
 
         const meshIds = this.collectMeshIds(entity);
         for (const meshId of meshIds) {
-          const meshData = this.objectRenderer.getMeshRenderData(meshId);
-          if (!meshData) continue;
+          const drawParams = this.meshPool.getDrawParams(meshId);
+          const modelBG = this.meshPool.getModelBindGroup(meshId);
+          if (!drawParams || !modelBG) continue;
 
-          passEncoder.setBindGroup(1, meshData.modelBindGroup);
-          passEncoder.setBindGroup(2, meshData.placeholderTextureBindGroup);
-          passEncoder.setVertexBuffer(0, meshData.vertexBuffer);
+          passEncoder.setBindGroup(1, modelBG);
 
-          if (meshData.indexBuffer) {
-            passEncoder.setIndexBuffer(meshData.indexBuffer, meshData.indexFormat);
-            passEncoder.drawIndexed(meshData.indexCount, 1, 0, 0, 0);
+          // For depth-only, build texture bind group with placeholders
+          // (the WGSL declares Group 2 bindings even though fragment is absent)
+          if (depthEntry.composed.bindingLayout.size > 0) {
+            const texBG = this.meshPool.buildTextureBindGroup(
+              meshId, depthEntry.composed, this.getDepthTextureLayout(ctx, variantManager, featureIds),
+            );
+            passEncoder.setBindGroup(2, texBG);
           } else {
-            passEncoder.draw(meshData.vertexCount, 1, 0, 0);
+            passEncoder.setBindGroup(2, emptyBG);
+          }
+
+          passEncoder.setVertexBuffer(0, drawParams.vertexBuffer);
+
+          if (drawParams.indexBuffer) {
+            passEncoder.setIndexBuffer(drawParams.indexBuffer, drawParams.indexFormat);
+            passEncoder.drawIndexed(drawParams.indexCount, 1, 0, 0, 0);
+          } else {
+            passEncoder.draw(drawParams.vertexCount, 1, 0, 0);
           }
           drawCalls++;
         }
@@ -238,7 +234,7 @@ export class VariantRenderer {
     }
 
     // Restore original camera VP matrix
-    this.objectRenderer.writeGlobalUniforms({
+    this.meshPool.writeGlobalUniforms({
       viewProjectionMatrix,
       cameraPosition,
     });
@@ -291,12 +287,12 @@ export class VariantRenderer {
     if (windGroups.length === 0) return 0;
 
     // Write light VP matrix so composed vs_main transforms into light clip space
-    this.objectRenderer.writeGlobalUniforms({
+    this.meshPool.writeGlobalUniforms({
       viewProjectionMatrix: lightSpaceMatrix,
       cameraPosition: [0, 0, 0],
     });
 
-    const emptyBG = this.objectRenderer.getEmptyBindGroup().bindGroup;
+    const emptyBG = this.meshPool.getEmptyBindGroup().bindGroup;
     let drawCalls = 0;
 
     for (const group of windGroups) {
@@ -304,7 +300,7 @@ export class VariantRenderer {
       const depthEntry = variantManager.getOrCreateDepthOnly(featureIds, 'depth32float', 'less');
 
       passEncoder.setPipeline(depthEntry.pipeline);
-      passEncoder.setBindGroup(0, this.objectRenderer.getGlobalBindGroup());
+      passEncoder.setBindGroup(0, this.meshPool.getGlobalBindGroup());
       passEncoder.setBindGroup(3, emptyBG);
 
       for (const entity of group.entities) {
@@ -313,18 +309,29 @@ export class VariantRenderer {
 
         const meshIds = this.collectMeshIds(entity);
         for (const meshId of meshIds) {
-          const meshData = this.objectRenderer.getMeshRenderData(meshId);
-          if (!meshData) continue;
+          const drawParams = this.meshPool.getDrawParams(meshId);
+          const modelBG = this.meshPool.getModelBindGroup(meshId);
+          if (!drawParams || !modelBG) continue;
 
-          passEncoder.setBindGroup(1, meshData.modelBindGroup);
-          passEncoder.setBindGroup(2, meshData.placeholderTextureBindGroup);
-          passEncoder.setVertexBuffer(0, meshData.vertexBuffer);
+          passEncoder.setBindGroup(1, modelBG);
 
-          if (meshData.indexBuffer) {
-            passEncoder.setIndexBuffer(meshData.indexBuffer, meshData.indexFormat);
-            passEncoder.drawIndexed(meshData.indexCount, 1, 0, 0, 0);
+          // Build texture bind group for depth (with placeholders)
+          if (depthEntry.composed.bindingLayout.size > 0) {
+            const texBG = this.meshPool.buildTextureBindGroup(
+              meshId, depthEntry.composed, this.getDepthTextureLayout(ctx, variantManager, featureIds),
+            );
+            passEncoder.setBindGroup(2, texBG);
           } else {
-            passEncoder.draw(meshData.vertexCount, 1, 0, 0);
+            passEncoder.setBindGroup(2, emptyBG);
+          }
+
+          passEncoder.setVertexBuffer(0, drawParams.vertexBuffer);
+
+          if (drawParams.indexBuffer) {
+            passEncoder.setIndexBuffer(drawParams.indexBuffer, drawParams.indexFormat);
+            passEncoder.drawIndexed(drawParams.indexCount, 1, 0, 0, 0);
+          } else {
+            passEncoder.draw(drawParams.vertexCount, 1, 0, 0);
           }
           drawCalls++;
         }
@@ -336,15 +343,8 @@ export class VariantRenderer {
 
   // ===================== Utilities =====================
 
-  /**
-   * Ensure 'textured' is in feature list for bind group layout compatibility.
-   */
-  private ensureTexturedFeature(featureIds: string[]): string[] {
-    return featureIds.includes('textured') ? featureIds : [...featureIds, 'textured'];
-  }
-
   /** Fragment-only features that should be excluded from depth-only pipelines. */
-  private static readonly FRAGMENT_ONLY_FEATURES = new Set(['shadow', 'ibl', 'wetness']);
+  private static readonly FRAGMENT_ONLY_FEATURES = new Set(['shadow', 'ibl', 'wetness', 'reflection-probe']);
 
   /**
    * Build feature list for depth-only rendering.
@@ -353,8 +353,25 @@ export class VariantRenderer {
    * Keeps vertex-affecting features (wind, textured) for displacement + layout compatibility.
    */
   private buildDepthOnlyFeatures(featureIds: string[]): string[] {
-    const ids = featureIds.filter(id => !VariantRenderer.FRAGMENT_ONLY_FEATURES.has(id));
-    return this.ensureTexturedFeature(ids);
+    return featureIds.filter(id => !VariantRenderer.FRAGMENT_ONLY_FEATURES.has(id));
+  }
+
+  /**
+   * Get the texture bind group layout for a depth-only pipeline variant.
+   * This is needed because depth-only pipelines still declare Group 2 bindings in WGSL.
+   */
+  private getDepthTextureLayout(
+    ctx: GPUContext,
+    variantManager: VariantPipelineManager,
+    featureIds: string[],
+  ): GPUBindGroupLayout {
+    // The depth-only pipeline was created with the existing texture layout from ObjectRendererGPU.
+    // For VariantMeshPool, we get the layout from the depth entry's pipeline.
+    // However, depth entries use existingTextureBindGroupLayout which is now from meshPool.
+    // We can use the pipeline's bind group layout directly.
+    const depthEntry = variantManager.getOrCreateDepthOnly(featureIds, 'depth32float', 'less');
+    // The pipeline was created with the texture layout at group index 2
+    return depthEntry.pipeline.getBindGroupLayout(2);
   }
 
   /**

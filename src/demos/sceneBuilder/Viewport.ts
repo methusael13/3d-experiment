@@ -641,6 +641,12 @@ export class Viewport {
     }
 
     this.gpuPipeline.render(cameraAdapter as any, options, separateSceneCamera as any, this._world);
+
+    // Flush deferred entity deletions after all GPU commands are submitted.
+    // Entities marked for deletion during the frame are kept alive until here
+    // so their GPU resources (textures, buffers) can still be referenced by
+    // in-flight render commands.
+    this._world.flushPendingDeletions();
     
     // Render debug camera frustum visualization when in debug camera mode
     if (this.debugCameraMode && this.debugCameraController && this.cameraFrustumRenderer) {

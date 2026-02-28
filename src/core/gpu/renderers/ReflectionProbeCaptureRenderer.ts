@@ -93,7 +93,7 @@ export class ReflectionProbeCaptureRenderer {
 
   private ensureVariantRenderer(): VariantRenderer {
     if (!this.variantRenderer) {
-      this.variantRenderer = new VariantRenderer(this.ctx.objectRenderer);
+      this.variantRenderer = new VariantRenderer(this.ctx.variantMeshPool);
     }
     return this.variantRenderer;
   }
@@ -134,7 +134,7 @@ export class ReflectionProbeCaptureRenderer {
 
     // Temporarily clear the probe from SceneEnvironment to avoid
     // usage conflict (RenderAttachment + TextureBinding in same submission)
-    ctx.sceneEnvironment.setReflectionProbe(null, null);
+    // Probe cubemap is now per-entity in Group 2, no need to clear from SceneEnvironment
 
     for (let face = 0; face < 6; face++) {
       const faceDir = CUBEMAP_FACES[face];

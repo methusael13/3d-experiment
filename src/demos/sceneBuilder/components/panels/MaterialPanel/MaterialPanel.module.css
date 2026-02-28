@@ -94,3 +94,57 @@
   width: 14px;
   height: 14px;
 }
+
+/* Slider + texture button row */
+.sliderWithTex {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sliderFlex {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Texture button */
+.texBtn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: var(--sb-bg-hover);
+  color: var(--sb-text-muted);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--sb-radius-sm);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.texBtn:hover {
+  background: var(--sb-bg-panel);
+  color: var(--sb-text-primary);
+  border-color: var(--sb-accent);
+}
+
+.texBtnActive {
+  background: rgba(74, 158, 255, 0.15);
+  color: var(--sb-accent);
+  border-color: var(--sb-accent);
+}
+
+.texBtnActive:hover {
+  background: rgba(74, 158, 255, 0.25);
+}
+
+/* Occlusion label (no slider, just label + tex button) */
+.occlusionLabel {
+  flex: 1;
+  font-size: var(--sb-font-sm);
+  color: var(--sb-text-secondary);
+}

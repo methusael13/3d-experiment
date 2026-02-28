@@ -19,7 +19,8 @@ import { SceneEnvironment } from '../renderers/shared/SceneEnvironment';
 import { RES } from '../shaders/composition/resourceNames';
 import { ENVIRONMENT_BINDINGS, ENV_BINDING_MASK } from '../renderers/shared/types';
 import type { EnvironmentBindingMask } from '../renderers/shared/types';
-import type { ObjectRendererGPU } from '../renderers/ObjectRendererGPU';
+import type { VariantMeshPool } from './VariantMeshPool';
+import { PlaceholderTextures } from '../renderers/shared/PlaceholderTextures';
 
 /**
  * Cached pipeline entry for a specific variant + cull mode combination.
@@ -91,9 +92,7 @@ function computeEnvironmentMask(composed: ComposedShader): EnvironmentBindingMas
   if (features.includes('ssr')) {
     mask |= ENV_BINDING_MASK.SSR_TEXTURE;
   }
-  if (features.includes('reflection-probe')) {
-    mask |= ENV_BINDING_MASK.REFLECTION_PROBE;
-  }
+  // reflection-probe resources are now in Group 2 (textures), not Group 3 (environment)
 
   return mask;
 }
@@ -162,24 +161,23 @@ export class VariantPipelineManager {
   // Cache: key = `${featureKey}:${cullMode}` → pipeline entry
   private pipelineCache = new Map<string, VariantPipelineEntry>();
 
-  // Shared bind group layouts from ObjectRendererGPU (Groups 0, 1, and 2)
+  // Shared bind group layouts from VariantMeshPool (Groups 0 and 1)
   private globalBindGroupLayout: GPUBindGroupLayout;
   private modelBindGroupLayout: GPUBindGroupLayout;
-  /** ObjectRendererGPU's existing texture bind group layout (Group 2).
-   * Used for textured variants so existing per-mesh texture bind groups are compatible. */
-  private existingTextureBindGroupLayout: GPUBindGroupLayout;
+  /** VariantMeshPool reference — used for empty bind group fallback in depth-only. */
+  private meshPool: VariantMeshPool;
 
   constructor(
     ctx: GPUContext,
     globalBindGroupLayout: GPUBindGroupLayout,
     modelBindGroupLayout: GPUBindGroupLayout,
-    existingTextureBindGroupLayout: GPUBindGroupLayout,
+    meshPool: VariantMeshPool,
     variantCache?: ShaderVariantCache,
   ) {
     this.ctx = ctx;
     this.globalBindGroupLayout = globalBindGroupLayout;
     this.modelBindGroupLayout = modelBindGroupLayout;
-    this.existingTextureBindGroupLayout = existingTextureBindGroupLayout;
+    this.meshPool = meshPool;
     this.variantCache = variantCache ?? new ShaderVariantCache();
   }
 
@@ -222,16 +220,19 @@ export class VariantPipelineManager {
     const { composed, shaderModule } = variantEntry;
     const device = this.ctx.device;
 
-    // For Group 2, reuse ObjectRendererGPU's existing texture layout when textures are present.
-    // This is critical: per-mesh texture bind groups were created with that layout, so the
-    // pipeline's Group 2 layout must be the exact same GPUBindGroupLayout object.
+    // For Group 2, ALWAYS build the layout from the composed shader's bindingLayout.
+    // VariantMeshPool builds bind groups dynamically by name, so the layout must match
+    // the composed shader's resource declarations exactly.
     const hasTextureBindings = composed.bindingLayout.size > 0;
-    const textureBindGroupLayout = hasTextureBindings
-      ? this.existingTextureBindGroupLayout
-      : device.createBindGroupLayout({
-          label: `variant-texture-empty-${composed.featureKey}`,
-          entries: [],
-        });
+    let textureBindGroupLayout: GPUBindGroupLayout;
+    if (hasTextureBindings) {
+      textureBindGroupLayout = buildTextureBindGroupLayout(device, composed, composed.featureKey);
+    } else {
+      textureBindGroupLayout = device.createBindGroupLayout({
+        label: `variant-texture-empty-${composed.featureKey}`,
+        entries: [],
+      });
+    }
 
     const environmentMask = computeEnvironmentMask(composed);
     const hasEnvironmentBindings = environmentMask !== 0;
@@ -351,8 +352,12 @@ export class VariantPipelineManager {
     const { composed, shaderModule } = variantEntry;
     const device = this.ctx.device;
 
-    // Empty layouts for Groups 2 and 3 (not needed for depth-only)
-    const emptyLayout2 = this.existingTextureBindGroupLayout;
+    // For Group 2, build from composed shader's bindingLayout (same as color path)
+    // so that VariantMeshPool.buildTextureBindGroup() can create compatible bind groups.
+    const hasTextureBindings = composed.bindingLayout.size > 0;
+    const emptyLayout2 = hasTextureBindings
+      ? buildTextureBindGroupLayout(device, composed, composed.featureKey + '-depth')
+      : device.createBindGroupLayout({ label: `variant-depth-tex-empty-${composed.featureKey}`, entries: [] });
     const emptyLayout3 = device.createBindGroupLayout({
       label: `variant-depth-env-empty-${composed.featureKey}`,
       entries: [],

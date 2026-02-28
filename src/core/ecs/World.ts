@@ -11,6 +11,9 @@ export class World {
   private entities = new Map<string, Entity>();
   private systems: System[] = [];
 
+  /** Entities marked for deletion — actual destroy() deferred to flushPendingDeletions() */
+  private pendingDeletions: Entity[] = [];
+
   /** Spatial index for raycasting. Automatically synced with entity transforms. */
   private _sceneGraph: SceneGraph = new SceneGraph();
 
@@ -52,17 +55,36 @@ export class World {
   }
 
   /**
-   * Remove and destroy an entity.
+   * Mark an entity for deletion. The entity is immediately removed from
+   * queries, selection, and the scene graph, but actual GPU resource
+   * cleanup (entity.destroy()) is deferred until flushPendingDeletions()
+   * is called — typically after the render frame submits GPU commands.
+   * This prevents "destroyed texture used in a submit" crashes.
    */
   destroyEntity(id: string): boolean {
     const entity = this.entities.get(id);
     if (!entity) return false;
     this.selectedIds.delete(id);
     this._sceneGraph.remove(id);
-    entity.destroy();
     this.entities.delete(id);
     this.onEntityRemoved?.(id);
+    // Defer actual GPU resource cleanup
+    this.pendingDeletions.push(entity);
     return true;
+  }
+
+  /**
+   * Flush pending entity deletions — call after GPU frame submission.
+   * This runs entity.destroy() on all entities that were marked for
+   * deletion since the last flush, safely releasing GPU resources
+   * after the render commands referencing them have been submitted.
+   */
+  flushPendingDeletions(): void {
+    if (this.pendingDeletions.length === 0) return;
+    for (const entity of this.pendingDeletions) {
+      entity.destroy();
+    }
+    this.pendingDeletions.length = 0;
   }
 
   /**
