@@ -188,7 +188,7 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     
     batch(() => {
       // Sync objects from World entities
-      objects.value = world.getAllEntities();
+      objects.value = world.getAllEntities().filter(e => !e.internal);
       
       // Sync selection from World
       selectedIds.value = new Set(world.getSelectedIds());

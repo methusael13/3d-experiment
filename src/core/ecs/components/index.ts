@@ -14,3 +14,5 @@ export { WetnessComponent } from './WetnessComponent';
 export { SSRComponent } from './SSRComponent';
 export { ReflectionProbeComponent } from './ReflectionProbeComponent';
 export { PrimitiveGeometryComponent } from './PrimitiveGeometryComponent';
+export { FPSCameraComponent } from './FPSCameraComponent';
+export { FrustumCullComponent } from './FrustumCullComponent';

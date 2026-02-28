@@ -1,5 +1,6 @@
 import type { GPUContext } from '../gpu/GPUContext';
 import type { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
+import type { World } from './World';
 
 /**
  * Component type identifiers.
@@ -24,13 +25,16 @@ export type ComponentType =
   | 'lod'
   | 'wetness'
   | 'ssr'
-  | 'reflection-probe'; // Extensible for future/external components
+  | 'reflection-probe'
+  | 'fps-camera'
+  | 'frustum-cull'; // Extensible for future/external components
 
 /**
  * Context provided to systems each frame.
  */
 export interface SystemContext {
   ctx: GPUContext;
+  world: World;
   time: number;
   deltaTime: number;
   sceneEnvironment: SceneEnvironment;

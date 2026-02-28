@@ -56,6 +56,9 @@ export class VariantRenderer {
    * Used by OpaquePass for the main scene rendering.
    * 
    * @param excludeEntitySet - Optional set of entity IDs to skip (for probe self-exclusion)
+   * @param visibleEntitySet - Optional set of entity IDs that passed frustum culling.
+   *                           When provided, entities NOT in this set are skipped.
+   *                           When null/undefined, all entities are rendered (no frustum culling).
    */
   renderColor(
     pass: GPURenderPassEncoder,
@@ -64,6 +67,7 @@ export class VariantRenderer {
     sceneEnvironment: SceneEnvironment,
     renderParams: ObjectRenderParams,
     excludeEntitySet?: Set<string>,
+    visibleEntitySet?: Set<string> | null,
   ): number {
     const variantManager = this.ensureVariantManager(ctx);
     this.meshPool.writeGlobalUniforms(renderParams);
@@ -82,6 +86,10 @@ export class VariantRenderer {
 
       for (const entity of group.entities) {
         if (excludeEntitySet?.has(entity.id)) {
+          continue;
+        }
+        // Frustum culling: skip entities not in the visible set
+        if (visibleEntitySet && !visibleEntitySet.has(entity.id)) {
           continue;
         }
 

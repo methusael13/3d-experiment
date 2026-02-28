@@ -8,11 +8,12 @@ import { useCallback, useMemo, useRef } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
 import { MenuBar, type MenuDefinition, type MenuAction } from '../layout';
 import { shaderPanelVisible, toggleShaderPanel } from './ShaderDebugPanelBridge';
-import { FPSCameraController } from '../../FPSCameraController';
 import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity } from '@/core/ecs/factories';
 import { PrimitiveGeometryComponent } from '@/core/ecs/components/PrimitiveGeometryComponent';
 import { TransformComponent } from '@/core/ecs/components/TransformComponent';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
+import { FPSCameraComponent } from '@/core/ecs/components/FPSCameraComponent';
+import { FPSCameraSystem } from '@/core/ecs/systems/FPSCameraSystem';
 import { TerrainManager } from '@/core/terrain/TerrainManager';
 import { OceanManager } from '@/core/ocean/OceanManager';
 import { generatePrimitiveGeometry } from '@/core/utils/primitiveGeometry';
@@ -299,8 +300,8 @@ export function ConnectedMenuBar() {
     console.log('[MenuBar] Expand View - TODO');
   }, []);
   
-  // FPS camera controller ref
-  const fpsControllerRef = useRef<FPSCameraController | null>(null);
+  // FPS camera entity ID ref (for cleanup)
+  const fpsCameraEntityIdRef = useRef<string | null>(null);
   
   const handleFPSCamera = useCallback(() => {
     const viewport = store.viewport;
@@ -312,33 +313,11 @@ export function ConnectedMenuBar() {
     
     // If already in FPS mode, exit
     if (fpsModeActive.value) {
-      if (fpsControllerRef.current) {
-        fpsControllerRef.current.exit();
+      const fpsSystem = world.getSystem<FPSCameraSystem>('fps-camera');
+      if (fpsSystem) {
+        fpsSystem.exit();
       }
       return;
-    }
-    
-    // Get terrain entity and its manager
-    const terrainEntity = world.queryFirst('terrain');
-    if (!terrainEntity) {
-      console.warn('[MenuBar] FPS Camera - no terrain entity in world');
-      return;
-    }
-    
-    const terrainComp = terrainEntity.getComponent<TerrainComponent>('terrain');
-    const terrainManager = terrainComp?.manager;
-    if (!terrainManager) {
-      console.warn('[MenuBar] FPS Camera - no TerrainManager available');
-      return;
-    }
-    
-    if (!terrainManager.hasCPUHeightfield()) {
-      console.warn('[MenuBar] FPS Camera - terrain CPU heightfield not ready');
-      return;
-    }
-    
-    if (!fpsControllerRef.current) {
-      fpsControllerRef.current = new FPSCameraController();
     }
     
     const inputManager = viewport.getInputManager();
@@ -347,30 +326,49 @@ export function ConnectedMenuBar() {
       return;
     }
     
-    const canvas = (viewport as any).canvas;
-    if (!canvas) {
-      console.warn('[MenuBar] FPS Camera - canvas not available');
-      return;
+    // Create FPS camera entity — spawning is handled by FPSCameraSystem on first update
+    const fpsCamEntity = world.createEntity('FPS Camera');
+    const fpsCam = new FPSCameraComponent();
+    fpsCam.active = true;
+    
+    // Set aspect ratio from canvas
+    const canvas = (viewport as any).canvas as HTMLCanvasElement | undefined;
+    if (canvas) {
+      fpsCam.setAspectRatio(canvas.width, canvas.height);
     }
     
-    const activated = fpsControllerRef.current.activate(
-      canvas,
-      terrainManager,
-      inputManager,
-      {
-        onExit: () => {
-          fpsModeActive.value = false;
-          viewport.setFPSMode(false, null);
-          console.log('[MenuBar] FPS Camera mode exited');
-        },
+    fpsCamEntity.addComponent(fpsCam);
+    fpsCameraEntityIdRef.current = fpsCamEntity.id;
+    
+    // Create and add FPSCameraSystem with exit callback
+    const fpsSystem = new FPSCameraSystem(inputManager, () => {
+      // Exit callback: clean up entity, system, and UI state
+      fpsModeActive.value = false;
+      viewport.setFPSMode(false);
+      
+      // Remove entity
+      if (fpsCameraEntityIdRef.current) {
+        world.destroyEntity(fpsCameraEntityIdRef.current);
+        fpsCameraEntityIdRef.current = null;
       }
-    );
+      
+      // Remove system
+      world.removeSystem('fps-camera');
+      
+      console.log('[MenuBar] FPS Camera mode exited');
+    });
     
-    if (activated) {
-      fpsModeActive.value = true;
-      viewport.setFPSMode(true, fpsControllerRef.current);
-      console.log('[MenuBar] FPS Camera mode activated');
-    }
+    // Subscribe to input events immediately
+    fpsSystem.initialize?.();
+    
+    world.addSystem(fpsSystem, 5);
+    
+    // Request pointer lock
+    inputManager.requestPointerLock();
+    
+    // Activate viewport FPS mode (switches input channel, hides gizmos)
+    fpsModeActive.value = true;
+    viewport.setFPSMode(true);
   }, [store]);
   
   const handleToggleDebugCamera = useCallback(() => {
@@ -379,7 +377,12 @@ export function ConnectedMenuBar() {
     
     const newState = !debugCameraModeActive.value;
     if (newState && fpsModeActive.value) {
-      fpsModeActive.value = false;
+      // Exit FPS mode if entering debug camera mode
+      const world = store.world;
+      const fpsSystem = world?.getSystem<FPSCameraSystem>('fps-camera');
+      if (fpsSystem) {
+        fpsSystem.exit();
+      }
     }
     
     viewport.setDebugCameraMode(newState);

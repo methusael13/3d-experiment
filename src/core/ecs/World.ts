@@ -286,6 +286,84 @@ export class World {
     }
   }
 
+  // ===================== Spatial Queries =====================
+
+  /**
+   * Find all entities within a radius of a point.
+   * BVH-accelerated via the scene graph, then resolves node IDs to entities.
+   *
+   * @param center - Query center point [x, y, z]
+   * @param radius - Search radius in world units
+   * @returns Entities whose world AABB intersects the query sphere
+   */
+  queryNearby(center: [number, number, number], radius: number): Entity[] {
+    const nodes = this._sceneGraph.queryNearby(center, radius);
+    const results: Entity[] = [];
+    for (const node of nodes) {
+      const entity = this.entities.get(node.id);
+      if (entity) results.push(entity);
+    }
+    return results;
+  }
+
+  /**
+   * Find all entities within a radius that have a specific component type.
+   * Combines BVH spatial query with ECS component filtering.
+   *
+   * @param center - Query center point [x, y, z]
+   * @param radius - Search radius in world units
+   * @param componentType - Required component type for returned entities
+   * @returns Entities within radius that have the specified component
+   */
+  queryNearbyWith(center: [number, number, number], radius: number, componentType: ComponentType): Entity[] {
+    const nodes = this._sceneGraph.queryNearby(center, radius);
+    const results: Entity[] = [];
+    for (const node of nodes) {
+      const entity = this.entities.get(node.id);
+      if (entity && entity.hasComponent(componentType)) {
+        results.push(entity);
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Find all entities visible within a camera frustum.
+   * BVH-accelerated: prunes branches whose bounding boxes are fully outside the frustum.
+   *
+   * @param vpMatrix - View-projection matrix (column-major Float32Array, from gl-matrix)
+   * @returns Entities whose world AABB intersects or is inside the frustum
+   */
+  queryFrustum(vpMatrix: Float32Array | number[]): Entity[] {
+    const nodes = this._sceneGraph.queryFrustum(vpMatrix);
+    const results: Entity[] = [];
+    for (const node of nodes) {
+      const entity = this.entities.get(node.id);
+      if (entity) results.push(entity);
+    }
+    return results;
+  }
+
+  /**
+   * Cast a ray through the scene, return the closest hit entity.
+   * BVH-accelerated via the scene graph.
+   *
+   * @param origin - Ray origin [x, y, z]
+   * @param direction - Ray direction [x, y, z] (will be normalized)
+   * @returns Object with entity, distance, and hitPoint — or null if no hit
+   */
+  raycast(origin: [number, number, number], direction: [number, number, number]): { entity: Entity; distance: number; hitPoint: [number, number, number] } | null {
+    const hit = this._sceneGraph.castRay(origin as any, direction as any);
+    if (!hit) return null;
+    const entity = this.entities.get(hit.node.id);
+    if (!entity) return null;
+    return {
+      entity,
+      distance: hit.distance,
+      hitPoint: [hit.hitPoint[0], hit.hitPoint[1], hit.hitPoint[2]],
+    };
+  }
+
   // ===================== Groups =====================
 
   private groups = new Map<string, { name: string; childIds: Set<string> }>();

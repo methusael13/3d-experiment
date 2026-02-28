@@ -10,6 +10,8 @@ export class Entity {
 
   readonly id: string;
   name: string;
+  /** When true, this entity is hidden from UI panels (e.g., internal system entities like frustum cull). */
+  internal = false;
   private components = new Map<ComponentType, Component>();
 
   constructor(name: string = 'Entity') {

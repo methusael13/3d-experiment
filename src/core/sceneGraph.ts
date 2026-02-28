@@ -346,6 +346,147 @@ export class SceneGraphNode<T = unknown> {
   }
 }
 
+// ============ Frustum Class ============
+
+/**
+ * Camera frustum defined by 6 planes, extracted from a view-projection matrix.
+ * Each plane is [a, b, c, d] where ax + by + cz + d = 0, normal pointing inward.
+ *
+ * Used for CPU-side frustum culling of AABBs via the BVH.
+ */
+export class Frustum {
+  /** Planes: left, right, bottom, top, near, far. Each [a, b, c, d]. */
+  planes: [Float32Array, Float32Array, Float32Array, Float32Array, Float32Array, Float32Array];
+
+  constructor() {
+    this.planes = [
+      new Float32Array(4),
+      new Float32Array(4),
+      new Float32Array(4),
+      new Float32Array(4),
+      new Float32Array(4),
+      new Float32Array(4),
+    ];
+  }
+
+  /**
+   * Extract frustum planes from a view-projection matrix (column-major, gl-matrix layout).
+   * Planes are normalized so that (a,b,c) is a unit normal.
+   */
+  static fromViewProjection(vp: Float32Array | number[]): Frustum {
+    const f = new Frustum();
+    const m = vp;
+
+    // Row extraction from column-major matrix:
+    // row0 = [m0, m4, m8,  m12]
+    // row1 = [m1, m5, m9,  m13]
+    // row2 = [m2, m6, m10, m14]
+    // row3 = [m3, m7, m11, m15]
+
+    // Left:   row3 + row0
+    f.planes[0][0] = m[3] + m[0];
+    f.planes[0][1] = m[7] + m[4];
+    f.planes[0][2] = m[11] + m[8];
+    f.planes[0][3] = m[15] + m[12];
+
+    // Right:  row3 - row0
+    f.planes[1][0] = m[3] - m[0];
+    f.planes[1][1] = m[7] - m[4];
+    f.planes[1][2] = m[11] - m[8];
+    f.planes[1][3] = m[15] - m[12];
+
+    // Bottom: row3 + row1
+    f.planes[2][0] = m[3] + m[1];
+    f.planes[2][1] = m[7] + m[5];
+    f.planes[2][2] = m[11] + m[9];
+    f.planes[2][3] = m[15] + m[13];
+
+    // Top:    row3 - row1
+    f.planes[3][0] = m[3] - m[1];
+    f.planes[3][1] = m[7] - m[5];
+    f.planes[3][2] = m[11] - m[9];
+    f.planes[3][3] = m[15] - m[13];
+
+    // Near:   row3 + row2
+    f.planes[4][0] = m[3] + m[2];
+    f.planes[4][1] = m[7] + m[6];
+    f.planes[4][2] = m[11] + m[10];
+    f.planes[4][3] = m[15] + m[14];
+
+    // Far:    row3 - row2
+    f.planes[5][0] = m[3] - m[2];
+    f.planes[5][1] = m[7] - m[6];
+    f.planes[5][2] = m[11] - m[10];
+    f.planes[5][3] = m[15] - m[14];
+
+    // Normalize each plane
+    for (const p of f.planes) {
+      const len = Math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+      if (len > 1e-8) {
+        p[0] /= len;
+        p[1] /= len;
+        p[2] /= len;
+        p[3] /= len;
+      }
+    }
+
+    return f;
+  }
+
+  /**
+   * Test whether an AABB intersects or is inside the frustum.
+   * Uses the p-vertex (positive vertex) method for fast rejection.
+   *
+   * @returns true if the AABB is at least partially inside the frustum
+   */
+  intersectsAABB(aabb: AABB): boolean {
+    for (const p of this.planes) {
+      // p-vertex: the corner of the AABB furthest in the direction of the plane normal
+      const px = p[0] >= 0 ? aabb.max[0] : aabb.min[0];
+      const py = p[1] >= 0 ? aabb.max[1] : aabb.min[1];
+      const pz = p[2] >= 0 ? aabb.max[2] : aabb.min[2];
+
+      // If the p-vertex is on the negative side, the AABB is fully outside this plane
+      if (p[0] * px + p[1] * py + p[2] * pz + p[3] < 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Classify an AABB against the frustum.
+   * @returns 'outside' | 'intersect' | 'inside'
+   */
+  classifyAABB(aabb: AABB): 'outside' | 'intersect' | 'inside' {
+    let allInside = true;
+
+    for (const p of this.planes) {
+      // p-vertex (furthest in normal direction)
+      const px = p[0] >= 0 ? aabb.max[0] : aabb.min[0];
+      const py = p[1] >= 0 ? aabb.max[1] : aabb.min[1];
+      const pz = p[2] >= 0 ? aabb.max[2] : aabb.min[2];
+
+      // n-vertex (closest in normal direction)
+      const nx = p[0] >= 0 ? aabb.min[0] : aabb.max[0];
+      const ny = p[1] >= 0 ? aabb.min[1] : aabb.max[1];
+      const nz = p[2] >= 0 ? aabb.min[2] : aabb.max[2];
+
+      // If p-vertex is outside, entire AABB is outside
+      if (p[0] * px + p[1] * py + p[2] * pz + p[3] < 0) {
+        return 'outside';
+      }
+
+      // If n-vertex is outside, AABB straddles this plane
+      if (p[0] * nx + p[1] * ny + p[2] * nz + p[3] < 0) {
+        allInside = false;
+      }
+    }
+
+    return allInside ? 'inside' : 'intersect';
+  }
+}
+
 // ============ SceneGraph Class ============
 
 /**
@@ -600,6 +741,94 @@ export class SceneGraph<T = unknown> {
 
     traverse(this.bvhRoot);
 
+    return results;
+  }
+
+  /**
+   * Query all nodes within a radius of a point.
+   * Uses AABB broadphase via BVH, then refines with sphere-AABB distance check.
+   *
+   * @param center - Query center point
+   * @param radius - Search radius
+   * @returns Nodes whose world AABB intersects the query sphere
+   */
+  queryNearby(center: vec3 | [number, number, number], radius: number): SceneGraphNode<T>[] {
+    if (this.bvhDirty) {
+      this.rebuild();
+    }
+
+    const r2 = radius * radius;
+    const results: SceneGraphNode<T>[] = [];
+
+    // Build query AABB for broadphase
+    const queryBox = new BoundingBox(
+      [center[0] - radius, center[1] - radius, center[2] - radius],
+      [center[0] + radius, center[1] + radius, center[2] + radius],
+    );
+
+    const traverse = (bvhNode: BVHNode<T> | null): void => {
+      if (!bvhNode) return;
+
+      // BVH branch pruning: skip if query AABB doesn't intersect this BVH node
+      if (!bvhNode.bounds.intersects(queryBox)) return;
+
+      if (bvhNode.leaf) {
+        // Refine: check squared distance from center to closest point on AABB
+        const wb = bvhNode.leaf.worldBounds;
+        const cx = Math.max(wb.min[0], Math.min(center[0], wb.max[0]));
+        const cy = Math.max(wb.min[1], Math.min(center[1], wb.max[1]));
+        const cz = Math.max(wb.min[2], Math.min(center[2], wb.max[2]));
+        const dx = cx - center[0];
+        const dy = cy - center[1];
+        const dz = cz - center[2];
+        if (dx * dx + dy * dy + dz * dz <= r2) {
+          results.push(bvhNode.leaf);
+        }
+      } else {
+        traverse(bvhNode.left);
+        traverse(bvhNode.right);
+      }
+    };
+
+    traverse(this.bvhRoot);
+    return results;
+  }
+
+  /**
+   * Query all nodes visible within a camera frustum.
+   * BVH-accelerated: prunes branches whose bounding boxes are fully outside the frustum.
+   *
+   * @param vpMatrix - View-projection matrix (column-major, gl-matrix layout)
+   * @returns Nodes whose world AABB intersects or is inside the frustum
+   */
+  queryFrustum(vpMatrix: Float32Array | number[]): SceneGraphNode<T>[] {
+    if (this.bvhDirty) {
+      this.rebuild();
+    }
+
+    if (!this.bvhRoot) return [];
+
+    const frustum = Frustum.fromViewProjection(vpMatrix);
+    const results: SceneGraphNode<T>[] = [];
+
+    const traverse = (bvhNode: BVHNode<T> | null): void => {
+      if (!bvhNode) return;
+
+      // Early out: if the BVH node's bounds are fully outside the frustum, skip entire subtree
+      if (!frustum.intersectsAABB(bvhNode.bounds)) return;
+
+      if (bvhNode.leaf) {
+        // Test leaf node's actual world bounds
+        if (frustum.intersectsAABB(bvhNode.leaf.worldBounds)) {
+          results.push(bvhNode.leaf);
+        }
+      } else {
+        traverse(bvhNode.left);
+        traverse(bvhNode.right);
+      }
+    };
+
+    traverse(this.bvhRoot);
     return results;
   }
 

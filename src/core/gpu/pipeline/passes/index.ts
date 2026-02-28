@@ -29,6 +29,7 @@ import { PrimitiveGeometryComponent } from '../../../ecs/components/PrimitiveGeo
 import { VariantRenderer } from '../VariantRenderer';
 import type { VariantMeshPool } from '../VariantMeshPool';
 import { SSRConfig } from '../SSRConfig';
+import { FrustumCullComponent } from '@/core/ecs';
 
 // ============================================================================
 // SKY PASS
@@ -411,8 +412,22 @@ export class OpaquePass extends BaseRenderPass {
     // Choose rendering path
     if (this.useComposedShaders && ctx.meshRenderSystem && ctx.sceneEnvironment) {
       // Composed shader path: iterate variant groups, use composed pipelines
+      // Get frustum cull visible set (if available) for CPU-side frustum culling
+      let visibleEntitySet: Set<string> | null = null;
+      if (ctx.world) {
+        const frustumCullEntity = ctx.world.queryFirst('frustum-cull' as any);
+        if (frustumCullEntity) {
+          const frustumCull = frustumCullEntity.getComponent<FrustumCullComponent>('frustum-cull');
+          if (frustumCull?.enabled && frustumCull.visibleEntityIds.size > 0) {
+            visibleEntitySet = frustumCull.visibleEntityIds;
+          }
+        }
+      }
+
       drawCalls += this.ensureVariantRenderer().renderColor(
         pass, ctx.ctx, ctx.meshRenderSystem, ctx.sceneEnvironment, renderParams,
+        undefined, // excludeEntitySet
+        visibleEntitySet,
       );
     } else {
       // Monolithic path: single shader with runtime uniform branches

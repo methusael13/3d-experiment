@@ -15,7 +15,6 @@ import type {
   ObjectWindSettings,
   IRenderer,
 } from '../../core/sceneObjects/types';
-import type { FPSCameraController } from './FPSCameraController';
 import { DebugCameraController } from './DebugCameraController';
 import { CameraFrustumRendererGPU, type CSMDebugInfo } from '../../core/gpu/renderers/CameraFrustumRendererGPU';
 import { WebGPUShadowSettings } from './components/panels/RenderingPanel';
@@ -33,7 +32,11 @@ import {
   WetnessSystem,
   SSRSystem,
   ReflectionProbeSystem,
+  FPSCameraSystem,
+  FrustumCullSystem,
 } from '../../core/ecs/systems';
+import { FPSCameraComponent } from '../../core/ecs/components/FPSCameraComponent';
+import { FrustumCullComponent } from '../../core/ecs/components/FrustumCullComponent';
 import { ReflectionProbeCaptureRenderer } from '../../core/gpu/renderers/ReflectionProbeCaptureRenderer';
 
 // ==================== Type Definitions ====================
@@ -133,7 +136,7 @@ export class Viewport {
 
   // Input management
   private inputManager: InputManager | null = null;
-  
+
   // Camera
   private cameraController: CameraController | null = null;
 
@@ -145,7 +148,7 @@ export class Viewport {
 
   // Scene graph reference (for raycasting)
   private sceneGraph: SceneGraph | null = null;
-  
+
   // ECS World (self-contained, owns its systems)
   private _world: World;
 
@@ -168,14 +171,13 @@ export class Viewport {
 
   // Mouse tracking
   private lastMousePos: Vec2 = [0, 0];
-  
+
   // Animation time (for ECS systems)
   private time = 0;
-  
+
   // FPS Camera mode
   private fpsMode = false;
-  private fpsController: FPSCameraController | null = null;
-  
+
   // Debug Camera mode
   private debugCameraMode = false;
   private debugCameraController: DebugCameraController | null = null;
@@ -186,7 +188,7 @@ export class Viewport {
 
   private gpuContext: GPUContext | null = null;
   private gpuPipeline: GPUForwardPipeline | null = null;
-  
+
   // Dynamic IBL (Image-Based Lighting) setting for WebGPU mode
   private dynamicIBLEnabled = true;  // Enabled by default
 
@@ -225,6 +227,15 @@ export class Viewport {
     const wetnessSystem = new WetnessSystem();            // priority 55 — wetness from ocean
     wetnessSystem.setWorld(this._world);
     this._world.addSystem(wetnessSystem);
+
+    // Frustum culling system (priority 85 — after bounds, before shadow caster / render)
+    const frustumCullSystem = new FrustumCullSystem();
+    this._world.addSystem(frustumCullSystem);             // priority 85
+    // Create singleton entity for frustum cull data (internal = hidden from UI)
+    const frustumCullEntity = this._world.createEntity('__FrustumCull');
+    frustumCullEntity.internal = true;
+    frustumCullEntity.addComponent(new FrustumCullComponent());
+
     this._world.addSystem(new ShadowCasterSystem());     // priority 90
     const ssrSystem = new SSRSystem();                   // priority 95 — LOD-gated SSR
     this._world.addSystem(ssrSystem);
@@ -232,16 +243,16 @@ export class Viewport {
     this._world.addSystem(new MeshRenderSystem());       // priority 100
 
     // Callbacks
-    this.onFps = options.onFps ?? (() => {});
-    this.onDrawCalls = options.onDrawCalls ?? (() => {});
-    this.onUpdate = options.onUpdate ?? (() => {});
-    this.onGizmoTransform = options.onGizmoTransform ?? (() => {});
-    this.onGizmoDragEnd = options.onGizmoDragEnd ?? (() => {});
-    this.onUniformScaleChange = options.onUniformScaleChange ?? (() => {});
-    this.onUniformScaleCommit = options.onUniformScaleCommit ?? (() => {});
-    this.onUniformScaleCancel = options.onUniformScaleCancel ?? (() => {});
-    this.onObjectClicked = options.onObjectClicked ?? (() => {});
-    this.onBackgroundClicked = options.onBackgroundClicked ?? (() => {});
+    this.onFps = options.onFps ?? (() => { });
+    this.onDrawCalls = options.onDrawCalls ?? (() => { });
+    this.onUpdate = options.onUpdate ?? (() => { });
+    this.onGizmoTransform = options.onGizmoTransform ?? (() => { });
+    this.onGizmoDragEnd = options.onGizmoDragEnd ?? (() => { });
+    this.onUniformScaleChange = options.onUniformScaleChange ?? (() => { });
+    this.onUniformScaleCommit = options.onUniformScaleCommit ?? (() => { });
+    this.onUniformScaleCancel = options.onUniformScaleCancel ?? (() => { });
+    this.onObjectClicked = options.onObjectClicked ?? (() => { });
+    this.onBackgroundClicked = options.onBackgroundClicked ?? (() => { });
   }
 
   // ==================== Lifecycle ====================
@@ -277,7 +288,7 @@ export class Viewport {
       // Initialize WebGPU context on the separate canvas
       this.gpuContext = await GPUContext.getInstance(this.canvas);
       console.log('[Viewport] WebGPU context initialized');
-      
+
       // Create full WebGPU forward pipeline with grid and sky
       this.gpuPipeline = new GPUForwardPipeline(this.gpuContext, {
         width: this.renderWidth,
@@ -292,7 +303,7 @@ export class Viewport {
           this.reflectionProbeCaptureRenderer = new ReflectionProbeCaptureRenderer(this.gpuContext);
         }
         // Wire up MeshRenderSystem so the capture renderer can use VariantRenderer.renderColor()
-        this.reflectionProbeCaptureRenderer.meshRenderSystem = 
+        this.reflectionProbeCaptureRenderer.meshRenderSystem =
           this._world.getSystem<MeshRenderSystem>('mesh-render') ?? null;
         probeSystem.captureRenderer = this.reflectionProbeCaptureRenderer;
       }
@@ -324,7 +335,7 @@ export class Viewport {
   private initCamera(): void {
     // Create InputManager for event routing
     this.inputManager = new InputManager(this.canvas);
-    
+
     // Create CameraController with InputManager
     this.cameraController = new CameraController({
       width: this.logicalWidth,
@@ -420,14 +431,14 @@ export class Viewport {
   }
 
   // ==================== WebGPU Mode ====================
-  
+
   /**
    * Check if WebGPU test mode is active
    */
   isWebGPUTestMode(): boolean {
     return true;
   }
-  
+
   /**
    * Get the WebGPU terrain manager (for panel integration)
    * @deprecated - Terrain is now maintained within the terrain scene object
@@ -439,14 +450,14 @@ export class Viewport {
   getWebGPUContext(): GPUContext | null {
     return this.gpuContext;
   }
-  
+
   /**
    * Get the WebGPU debug texture manager (for registering debug textures)
    */
   getDebugTextureManager() {
     return this.gpuPipeline?.getDebugTextureManager() ?? null;
   }
-  
+
   /**
    * Set WebGPU shadow settings (for RenderingPanel integration)
    */
@@ -455,7 +466,7 @@ export class Viewport {
       this.gpuPipeline.setShadowSettings(settings);
     }
   }
-  
+
   /**
    * Set Dynamic IBL (Image-Based Lighting) enabled state
    * Controls whether the DynamicSkyIBL system is active for realistic ambient lighting
@@ -463,7 +474,7 @@ export class Viewport {
   setDynamicIBL(enabled: boolean): void {
     this.dynamicIBLEnabled = enabled;
   }
-  
+
   /**
    * Set WebGPU SSAO settings (for RenderingPanel integration)
    * Uses SSAOSettings which extends SSAOConfig from postprocess module
@@ -502,7 +513,7 @@ export class Viewport {
       ssrSystem.ssrGloballyEnabled = settings.enabled;
     }
   }
-  
+
   /**
    * Set WebGPU composite/tonemapping settings (for RenderingPanel integration)
    */
@@ -521,42 +532,49 @@ export class Viewport {
       far: camera.far,
     };
   }
-  
+
   /**
    * Render using WebGPU (full pipeline with grid/sky)
    */
   private renderWebGPU(dt: number): void {
     if (!this.gpuContext || !this.gpuPipeline || !this.cameraController) return;
-    
+
     // Scene camera adapter (always the orbit camera — drives shadows, culling, shader uniforms)
     let sceneCameraAdapter = this.adaptCamera(this.cameraController.getCamera());
-    
+
     // View camera adapter (what appears on screen — may be debug camera)
     let viewCameraAdapter: GPUCamera;
     let separateSceneCamera: GPUCamera | undefined;
-    
+
     if (this.debugCameraMode && this.debugCameraController) {
       // Debug camera mode: view from debug camera, scene camera separate
       viewCameraAdapter = this.adaptCamera(this.debugCameraController.getCamera());
       separateSceneCamera = sceneCameraAdapter;
-    } else if (this.fpsMode && this.fpsController) {
-      // FPS camera mode
-      viewCameraAdapter = {
-        getViewMatrix: () => this.fpsController!.getViewMatrix() as Float32Array,
-        getProjectionMatrix: () => this.fpsController!.getProjectionMatrix() as Float32Array,
-        getPosition: () => this.fpsController!.getPosition() as number[],
-        near: this.fpsController!.near,
-        far: this.fpsController!.far,
-      };
-      sceneCameraAdapter = viewCameraAdapter;
+    } else if (this.fpsMode) {
+      // FPS camera mode — read matrices from ECS FPSCameraComponent
+      const fpsCamEntity = this._world.queryFirst('fps-camera');
+      const fpsCam = fpsCamEntity?.getComponent<FPSCameraComponent>('fps-camera');
+      if (fpsCam && fpsCam.active) {
+        viewCameraAdapter = {
+          getViewMatrix: () => fpsCam.viewMatrix as Float32Array,
+          getProjectionMatrix: () => fpsCam.projMatrix as Float32Array,
+          getPosition: () => [...fpsCam.position] as number[],
+          near: fpsCam.near,
+          far: fpsCam.far,
+        };
+        sceneCameraAdapter = viewCameraAdapter;
+      } else {
+        // FPS entity exists but not active — fall through to normal mode
+        viewCameraAdapter = sceneCameraAdapter;
+      }
     } else {
       // Normal mode: scene camera is also the view camera
       viewCameraAdapter = sceneCameraAdapter;
     }
-    
+
     // Alias for backward compatibility
     const cameraAdapter = viewCameraAdapter;
-    
+
     // Get lighting settings
     // Note: lightParams.direction is pre-computed from DirectionalLight
     // sunElevation/sunAzimuth are still needed for sky rendering
@@ -575,9 +593,9 @@ export class Viewport {
     // Get pre-computed light direction from DirectionalLight (avoids redundant calculation)
     // Only available on directional light type, not HDR
     const lightDirection = (this.lightParams as any)?.direction as [number, number, number] | undefined;
-    
+
     // Note: Gizmos are rendered by TransformGizmoManager after the pipeline finishes
-    
+
     // Render options
     const options: GPURenderOptions = {
       showGrid: this.showGrid,
@@ -591,10 +609,12 @@ export class Viewport {
       lightColor,
       dynamicIBL: this.dynamicIBLEnabled,  // Pass Dynamic IBL state
     };
-    
+
     // Use render with scene and camera adapter (pass separate scene camera if in debug mode)
     // Run ECS systems before rendering
     if (this.gpuContext) {
+      this.updateFrustumCullSystem(sceneCameraAdapter);
+
       // Feed per-frame data to systems
       const shadowCasterSystem = this._world.getSystem<ShadowCasterSystem>('shadow-caster');
       if (shadowCasterSystem) {
@@ -634,6 +654,7 @@ export class Viewport {
       this.time += dt;
       this._world.update(dt, {
         ctx: this.gpuContext,
+        world: this._world,
         time: this.time,
         deltaTime: dt,
         sceneEnvironment: this.gpuPipeline!.getSceneEnvironment(),
@@ -647,12 +668,12 @@ export class Viewport {
     // so their GPU resources (textures, buffers) can still be referenced by
     // in-flight render commands.
     this._world.flushPendingDeletions();
-    
+
     // Render debug camera frustum visualization when in debug camera mode
     if (this.debugCameraMode && this.debugCameraController && this.cameraFrustumRenderer) {
       this.renderDebugCameraOverlay();
     }
-    
+
     // Render gizmo via TransformGizmoManager (skip in FPS mode and debug camera mode)
     // This uses the same screen-space scale as hit testing for consistency
     if (!this.fpsMode && !this.debugCameraMode && this.transformGizmo?.hasGPURenderer()) {
@@ -660,19 +681,40 @@ export class Viewport {
       this.renderGizmoOverlay(vpMatrix as Float32Array);
     }
   }
-  
+
+  private updateFrustumCullSystem(sceneCamera: GPUCamera) {
+    // Feed scene camera VP matrix to frustum cull system (always scene camera, not debug camera)
+    const frustumCullSys = this._world.getSystem<FrustumCullSystem>('frustum-cull');
+    if (frustumCullSys) {
+      const sceneVP = new Float32Array(16);
+      const sceneView = sceneCamera.getViewMatrix();
+      const sceneProj = sceneCamera.getProjectionMatrix();
+      // Compute VP = proj * view
+      for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 4; j++) {
+          let sum = 0;
+          for (let k = 0; k < 4; k++) {
+            sum += sceneProj[i + k * 4] * sceneView[k + j * 4];
+          }
+          sceneVP[i + j * 4] = sum;
+        }
+      }
+      frustumCullSys.setViewProjectionMatrix(sceneVP);
+    }
+  }
+
   /**
    * Render debug camera overlay: scene camera frustum + body visualization
    */
   private renderDebugCameraOverlay(): void {
     if (!this.gpuContext || !this.cameraFrustumRenderer || !this.cameraController || !this.debugCameraController) return;
-    
+
     const sceneCamera = this.cameraController.getCamera();
-    
+
     // Update frustum geometry from scene camera parameters
     const pos = sceneCamera.getPosition() as [number, number, number];
     const target = sceneCamera.getTarget() as [number, number, number];
-    
+
     // Build CSM debug info if shadow renderer has CSM enabled
     let csmInfo: CSMDebugInfo | undefined;
     if (this.gpuPipeline) {
@@ -691,7 +733,7 @@ export class Viewport {
         }
       }
     }
-    
+
     this.cameraFrustumRenderer.updateFrustum(
       pos,
       target,
@@ -701,18 +743,18 @@ export class Viewport {
       sceneCamera.far,
       csmInfo
     );
-    
+
     // Get current backbuffer
     const outputTexture = this.gpuContext.context?.getCurrentTexture();
     if (!outputTexture) return;
-    
+
     const outputView = outputTexture.createView();
-    
+
     // Create command encoder for frustum pass
     const encoder = this.gpuContext.device.createCommandEncoder({
       label: 'camera-frustum-overlay-encoder',
     });
-    
+
     const passEncoder = encoder.beginRenderPass({
       label: 'camera-frustum-overlay-pass',
       colorAttachments: [{
@@ -721,33 +763,33 @@ export class Viewport {
         storeOp: 'store',
       }],
     });
-    
+
     // Get debug camera VP matrix for rendering
     const debugVP = this.debugCameraController.getCamera().getViewProjectionMatrix();
     this.cameraFrustumRenderer.render(passEncoder, debugVP as Float32Array);
-    
+
     passEncoder.end();
     this.gpuContext.queue.submit([encoder.finish()]);
   }
-  
+
   /**
    * Render gizmo overlay using WebGPU
    * Creates a separate render pass after the main pipeline to render gizmos
    */
   private renderGizmoOverlay(vpMatrix: Float32Array): void {
     if (!this.gpuContext || !this.transformGizmo) return;
-    
+
     // Get current backbuffer
     const outputTexture = this.gpuContext.context?.getCurrentTexture();
     if (!outputTexture) return;
-    
+
     const outputView = outputTexture.createView();
-    
+
     // Create command encoder for gizmo pass
     const encoder = this.gpuContext.device.createCommandEncoder({
       label: 'gizmo-overlay-encoder',
     });
-    
+
     // Create render pass that renders on top of existing content
     // Load existing color, use existing depth for depth testing
     const passEncoder = encoder.beginRenderPass({
@@ -760,12 +802,12 @@ export class Viewport {
       // No depth attachment - gizmos render without depth test in this overlay
       // (The GizmoRendererGPU disables depth test internally via pipeline state)
     });
-    
+
     // Render gizmo
     this.transformGizmo.renderGPU(passEncoder, vpMatrix);
-    
+
     passEncoder.end();
-    
+
     // Submit gizmo commands
     this.gpuContext.queue.submit([encoder.finish()]);
   }
@@ -783,14 +825,11 @@ export class Viewport {
 
   private render(deltaTime: number): void {
     const dt = deltaTime / 1000;
-    
-    // Update FPS camera if active (needed for both WebGL and WebGPU paths)
-    if (this.fpsMode && this.fpsController) {
-      this.fpsController.update(dt);
-    }
-    
+
+    // FPS camera update is now handled by FPSCameraSystem in the ECS update loop
+
     this.renderWebGPU(dt);
-    
+
     // Emit draw call count from last pipeline render
     if (this.gpuPipeline) {
       this.onDrawCalls(this.gpuPipeline.getLastDrawCallsCount());
@@ -807,7 +846,7 @@ export class Viewport {
   setSceneGraph(sg: SceneGraph): void {
     this.sceneGraph = sg;
   }
-  
+
   /**
    * Get the ECS World.
    */
@@ -825,7 +864,7 @@ export class Viewport {
     this.transformGizmo?.setEnabled(true);
     this.transformGizmo?.setTarget(position, rotation || [0, 0, 0], scale || [1, 1, 1]);
   }
-  
+
   /**
    * Set gizmo target with quaternion rotation directly.
    * Avoids Euler→Quat→Euler conversion for better precision on selection changes.
@@ -862,23 +901,22 @@ export class Viewport {
 
   // ==================== Viewport Settings ====================
 
-  setFPSMode(enabled: boolean, controller: FPSCameraController | null): void {
+  setFPSMode(enabled: boolean): void {
     // Exit debug camera mode if entering FPS mode
     if (enabled && this.debugCameraMode) {
       this.setDebugCameraMode(false);
     }
-    
+
     this.fpsMode = enabled;
-    this.fpsController = controller;
-    
+
     // Switch InputManager channel
     if (this.inputManager) {
       this.inputManager.setActiveChannel(enabled ? 'fps' : 'editor');
     }
-    
+
     console.log(`[Viewport] FPS mode ${enabled ? 'enabled' : 'disabled'}`);
   }
-  
+
   /**
    * Enable/disable debug (global) camera mode.
    * When enabled, the scene is viewed from an independent debug camera
@@ -886,19 +924,18 @@ export class Viewport {
    */
   setDebugCameraMode(enabled: boolean): void {
     if (enabled === this.debugCameraMode) return;
-    
+
     // Exit FPS mode if entering debug camera mode
     if (enabled && this.fpsMode) {
       // Don't call setFPSMode to avoid recursion - just clear state
       this.fpsMode = false;
-      this.fpsController = null;
     }
-    
+
     this.debugCameraMode = enabled;
-    
+
     if (enabled) {
       if (!this.inputManager || !this.cameraController) return;
-      
+
       // Create debug camera controller if needed
       if (!this.debugCameraController) {
         this.debugCameraController = new DebugCameraController({
@@ -907,40 +944,40 @@ export class Viewport {
           inputManager: this.inputManager,
         });
       }
-      
+
       // Create frustum renderer if needed
       if (!this.cameraFrustumRenderer && this.gpuContext) {
         this.cameraFrustumRenderer = new CameraFrustumRendererGPU(this.gpuContext);
       }
-      
+
       // Initialize debug camera from current scene camera
       this.debugCameraController.initFromSceneCamera(this.cameraController.getCamera());
-      
+
       // Activate input handling
       this.debugCameraController.activate();
       this.inputManager.setActiveChannel('debug-camera');
-      
+
       console.log('[Viewport] Debug camera mode enabled');
     } else {
       // Deactivate debug camera input
       this.debugCameraController?.deactivate();
-      
+
       // Switch back to editor channel
       if (this.inputManager) {
         this.inputManager.setActiveChannel('editor');
       }
-      
+
       console.log('[Viewport] Debug camera mode disabled');
     }
   }
-  
+
   /**
    * Check if debug camera mode is active
    */
   isDebugCameraMode(): boolean {
     return this.debugCameraMode;
   }
-  
+
   setViewportMode(mode: 'solid' | 'wireframe'): void {
     this.viewportMode = mode;
   }
@@ -995,19 +1032,19 @@ export class Viewport {
    */
   updateCameraForSceneBounds(sceneRadius: number): void {
     if (!this.cameraController) return;
-    
+
     const camera = this.cameraController.getCamera();
-    
+
     // Set zoom limits: min is small for close-up, max is enough to see whole scene
     const minDist = 0.5;
     const maxDist = sceneRadius * 3; // 3x radius allows viewing from outside
     camera.setZoomLimits(minDist, maxDist);
-    
+
     // Update far plane to accommodate the scene
     // Far plane should be at least maxDist + sceneRadius (camera at max dist looking at scene edge)
     const farPlane = Math.max(maxDist + sceneRadius, 100);
     camera.setClipPlanes(camera.near, farPlane);
-    
+
     console.log(`[Viewport] Updated camera for scene bounds: radius=${sceneRadius}, maxDist=${maxDist.toFixed(1)}, far=${farPlane.toFixed(1)}`);
   }
 
@@ -1038,7 +1075,7 @@ export class Viewport {
   getLastMousePos(): Vec2 {
     return [...this.lastMousePos];
   }
-  
+
   getInputManager(): InputManager | null {
     return this.inputManager;
   }
@@ -1062,7 +1099,7 @@ export class Viewport {
     const dpr = this.dpr;
     const renderWidth = Math.floor(width * dpr);
     const renderHeight = Math.floor(height * dpr);
-    
+
     // Update canvas
     this.canvas.width = renderWidth;
     this.canvas.height = renderHeight;
@@ -1075,7 +1112,7 @@ export class Viewport {
       // Update projection matrix with new dimensions
       camera.setAspectRatio(width, height);
     }
-    
+
     // Update gizmo canvas size
     if (this.transformGizmo) {
       this.transformGizmo.setCanvasSize(width, height);
@@ -1085,7 +1122,7 @@ export class Viewport {
     if (this.gpuPipeline) {
       this.gpuPipeline.resize(renderWidth, renderHeight);
     }
-    
+
     console.log(`[Viewport] Resized to ${width}x${height} (render: ${renderWidth}x${renderHeight})`);
   }
 }

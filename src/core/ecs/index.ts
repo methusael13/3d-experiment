@@ -21,6 +21,8 @@ export {
   WindComponent,
   LODComponent,
   WetnessComponent,
+  FPSCameraComponent,
+  FrustumCullComponent,
 } from './components';
 
 // Systems
@@ -32,6 +34,8 @@ export {
   WetnessSystem,
   MeshRenderSystem,
   ShadowCasterSystem,
+  FPSCameraSystem,
+  FrustumCullSystem,
 } from './systems';
 export type { ShaderVariantGroup } from './systems';
 
