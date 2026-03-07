@@ -195,6 +195,7 @@ export function ConnectedObjectPanel() {
       activeComponents={activeComponents.value}
       onComponentsChanged={handleComponentsChanged}
       debugTextureManager={store.viewport?.getDebugTextureManager() ?? null}
+      shadowRenderer={store.viewport?.getShadowRenderer() ?? null}
     />
   );
 }

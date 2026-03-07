@@ -161,34 +161,17 @@ export function useFileDrop(containerRef: { current: HTMLElement | null }) {
 
 /**
  * Handle HDR file import for environment lighting
+ * TODO: Implement ECS-based HDR environment lighting
  */
-async function handleHDRImport(file: File, store: ReturnType<typeof getSceneBuilderStore>): Promise<void> {
-  const lightingManager = store.lightingManager;
-  
-  if (!lightingManager) {
-    throw new Error('GL context or lighting manager not initialized');
-  }
-  
+async function handleHDRImport(file: File, _store: ReturnType<typeof getSceneBuilderStore>): Promise<void> {
   // Import HDRLoader dynamically
   const { HDRLoader } = await import('../../../../loaders/HDRLoader');
   
   const arrayBuffer = await file.arrayBuffer();
-  const hdrData = HDRLoader.parse(arrayBuffer);
-  // Note: HDRLoader needs to be migrated to create WebGPU textures
-  // const hdrTexture = HDRLoader.createPrefilteredTexture(, hdrData).texture;
-  
-  // Set HDR texture on lighting manager
-  // lightingManager.hdrLight.setTexture(hdrTexture);
-  lightingManager.hdrLight.filename = file.name;
-  
-  // Set mode to HDR
-  lightingManager.setMode('hdr');
-  
-  // Update viewport
-  const viewport = store.viewport;
-  if (viewport) {
-    // Todo: viewport.setHDRTexture
-  }
+  HDRLoader.parse(arrayBuffer);
+  // TODO: HDR environment lighting needs to be implemented via ECS
+  // (create an HDR environment light entity or set on existing light component)
+  console.log(`[handleHDRImport] Parsed HDR file: ${file.name} — ECS HDR lighting not yet implemented`);
 }
 
 /**

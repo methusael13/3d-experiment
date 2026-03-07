@@ -1,7 +1,8 @@
-import { useCallback, useState, useEffect } from 'preact/hooks';
-import type { LightingManager } from '../../../lightingManager';
+import { useCallback, useState } from 'preact/hooks';
 import type { WindManager } from '../../../wind';
 import type { PanelContext } from '../../../componentPanels/panelContext';
+import type { World } from '@/core/ecs/World';
+import { LightComponent } from '@/core/ecs/components/LightComponent';
 
 export interface EnvironmentStore {
   // Lighting state
@@ -43,16 +44,20 @@ export interface EnvironmentStore {
 }
 
 export function useEnvironmentStore(
-  lightingManager: LightingManager,
   windManager: WindManager,
-  context: PanelContext
+  context: PanelContext,
+  world?: World | null,
 ): EnvironmentStore {
-  // Lighting state
-  const [lightMode, setLightModeState] = useState<'directional' | 'hdr'>(lightingManager.activeMode);
-  const [sunAzimuth, setSunAzimuthState] = useState(lightingManager.sunLight.azimuth);
-  const [sunElevation, setSunElevationState] = useState(lightingManager.sunLight.elevation);
-  const [sunAmbient, setSunAmbientState] = useState(lightingManager.sunLight.ambientIntensity);
-  const [hdrExposure, setHdrExposureState] = useState(lightingManager.hdrLight.exposure);
+  // Read initial values from ECS world
+  const sunEntity = world?.queryFirst('light');
+  const sunLc = sunEntity?.getComponent<LightComponent>('light');
+
+  // Lighting state (seeded from ECS)
+  const [lightMode, setLightModeState] = useState<'directional' | 'hdr'>('directional');
+  const [sunAzimuth, setSunAzimuthState] = useState(sunLc?.azimuth ?? 45);
+  const [sunElevation, setSunElevationState] = useState(sunLc?.elevation ?? 45);
+  const [sunAmbient, setSunAmbientState] = useState(sunLc?.ambientIntensity ?? 1.0);
+  const [hdrExposure, setHdrExposureState] = useState(1.0);
   const [hdrFilename, setHdrFilenameState] = useState('No HDR loaded');
   const [dynamicIBL, setDynamicIBLState] = useState(true); // Default enabled
   
@@ -75,27 +80,38 @@ export function useEnvironmentStore(
 
   const setSunAzimuth = useCallback((value: number) => {
     setSunAzimuthState(value);
-    lightingManager.sunLight.azimuth = value;
-    context.onLightingChanged();
-  }, [lightingManager, context]);
+    // Write directly to ECS LightComponent (single source of truth)
+    if (world) {
+      const sunEntity = world.queryFirst('light');
+      const lc = sunEntity?.getComponent<LightComponent>('light');
+      if (lc) lc.azimuth = value;
+    }
+  }, [world]);
 
   const setSunElevation = useCallback((value: number) => {
     setSunElevationState(value);
-    lightingManager.sunLight.elevation = value;
-    context.onLightingChanged();
-  }, [lightingManager, context]);
+    // Write directly to ECS LightComponent (single source of truth)
+    if (world) {
+      const sunEntity = world.queryFirst('light');
+      const lc = sunEntity?.getComponent<LightComponent>('light');
+      if (lc) lc.elevation = value;
+    }
+  }, [world]);
 
   const setSunAmbient = useCallback((value: number) => {
     setSunAmbientState(value);
-    lightingManager.sunLight.ambientIntensity = value;
-    context.onLightingChanged();
-  }, [lightingManager, context]);
+    // Write directly to ECS LightComponent (single source of truth)
+    if (world) {
+      const sunEntity = world.queryFirst('light');
+      const lc = sunEntity?.getComponent<LightComponent>('light');
+      if (lc) lc.ambientIntensity = value;
+    }
+  }, [world]);
 
   const setHdrExposure = useCallback((value: number) => {
     setHdrExposureState(value);
-    lightingManager.hdrLight.exposure = value;
-    context.onLightingChanged();
-  }, [lightingManager, context]);
+    // TODO: HDR exposure via ECS when HDR light component is added
+  }, []);
 
   const setWindEnabled = useCallback((enabled: boolean) => {
     setWindEnabledState(enabled);

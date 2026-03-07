@@ -1,6 +1,6 @@
 /**
  * EnvironmentPanelBridge - Connects EnvironmentPanel to the store (ECS Step 3)
- * Wind is managed by WindSystem in ECS. Lighting via LightingManager.
+ * Wind is managed by WindSystem in ECS. Lighting via ECS LightComponent (LightingSystem).
  */
 
 import { useMemo } from 'preact/hooks';
@@ -30,7 +30,7 @@ function getWindManagerFromWorld(store: ReturnType<typeof getSceneBuilderStore>)
 export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironmentPanelProps = {}) {
   const store = getSceneBuilderStore();
   
-  if (!store.lightingManager) {
+  if (!store.viewportInitialized.value) {
     return <div style={{ padding: '8px', color: 'var(--text-secondary)' }}>Loading...</div>;
   }
   
@@ -47,15 +47,12 @@ export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironm
     return createPanelContext({
       container,
       windManager: wm!, // WindManager from ECS WindSystem
-      lightingManager: store.lightingManager!,
       cameraController: null,
       objectWindSettings: store.objectWindSettings.value,
       
       onLightingChanged: () => {
-        if (store.lightingManager && store.viewport) {
-          const params = store.lightingManager.getLightParams();
-          store.viewport.setLightParams(params);
-        }
+        // No-op: ECS LightComponent is now the single source of truth.
+        // LightingSystem computes derived values each frame automatically.
       },
       setHDRTexture: (_texture) => {
         // TODO: HDR texture via ECS
@@ -71,13 +68,13 @@ export function ConnectedEnvironmentPanel({ externalContext }: ConnectedEnvironm
         store.viewport?.setDynamicIBL?.(enabled);
       } : undefined,
     });
-  }, [store.lightingManager, store.isWebGPU.value, store.world, externalContext]);
+  }, [store.isWebGPU.value, store.world, externalContext]);
   
   return (
     <EnvironmentPanel
-      lightingManager={store.lightingManager}
       windManager={windManager!}
       context={context}
+      world={store.world ?? null}
     />
   );
 }

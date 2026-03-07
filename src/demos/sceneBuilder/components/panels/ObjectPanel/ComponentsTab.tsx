@@ -8,12 +8,15 @@ import { WetnessComponent } from '@/core/ecs/components/WetnessComponent';
 import { WindComponent } from '@/core/ecs/components/WindComponent';
 import { SSRComponent } from '@/core/ecs/components/SSRComponent';
 import { ReflectionProbeComponent } from '@/core/ecs/components/ReflectionProbeComponent';
+import { LightComponent } from '@/core/ecs/components/LightComponent';
 import type { DebugTextureManager } from '@/core/gpu/renderers/DebugTextureManager';
+import type { ShadowRendererGPU } from '@/core/gpu/renderers/ShadowRendererGPU';
 import { WetnessSubPanel } from './subpanels/WetnessSubPanel';
 import { LODSubPanel } from './subpanels/LODSubPanel';
 import { WindSubPanel } from './subpanels/WindSubPanel';
 import { SSRSubPanel } from './subpanels/SSRSubPanel';
 import { ReflectionProbeSubPanel } from './subpanels/ReflectionProbeSubPanel';
+import { LightSubPanel } from './subpanels/LightSubPanel';
 import styles from './ComponentsTab.module.css';
 
 /**
@@ -75,6 +78,24 @@ export const OPTIONAL_COMPONENTS: {
   },
 ];
 
+/**
+ * Intrinsic component types that show their subpanel automatically when present
+ * but cannot be added/removed by the user (they are part of the entity's identity).
+ */
+export const INTRINSIC_COMPONENT_PANELS: {
+  type: ComponentType;
+  label: string;
+  renderPanel: (entity: Entity, onChanged: () => void, debugTextureManager?: DebugTextureManager | null, shadowRenderer?: ShadowRendererGPU | null) => ComponentChildren;
+}[] = [
+  {
+    type: 'light',
+    label: 'Light Properties',
+    renderPanel: (entity, onChanged, debugTextureManager, shadowRenderer) => (
+      <LightSubPanel entity={entity} onChanged={onChanged} debugTextureManager={debugTextureManager} shadowRenderer={shadowRenderer} />
+    ),
+  },
+];
+
 export interface ComponentsTabProps {
   /** The selected entity (single selection only) */
   entity: Entity | null;
@@ -84,6 +105,8 @@ export interface ComponentsTabProps {
   onChanged: () => void;
   /** Optional debug texture manager for probe face visualization */
   debugTextureManager?: DebugTextureManager | null;
+  /** Optional shadow renderer for shadow map debug visualization */
+  shadowRenderer?: ShadowRendererGPU | null;
 }
 
 // ---------- internal: collapsible subpanel wrapper ----------
@@ -129,6 +152,7 @@ export function ComponentsTab({
   activeComponents,
   onChanged,
   debugTextureManager,
+  shadowRenderer,
 }: ComponentsTabProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
@@ -168,8 +192,25 @@ export function ComponentsTab({
     activeComponents.includes(r.type)
   );
 
-  return (
+    // Intrinsic component panels (light, etc.) — shown but not removable
+    const intrinsic = INTRINSIC_COMPONENT_PANELS.filter((r) =>
+      activeComponents.includes(r.type)
+    );
+
+    return (
     <div class={styles.container}>
+      {/* Intrinsic component panels (non-removable, e.g., Light) */}
+      {intrinsic.map((reg) => (
+        <div key={reg.type} class={styles.subpanel}>
+          <div class={styles.subpanelHeader}>
+            <span class={styles.subpanelTitle}>{reg.label}</span>
+          </div>
+          <div class={styles.subpanelBody}>
+            {reg.renderPanel(entity, onChanged, debugTextureManager, shadowRenderer)}
+          </div>
+        </div>
+      ))}
+
       {/* "Add Component" dropdown */}
       {available.length > 0 && (
         <div class={styles.dropdown}>

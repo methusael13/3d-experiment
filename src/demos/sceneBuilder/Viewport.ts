@@ -8,8 +8,8 @@ import { TransformGizmoManager, GizmoMode } from './gizmos';
 import type { GizmoOrientation } from './gizmos/BaseGizmo';
 import { CameraController, type CameraState } from './CameraController';
 import { InputManager } from './InputManager';
-import { screenToRay, projectToScreen } from '../../core/utils/raycastUtils';
-import type { DirectionalLightParams, RGBColor, SceneLightingParams } from '../../core/sceneObjects/lights';
+import { screenToRay, projectToScreen, rayIntersectsSphere } from '../../core/utils/raycastUtils';
+import type { RGBColor } from '../../core/sceneObjects/lights';
 import type {
   WindParams,
   ObjectWindSettings,
@@ -34,10 +34,15 @@ import {
   ReflectionProbeSystem,
   FPSCameraSystem,
   FrustumCullSystem,
+  LightingSystem,
 } from '../../core/ecs/systems';
 import { FPSCameraComponent } from '../../core/ecs/components/FPSCameraComponent';
 import { FrustumCullComponent } from '../../core/ecs/components/FrustumCullComponent';
+import { LightComponent } from '../../core/ecs/components/LightComponent';
+import { createDirectionalLightEntity } from '../../core/ecs/factories';
 import { ReflectionProbeCaptureRenderer } from '../../core/gpu/renderers/ReflectionProbeCaptureRenderer';
+import { LightBufferManager } from '../../core/gpu/renderers/LightBufferManager';
+import { LightVisualizerGPU } from '../../core/gpu/renderers/LightVisualizerGPU';
 
 // ==================== Type Definitions ====================
 
@@ -152,9 +157,6 @@ export class Viewport {
   // ECS World (self-contained, owns its systems)
   private _world: World;
 
-  // Light params (reference from LightingManager via controller)
-  private lightParams: SceneLightingParams | null = null;
-
   // Wind params (reference from WindManager via controller)
   private windParams: WindParams = {
     enabled: false,
@@ -185,6 +187,12 @@ export class Viewport {
 
   // Reflection Probe capture renderer
   private reflectionProbeCaptureRenderer: ReflectionProbeCaptureRenderer | null = null;
+
+  // Light buffer manager for multi-light GPU buffers
+  private lightBufferManager: LightBufferManager | null = null;
+
+  // Light visualizer for wireframe helpers (arrows, spheres, cones)
+  private lightVisualizer: LightVisualizerGPU | null = null;
 
   private gpuContext: GPUContext | null = null;
   private gpuPipeline: GPUForwardPipeline | null = null;
@@ -236,11 +244,21 @@ export class Viewport {
     frustumCullEntity.internal = true;
     frustumCullEntity.addComponent(new FrustumCullComponent());
 
+    this._world.addSystem(new LightingSystem());         // priority 80 — compute direction/color from azimuth/elevation
     this._world.addSystem(new ShadowCasterSystem());     // priority 90
     const ssrSystem = new SSRSystem();                   // priority 95 — LOD-gated SSR
     this._world.addSystem(ssrSystem);
     this._world.addSystem(new ReflectionProbeSystem());  // priority 96 — probe bake lifecycle
     this._world.addSystem(new MeshRenderSystem());       // priority 100
+
+    // Create default "Sun" directional light entity (internal — not shown in Objects Panel)
+    const sunEntity = createDirectionalLightEntity(this._world, {
+      name: '__Sun',
+      azimuth: 45,
+      elevation: 45,
+      castsShadow: true,
+    });
+    sunEntity.internal = true;
 
     // Callbacks
     this.onFps = options.onFps ?? (() => { });
@@ -296,6 +314,24 @@ export class Viewport {
       });
       console.log('[Viewport] WebGPU Forward Pipeline created');
 
+      // Create LightBufferManager and wire to LightingSystem + SceneEnvironment
+      this.lightBufferManager = new LightBufferManager(this.gpuContext);
+      const lightingSystem = this._world.getSystem<LightingSystem>('lighting');
+      if (lightingSystem) {
+        lightingSystem.lightBufferManager = this.lightBufferManager;
+      }
+      // Wire LightBufferManager and ShadowRenderer into SceneEnvironment + LightingSystem
+      const sceneEnv = this.gpuPipeline.getSceneEnvironment();
+      const shadowRenderer = this.gpuPipeline.getShadowRenderer();
+      sceneEnv.setLightBufferManager(this.lightBufferManager);
+      sceneEnv.setShadowRenderer(shadowRenderer);
+      if (lightingSystem) {
+        lightingSystem.shadowRenderer = shadowRenderer;
+      }
+      // Create light visualizer for wireframe light helpers
+      this.lightVisualizer = new LightVisualizerGPU(this.gpuContext);
+      console.log('[Viewport] LightBufferManager + ShadowRenderer + LightVisualizer wired');
+
       // Wire up ReflectionProbeSystem with its capture renderer
       const probeSystem = this._world.getSystem<ReflectionProbeSystem>('reflection-probe');
       if (probeSystem && !probeSystem.captureRenderer) {
@@ -321,6 +357,12 @@ export class Viewport {
   destroy(): void {
     this.animationLoop?.stop();
     this.animationLoop = null;
+
+    // Destroy light visualizer and buffer manager
+    this.lightVisualizer?.destroy();
+    this.lightVisualizer = null;
+    this.lightBufferManager?.destroy();
+    this.lightBufferManager = null;
 
     // Pipeline handles cleanup of its own passes
     this.gpuPipeline?.destroy();
@@ -397,21 +439,64 @@ export class Viewport {
 
   // ==================== Input Handling ====================
 
-  private handleCanvasClick(screenX: number, screenY: number, shiftKey = false): void {
-    if (!this.sceneGraph || this.sceneGraph.size === 0) {
-      this.onBackgroundClicked(shiftKey);
-      return;
-    }
+  /** Fixed click radius for light handle selection (world units) */
+  private static readonly LIGHT_HANDLE_RADIUS = 0.5;
 
+  private handleCanvasClick(screenX: number, screenY: number, shiftKey = false): void {
     const camera = this.cameraController!.getCamera();
     const { rayOrigin, rayDir } = screenToRay(screenX, screenY, camera as any, this.logicalWidth, this.logicalHeight);
-    const hit = this.sceneGraph.castRay(rayOrigin, rayDir);
 
-    if (hit) {
-      this.onObjectClicked(hit.node.id, shiftKey);
+    // 1. Test scene graph (mesh entities) first
+    let hitId: string | null = null;
+    if (this.sceneGraph && this.sceneGraph.size > 0) {
+      const hit = this.sceneGraph.castRay(rayOrigin, rayDir);
+      if (hit) {
+        hitId = hit.node.id;
+      }
+    }
+
+    // 2. If no mesh hit, test light entity handles (sphere-ray intersection)
+    if (!hitId) {
+      hitId = this.raycastLightHandles(rayOrigin, rayDir);
+    }
+
+    if (hitId) {
+      this.onObjectClicked(hitId, shiftKey);
     } else {
       this.onBackgroundClicked(shiftKey);
     }
+  }
+
+  /**
+   * Test ray against light entity positions using sphere-ray intersection.
+   * Returns the closest light entity ID hit, or null.
+   */
+  private raycastLightHandles(rayOrigin: number[], rayDir: number[]): string | null {
+    const lightEntities = this._world.queryAny('light');
+    if (lightEntities.length === 0) return null;
+
+    let closestDist = Infinity;
+    let closestId: string | null = null;
+    const radius = Viewport.LIGHT_HANDLE_RADIUS;
+
+    for (const entity of lightEntities) {
+      const transform = entity.getComponent<import('../../core/ecs/components/TransformComponent').TransformComponent>('transform');
+      if (!transform) continue;
+
+      const pos = transform.position;
+      const dist = rayIntersectsSphere(
+        rayOrigin as [number, number, number],
+        rayDir as [number, number, number],
+        [pos[0], pos[1], pos[2]],
+        radius,
+      );
+      if (dist !== null && dist < closestDist) {
+        closestDist = dist;
+        closestId = entity.id;
+      }
+    }
+
+    return closestId;
   }
 
   // ==================== Uniform Scale ====================
@@ -456,6 +541,10 @@ export class Viewport {
    */
   getDebugTextureManager() {
     return this.gpuPipeline?.getDebugTextureManager() ?? null;
+  }
+
+  getShadowRenderer() {
+    return this.gpuPipeline?.getShadowRenderer() ?? null;
   }
 
   /**
@@ -575,24 +664,21 @@ export class Viewport {
     // Alias for backward compatibility
     const cameraAdapter = viewCameraAdapter;
 
-    // Get lighting settings
-    // Note: lightParams.direction is pre-computed from DirectionalLight
-    // sunElevation/sunAzimuth are still needed for sky rendering
-    const isHDR = this.lightParams?.type === 'hdr';
-    // Scale sunIntensity by sunIntensityFactor (0 at night, 1 during day)
-    // This ensures water, terrain, and objects all receive zero direct light at night
-    const baseSunIntensity = (this.lightParams as any)?.sunIntensity ?? 20;
-    const sunIntensityFactor = (this.lightParams as any)?.sunIntensityFactor ?? 1.0;
-    const sunIntensity = baseSunIntensity * sunIntensityFactor;
-    const hdrExposure = (this.lightParams as any)?.hdrExposure ?? 1.0;
-    const ambientIntensity = (this.lightParams as any)?.ambient ?? 0.3;
-    const lightColor = isHDR
-      ? [1.0, 1.0, 1.0] as RGBColor
-      : (this.lightParams as DirectionalLightParams).effectiveColor;
+    // ── Read lighting from ECS LightComponent (single source of truth) ──
+    // Query the first directional light entity. LightingSystem has already
+    // computed direction / effectiveColor / sunIntensityFactor / ambient.
+    const sunEntity = this._world.queryFirst('light');
+    const sunLight = sunEntity?.getComponent<LightComponent>('light') ?? null;
 
-    // Get pre-computed light direction from DirectionalLight (avoids redundant calculation)
-    // Only available on directional light type, not HDR
-    const lightDirection = (this.lightParams as any)?.direction as [number, number, number] | undefined;
+    const isHDR = false; // HDR mode will be driven by ECS in the future
+    const sunIntensityFactor = sunLight?.sunIntensityFactor ?? 1.0;
+    const sunIntensity = 20 * sunIntensityFactor;
+    const hdrExposure = 1.0;
+    const ambientIntensity = sunLight?.ambient ?? 0.3;
+    const lightColor: RGBColor = (sunLight?.effectiveColor as RGBColor) ?? [1, 1, 0.95];
+
+    // Light direction from ECS (computed by LightingSystem)
+    const lightDirection: [number, number, number] | undefined = sunLight?.direction;
 
     // Note: Gizmos are rendered by TransformGizmoManager after the pipeline finishes
 
@@ -614,6 +700,24 @@ export class Viewport {
     // Run ECS systems before rendering
     if (this.gpuContext) {
       this.updateFrustumCullSystem(sceneCameraAdapter);
+
+      // Feed scene camera VP matrix to LightingSystem for point/spot light frustum culling
+      const lightingSystem = this._world.getSystem<LightingSystem>('lighting');
+      if (lightingSystem) {
+        const sceneVP = new Float32Array(16);
+        const sceneView = sceneCameraAdapter.getViewMatrix();
+        const sceneProj = sceneCameraAdapter.getProjectionMatrix();
+        for (let i = 0; i < 4; i++) {
+          for (let j = 0; j < 4; j++) {
+            let sum = 0;
+            for (let k = 0; k < 4; k++) {
+              sum += sceneProj[i + k * 4] * sceneView[k + j * 4];
+            }
+            sceneVP[i + j * 4] = sum;
+          }
+        }
+        lightingSystem.setViewProjectionMatrix(sceneVP);
+      }
 
       // Feed per-frame data to systems
       const shadowCasterSystem = this._world.getSystem<ShadowCasterSystem>('shadow-caster');
@@ -674,6 +778,13 @@ export class Viewport {
       this.renderDebugCameraOverlay();
     }
 
+    // Render light helper wireframes (skip in FPS mode)
+    if (!this.fpsMode && this.lightVisualizer?.enabled) {
+      this.lightVisualizer.update(this._world);
+      const vpMatrix = this.cameraController!.getCamera().getViewProjectionMatrix();
+      this.renderLightHelperOverlay(vpMatrix as Float32Array);
+    }
+
     // Render gizmo via TransformGizmoManager (skip in FPS mode and debug camera mode)
     // This uses the same screen-space scale as hit testing for consistency
     if (!this.fpsMode && !this.debugCameraMode && this.transformGizmo?.hasGPURenderer()) {
@@ -712,8 +823,8 @@ export class Viewport {
     const sceneCamera = this.cameraController.getCamera();
 
     // Update frustum geometry from scene camera parameters
-    const pos = sceneCamera.getPosition() as [number, number, number];
-    const target = sceneCamera.getTarget() as [number, number, number];
+    const pos = sceneCamera.getPosition();
+    const target = sceneCamera.getTarget();
 
     // Build CSM debug info if shadow renderer has CSM enabled
     let csmInfo: CSMDebugInfo | undefined;
@@ -721,8 +832,10 @@ export class Viewport {
       const shadowRenderer = this.gpuPipeline.getShadowRenderer();
       const shadowConfig = shadowRenderer.getConfig();
       if (shadowConfig.csmEnabled) {
-        // Get light direction from current light params
-        const lightDir = (this.lightParams as any)?.direction as [number, number, number] | undefined;
+        // Get light direction from ECS
+        const sunEntity = this._world.queryFirst('light');
+        const sunLc = sunEntity?.getComponent<LightComponent>('light');
+        const lightDir = sunLc?.direction;
         if (lightDir) {
           csmInfo = {
             lightDirection: lightDir,
@@ -768,6 +881,41 @@ export class Viewport {
     const debugVP = this.debugCameraController.getCamera().getViewProjectionMatrix();
     this.cameraFrustumRenderer.render(passEncoder, debugVP as Float32Array);
 
+    passEncoder.end();
+    this.gpuContext.queue.submit([encoder.finish()]);
+  }
+
+  /**
+   * Render light helper wireframes overlay
+   */
+  private renderLightHelperOverlay(vpMatrix: Float32Array): void {
+    if (!this.gpuContext || !this.lightVisualizer || this.lightVisualizer.drawCount === 0) return;
+
+    const outputTexture = this.gpuContext.context?.getCurrentTexture();
+    if (!outputTexture) return;
+
+    const outputView = outputTexture.createView();
+    const encoder = this.gpuContext.device.createCommandEncoder({
+      label: 'light-helper-overlay-encoder',
+    });
+
+    const passEncoder = encoder.beginRenderPass({
+      label: 'light-helper-overlay-pass',
+      colorAttachments: [{
+        view: outputView,
+        loadOp: 'load',
+        storeOp: 'store',
+      }],
+    });
+
+    const cam = this.cameraController!.getCamera();
+    const camPos = cam.getPosition();
+    this.lightVisualizer.render(
+      passEncoder,
+      vpMatrix,
+      [camPos[0], camPos[1], camPos[2]] as [number, number, number],
+      this.logicalHeight,
+    );
     passEncoder.end();
     this.gpuContext.queue.submit([encoder.finish()]);
   }
@@ -982,14 +1130,6 @@ export class Viewport {
     this.viewportMode = mode;
   }
 
-  /**
-   * Set light params from LightingManager.
-   * This is the primary way to update lighting state.
-   */
-  setLightParams(params: SceneLightingParams): void {
-    this.lightParams = params;
-  }
-
   setWindParams(params: Partial<WindParams>): void {
     const currentTime = this.windParams.time;
 
@@ -1009,6 +1149,15 @@ export class Viewport {
 
   setShowAxes(show: boolean): void {
     this.showAxes = show;
+  }
+
+  /**
+   * Show/hide light helper wireframes (arrows, spheres, cones) in the viewport
+   */
+  setShowLightHelpers(show: boolean): void {
+    if (this.lightVisualizer) {
+      this.lightVisualizer.enabled = show;
+    }
   }
 
   // ==================== Uniform Scale ====================

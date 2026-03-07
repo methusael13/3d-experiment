@@ -8,7 +8,7 @@ import { useCallback, useMemo, useRef } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
 import { MenuBar, type MenuDefinition, type MenuAction } from '../layout';
 import { shaderPanelVisible, toggleShaderPanel } from './ShaderDebugPanelBridge';
-import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity } from '@/core/ecs/factories';
+import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity, createPointLightEntity, createSpotLightEntity } from '@/core/ecs/factories';
 import { PrimitiveGeometryComponent } from '@/core/ecs/components/PrimitiveGeometryComponent';
 import { TransformComponent } from '@/core/ecs/components/TransformComponent';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
@@ -504,6 +504,29 @@ export function ConnectedMenuBar() {
     
     world.select(entity.id);
   }, [store]);
+
+  const handleAddPointLight = useCallback(() => {
+    const world = store.world;
+    if (!world) return;
+    const entity = createPointLightEntity(world, {
+      position: [0, 5, 0],
+      intensity: 2.0,
+      range: 15,
+    });
+    world.select(entity.id);
+  }, [store]);
+
+  const handleAddSpotLight = useCallback(() => {
+    const world = store.world;
+    if (!world) return;
+    const entity = createSpotLightEntity(world, {
+      position: [0, 5, 0],
+      direction: [0, -1, 0],
+      intensity: 3.0,
+      range: 20,
+    });
+    world.select(entity.id);
+  }, [store]);
   
   // ==================== Menu Definitions ====================
   
@@ -566,6 +589,9 @@ export function ConnectedMenuBar() {
         { separator: true, id: 'sep1', label: '' },
         { id: 'terrain', label: 'Terrain', onClick: handleAddTerrain },
         { id: 'water', label: 'Water', onClick: handleAddWater },
+        { separator: true, id: 'sep2', label: '' },
+        { id: 'point-light', label: '💡 Point Light', onClick: handleAddPointLight },
+        { id: 'spot-light', label: '🔦 Spot Light', onClick: handleAddSpotLight },
       ],
     },
   ], [
@@ -573,7 +599,7 @@ export function ConnectedMenuBar() {
     handleSelectAll, handleDuplicate, handleDeleteSelected, handleGroupSelection, handleUngroup,
     handleSetViewportMode, handleToggleGrid, handleToggleAxes, handleExpandView, handleFPSCamera, handleCameraPreset,
     handleToggleShaderEditor, handleToggleDebugCamera,
-    handleAddPrimitive, handleAddTerrain, handleAddWater,
+    handleAddPrimitive, handleAddTerrain, handleAddWater, handleAddPointLight, handleAddSpotLight,
     hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value, fpsModeActive.value, debugCameraModeActive.value,
   ]);
   

@@ -118,6 +118,14 @@ struct BiomeTextureParams {
 @group(3) @binding(7) var csmShadowArray: texture_depth_2d_array;
 @group(3) @binding(8) var<uniform> csmUniforms: CSMUniforms;
 
+// Multi-light buffers from SceneEnvironment (bindings 10-12)
+@group(3) @binding(10) var<uniform> env_lightCounts: TerrainLightCounts;
+@group(3) @binding(11) var<storage, read> env_pointLights: array<TerrainPointLightData>;
+@group(3) @binding(12) var<storage, read> env_spotLights: array<TerrainSpotLightData>;
+// Spot shadow atlas (bindings 13-14)
+@group(3) @binding(13) var env_spotShadowAtlas: texture_depth_2d_array;
+@group(3) @binding(14) var env_spotShadowSampler: sampler_comparison;
+
 // ============================================================================
 // CSM Uniform Structure (matches ShadowRendererGPU)
 // ============================================================================
@@ -137,6 +145,90 @@ struct CSMUniforms {
 
 // Sample diffuse irradiance from IBL cubemap for ambient lighting
 // Returns pre-convolved irradiance for Lambert diffuse
+// ============ Multi-Light Structures ============
+
+struct TerrainPointLightData {
+  position: vec3f,
+  range: f32,
+  color: vec3f,
+  intensity: f32,
+};
+
+struct TerrainSpotLightData {
+  position: vec3f,
+  range: f32,
+  direction: vec3f,
+  intensity: f32,
+  color: vec3f,
+  innerCos: f32,
+  outerCos: f32,
+  shadowAtlasIndex: i32,
+  cookieAtlasIndex: i32,
+  cookieIntensity: f32,
+  lightSpaceMatrix: mat4x4f,
+};
+
+struct TerrainLightCounts {
+  numPoint: u32,
+  numSpot: u32,
+  _pad0: u32,
+  _pad1: u32,
+};
+
+fn terrainAttenuateDistance(distance: f32, range: f32) -> f32 {
+  if (range <= 0.0) { return 0.0; }
+  let ratio = distance / range;
+  if (ratio >= 1.0) { return 0.0; }
+  let window = pow(saturate(1.0 - ratio * ratio), 2.0);
+  let invDist2 = 1.0 / (distance * distance + 0.01);
+  return window * invDist2;
+}
+
+fn terrainAttenuateSpotCone(cosAngle: f32, innerCos: f32, outerCos: f32) -> f32 {
+  return saturate((cosAngle - outerCos) / max(innerCos - outerCos, 0.001));
+}
+
+fn sampleTerrainSpotShadow(worldPos: vec3f, lightSpaceMatrix: mat4x4f, atlasIndex: i32) -> f32 {
+  if (atlasIndex < 0) { return 1.0; }
+  let lsp = lightSpaceMatrix * vec4f(worldPos, 1.0);
+  let pc = lsp.xyz / lsp.w;
+  let suv = pc.xy * 0.5 + 0.5;
+  if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0 || pc.z > 1.0) { return 1.0; }
+  let uv = vec2f(suv.x, 1.0 - suv.y);
+  return textureSampleCompareLevel(env_spotShadowAtlas, env_spotShadowSampler, uv, atlasIndex, pc.z - 0.002);
+}
+
+fn computeTerrainMultiLight(worldPos: vec3f, normal: vec3f) -> vec3f {
+  var totalLight = vec3f(0.0);
+
+  let numPoint = min(env_lightCounts.numPoint, 64u);
+  for (var i = 0u; i < numPoint; i++) {
+    let light = env_pointLights[i];
+    let toLight = light.position - worldPos;
+    let dist = length(toLight);
+    let L = toLight / max(dist, 0.001);
+    let NdotL = max(dot(normal, L), 0.0);
+    let atten = terrainAttenuateDistance(dist, light.range);
+    totalLight += light.color * light.intensity * NdotL * atten;
+  }
+
+  let numSpot = min(env_lightCounts.numSpot, 32u);
+  for (var i = 0u; i < numSpot; i++) {
+    let light = env_spotLights[i];
+    let toLight = light.position - worldPos;
+    let dist = length(toLight);
+    let L = toLight / max(dist, 0.001);
+    let NdotL = max(dot(normal, L), 0.0);
+    let atten = terrainAttenuateDistance(dist, light.range);
+    let cosAngle = dot(-L, normalize(light.direction));
+    let spotFalloff = terrainAttenuateSpotCone(cosAngle, light.innerCos, light.outerCos);
+    let shadow = sampleTerrainSpotShadow(worldPos, light.lightSpaceMatrix, light.shadowAtlasIndex);
+    totalLight += light.color * light.intensity * NdotL * atten * spotFalloff * shadow;
+  }
+
+  return totalLight;
+}
+
 fn sampleIBLDiffuse(worldNormal: vec3f) -> vec3f {
   return textureSample(env_iblDiffuse, env_cubeSampler, worldNormal).rgb;
 }
@@ -1290,7 +1382,10 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
   // Apply shadow to diffuse component only (ambient is always visible)
   let diffuse = NdotL * material.lightColor.rgb * shadow;
   
-  var finalColor = aoAmbientColor + albedo * diffuse;
+  // Multi-light contribution (point + spot lights)
+  let multiLight = computeTerrainMultiLight(input.worldPosition, normal) * albedo;
+
+  var finalColor = aoAmbientColor + albedo * diffuse + multiLight;
   
   // Selection highlighting is now handled via a separate outline pass (SelectionOutlinePass)
 

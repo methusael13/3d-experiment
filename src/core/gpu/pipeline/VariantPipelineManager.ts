@@ -92,6 +92,11 @@ function computeEnvironmentMask(composed: ComposedShader): EnvironmentBindingMas
   if (features.includes('ssr')) {
     mask |= ENV_BINDING_MASK.SSR_TEXTURE;
   }
+  if (features.includes('multi-light')) {
+    mask |= ENV_BINDING_MASK.MULTI_LIGHT;
+    mask |= ENV_BINDING_MASK.SPOT_SHADOW;
+    mask |= ENV_BINDING_MASK.COOKIE;
+  }
   // reflection-probe resources are now in Group 2 (textures), not Group 3 (environment)
 
   return mask;

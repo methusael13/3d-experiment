@@ -6,6 +6,7 @@ import { windFeature } from './windFeature';
 import { wetnessFeature } from './wetnessFeature';
 import { ssrFeature } from './ssrFeature';
 import { reflectionProbeFeature } from './reflectionProbeFeature';
+import { multiLightFeature } from './multiLightFeature';
 
 export { shadowFeature } from './shadowFeature';
 export { iblFeature } from './iblFeature';
@@ -14,6 +15,7 @@ export { windFeature } from './windFeature';
 export { wetnessFeature } from './wetnessFeature';
 export { ssrFeature } from './ssrFeature';
 export { reflectionProbeFeature } from './reflectionProbeFeature';
+export { multiLightFeature } from './multiLightFeature';
 
 /**
  * Feature registry — maps feature ID to its ShaderFeature definition.
@@ -27,6 +29,7 @@ export const featureRegistry = new Map<string, ShaderFeature>([
   [wetnessFeature.id, wetnessFeature],
   [ssrFeature.id, ssrFeature],
   [reflectionProbeFeature.id, reflectionProbeFeature],
+  [multiLightFeature.id, multiLightFeature],
 ]);
 
 /**

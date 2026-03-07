@@ -54,9 +54,14 @@ fn vs_main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let depth = textureSample(depthTexture, depthSampler, input.uv);
-  // Linearize depth for better visualization (depth is 0-1, closer = darker)
-  let linearDepth = pow(depth, 0.4); // Gamma correction for better visibility
-  return vec4f(linearDepth, linearDepth, linearDepth, 1.0);
+  // For perspective depth (spot/point lights), values are heavily compressed
+  // near 1.0 due to non-linear distribution. Use inverted + amplified view:
+  //   clearValue (1.0) → black, geometry (< 1.0) → bright
+  // This works for both ortho (CSM) and perspective shadow maps.
+  let invDepth = 1.0 - depth;           // 0.0 for empty, small positive for geometry
+  let amplified = saturate(invDepth * 100.0); // Amplify differences from 1.0
+  let visual = pow(amplified, 0.4);      // Gamma for better mid-tone visibility
+  return vec4f(visual, visual, visual, 1.0);
 }
 `;
   

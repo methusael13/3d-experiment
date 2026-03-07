@@ -119,6 +119,23 @@ export class ShadowRendererGPU {
 
   private _debugOnce: boolean = false;
   
+  // ── Spot/Point shadow atlas ──────────────────────────────────────────
+  /** Maximum number of spot/point shadow atlas layers */
+  static readonly MAX_SHADOW_ATLAS_LAYERS = 16;
+
+  /** Shadow atlas texture array for spot/point lights */
+  private spotShadowAtlasTexture: GPUTexture | null = null;
+  private spotShadowAtlasView: GPUTextureView | null = null;
+  private spotShadowAtlasLayerViews: GPUTextureView[] = [];
+  /** Current resolution of the spot shadow atlas layers */
+  private spotShadowAtlasResolution: number = 0;
+
+  /** Light-space matrices for spot shadow atlas layers */
+  private spotShadowMatrices: mat4[] = [];
+
+  /** Tracks which atlas layers are allocated (-1 = free, entityId = in use) */
+  private spotShadowSlots: (string | null)[] = [];
+
   // Debug visualization
   private depthVisualizer: DepthTextureVisualizer | null = null;
   
@@ -129,6 +146,7 @@ export class ShadowRendererGPU {
     this.createShadowMaps();
     this.createCSMUniformBuffer();
     this.initializeCascades();
+    this.createSpotShadowAtlas();
   }
   
   /** Create depth-only shadow map texture(s) */
@@ -573,6 +591,161 @@ export class ShadowRendererGPU {
     );
   }
   
+  // ============ Spot Shadow Atlas ============
+
+  /** Create the spot/point shadow atlas texture array */
+  private createSpotShadowAtlas(resolution?: number): void {
+    const atlasResolution = resolution ?? 1024; // Default 1024 for spot shadows
+    const layers = ShadowRendererGPU.MAX_SHADOW_ATLAS_LAYERS;
+
+    // Destroy old atlas if exists
+    this.spotShadowAtlasTexture?.destroy();
+    this.spotShadowAtlasResolution = atlasResolution;
+
+    this.spotShadowAtlasTexture = this.ctx.device.createTexture({
+      label: 'spot-shadow-atlas',
+      size: {
+        width: atlasResolution,
+        height: atlasResolution,
+        depthOrArrayLayers: layers,
+      },
+      format: 'depth32float',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+
+    this.spotShadowAtlasView = this.spotShadowAtlasTexture.createView({
+      label: 'spot-shadow-atlas-view',
+      dimension: '2d-array',
+      arrayLayerCount: layers,
+    });
+
+    this.spotShadowAtlasLayerViews = [];
+    for (let i = 0; i < layers; i++) {
+      this.spotShadowAtlasLayerViews.push(
+        this.spotShadowAtlasTexture.createView({
+          label: `spot-shadow-atlas-layer-${i}`,
+          dimension: '2d',
+          baseArrayLayer: i,
+          arrayLayerCount: 1,
+        }),
+      );
+    }
+
+    this.spotShadowMatrices = [];
+    this.spotShadowSlots = [];
+    for (let i = 0; i < layers; i++) {
+      this.spotShadowMatrices.push(mat4.create());
+      this.spotShadowSlots.push(null);
+    }
+  }
+
+  /**
+   * Allocate a shadow atlas slot for a light entity.
+   * @returns The atlas layer index, or -1 if no slot available.
+   */
+  allocateShadowSlot(entityId: string): number {
+    // Check if entity already has a slot
+    const existingIdx = this.spotShadowSlots.indexOf(entityId);
+    if (existingIdx >= 0) return existingIdx;
+
+    // Find a free slot
+    const freeIdx = this.spotShadowSlots.indexOf(null);
+    if (freeIdx < 0) {
+      return -1;
+    }
+
+    this.spotShadowSlots[freeIdx] = entityId;
+    return freeIdx;
+  }
+
+  /**
+   * Free a shadow atlas slot previously allocated for a light entity.
+   */
+  freeShadowSlot(entityId: string): void {
+    const idx = this.spotShadowSlots.indexOf(entityId);
+    if (idx >= 0) {
+      this.spotShadowSlots[idx] = null;
+      mat4.identity(this.spotShadowMatrices[idx]);
+    }
+  }
+
+  /**
+   * Get the render attachment view for a specific atlas layer (for rendering into it).
+   */
+  getSpotShadowAtlasLayerView(layerIndex: number): GPUTextureView | null {
+    return this.spotShadowAtlasLayerViews[layerIndex] ?? null;
+  }
+
+  /**
+   * Get the full atlas array view (for shader sampling).
+   */
+  getSpotShadowAtlasView(): GPUTextureView | null {
+    return this.spotShadowAtlasView;
+  }
+
+  /**
+   * Set the light-space matrix for a specific atlas layer.
+   * Called by LightingSystem after computing the spot light projection.
+   */
+  setSpotShadowMatrix(layerIndex: number, matrix: mat4): void {
+    if (layerIndex >= 0 && layerIndex < this.spotShadowMatrices.length) {
+      mat4.copy(this.spotShadowMatrices[layerIndex], matrix);
+    }
+  }
+
+  /**
+   * Get the light-space matrix for a specific atlas layer.
+   */
+  getSpotShadowMatrix(layerIndex: number): mat4 {
+    return this.spotShadowMatrices[layerIndex] ?? mat4.create();
+  }
+
+  /**
+   * Get the number of currently allocated shadow slots.
+   */
+  getActiveSpotShadowCount(): number {
+    return this.spotShadowSlots.filter((s) => s !== null).length;
+  }
+
+  /**
+   * Get the current spot shadow atlas resolution.
+   */
+  getSpotShadowAtlasResolution(): number {
+    return this.spotShadowAtlasResolution;
+  }
+
+  /**
+   * Resize the spot shadow atlas to a new resolution.
+   * Recreates the atlas texture and all layer views. Existing slot allocations
+   * and matrices are preserved; only the texture storage changes.
+   * @returns true if the atlas was actually recreated (resolution changed)
+   */
+  resizeSpotShadowAtlas(resolution: number): boolean {
+    const clamped = Math.max(256, Math.min(4096, resolution));
+    if (clamped === this.spotShadowAtlasResolution) return false;
+
+    // Preserve slot allocations and matrices
+    const savedSlots = [...this.spotShadowSlots];
+    const savedMatrices = this.spotShadowMatrices.map(m => {
+      const copy = mat4.create();
+      mat4.copy(copy, m);
+      return copy;
+    });
+
+    this.createSpotShadowAtlas(clamped);
+
+    // Restore slot allocations and matrices
+    for (let i = 0; i < savedSlots.length && i < this.spotShadowSlots.length; i++) {
+      this.spotShadowSlots[i] = savedSlots[i];
+    }
+    for (let i = 0; i < savedMatrices.length && i < this.spotShadowMatrices.length; i++) {
+      mat4.copy(this.spotShadowMatrices[i], savedMatrices[i]);
+    }
+
+    console.log(`[ShadowRendererGPU] Spot shadow atlas resized to ${clamped}x${clamped}`);
+    return true;
+  }
+
   // ============ Cleanup ============
   
   destroy(): void {
@@ -580,6 +753,7 @@ export class ShadowRendererGPU {
     this.shadowMapArrayTexture?.destroy();
     this.csmUniformBuffer?.destroy();
     this.depthVisualizer?.destroy();
+    this.spotShadowAtlasTexture?.destroy();
     
     this.shadowMap = null;
     this.shadowMapArrayTexture = null;
@@ -587,5 +761,8 @@ export class ShadowRendererGPU {
     this.csmUniformBuffer = null;
     this.depthVisualizer = null;
     this.cascadeViews = [];
+    this.spotShadowAtlasTexture = null;
+    this.spotShadowAtlasView = null;
+    this.spotShadowAtlasLayerViews = [];
   }
 }

@@ -113,6 +113,13 @@ export const ENVIRONMENT_BINDINGS = {
   CSM_SHADOW_ARRAY: 7,
   CSM_UNIFORMS: 8,
   SSR_TEXTURE: 9,
+  LIGHT_COUNTS: 10,
+  POINT_LIGHTS: 11,
+  SPOT_LIGHTS: 12,
+  SPOT_SHADOW_ATLAS: 13,
+  SPOT_SHADOW_SAMPLER: 14,
+  COOKIE_ATLAS: 15,
+  COOKIE_SAMPLER: 16,
 } as const;
 
 /**
@@ -151,8 +158,18 @@ export const ENV_BINDING_MASK = {
   ALL_LEGACY: 0x7F, // Original 7 bindings
   /** SSR texture (for metallic object reflections) */
   SSR: 1 << ENVIRONMENT_BINDINGS.SSR_TEXTURE,
-  /** All resources including CSM - for CSM-aware renderers */
-  ALL: 0x3FF, // All 10 bindings (0-9)
+  /** Multi-light buffers (light counts + point + spot storage) */
+  MULTI_LIGHT: (1 << ENVIRONMENT_BINDINGS.LIGHT_COUNTS) |
+               (1 << ENVIRONMENT_BINDINGS.POINT_LIGHTS) |
+               (1 << ENVIRONMENT_BINDINGS.SPOT_LIGHTS),
+  /** Spot shadow atlas (depth array + comparison sampler) */
+  SPOT_SHADOW: (1 << ENVIRONMENT_BINDINGS.SPOT_SHADOW_ATLAS) |
+               (1 << ENVIRONMENT_BINDINGS.SPOT_SHADOW_SAMPLER),
+  /** Cookie atlas (2d array + sampler) */
+  COOKIE: (1 << ENVIRONMENT_BINDINGS.COOKIE_ATLAS) |
+          (1 << ENVIRONMENT_BINDINGS.COOKIE_SAMPLER),
+  /** All resources including CSM + multi-light + shadow atlas + cookies */
+  ALL: 0x1FFFF, // All 17 bindings (0-16)
 } as const;
 
 export type EnvironmentBindingMask = number;

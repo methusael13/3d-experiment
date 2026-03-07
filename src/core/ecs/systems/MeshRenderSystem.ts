@@ -85,6 +85,12 @@ export class MeshRenderSystem extends System {
    */
   shadowsActive: boolean = true;
 
+  /**
+   * Whether multi-light (point/spot) rendering is active.
+   * Set by LightingSystem when point/spot light entities exist in the world.
+   */
+  multiLightActive: boolean = false;
+
   update(entities: Entity[], _deltaTime: number, _context: SystemContext): void {
     const groupMap = new Map<string, ShaderVariantGroup>();
 
@@ -288,6 +294,11 @@ export class MeshRenderSystem extends System {
     const wetness = entity.getComponent<WetnessComponent>('wetness');
     if (wetness && wetness.enabled && wetness.wetnessFactor > 0) {
       features.push('wetness');
+    }
+
+    // Multi-light feature (if scene has point/spot lights)
+    if (this.multiLightActive) {
+      features.push('multi-light');
     }
 
     // Reflection probe takes priority over SSR — probe cubemap + IBL fallback is sufficient

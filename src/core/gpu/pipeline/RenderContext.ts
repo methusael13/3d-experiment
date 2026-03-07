@@ -16,6 +16,20 @@ import { DEFAULT_RENDER_OPTIONS } from './GPUForwardPipeline';
 import type { World } from '../../ecs/World';
 import type { SceneEnvironment } from '../renderers/shared';
 import type { MeshRenderSystem } from '../../ecs/systems/MeshRenderSystem';
+import { LightComponent } from '../../ecs/components/LightComponent';
+
+/**
+ * Cached directional light data from ECS LightComponent.
+ * Queried once per frame and cached to avoid repeated world queries.
+ */
+export interface DirectionalLightData {
+  direction: [number, number, number];
+  effectiveColor: [number, number, number];
+  ambient: number;
+  sunIntensityFactor: number;
+  skyColor: [number, number, number];
+  groundColor: [number, number, number];
+}
 
 /**
  * Context passed to each render pass
@@ -92,6 +106,12 @@ export interface RenderContext {
   
   /** MeshRenderSystem — provides per-frame variant groups for composed rendering */
   readonly meshRenderSystem?: MeshRenderSystem;
+  
+  /**
+   * Get the primary directional light data from ECS world.
+   * Cached per frame. Falls back to ctx.options if no world/light entity.
+   */
+  getDirectionalLight(): DirectionalLightData;
   
   // Helper methods
   getColorAttachment(loadOp: 'clear' | 'load'): GPURenderPassColorAttachment;
@@ -212,6 +232,7 @@ export class RenderContextImpl implements RenderContext {
   private depthCopied = false;
   private sceneColorCopied = false;
   private drawCalls = 0;
+  private _cachedDirLight: DirectionalLightData | null = null;
   
   constructor(opts: RenderContextOptions) {
     this.encoder = opts.encoder;
@@ -326,6 +347,40 @@ export class RenderContextImpl implements RenderContext {
       }
       this.sceneCameraForward = scFwd;
     }
+  }
+
+  getDirectionalLight(): DirectionalLightData {
+    if (this._cachedDirLight) return this._cachedDirLight;
+
+    // Query ECS world for directional light entity
+    if (this.world) {
+      const lightEntity = this.world.queryFirst('light');
+      if (lightEntity) {
+        const lc = lightEntity.getComponent<LightComponent>('light');
+        if (lc && lc.lightType === 'directional' && lc.enabled) {
+          this._cachedDirLight = {
+            direction: lc.direction,
+            effectiveColor: lc.effectiveColor,
+            ambient: lc.ambient,
+            sunIntensityFactor: lc.sunIntensityFactor,
+            skyColor: lc.skyColor,
+            groundColor: lc.groundColor,
+          };
+          return this._cachedDirLight;
+        }
+      }
+    }
+
+    // Fallback to options
+    this._cachedDirLight = {
+      direction: (this.options.lightDirection ?? [0.3, 0.8, 0.5]) as [number, number, number],
+      effectiveColor: (this.options.lightColor ?? [1, 1, 0.95]) as [number, number, number],
+      ambient: this.options.ambientIntensity ?? 0.3,
+      sunIntensityFactor: 1.0,
+      skyColor: [0.4, 0.6, 1.0],
+      groundColor: [0.3, 0.25, 0.2],
+    };
+    return this._cachedDirLight;
   }
 
   getDrawCalls() { return this.drawCalls; }

@@ -9,6 +9,8 @@ interface SceneObject {
   id: string;
   name: string;
   groupId?: string | null;
+  /** Optional icon emoji displayed before the name (e.g. ☀️💡🔦🧊🌊⛰️) */
+  icon?: string;
 }
 
 interface ObjectGroup {
@@ -106,6 +108,7 @@ export function ObjectsPanel({
                       onClick={handleObjectClick(obj.id, true)}
                     >
                       <span class={styles.childIndent}>└─</span>
+                      {obj.icon && <span class={styles.objectIcon}>{obj.icon}</span>}
                       <span>{obj.name}</span>
                     </li>
                   ))}
@@ -122,6 +125,7 @@ export function ObjectsPanel({
             class={`${styles.objectItem} ${selectedIds.has(obj.id) ? styles.selected : ''}`}
             onClick={handleObjectClick(obj.id, false)}
           >
+            {obj.icon && <span class={styles.objectIcon}>{obj.icon}</span>}
             <span>{obj.name}</span>
           </li>
         ))}

@@ -36,6 +36,7 @@ export {
   ShadowCasterSystem,
   FPSCameraSystem,
   FrustumCullSystem,
+  LightingSystem,
 } from './systems';
 export type { ShaderVariantGroup } from './systems';
 
@@ -46,6 +47,8 @@ export {
   createTerrainEntity,
   createOceanEntity,
   createDirectionalLightEntity,
+  createPointLightEntity,
+  createSpotLightEntity,
 } from './factories';
 export type { ModelEntityMeta, PrimitiveEntityMeta } from './factories';
 

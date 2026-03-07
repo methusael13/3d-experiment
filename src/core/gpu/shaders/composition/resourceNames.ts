@@ -50,6 +50,15 @@ export const RES = {
   REFLECTION_PROBE_CUBEMAP: 'reflectionProbeCubemap',
   REFLECTION_PROBE_SAMPLER: 'reflectionProbeSampler',
 
+  // ==================== Multi-Light (environment) ====================
+  LIGHT_COUNTS: 'lightCounts',
+  POINT_LIGHTS_BUFFER: 'pointLightsBuffer',
+  SPOT_LIGHTS_BUFFER: 'spotLightsBuffer',
+  SPOT_SHADOW_ATLAS: 'spotShadowAtlas',
+  SPOT_SHADOW_SAMPLER: 'spotShadowSampler',
+  COOKIE_ATLAS: 'cookieAtlas',
+  COOKIE_SAMPLER: 'cookieSampler',
+
   // ==================== Terrain (shared by terrain + shadow) ====================
   TERRAIN_HEIGHTMAP: 'terrainHeightmap',
   TERRAIN_NORMALMAP: 'terrainNormalMap',

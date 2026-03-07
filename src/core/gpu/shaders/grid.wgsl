@@ -50,6 +50,46 @@ struct GridUniforms {
 // Binding 8: CSM uniforms buffer
 @group(3) @binding(8) var<uniform> env_csmUniforms: CSMUniforms;
 
+// Binding 10-12: Multi-light buffers
+@group(3) @binding(10) var<uniform> env_lightCounts: LightCounts;
+@group(3) @binding(11) var<storage, read> env_pointLights: array<PointLightData>;
+@group(3) @binding(12) var<storage, read> env_spotLights: array<SpotLightData>;
+// Binding 13-14: Spot shadow atlas
+@group(3) @binding(13) var env_spotShadowAtlas: texture_depth_2d_array;
+@group(3) @binding(14) var env_spotShadowSampler: sampler_comparison;
+
+// ============================================================================
+// Multi-Light Structures (must match lights.wgsl / LightBufferManager.ts)
+// ============================================================================
+
+struct PointLightData {
+  position: vec3f,
+  range: f32,
+  color: vec3f,
+  intensity: f32,
+};
+
+struct SpotLightData {
+  position: vec3f,
+  range: f32,
+  direction: vec3f,
+  intensity: f32,
+  color: vec3f,
+  innerCos: f32,
+  outerCos: f32,
+  shadowAtlasIndex: i32,
+  cookieAtlasIndex: i32,
+  cookieIntensity: f32,
+  lightSpaceMatrix: mat4x4f,
+};
+
+struct LightCounts {
+  numPoint: u32,
+  numSpot: u32,
+  _pad0: u32,
+  _pad1: u32,
+};
+
 // ============================================================================
 // CSM Uniforms Structure (must match ShadowRendererGPU.ts / shadow-csm.wgsl)
 // ============================================================================
@@ -281,6 +321,67 @@ fn sampleIBLDiffuse(worldNormal: vec3f) -> vec3f {
 }
 
 // ============================================================================
+// Multi-Light Attenuation
+// ============================================================================
+
+fn attenuateDistance(distance: f32, range: f32) -> f32 {
+  if (range <= 0.0) { return 0.0; }
+  let ratio = distance / range;
+  if (ratio >= 1.0) { return 0.0; }
+  let window = pow(saturate(1.0 - ratio * ratio), 2.0);
+  let invDist2 = 1.0 / (distance * distance + 0.01);
+  return window * invDist2;
+}
+
+fn attenuateSpotCone(cosAngle: f32, innerCos: f32, outerCos: f32) -> f32 {
+  return saturate((cosAngle - outerCos) / max(innerCos - outerCos, 0.001));
+}
+
+// Compute total diffuse contribution from all point and spot lights for a flat ground surface
+fn sampleGridSpotShadow(worldPos: vec3f, lightSpaceMatrix: mat4x4f, atlasIndex: i32) -> f32 {
+  if (atlasIndex < 0) { return 1.0; }
+  let lsp = lightSpaceMatrix * vec4f(worldPos, 1.0);
+  let pc = lsp.xyz / lsp.w;
+  let suv = pc.xy * 0.5 + 0.5;
+  if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0 || pc.z > 1.0) { return 1.0; }
+  let uv = vec2f(suv.x, 1.0 - suv.y);
+  return textureSampleCompareLevel(env_spotShadowAtlas, env_spotShadowSampler, uv, atlasIndex, pc.z - 0.002);
+}
+
+fn computeMultiLightDiffuse(worldPos: vec3f, normal: vec3f) -> vec3f {
+  var totalLight = vec3f(0.0);
+
+  // Point lights
+  let numPoint = min(env_lightCounts.numPoint, 64u);
+  for (var i = 0u; i < numPoint; i++) {
+    let light = env_pointLights[i];
+    let toLight = light.position - worldPos;
+    let dist = length(toLight);
+    let L = toLight / max(dist, 0.001);
+    let NdotL = max(dot(normal, L), 0.0);
+    let atten = attenuateDistance(dist, light.range);
+    totalLight += light.color * light.intensity * NdotL * atten;
+  }
+
+  // Spot lights (with shadow atlas sampling)
+  let numSpot = min(env_lightCounts.numSpot, 32u);
+  for (var i = 0u; i < numSpot; i++) {
+    let light = env_spotLights[i];
+    let toLight = light.position - worldPos;
+    let dist = length(toLight);
+    let L = toLight / max(dist, 0.001);
+    let NdotL = max(dot(normal, L), 0.0);
+    let atten = attenuateDistance(dist, light.range);
+    let cosAngle = dot(-L, normalize(light.direction));
+    let spotFalloff = attenuateSpotCone(cosAngle, light.innerCos, light.outerCos);
+    let shadow = sampleGridSpotShadow(worldPos, light.lightSpaceMatrix, light.shadowAtlasIndex);
+    totalLight += light.color * light.intensity * NdotL * atten * spotFalloff * shadow;
+  }
+
+  return totalLight;
+}
+
+// ============================================================================
 // Procedural Grid + Checkerboard
 // ============================================================================
 
@@ -451,8 +552,11 @@ fn fs_ground(input: GroundVertexOutput) -> @location(0) vec4f {
   // Direct lighting (Lambert diffuse * shadow)
   let directLight = uniforms.lightColor * NdotL * shadowFactor;
 
-  // Combine: ambient + direct
-  let finalColor = gridColor * (ambient + directLight);
+  // Multi-light contribution (point + spot lights)
+  let multiLight = computeMultiLightDiffuse(input.worldPos, normal);
+
+  // Combine: ambient + direct + multi-light
+  let finalColor = gridColor * (ambient + directLight + multiLight);
 
   // === Edge fade ===
   let gridExtent = uniforms.gridConfig.x;

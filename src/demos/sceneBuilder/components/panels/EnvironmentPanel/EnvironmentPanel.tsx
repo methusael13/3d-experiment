@@ -5,86 +5,36 @@ import { WindTab } from './WindTab';
 import { HdrGallery } from './HdrGallery';
 import { useEnvironmentStore } from './useEnvironmentStore';
 import type { PanelContext } from '../../../componentPanels/panelContext';
-import type { LightingManager } from '../../../lightingManager';
 import type { WindManager } from '../../../wind';
-import { HDRLoader } from '../../../../../loaders';
+import type { World } from '@/core/ecs/World';
 
 // Import CSS variables
 import '../../styles/variables.css';
 
 export interface EnvironmentPanelProps {
-  lightingManager: LightingManager;
   windManager: WindManager;
   context: PanelContext;
+  world?: World | null;
 }
 
 export function EnvironmentPanel({
-  lightingManager,
   windManager,
   context,
+  world,
 }: EnvironmentPanelProps) {
-  const store = useEnvironmentStore(lightingManager, windManager, context);
+  const store = useEnvironmentStore(windManager, context, world);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedHdrName, setSelectedHdrName] = useState<string | null>(null);
 
   // HDR loading handlers
   const handleLoadSelectedHdr = useCallback(async () => {
     if (!selectedHdrName || store.isLoadingHdr) return;
-
-    store.setIsLoadingHdr(true);
-    store.setHdrProgress(0);
-
-    try {
-      const hdrPath = `/ibl/${selectedHdrName}.hdr`;
-      store.setHdrFilename('Loading...');
-
-      const response = await fetch(hdrPath);
-      if (!response.ok) throw new Error(`Failed to fetch ${hdrPath}`);
-
-      // Todo: Need support for HDR loader with WebGPU textures
-      const buffer = await response.arrayBuffer();
-      const hdrData = HDRLoader.parse(buffer);
-
-      lightingManager.hdrLight.setTexture(null, `${selectedHdrName}.hdr`);
-      store.setHdrFilename(selectedHdrName);
-
-      context.setHDRTexture(null);
-      store.setLightMode('hdr');
-    } catch (err) {
-      console.error('Failed to load HDR:', err);
-      store.setHdrFilename('Error loading HDR');
-    } finally {
-      store.setIsLoadingHdr(false);
-    }
-  }, [selectedHdrName, store, context, lightingManager]);
+    // Todo: Need support for ECS based HDR light
+  }, [selectedHdrName, store, context]);
 
   const handleFileUpload = useCallback(async (e: Event) => {
-    const file = (e.target as HTMLInputElement).files?.[0];
-    if (!file) return;
-
-    store.setIsLoadingHdr(true);
-    store.setHdrProgress(0);
-
-    try {
-      store.setHdrFilename('Loading...');
-
-      const buffer = await file.arrayBuffer();
-
-      // Todo: Need support for HDR loader with WebGPU textures
-      const hdrData = HDRLoader.parse(buffer);
-
-      lightingManager.hdrLight.setTexture(null, file.name);
-      store.setHdrFilename(file.name);
-
-      context.setHDRTexture(null);
-      store.setLightMode('hdr');
-    } catch (err) {
-      console.error('Failed to load HDR:', err);
-      store.setHdrFilename('Error loading HDR');
-    } finally {
-      store.setIsLoadingHdr(false);
-    }
-  }, [store, context, lightingManager]);
+    // Todo
+  }, [store, context]);
 
   const handleUploadClick = useCallback(() => {
     fileInputRef.current?.click();

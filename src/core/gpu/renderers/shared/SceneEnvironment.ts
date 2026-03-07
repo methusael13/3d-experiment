@@ -13,11 +13,23 @@
  * - Binding 4: BRDF LUT texture
  * - Binding 5: IBL cubemap sampler
  * - Binding 6: IBL LUT sampler
+ * - Binding 7: CSM shadow map array
+ * - Binding 8: CSM uniforms buffer
+ * - Binding 9: SSR texture
+ * - Binding 10: Light counts uniform
+ * - Binding 11: Point lights storage
+ * - Binding 12: Spot lights storage
+ * - Binding 13: Spot shadow atlas (depth 2d-array)
+ * - Binding 14: Spot shadow comparison sampler
+ * - Binding 15: Cookie atlas (2d-array)
+ * - Binding 16: Cookie sampler
  */
 
 import { GPUContext } from '../../GPUContext';
 import { PlaceholderTextures } from './PlaceholderTextures';
 import type { UnifiedGPUBuffer } from '../../GPUBuffer';
+import type { LightBufferManager } from '../LightBufferManager';
+import type { ShadowRendererGPU } from '../ShadowRendererGPU';
 import { IBLResources, ENVIRONMENT_BINDINGS, ENV_BINDING_MASK, EnvironmentBindingMask } from './types';
 
 /**
@@ -49,6 +61,10 @@ export class SceneEnvironment {
   private currentCSM: CSMResources | null = null;
   private currentSSRView: GPUTextureView | null = null;
 
+  // Multi-light resources
+  private currentLightBufferManager: LightBufferManager | null = null;
+  private currentShadowRenderer: ShadowRendererGPU | null = null;
+
   // Track if bind group needs rebuild
   private needsRebuild: boolean = false;
 
@@ -76,7 +92,7 @@ export class SceneEnvironment {
 
   /**
    * Create a bind group with the given resources (or placeholders)
-   * Includes all 9 bindings (0-8) including CSM for compatibility with ALL mask
+   * Includes all 10 bindings (0-9) including CSM for compatibility with ALL mask
    */
   private createBindGroup(
     shadowMapView: GPUTextureView | null,
@@ -93,6 +109,9 @@ export class SceneEnvironment {
     const csmArray = this.currentCSM?.shadowArrayView ?? this.placeholders.csmArrayView;
     const csmBuffer = this.currentCSM?.uniformBuffer?.buffer ?? this.placeholders.csmUniformBuffer;
 
+    // Multi-light buffers
+    const lightBuffers = this.currentLightBufferManager?.getBuffers();
+
     return this.ctx.device.createBindGroup({
       label: 'shared-environment-bindgroup',
       layout: this._layout,
@@ -107,6 +126,16 @@ export class SceneEnvironment {
         { binding: ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY, resource: csmArray },
         { binding: ENVIRONMENT_BINDINGS.CSM_UNIFORMS, resource: { buffer: csmBuffer } },
         { binding: ENVIRONMENT_BINDINGS.SSR_TEXTURE, resource: this.currentSSRView ?? this.placeholders.ssrTextureView },
+        // Multi-light bindings (10-12)
+        { binding: ENVIRONMENT_BINDINGS.LIGHT_COUNTS, resource: { buffer: lightBuffers?.lightCountsBuffer ?? this.getPlaceholderUniformBuffer() } },
+        { binding: ENVIRONMENT_BINDINGS.POINT_LIGHTS, resource: { buffer: lightBuffers?.pointLightsBuffer ?? this.getPlaceholderStorageBuffer() } },
+        { binding: ENVIRONMENT_BINDINGS.SPOT_LIGHTS, resource: { buffer: lightBuffers?.spotLightsBuffer ?? this.getPlaceholderStorageBuffer() } },
+        // Spot shadow atlas (13-14)
+        { binding: ENVIRONMENT_BINDINGS.SPOT_SHADOW_ATLAS, resource: this.currentShadowRenderer?.getSpotShadowAtlasView() ?? this.placeholders.spotShadowAtlasView },
+        { binding: ENVIRONMENT_BINDINGS.SPOT_SHADOW_SAMPLER, resource: this.placeholders.spotShadowSampler },
+        // Cookie atlas (15-16)
+        { binding: ENVIRONMENT_BINDINGS.COOKIE_ATLAS, resource: this.placeholders.cookieAtlasView },
+        { binding: ENVIRONMENT_BINDINGS.COOKIE_SAMPLER, resource: this.placeholders.cookieSampler },
       ],
     });
   }
@@ -143,6 +172,30 @@ export class SceneEnvironment {
   setCSM(csm: CSMResources | null): void {
     if (this.currentCSM !== csm) {
       this.currentCSM = csm;
+      this.needsRebuild = true;
+      this.invalidateMaskedBindGroups();
+    }
+  }
+
+  /**
+   * Set the LightBufferManager for multi-light bindings (10-12)
+   * @param manager LightBufferManager (null to clear)
+   */
+  setLightBufferManager(manager: LightBufferManager | null): void {
+    if (this.currentLightBufferManager !== manager) {
+      this.currentLightBufferManager = manager;
+      this.needsRebuild = true;
+      this.invalidateMaskedBindGroups();
+    }
+  }
+
+  /**
+   * Set the ShadowRendererGPU for spot shadow atlas bindings (13-14)
+   * @param renderer ShadowRendererGPU (null to clear)
+   */
+  setShadowRenderer(renderer: ShadowRendererGPU | null): void {
+    if (this.currentShadowRenderer !== renderer) {
+      this.currentShadowRenderer = renderer;
       this.needsRebuild = true;
       this.invalidateMaskedBindGroups();
     }
@@ -256,7 +309,7 @@ export class SceneEnvironment {
   static getBindGroupLayoutEntriesForMask(mask: EnvironmentBindingMask): GPUBindGroupLayoutEntry[] {
     const entries: GPUBindGroupLayoutEntry[] = [];
     
-    // Shadow resources
+    // Shadow resources (bindings 0-1)
     if (mask & ENV_BINDING_MASK.SHADOW_MAP) {
       entries.push({
         binding: ENVIRONMENT_BINDINGS.SHADOW_MAP,
@@ -272,7 +325,7 @@ export class SceneEnvironment {
       });
     }
     
-    // IBL resources
+    // IBL resources (bindings 2-6)
     if (mask & ENV_BINDING_MASK.IBL_DIFFUSE) {
       entries.push({
         binding: ENVIRONMENT_BINDINGS.IBL_DIFFUSE,
@@ -309,16 +362,7 @@ export class SceneEnvironment {
       });
     }
     
-    // SSR texture
-    if (mask & ENV_BINDING_MASK.SSR_TEXTURE) {
-      entries.push({
-        binding: ENVIRONMENT_BINDINGS.SSR_TEXTURE,
-        visibility: GPUShaderStage.FRAGMENT,
-        texture: { sampleType: 'float' },
-      });
-    }
-    
-    // CSM resources
+    // CSM resources (bindings 7-8)
     if (mask & ENV_BINDING_MASK.CSM_SHADOW_ARRAY) {
       entries.push({
         binding: ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY,
@@ -334,6 +378,76 @@ export class SceneEnvironment {
         binding: ENVIRONMENT_BINDINGS.CSM_UNIFORMS,
         visibility: GPUShaderStage.FRAGMENT,
         buffer: { type: 'uniform' },
+      });
+    }
+    
+    // SSR texture (binding 9)
+    if (mask & ENV_BINDING_MASK.SSR_TEXTURE) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.SSR_TEXTURE,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: 'float' },
+      });
+    }
+    
+    // Multi-light buffers (bindings 10-12)
+    if (mask & (1 << ENVIRONMENT_BINDINGS.LIGHT_COUNTS)) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.LIGHT_COUNTS,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: 'uniform' },
+      });
+    }
+    if (mask & (1 << ENVIRONMENT_BINDINGS.POINT_LIGHTS)) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.POINT_LIGHTS,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: 'read-only-storage' },
+      });
+    }
+    if (mask & (1 << ENVIRONMENT_BINDINGS.SPOT_LIGHTS)) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.SPOT_LIGHTS,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: 'read-only-storage' },
+      });
+    }
+    
+    // Spot shadow atlas (bindings 13-14)
+    if (mask & (1 << ENVIRONMENT_BINDINGS.SPOT_SHADOW_ATLAS)) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.SPOT_SHADOW_ATLAS,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: {
+          sampleType: 'depth',
+          viewDimension: '2d-array',
+        },
+      });
+    }
+    if (mask & (1 << ENVIRONMENT_BINDINGS.SPOT_SHADOW_SAMPLER)) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.SPOT_SHADOW_SAMPLER,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: 'comparison' },
+      });
+    }
+    
+    // Cookie atlas (bindings 15-16)
+    if (mask & (1 << ENVIRONMENT_BINDINGS.COOKIE_ATLAS)) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.COOKIE_ATLAS,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: {
+          sampleType: 'float',
+          viewDimension: '2d-array',
+        },
+      });
+    }
+    if (mask & (1 << ENVIRONMENT_BINDINGS.COOKIE_SAMPLER)) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.COOKIE_SAMPLER,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: 'filtering' },
       });
     }
     
@@ -392,12 +506,15 @@ export class SceneEnvironment {
     
     const entries: GPUBindGroupEntry[] = [];
     
+    // Shadow resources (bindings 0-1)
     if (mask & ENV_BINDING_MASK.SHADOW_MAP) {
       entries.push({ binding: ENVIRONMENT_BINDINGS.SHADOW_MAP, resource: shadow });
     }
     if (mask & ENV_BINDING_MASK.SHADOW_SAMPLER) {
       entries.push({ binding: ENVIRONMENT_BINDINGS.SHADOW_SAMPLER, resource: this.placeholders.shadowSampler });
     }
+    
+    // IBL resources (bindings 2-6)
     if (mask & ENV_BINDING_MASK.IBL_DIFFUSE) {
       entries.push({ binding: ENVIRONMENT_BINDINGS.IBL_DIFFUSE, resource: diffuse });
     }
@@ -414,12 +531,7 @@ export class SceneEnvironment {
       entries.push({ binding: ENVIRONMENT_BINDINGS.IBL_LUT_SAMPLER, resource: lutSampler });
     }
     
-    // SSR texture
-    if (mask & ENV_BINDING_MASK.SSR_TEXTURE) {
-      entries.push({ binding: ENVIRONMENT_BINDINGS.SSR_TEXTURE, resource: this.currentSSRView ?? this.placeholders.ssrTextureView });
-    }
-    
-    // CSM resources
+    // CSM resources (bindings 7-8)
     if (mask & ENV_BINDING_MASK.CSM_SHADOW_ARRAY) {
       const csmArray = this.currentCSM?.shadowArrayView ?? this.placeholders.csmArrayView;
       entries.push({ binding: ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY, resource: csmArray });
@@ -431,13 +543,56 @@ export class SceneEnvironment {
           resource: { buffer: this.currentCSM.uniformBuffer.buffer } 
         });
       } else {
-        // Skip CSM uniforms if not available - shader should check csmEnabled flag
-        // To prevent binding errors, we need a placeholder buffer
         entries.push({ 
           binding: ENVIRONMENT_BINDINGS.CSM_UNIFORMS, 
           resource: { buffer: this.placeholders.csmUniformBuffer } 
         });
       }
+    }
+    
+    // SSR texture (binding 9)
+    if (mask & ENV_BINDING_MASK.SSR_TEXTURE) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.SSR_TEXTURE, resource: this.currentSSRView ?? this.placeholders.ssrTextureView });
+    }
+    
+    // Multi-light buffers (bindings 10-12)
+    if (mask & (1 << ENVIRONMENT_BINDINGS.LIGHT_COUNTS)) {
+      const buffers = this.currentLightBufferManager?.getBuffers();
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.LIGHT_COUNTS,
+        resource: { buffer: buffers?.lightCountsBuffer ?? this.getPlaceholderUniformBuffer() },
+      });
+    }
+    if (mask & (1 << ENVIRONMENT_BINDINGS.POINT_LIGHTS)) {
+      const buffers = this.currentLightBufferManager?.getBuffers();
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.POINT_LIGHTS,
+        resource: { buffer: buffers?.pointLightsBuffer ?? this.getPlaceholderStorageBuffer() },
+      });
+    }
+    if (mask & (1 << ENVIRONMENT_BINDINGS.SPOT_LIGHTS)) {
+      const buffers = this.currentLightBufferManager?.getBuffers();
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.SPOT_LIGHTS,
+        resource: { buffer: buffers?.spotLightsBuffer ?? this.getPlaceholderStorageBuffer() },
+      });
+    }
+    
+    // Spot shadow atlas (bindings 13-14)
+    if (mask & (1 << ENVIRONMENT_BINDINGS.SPOT_SHADOW_ATLAS)) {
+      const atlasView = this.currentShadowRenderer?.getSpotShadowAtlasView() ?? this.placeholders.spotShadowAtlasView;
+      entries.push({ binding: ENVIRONMENT_BINDINGS.SPOT_SHADOW_ATLAS, resource: atlasView });
+    }
+    if (mask & (1 << ENVIRONMENT_BINDINGS.SPOT_SHADOW_SAMPLER)) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.SPOT_SHADOW_SAMPLER, resource: this.placeholders.spotShadowSampler });
+    }
+    
+    // Cookie atlas (bindings 15-16)
+    if (mask & (1 << ENVIRONMENT_BINDINGS.COOKIE_ATLAS)) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.COOKIE_ATLAS, resource: this.placeholders.cookieAtlasView });
+    }
+    if (mask & (1 << ENVIRONMENT_BINDINGS.COOKIE_SAMPLER)) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.COOKIE_SAMPLER, resource: this.placeholders.cookieSampler });
     }
     
     return this.ctx.device.createBindGroup({
@@ -455,5 +610,34 @@ export class SceneEnvironment {
     for (const mask of this.maskedBindGroups.keys()) {
       this.maskedBindGroupsNeedRebuild.add(mask);
     }
+  }
+  
+  // ============ Placeholder buffer helpers for multi-light ============
+  
+  private _placeholderUniformBuffer: GPUBuffer | null = null;
+  private _placeholderStorageBuffer: GPUBuffer | null = null;
+  
+  /** Get a placeholder 16-byte uniform buffer (for light counts when no LightBufferManager) */
+  private getPlaceholderUniformBuffer(): GPUBuffer {
+    if (!this._placeholderUniformBuffer) {
+      this._placeholderUniformBuffer = this.ctx.device.createBuffer({
+        label: 'placeholder-light-counts',
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
+    return this._placeholderUniformBuffer;
+  }
+  
+  /** Get a placeholder 64-byte storage buffer (for empty point/spot light arrays) */
+  private getPlaceholderStorageBuffer(): GPUBuffer {
+    if (!this._placeholderStorageBuffer) {
+      this._placeholderStorageBuffer = this.ctx.device.createBuffer({
+        label: 'placeholder-light-storage',
+        size: 64, // min for storage buffer
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+    }
+    return this._placeholderStorageBuffer;
   }
 }

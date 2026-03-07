@@ -23,6 +23,13 @@ const ENV_RESOURCE_BINDING_INDEX: Record<string, number> = {
   [RES.CSM_SHADOW_ARRAY]: ENVIRONMENT_BINDINGS.CSM_SHADOW_ARRAY, // 7
   [RES.CSM_UNIFORMS]: ENVIRONMENT_BINDINGS.CSM_UNIFORMS,        // 8
   [RES.SSR_PREV_FRAME_TEXTURE]: ENVIRONMENT_BINDINGS.SSR_TEXTURE, // 9
+  [RES.LIGHT_COUNTS]: ENVIRONMENT_BINDINGS.LIGHT_COUNTS,         // 10
+  [RES.POINT_LIGHTS_BUFFER]: ENVIRONMENT_BINDINGS.POINT_LIGHTS,  // 11
+  [RES.SPOT_LIGHTS_BUFFER]: ENVIRONMENT_BINDINGS.SPOT_LIGHTS,    // 12
+  [RES.SPOT_SHADOW_ATLAS]: ENVIRONMENT_BINDINGS.SPOT_SHADOW_ATLAS,   // 13
+  [RES.SPOT_SHADOW_SAMPLER]: ENVIRONMENT_BINDINGS.SPOT_SHADOW_SAMPLER, // 14
+  [RES.COOKIE_ATLAS]: ENVIRONMENT_BINDINGS.COOKIE_ATLAS,         // 15
+  [RES.COOKIE_SAMPLER]: ENVIRONMENT_BINDINGS.COOKIE_SAMPLER,     // 16
 };
 
 /**
@@ -305,13 +312,7 @@ export class ShaderComposer {
           `@group(3) @binding(${res.bindingIndex}) var ${name}: ${res.samplerType};`,
         );
       } else if (res.kind === 'uniform') {
-        // Uniform buffers in environment group (e.g., CSMUniforms)
-        // Forward-declare the struct before the binding so WGSL can resolve the type.
-        // The full struct definition also appears in the feature's functions block;
-        // we emit a minimal forward definition here.  WGSL does not allow duplicate
-        // struct definitions, so the feature's functions block should NOT re-declare it.
-        // Since the shadow feature already puts CSMUniforms in its functions block and
-        // FUNCTIONS comes after ENVIRONMENT_BINDINGS, we need the struct HERE.
+        // Uniform buffers in environment group (e.g., CSMUniforms, lightCounts)
         if (name === 'csmUniforms') {
           structDefs.push(`
 struct CSMUniforms {
@@ -320,10 +321,31 @@ struct CSMUniforms {
   config: vec4f,
   cameraForward: vec4f,
 }`);
+          lines.push(
+            `@group(3) @binding(${res.bindingIndex}) var<uniform> ${name}: CSMUniforms;`,
+          );
+        } else if (name === 'lightCounts') {
+          // LightCounts struct is defined in the feature's functions block
+          lines.push(
+            `@group(3) @binding(${res.bindingIndex}) var<uniform> ${name}: LightCounts;`,
+          );
+        } else {
+          // Generic uniform — use wgslType if provided
+          lines.push(
+            `@group(3) @binding(${res.bindingIndex}) var<uniform> ${name}: ${res.wgslType ?? 'vec4f'};`,
+          );
         }
-        lines.push(
-          `@group(3) @binding(${res.bindingIndex}) var<uniform> ${name}: CSMUniforms;`,
-        );
+      } else if (res.kind === 'storage') {
+        // Read-only storage buffers in environment group (e.g., point/spot light arrays)
+        if (name === 'pointLightsBuffer') {
+          lines.push(
+            `@group(3) @binding(${res.bindingIndex}) var<storage, read> ${name}: array<PointLightData>;`,
+          );
+        } else if (name === 'spotLightsBuffer') {
+          lines.push(
+            `@group(3) @binding(${res.bindingIndex}) var<storage, read> ${name}: array<SpotLightData>;`,
+          );
+        }
       }
     }
     

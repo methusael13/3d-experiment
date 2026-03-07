@@ -5,7 +5,6 @@
 
 import type { WindManager, ObjectWindSettings } from '../wind';
 import { createObjectWindSettings } from '../wind';
-import type { LightingManager } from '../lightingManager';
 import type { CameraController } from '../CameraController';
 import type { GizmoMode } from '../gizmos';
 import type { GizmoOrientation } from '../gizmos/BaseGizmo';
@@ -28,7 +27,6 @@ export interface PanelContext {
   // Core references
   container: HTMLElement;
   windManager: WindManager;
-  lightingManager: LightingManager;
   cameraController: CameraController | null;
 
   // Object wind settings accessors
@@ -80,7 +78,6 @@ export interface PanelContext {
 export interface PanelContextConfig {
   container: HTMLElement;
   windManager: WindManager;
-  lightingManager: LightingManager;
   cameraController: CameraController | null;
 
   // Per-object settings storage (Maps)
@@ -142,7 +139,6 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
   const {
     container,
     windManager,
-    lightingManager,
     cameraController,
     objectWindSettings,
     onGizmoModeChange,
@@ -164,7 +160,6 @@ export function createPanelContext(config: PanelContextConfig): PanelContext {
     // Core references
     container,
     windManager,
-    lightingManager,
     cameraController,
 
     // Object wind settings accessors

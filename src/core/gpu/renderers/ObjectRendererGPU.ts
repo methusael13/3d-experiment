@@ -233,8 +233,11 @@ export class ObjectRendererGPU {
   // Dynamic uniform buffer for CSM shadow passes
   // Each slot is 256-byte aligned (WebGPU requirement for dynamic offsets)
   // Slot layout: [cascade0, cascade1, cascade2, cascade3, singleMap]
-  private static readonly SHADOW_SLOT_SIZE = 256; // Must be 256-byte aligned
-  private static readonly MAX_SHADOW_SLOTS = 5;   // 4 cascades + 1 single map
+  static readonly SHADOW_SLOT_SIZE = 256; // Must be 256-byte aligned
+  /** Base slots for directional shadows: 4 CSM cascades + 1 single map */
+  static readonly DIRECTIONAL_SHADOW_SLOTS = 5;
+  /** Total slots = directional + max spot shadow atlas layers */
+  static readonly MAX_SHADOW_SLOTS = ObjectRendererGPU.DIRECTIONAL_SHADOW_SLOTS + 16; // 16 = ShadowRendererGPU.MAX_SHADOW_ATLAS_LAYERS
   
   // Registered meshes
   private meshes: Map<number, GPUMeshInternal> = new Map();
@@ -1064,7 +1067,7 @@ export class ObjectRendererGPU {
     const slotSize = ObjectRendererGPU.SHADOW_SLOT_SIZE;
     const totalSize = slotSize * ObjectRendererGPU.MAX_SHADOW_SLOTS;
     
-    // Shadow uniform buffer: 5 slots × 256 bytes = 1280 bytes
+    // Shadow uniform buffer: 21 slots × 256 bytes = 5376 bytes
     // Each slot holds one mat4x4f (64 bytes) padded to 256-byte alignment
     this.shadowUniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'object-shadow-uniforms-dynamic',
@@ -1142,7 +1145,7 @@ export class ObjectRendererGPU {
   }
   
   /**
-   * Pre-write all shadow matrices to the dynamic uniform buffer.
+   * Pre-write all shadow matrices to the dynamic uniform buffer starting at slot 0.
    * Must be called ONCE before recording any shadow render passes.
    * 
    * @param matrices - Array of light-space matrices to write.
@@ -1150,7 +1153,18 @@ export class ObjectRendererGPU {
    *   For single map only: [singleMap]
    */
   writeShadowMatrices(matrices: (mat4 | Float32Array)[]): void {
-    if (!this.shadowUniformBuffer) return;
+    this.writeShadowMatricesAt(0, matrices);
+  }
+
+  /**
+   * Write shadow matrices to the dynamic uniform buffer starting at a specific slot.
+   * Only writes to the specified slot range, leaving other slots untouched.
+   * 
+   * @param startSlot - First slot index to write to
+   * @param matrices - Array of light-space matrices to write at consecutive slots
+   */
+  writeShadowMatricesAt(startSlot: number, matrices: (mat4 | Float32Array)[]): void {
+    if (!this.shadowUniformBuffer || matrices.length === 0) return;
     
     const slotSize = ObjectRendererGPU.SHADOW_SLOT_SIZE;
     const floatsPerSlot = slotSize / 4; // 64 floats per 256-byte slot
@@ -1162,7 +1176,9 @@ export class ObjectRendererGPU {
       data.set(matrices[i] as Float32Array, i * floatsPerSlot);
     }
     
-    this.shadowUniformBuffer.write(this.ctx, data);
+    // Write at byte offset for the starting slot
+    const byteOffset = startSlot * slotSize;
+    this.ctx.queue.writeBuffer(this.shadowUniformBuffer.buffer, byteOffset, data.buffer, data.byteOffset, data.byteLength);
   }
   
   /**
@@ -1200,7 +1216,7 @@ export class ObjectRendererGPU {
     
     // Calculate dynamic offset for this slot (256-byte aligned)
     const dynamicOffset = slotIndex * ObjectRendererGPU.SHADOW_SLOT_SIZE;
-    
+
     // Set pipeline and global bind group with dynamic offset
     passEncoder.setPipeline(this.shadowPipeline);
     passEncoder.setBindGroup(0, this.shadowBindGroup, [dynamicOffset]);

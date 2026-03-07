@@ -721,8 +721,8 @@ export class CDLODRendererGPU {
     });
   }
   
-  /** Environment binding mask for terrain - diffuse IBL + CSM shadow maps */
-  private static readonly TERRAIN_ENV_MASK = ENV_BINDING_MASK.DIFFUSE_IBL | ENV_BINDING_MASK.CSM_SHADOW;
+  /** Environment binding mask for terrain - diffuse IBL + CSM shadow maps + multi-light */
+  private static readonly TERRAIN_ENV_MASK = ENV_BINDING_MASK.DIFFUSE_IBL | ENV_BINDING_MASK.CSM_SHADOW | ENV_BINDING_MASK.MULTI_LIGHT | ENV_BINDING_MASK.SPOT_SHADOW;
   
   /**
    * Update the bind group with current textures using BindGroupBuilder

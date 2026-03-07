@@ -131,6 +131,12 @@
   font-size: 10px;
 }
 
+.objectIcon {
+  font-size: 12px;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
 .groupChild.selected .childIndent {
   color: rgba(255, 255, 255, 0.7);
 }

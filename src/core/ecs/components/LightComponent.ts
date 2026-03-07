@@ -6,6 +6,14 @@ import type { ComponentType } from '../types';
  *
  * The entity's TransformComponent provides position/direction.
  * This component holds light-specific properties.
+ *
+ * **Input fields** (set by UI / serialization):
+ *   lightType, enabled, color, intensity, castsShadow,
+ *   azimuth, elevation, ambientIntensity, range, innerConeAngle, outerConeAngle
+ *
+ * **Computed fields** (written by LightingSystem each frame):
+ *   direction, effectiveColor, sunIntensityFactor, ambient,
+ *   skyColor, groundColor
  */
 export class LightComponent extends Component {
   readonly type: ComponentType = 'light';
@@ -16,7 +24,7 @@ export class LightComponent extends Component {
   intensity: number = 1.0;
   castsShadow: boolean = false;
 
-  // Directional-specific
+  // Directional-specific (input)
   azimuth?: number;
   elevation?: number;
   ambientIntensity?: number;
@@ -27,6 +35,38 @@ export class LightComponent extends Component {
   // Spot-specific
   innerConeAngle?: number;
   outerConeAngle?: number;
+  /** Shadow map resolution for this light (spot/point, default: 1024) */
+  shadowMapResolution: number = 1024;
+
+  // ── Shadow atlas (managed by ShadowRendererGPU, not owned) ──────────
+  /** Index into the shadow atlas texture array (-1 = no shadow slot) */
+  shadowAtlasIndex: number = -1;
+
+  // ── Cookie textures (managed externally) ────────────────────────────
+  /** Path to the cookie texture asset (null = no cookie) */
+  cookieTexturePath: string | null = null;
+  /** Index into the cookie atlas texture array (-1 = no cookie) */
+  cookieAtlasIndex: number = -1;
+  /** Cookie modulation intensity (0 = no effect, 1 = full cookie pattern) */
+  cookieIntensity: number = 1.0;
+  /** Cookie UV tiling */
+  cookieTiling: [number, number] = [1, 1];
+  /** Cookie UV offset */
+  cookieOffset: [number, number] = [0, 0];
+
+  // ── Computed fields (written by LightingSystem) ──────────────────────
+  /** Light direction vector (points towards the light source) */
+  direction: [number, number, number] = [0.3, 0.8, 0.5];
+  /** Effective color (includes atmospheric tinting, moonlight, and intensity factor) */
+  effectiveColor: [number, number, number] = [1, 1, 0.95];
+  /** Sun intensity factor: 0→MOON_INTENSITY at night, 1 during day, smooth twilight transition */
+  sunIntensityFactor: number = 1.0;
+  /** Ambient contribution (computed from elevation and ambientIntensity) */
+  ambient: number = 0.3;
+  /** Sky hemisphere color for ambient lighting */
+  skyColor: [number, number, number] = [0.4, 0.6, 1.0];
+  /** Ground hemisphere color for ambient lighting */
+  groundColor: [number, number, number] = [0.3, 0.25, 0.2];
 
   serialize(): Record<string, unknown> {
     return {
@@ -41,6 +81,7 @@ export class LightComponent extends Component {
       range: this.range,
       innerConeAngle: this.innerConeAngle,
       outerConeAngle: this.outerConeAngle,
+      shadowMapResolution: this.shadowMapResolution,
     };
   }
 
@@ -62,5 +103,7 @@ export class LightComponent extends Component {
       this.innerConeAngle = data.innerConeAngle as number;
     if (data.outerConeAngle !== undefined)
       this.outerConeAngle = data.outerConeAngle as number;
+    if (data.shadowMapResolution !== undefined)
+      this.shadowMapResolution = data.shadowMapResolution as number;
   }
 }

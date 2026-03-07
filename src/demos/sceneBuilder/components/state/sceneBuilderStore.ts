@@ -7,7 +7,6 @@
 
 import { signal, computed, batch, type Signal } from '@preact/signals';
 import type { Viewport } from '../../Viewport';
-import type { LightingManager } from '../../lightingManager';
 import type { World } from '@/core/ecs/World';
 import type { Entity } from '@/core/ecs/Entity';
 import type { GizmoMode, GizmoOrientation } from '../../gizmos';
@@ -66,7 +65,6 @@ export interface SceneBuilderStore {
   
   // References (not reactive, just stored)
   viewport: Viewport | null;
-  lightingManager: LightingManager | null;
   
   /** ECS World — accessed via viewport.world. Available after viewport init. */
   readonly world: World | null;
@@ -178,7 +176,6 @@ export function createSceneBuilderStore(): SceneBuilderStore {
   
   // References (not signals)
   let viewport: Viewport | null = null;
-  let lightingManager: LightingManager | null = null;
   
   // ==================== Actions ====================
   
@@ -389,8 +386,6 @@ export function createSceneBuilderStore(): SceneBuilderStore {
     // References (using getters to allow mutation)
     get viewport() { return viewport; },
     set viewport(v) { viewport = v; },
-    get lightingManager() { return lightingManager; },
-    set lightingManager(l) { lightingManager = l; },
     
     // ECS World — delegates to viewport (single source of truth)
     get world() { return viewport?.world ?? null; },

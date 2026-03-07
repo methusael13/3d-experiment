@@ -9,6 +9,7 @@ import { OriginPivot } from '@/core/sceneObjects/SceneObject';
 import type { Entity } from '@/core/ecs/Entity';
 import type { ComponentType } from '@/core/ecs/types';
 import type { DebugTextureManager } from '@/core/gpu/renderers/DebugTextureManager';
+import type { ShadowRendererGPU } from '@/core/gpu/renderers/ShadowRendererGPU';
 import styles from './ObjectPanel.module.css';
 
 // Import CSS variables
@@ -55,6 +56,7 @@ export interface ObjectPanelProps {
 
   // Debug
   debugTextureManager?: DebugTextureManager | null;
+  shadowRenderer?: ShadowRendererGPU | null;
 }
 
 export function ObjectPanel({
@@ -83,6 +85,7 @@ export function ObjectPanel({
   activeComponents,
   onComponentsChanged,
   debugTextureManager,
+  shadowRenderer,
 }: ObjectPanelProps) {
   const showEditTab = objectType === 'primitive' && selectionCount === 1;
 
@@ -137,6 +140,7 @@ export function ObjectPanel({
             activeComponents={activeComponents}
             onChanged={onComponentsChanged}
             debugTextureManager={debugTextureManager}
+            shadowRenderer={shadowRenderer}
           />
         ) : null,
       },
@@ -153,6 +157,8 @@ export function ObjectPanel({
       showNormals,
       entity,
       activeComponents,
+      debugTextureManager,
+      shadowRenderer,
     ]
   );
 

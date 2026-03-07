@@ -13,6 +13,11 @@ import type { GridRendererGPU, GridGroundRenderParams } from '../../renderers/Gr
 import type { ShadowRendererGPU } from '../../renderers/ShadowRendererGPU';
 import type { DebugTextureManager } from '../../renderers/DebugTextureManager';
 import type { SelectionOutlineRendererGPU } from '../../renderers/SelectionOutlineRendererGPU';
+import { LightComponent } from '../../../ecs/components/LightComponent';
+import { TransformComponent } from '../../../ecs/components/TransformComponent';
+// Shadow Pass re-export
+export { ShadowPass } from './ShadowPass';
+export type { ShadowPassDependencies } from './ShadowPass';
 // SSR Pass re-export
 export { SSRPass } from './SSRPass';
 
@@ -30,6 +35,7 @@ import { VariantRenderer } from '../VariantRenderer';
 import type { VariantMeshPool } from '../VariantMeshPool';
 import { SSRConfig } from '../SSRConfig';
 import { FrustumCullComponent } from '@/core/ecs';
+import { Vec3 } from '@/core/types';
 
 // ============================================================================
 // SKY PASS
@@ -49,7 +55,7 @@ export class SkyPass extends BaseRenderPass {
   }
   
   execute(ctx: RenderContext): void {
-    const { skyMode, sunIntensity, hdrExposure, lightDirection } = ctx.options;
+    const { skyMode, sunIntensity, hdrExposure } = ctx.options;
     
     if (skyMode === 'none') return;
     
@@ -60,211 +66,15 @@ export class SkyPass extends BaseRenderPass {
     });
     
     if (skyMode === 'sun') {
-      this.skyRenderer.renderSunSky(pass, ctx.viewProjectionMatrix, lightDirection, sunIntensity);
+      // Read light direction from ECS (via cached helper)
+      const dirLight = ctx.getDirectionalLight();
+      this.skyRenderer.renderSunSky(pass, ctx.viewProjectionMatrix, dirLight.direction, sunIntensity);
     } else if (skyMode === 'hdr') {
       this.skyRenderer.renderHDRSky(pass, ctx.viewProjectionMatrix, hdrExposure);
     }
     
     pass.end();
     ctx.addDrawCalls(1);
-  }
-}
-
-// ============================================================================
-// SHADOW PASS
-// ============================================================================
-
-export interface ShadowPassDependencies {
-  shadowRenderer: ShadowRendererGPU;
-  objectRenderer: ObjectRendererGPU;
-  meshPool: VariantMeshPool;
-}
-
-/**
- * ShadowPass - Renders shadow map from light's perspective
- * Category: scene (shadow maps are used by scene passes)
- * 
- * Supports both single shadow map and Cascaded Shadow Maps (CSM).
- * Uses actual mesh geometry via ShadowCaster interface. Scene objects that
- * implement ShadowCaster (terrain, etc.) render their own depth. Batched
- * objects (primitives) are handled separately via ObjectRendererGPU.
- */
-export class ShadowPass extends BaseRenderPass {
-  readonly name = 'shadow';
-  readonly priority = PassPriority.SHADOW;
-  readonly category: PassCategory = 'scene';
-  
-  private shadowRenderer: ShadowRendererGPU;
-  private objectRenderer: ObjectRendererGPU;
-  private meshPool: VariantMeshPool;
-  
-  constructor(deps: ShadowPassDependencies) {
-    super();
-    this.shadowRenderer = deps.shadowRenderer;
-    this.objectRenderer = deps.objectRenderer;
-    this.meshPool = deps.meshPool;
-  }
-  
-  /** Shared variant renderer for composed depth-only shadow rendering */
-  private variantRenderer: VariantRenderer | null = null;
-
-  private ensureVariantRenderer(): VariantRenderer {
-    if (!this.variantRenderer) {
-      this.variantRenderer = new VariantRenderer(this.meshPool);
-    }
-    return this.variantRenderer;
-  }
-
-  execute(ctx: RenderContext): void {
-    const { shadowEnabled, lightDirection } = ctx.options;
-    
-    if (!shadowEnabled) return;
-    
-    // Update shadow renderer params and compute light space matrix (single + CSM)
-    // Use SCENE camera (not debug/view camera) so CSM frustum splits match what the scene sees
-    this.shadowRenderer.updateLightMatrix({
-      lightDirection: lightDirection as [number, number, number],
-      cameraPosition: ctx.sceneCameraPosition,
-      cameraForward: ctx.sceneCameraForward,
-      cameraViewMatrix: ctx.sceneCameraViewMatrix,
-      cameraProjectionMatrix: ctx.sceneCameraProjectionMatrix,
-      cameraNearPlane: ctx.near,
-      cameraFarPlane: ctx.far,
-    });
-    
-    const shadowConfig = this.shadowRenderer.getConfig();
-    const lightPos = this.shadowRenderer.getDirectionalLightPos();
-    
-    let drawCalls = 0;
-    // Check if CSM is enabled
-    if (shadowConfig.csmEnabled) {
-      drawCalls = this.executeCSM(ctx, shadowConfig, lightPos);
-    } else {
-      drawCalls = this.executeSingleMap(ctx, shadowConfig, lightPos);
-    }
-
-    ctx.addDrawCalls(drawCalls);
-  }
-  
-  /** Render single shadow map (non-CSM mode) */
-  private executeSingleMap(
-    ctx: RenderContext, 
-    shadowConfig: ReturnType<ShadowRendererGPU['getConfig']>,
-    lightPos: ArrayLike<number>,
-    slotIndex: number = 0
-  ): number {
-    const lightPosArray = [lightPos[0], lightPos[1], lightPos[2]] as [number, number, number];
-    const shadowMap = this.shadowRenderer.getShadowMap();
-    const lightSpaceMatrix = this.shadowRenderer.getLightSpaceMatrix();
-    
-    if (!shadowMap) return 0;
-    
-    // Pre-write single matrix when called standalone (not from executeCSM)
-    if (slotIndex === 0) {
-      this.objectRenderer.writeShadowMatrices([lightSpaceMatrix]);
-    }
-    
-    // Begin shadow render pass
-    const passEncoder = ctx.encoder.beginRenderPass({
-      label: 'single-shadow-pass',
-      colorAttachments: [],
-      depthStencilAttachment: {
-        view: shadowMap.view,
-        depthClearValue: 1.0,
-        depthLoadOp: 'clear',
-        depthStoreOp: 'store',
-      },
-    });
-    
-    passEncoder.setViewport(0, 0, shadowConfig.resolution, shadowConfig.resolution, 0, 1);
-    
-    let drawCalls = 0;
-    // Render terrain shadow depth via ECS TerrainComponent
-    if (ctx.world) {
-      const terrainEntity = ctx.world.queryFirst('terrain');
-      if (terrainEntity) {
-        const tc = terrainEntity.getComponent<TerrainComponent>('terrain');
-        if (tc) {
-          drawCalls += tc.renderDepthOnly(passEncoder, slotIndex, lightSpaceMatrix, lightPosArray);
-        }
-      }
-    }
-
-    // Render batched object shadows via legacy dynamic buffer path
-    drawCalls += this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPosArray);
-    
-    passEncoder.end();
-    return drawCalls;
-  }
-  
-  /** Render multiple cascade shadow maps (CSM mode) */
-  private executeCSM(
-    ctx: RenderContext,
-    shadowConfig: ReturnType<ShadowRendererGPU['getConfig']>,
-    lightPos: ArrayLike<number>
-  ): number {
-    const lightPosArray = [lightPos[0], lightPos[1], lightPos[2]] as [number, number, number];
-    
-    // Pre-write ALL shadow matrices (cascades + single map) in one call
-    // Slot layout: [cascade0, cascade1, cascade2, cascade3, singleMap]
-    const matrices: (Float32Array | ReturnType<ShadowRendererGPU['getCascadeLightSpaceMatrix']>)[] = [];
-    const casterMatrices: { lightSpaceMatrix: mat4; lightPosition: [number, number, number] }[] = [];
-    for (let i = 0; i < shadowConfig.cascadeCount; i++) {
-      const m = this.shadowRenderer.getCascadeLightSpaceMatrix(i);
-      matrices.push(m);
-      casterMatrices.push({ lightSpaceMatrix: m as mat4, lightPosition: lightPosArray });
-    }
-    // Single map matrix goes in the slot after all cascades
-    const singleMapSlot = shadowConfig.cascadeCount;
-    const singleMatrix = this.shadowRenderer.getLightSpaceMatrix();
-    matrices.push(singleMatrix);
-    casterMatrices.push({ lightSpaceMatrix: singleMatrix as mat4, lightPosition: lightPosArray });
-    this.objectRenderer.writeShadowMatrices(matrices);
-    
-    // Pre-write terrain shadow uniforms via ECS TerrainComponent
-    let terrainComponent: TerrainComponent | null = null;
-    if (ctx.world) {
-      const terrainEntity = ctx.world.queryFirst('terrain');
-      if (terrainEntity) {
-        terrainComponent = terrainEntity.getComponent<TerrainComponent>('terrain') ?? null;
-        terrainComponent?.prepareShadowPasses(casterMatrices);
-      }
-    }
-    
-    let drawCalls = 0;
-    // Render each cascade using its pre-written slot
-    for (let cascadeIdx = 0; cascadeIdx < shadowConfig.cascadeCount; cascadeIdx++) {
-      const cascadeView = this.shadowRenderer.getCascadeView(cascadeIdx);
-      const cascadeLightMatrix = this.shadowRenderer.getCascadeLightSpaceMatrix(cascadeIdx);
-      
-      if (!cascadeView) continue;
-      
-      // Begin cascade shadow render pass
-      const passEncoder = ctx.encoder.beginRenderPass({
-        label: `csm-shadow-pass-cascade-${cascadeIdx}`,
-        colorAttachments: [],
-        depthStencilAttachment: {
-          view: cascadeView,
-          depthClearValue: 1.0,
-          depthLoadOp: 'clear',
-          depthStoreOp: 'store',
-        },
-      });
-      
-      passEncoder.setViewport(0, 0, shadowConfig.resolution, shadowConfig.resolution, 0, 1);
-      
-      // Render terrain shadow depth for this cascade via ECS TerrainComponent
-      if (terrainComponent) {
-        drawCalls += terrainComponent.renderDepthOnly(passEncoder, cascadeIdx, cascadeLightMatrix, lightPosArray);
-      }
-
-      // Render batched object shadows via legacy dynamic buffer path
-      drawCalls += this.objectRenderer.renderShadowPass(passEncoder, cascadeIdx, lightPosArray);
-      
-      passEncoder.end();
-    }
-
-    return drawCalls;
   }
 }
 
@@ -325,10 +135,15 @@ export class OpaquePass extends BaseRenderPass {
   
   execute(ctx: RenderContext): void {
     const { 
-      wireframe, ambientIntensity, lightDirection,
-      lightColor, shadowEnabled, shadowSoftShadows,
+      wireframe, shadowEnabled, shadowSoftShadows,
       shadowRadius, dynamicIBL
     } = ctx.options;
+    
+    // Read light from ECS (via cached helper)
+    const dirLight = ctx.getDirectionalLight();
+    const lightDirection = dirLight.direction;
+    const lightColor = dirLight.effectiveColor;
+    const ambientIntensity = dirLight.ambient;
     
     // Get terrain manager from ECS World
     let terrainManager = null;
@@ -496,7 +311,12 @@ export class TransparentPass extends BaseRenderPass {
     
     // Get terrain config for size/scale (default if no terrain)
     const terrainConfig = terrainManager?.getConfig();
-    const { lightDirection, sunIntensity, ambientIntensity, shadowEnabled } = ctx.options;
+    // Read light from ECS
+    const dirLight = ctx.getDirectionalLight();
+    const lightDirection = dirLight.direction;
+    const sunIntensity = ctx.options.sunIntensity;
+    const ambientIntensity = dirLight.ambient;
+    const shadowEnabled = ctx.options.shadowEnabled;
     
     const pass = ctx.encoder.beginRenderPass({
       label: 'transparent-pass',
@@ -568,7 +388,13 @@ export class GroundPass extends BaseRenderPass {
   }
   
   execute(ctx: RenderContext): void {
-    const { showGrid, shadowEnabled, lightDirection, lightColor, ambientIntensity } = ctx.options;
+    const { showGrid, shadowEnabled } = ctx.options;
+    
+    // Read light from ECS
+    const dirLight = ctx.getDirectionalLight();
+    const lightDirection = dirLight.direction;
+    const lightColor = dirLight.effectiveColor;
+    const ambientIntensity = dirLight.ambient;
     
     // Color: load from sky pass if sky ran, otherwise clear
     const colorLoadOp = ctx.options.skyMode !== 'none' ? 'load' : 'clear';

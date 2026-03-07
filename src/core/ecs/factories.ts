@@ -199,6 +199,78 @@ export function createOceanEntity(
 // ============================================================================
 
 /**
+ * Create a point light entity.
+ */
+export function createPointLightEntity(
+  world: World,
+  options?: {
+    name?: string;
+    position?: [number, number, number];
+    color?: [number, number, number];
+    intensity?: number;
+    range?: number;
+    castsShadow?: boolean;
+  },
+): Entity {
+  const entity = world.createEntity(options?.name ?? 'Point Light');
+
+  const transform = entity.addComponent(new TransformComponent());
+  if (options?.position) {
+    vec3.set(transform.position, options.position[0], options.position[1], options.position[2]);
+  }
+
+  const light = entity.addComponent(new LightComponent());
+  light.lightType = 'point';
+  if (options?.color) light.color = options.color;
+  if (options?.intensity !== undefined) light.intensity = options.intensity;
+  if (options?.range !== undefined) light.range = options.range;
+  light.castsShadow = options?.castsShadow ?? false;
+
+  entity.addComponent(new VisibilityComponent());
+
+  return entity;
+}
+
+/**
+ * Create a spot light entity.
+ */
+export function createSpotLightEntity(
+  world: World,
+  options?: {
+    name?: string;
+    position?: [number, number, number];
+    direction?: [number, number, number];
+    color?: [number, number, number];
+    intensity?: number;
+    range?: number;
+    innerConeAngle?: number;
+    outerConeAngle?: number;
+    castsShadow?: boolean;
+  },
+): Entity {
+  const entity = world.createEntity(options?.name ?? 'Spot Light');
+
+  const transform = entity.addComponent(new TransformComponent());
+  if (options?.position) {
+    vec3.set(transform.position, options.position[0], options.position[1], options.position[2]);
+  }
+
+  const light = entity.addComponent(new LightComponent());
+  light.lightType = 'spot';
+  if (options?.color) light.color = options.color;
+  if (options?.intensity !== undefined) light.intensity = options.intensity;
+  if (options?.range !== undefined) light.range = options.range;
+  if (options?.innerConeAngle !== undefined) light.innerConeAngle = options.innerConeAngle;
+  if (options?.outerConeAngle !== undefined) light.outerConeAngle = options.outerConeAngle;
+  if (options?.direction) light.direction = options.direction;
+  light.castsShadow = options?.castsShadow ?? false;
+
+  entity.addComponent(new VisibilityComponent());
+
+  return entity;
+}
+
+/**
  * Create a directional light entity.
  */
 export function createDirectionalLightEntity(

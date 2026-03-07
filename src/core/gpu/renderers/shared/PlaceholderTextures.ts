@@ -51,6 +51,16 @@ export class PlaceholderTextures {
   private _csmArray: GPUTexture;
   private _csmArrayView: GPUTextureView;
   
+  // Spot shadow atlas placeholder (1x1x1 depth texture array for spot/point lights)
+  private _spotShadowAtlas: GPUTexture;
+  private _spotShadowAtlasView: GPUTextureView;
+  private _spotShadowSampler: GPUSampler;
+  
+  // Cookie atlas placeholder (1x1x1 texture array for light cookies)
+  private _cookieAtlas: GPUTexture;
+  private _cookieAtlasView: GPUTextureView;
+  private _cookieSampler: GPUSampler;
+  
   private constructor(ctx: GPUContext) {
     const device = ctx.device;
     
@@ -246,6 +256,56 @@ export class PlaceholderTextures {
       dimension: '2d-array',
       arrayLayerCount: 4,
     });
+    
+    // ============ Spot Shadow Atlas Placeholder ============
+    
+    // 1x1x1 depth texture array for spot/point shadow atlas
+    this._spotShadowAtlas = device.createTexture({
+      label: 'placeholder-spot-shadow-atlas',
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: 'depth32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this._spotShadowAtlasView = this._spotShadowAtlas.createView({
+      dimension: '2d-array',
+      arrayLayerCount: 1,
+    });
+    
+    // Comparison sampler for spot shadow PCF (reuse shadow sampler config)
+    this._spotShadowSampler = device.createSampler({
+      label: 'placeholder-spot-shadow-sampler',
+      compare: 'less',
+      magFilter: 'linear',
+      minFilter: 'linear',
+    });
+    
+    // ============ Cookie Atlas Placeholder ============
+    
+    // 1x1x1 white texture array for light cookies (no cookie = white = full light)
+    this._cookieAtlas = device.createTexture({
+      label: 'placeholder-cookie-atlas',
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this._cookieAtlasView = this._cookieAtlas.createView({
+      dimension: '2d-array',
+      arrayLayerCount: 1,
+    });
+    ctx.queue.writeTexture(
+      { texture: this._cookieAtlas },
+      new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: 4 },
+      { width: 1, height: 1 }
+    );
+    
+    this._cookieSampler = device.createSampler({
+      label: 'placeholder-cookie-sampler',
+      magFilter: 'linear',
+      minFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    });
   }
   
   /**
@@ -274,6 +334,8 @@ export class PlaceholderTextures {
       inst._biomeMask.destroy();
       inst._csmUniformBuffer.destroy();
       inst._csmArray.destroy();
+      inst._spotShadowAtlas.destroy();
+      inst._cookieAtlas.destroy();
       PlaceholderTextures.instance = null;
     }
   }
@@ -306,4 +368,9 @@ export class PlaceholderTextures {
   
   get csmUniformBuffer(): GPUBuffer { return this._csmUniformBuffer; }
   get csmArrayView(): GPUTextureView { return this._csmArrayView; }
+  
+  get spotShadowAtlasView(): GPUTextureView { return this._spotShadowAtlasView; }
+  get spotShadowSampler(): GPUSampler { return this._spotShadowSampler; }
+  get cookieAtlasView(): GPUTextureView { return this._cookieAtlasView; }
+  get cookieSampler(): GPUSampler { return this._cookieSampler; }
 }

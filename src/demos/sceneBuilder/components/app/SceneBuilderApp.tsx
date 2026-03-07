@@ -7,7 +7,6 @@
 
 import { useEffect, useCallback, useState } from 'preact/hooks';
 import { render } from 'preact';
-import { createLightingManager, type LightingManager } from '../../lightingManager';
 import { clearImportedModels } from '../../../../loaders';
 import type { Asset } from '../hooks/useAssetLibrary';
 import { useAssetImport } from '../hooks';
@@ -26,9 +25,12 @@ import styles from './SceneBuilderApp.module.css';
 
 // Import CSS variables
 import '../styles/variables.css';
+import { Logger, LogLevel } from '@/core/utils/logger';
 
 
 // ==================== Types ====================
+
+Logger.setGlobalLevel(LogLevel.LOG);
 
 export interface SceneBuilderAppProps {
   width?: number;
@@ -48,11 +50,8 @@ export function SceneBuilderApp({
   // ==================== Initialize Core Systems ====================
   
   const handleViewportInitialized = useCallback((viewport: Viewport) => {
-    const lightingManager = createLightingManager();
-    
     // Store references
     store.viewport = viewport;
-    store.lightingManager = lightingManager;
     
     // Set viewport scene graph to World's internal sceneGraph
     viewport.setSceneGraph(viewport.world.sceneGraph);
@@ -63,9 +62,6 @@ export function SceneBuilderApp({
     // Initial sync
     store.syncFromWorld();
     
-    // Initial lighting setup
-    const lightParams = lightingManager.getLightParams();
-    viewport.setLightParams(lightParams);
     store.setViewportInitialized();
 
     console.log('[SceneBuilderApp] Initialized (ECS World-based)');
@@ -113,9 +109,26 @@ export function SceneBuilderApp({
   // ==================== Render ====================
   
   // Map entities to ObjectsPanel-compatible format
+  // Helper: get entity icon based on component types
+  const getEntityIcon = (e: Entity): string | undefined => {
+    const lc = e.getComponent<any>('light');
+    if (lc) {
+      const lt = lc.lightType;
+      if (lt === 'directional') return '☀️';
+      if (lt === 'point') return '💡';
+      if (lt === 'spot') return '🔦';
+      return '💡';
+    }
+    if (e.hasComponent('terrain')) return '⛰️';
+    if (e.hasComponent('ocean')) return '🌊';
+    if (e.hasComponent('mesh')) return '📦';
+    if (e.hasComponent('primitive-geometry')) return '🧊';
+    return undefined;
+  };
+
   const objectsForPanel = store.objects.value.map((e: Entity) => {
     const group = e.getComponent<GroupComponent>('group');
-    return { id: e.id, name: e.name, groupId: group?.groupId };
+    return { id: e.id, name: e.name, groupId: group?.groupId, icon: getEntityIcon(e) };
   });
   
   return (

@@ -72,6 +72,98 @@ struct CSMUniforms {
 
 @group(3) @binding(8) var<uniform> env_csmUniforms: CSMUniforms;
 
+// Multi-light buffers from SceneEnvironment (bindings 10-12)
+@group(3) @binding(10) var<uniform> env_waterLightCounts: WaterLightCounts;
+@group(3) @binding(11) var<storage, read> env_waterPointLights: array<WaterPointLightData>;
+@group(3) @binding(12) var<storage, read> env_waterSpotLights: array<WaterSpotLightData>;
+// Spot shadow atlas (bindings 13-14)
+@group(3) @binding(13) var env_waterSpotShadowAtlas: texture_depth_2d_array;
+@group(3) @binding(14) var env_waterSpotShadowSampler: sampler_comparison;
+
+// ============ Multi-Light Structures (water) ============
+
+struct WaterPointLightData {
+  position: vec3f,
+  range: f32,
+  color: vec3f,
+  intensity: f32,
+};
+
+struct WaterSpotLightData {
+  position: vec3f,
+  range: f32,
+  direction: vec3f,
+  intensity: f32,
+  color: vec3f,
+  innerCos: f32,
+  outerCos: f32,
+  shadowAtlasIndex: i32,
+  cookieAtlasIndex: i32,
+  cookieIntensity: f32,
+  lightSpaceMatrix: mat4x4f,
+};
+
+struct WaterLightCounts {
+  numPoint: u32,
+  numSpot: u32,
+  _pad0: u32,
+  _pad1: u32,
+};
+
+fn waterAttenuateDistance(distance: f32, range: f32) -> f32 {
+  if (range <= 0.0) { return 0.0; }
+  let ratio = distance / range;
+  if (ratio >= 1.0) { return 0.0; }
+  let window = pow(saturate(1.0 - ratio * ratio), 2.0);
+  let invDist2 = 1.0 / (distance * distance + 0.01);
+  return window * invDist2;
+}
+
+fn waterAttenuateSpotCone(cosAngle: f32, innerCos: f32, outerCos: f32) -> f32 {
+  return saturate((cosAngle - outerCos) / max(innerCos - outerCos, 0.001));
+}
+
+fn sampleWaterSpotShadow(worldPos: vec3f, lightSpaceMatrix: mat4x4f, atlasIndex: i32) -> f32 {
+  if (atlasIndex < 0) { return 1.0; }
+  let lsp = lightSpaceMatrix * vec4f(worldPos, 1.0);
+  let pc = lsp.xyz / lsp.w;
+  let suv = pc.xy * 0.5 + 0.5;
+  if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0 || pc.z > 1.0) { return 1.0; }
+  let uv = vec2f(suv.x, 1.0 - suv.y);
+  return textureSampleCompareLevel(env_waterSpotShadowAtlas, env_waterSpotShadowSampler, uv, atlasIndex, pc.z - 0.002);
+}
+
+fn computeWaterMultiLight(worldPos: vec3f, normal: vec3f) -> vec3f {
+  var totalLight = vec3f(0.0);
+
+  let numPoint = min(env_waterLightCounts.numPoint, 64u);
+  for (var i = 0u; i < numPoint; i++) {
+    let light = env_waterPointLights[i];
+    let toLight = light.position - worldPos;
+    let dist = length(toLight);
+    let L = toLight / max(dist, 0.001);
+    let NdotL = max(dot(normal, L), 0.0);
+    let atten = waterAttenuateDistance(dist, light.range);
+    totalLight += light.color * light.intensity * NdotL * atten;
+  }
+
+  let numSpot = min(env_waterLightCounts.numSpot, 32u);
+  for (var i = 0u; i < numSpot; i++) {
+    let light = env_waterSpotLights[i];
+    let toLight = light.position - worldPos;
+    let dist = length(toLight);
+    let L = toLight / max(dist, 0.001);
+    let NdotL = max(dot(normal, L), 0.0);
+    let atten = waterAttenuateDistance(dist, light.range);
+    let cosAngle = dot(-L, normalize(light.direction));
+    let spotFalloff = waterAttenuateSpotCone(cosAngle, light.innerCos, light.outerCos);
+    let shadow = sampleWaterSpotShadow(worldPos, light.lightSpaceMatrix, light.shadowAtlasIndex);
+    totalLight += light.color * light.intensity * NdotL * atten * spotFalloff * shadow;
+  }
+
+  return totalLight;
+}
+
 // ============================================================================
 // Vertex Structures
 // ============================================================================
@@ -552,6 +644,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let baseAlpha = max(opacity, minAlpha);
   let shoreEdgeFade = saturate(waterDepthMeters / 2.0);
   let alpha = mix(minAlpha, baseAlpha, shoreEdgeFade) + fresnel * 0.15;
+
+  // Multi-light contribution (point + spot lights on water surface)
+  let waterMultiLight = computeWaterMultiLight(input.worldPosition, N);
+  finalColor += waterMultiLight * 0.5; // Attenuated contribution for water
 
   return vec4f(finalColor * alpha, alpha);
 }
