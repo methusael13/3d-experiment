@@ -1,7 +1,7 @@
 import { useCallback } from 'preact/hooks';
 import type { Entity } from '@/core/ecs/Entity';
 import { FPSCameraComponent } from '@/core/ecs/components/FPSCameraComponent';
-import { Section } from '../../../ui/Section/Section';
+import { NumberInput } from '../../../ui/NumberInput/NumberInput';
 
 export interface FPSCameraSubPanelProps {
   entity: Entity;
@@ -17,8 +17,8 @@ export function FPSCameraSubPanel({ entity, onChanged }: FPSCameraSubPanelProps)
     onChanged();
   }, [cam, onChanged]);
 
-  const handleNumberChange = useCallback(
-    (field: keyof FPSCameraComponent, value: number) => {
+  const set = useCallback(
+    (field: string, value: number) => {
       (cam as any)[field] = value;
       onChanged();
     },
@@ -37,91 +37,16 @@ export function FPSCameraSubPanel({ entity, onChanged }: FPSCameraSubPanelProps)
         Active
       </label>
 
-      {/* Player Height */}
-      <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>Player Height</span>
-        <input
-          type="number"
-          step="0.1"
-          value={cam.playerHeight}
-          style={{ width: '60px' }}
-          onInput={(e) => handleNumberChange('playerHeight', parseFloat((e.target as HTMLInputElement).value) || 1.8)}
-        />
-      </label>
-
-      {/* Move Speed */}
-      <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>Move Speed</span>
-        <input
-          type="number"
-          step="0.5"
-          value={cam.moveSpeed}
-          style={{ width: '60px' }}
-          onInput={(e) => handleNumberChange('moveSpeed', parseFloat((e.target as HTMLInputElement).value) || 5.0)}
-        />
-      </label>
-
-      {/* Sprint Multiplier */}
-      <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>Sprint Multiplier</span>
-        <input
-          type="number"
-          step="0.5"
-          value={cam.sprintMultiplier}
-          style={{ width: '60px' }}
-          onInput={(e) => handleNumberChange('sprintMultiplier', parseFloat((e.target as HTMLInputElement).value) || 2.0)}
-        />
-      </label>
-
-      {/* Mouse Sensitivity */}
-      <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>Sensitivity</span>
-        <input
-          type="number"
-          step="0.0005"
-          value={cam.mouseSensitivity}
-          style={{ width: '80px' }}
-          onInput={(e) => handleNumberChange('mouseSensitivity', parseFloat((e.target as HTMLInputElement).value) || 0.002)}
-        />
-      </label>
-
-      {/* FOV (display in degrees) */}
-      <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>FOV (°)</span>
-        <input
-          type="number"
-          step="5"
-          value={Math.round((cam.fov * 180) / Math.PI)}
-          style={{ width: '60px' }}
-          onInput={(e) => {
-            const deg = parseFloat((e.target as HTMLInputElement).value) || 60;
-            handleNumberChange('fov', (deg * Math.PI) / 180);
-          }}
-        />
-      </label>
+      <NumberInput label="Player Height" value={cam.playerHeight} step={0.1} min={0.1} defaultValue={1.8} onChange={(v) => set('playerHeight', v)} />
+      <NumberInput label="Move Speed" value={cam.moveSpeed} step={0.5} min={0} defaultValue={5.0} onChange={(v) => set('moveSpeed', v)} />
+      <NumberInput label="Sprint Multiplier" value={cam.sprintMultiplier} step={0.5} min={1} defaultValue={2.0} onChange={(v) => set('sprintMultiplier', v)} />
+      <NumberInput label="Sensitivity" value={cam.mouseSensitivity} step={0.0005} min={0} defaultValue={0.002} precision={4} width="80px" onChange={(v) => set('mouseSensitivity', v)} />
+      <NumberInput label="FOV (°)" value={Math.round((cam.fov * 180) / Math.PI)} step={5} min={10} max={170} defaultValue={60} onChange={(v) => set('fov', (v * Math.PI) / 180)} />
 
       {/* Near / Far */}
       <div style={{ display: 'flex', gap: '8px' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', flex: 1 }}>
-          <span>Near</span>
-          <input
-            type="number"
-            step="0.01"
-            value={cam.near}
-            style={{ width: '50px' }}
-            onInput={(e) => handleNumberChange('near', parseFloat((e.target as HTMLInputElement).value) || 0.1)}
-          />
-        </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', flex: 1 }}>
-          <span>Far</span>
-          <input
-            type="number"
-            step="100"
-            value={cam.far}
-            style={{ width: '60px' }}
-            onInput={(e) => handleNumberChange('far', parseFloat((e.target as HTMLInputElement).value) || 1000)}
-          />
-        </label>
+        <NumberInput label="Near" value={cam.near} step={0.01} min={0.001} defaultValue={0.1} width="50px" onChange={(v) => set('near', v)} />
+        <NumberInput label="Far" value={cam.far} step={100} min={1} defaultValue={1000} onChange={(v) => set('far', v)} />
       </div>
 
       <div style={{ color: '#888', fontSize: '10px', marginTop: '4px' }}>
