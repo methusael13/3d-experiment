@@ -605,18 +605,27 @@ The scene file format needs to save hierarchy relationships:
 
 ## 8. Implementation Phases
 
-### Phase 1: Core ECS Hierarchy + Camera Sync (backend)
-**Files:** `Entity.ts`, `World.ts`, `TransformComponent.ts`, `TransformSystem.ts`, `FPSCameraSystem.ts`
+### Phase 1: Core ECS Hierarchy + Camera TransformComponent Refactor (backend)
+**Files:** `Entity.ts`, `World.ts`, `TransformComponent.ts`, `TransformSystem.ts`, `FPSCameraComponent.ts`, `FPSCameraSystem.ts`
 
+**Already completed (prerequisites):**
+- ✅ FPSCameraSystem is now a persistent system (registered at world startup in Viewport.ts, no longer created/destroyed per session)
+- ✅ FPSCameraSystem has `enter(world)`/`exit()` methods and a `playing` flag (no-ops when not playing)
+- ✅ MenuBarBridge decoupled: "Play Mode" calls `fpsSystem.enter()`/`exit()` instead of creating entities/systems
+- ✅ Empty entities can be created via `Add > Empty Entity`
+- ✅ FPS Camera and Transform are optional components in ComponentsTab with dependency auto-add
+- ✅ FPSCameraSubPanel created for editing camera config
+
+**Remaining work:**
 - Add `parentId`/`childIds` to Entity
 - Add `setParent()`/`getParent()`/`getChildren()`/`getRootEntities()`/`getHierarchyOrder()` to World
 - Add `localMatrix` to TransformComponent
 - Update TransformSystem for hierarchy-aware matrix computation
 - Update `destroyEntity` for child handling
 - Add cycle detection
-- **FPSCameraSystem refactor:** Refactor FPSCameraSystem to write position/rotation directly to `TransformComponent` instead of FPSCameraComponent's own fields (Section 6). This is the **only system that needs changes** because FPSCameraComponent is currently the only component that bypasses TransformComponent — it maintains its own `position`/`yaw`/`pitch` and computes view matrices internally. Every other entity (meshes, lights, etc.) already uses TransformComponent as the single source of truth, so hierarchy propagation works automatically for them with no changes. After refactoring, FPSCameraComponent becomes a lightweight config/state component (FOV, sensitivity, speed, key state, cached matrices) while TransformComponent owns the position/orientation. This eliminates the need for any sync step.
+- **FPSCameraComponent refactor:** Remove `position` from FPSCameraComponent (Section 6.2). FPSCameraSystem already operates as a persistent system; the remaining work is to make it write position/rotation to `TransformComponent` instead of FPSCameraComponent's own fields. This is the **only component that bypasses TransformComponent**. After refactoring, FPSCameraComponent becomes a lightweight config/state component (FOV, sensitivity, speed, key state, cached matrices) while TransformComponent owns the position/orientation.
 
-**Estimated effort:** 1.5 days
+**Estimated effort:** 1 day (reduced from 1.5 — FPS system persistence already done)
 
 ### Phase 2: Objects Panel Tree View (UI)
 **Files:** `ObjectsPanel.tsx`, `ObjectsPanel.module.css`
@@ -662,7 +671,7 @@ This is what enables the **torch workflow from UI only:**
 
 **Estimated effort:** 0.5 day
 
-**Total estimated effort: ~4.5 days**
+**Total estimated effort: ~4 days** (reduced from 4.5 — FPS system persistence + Play Mode + empty entities + component UI already done)
 
 ### Torch Light — Pure UI Workflow (No Custom Code)
 
