@@ -22,6 +22,8 @@ import type { WindParams, VegetationLightParams } from './types';
 import { DEFAULT_VEGETATION_LIGHT } from './types';
 import { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
 import { ENV_BINDING_MASK } from '../gpu/renderers/shared/types';
+import { SHADOW_SLOT_SIZE } from '../gpu/renderers/shared/constants';
+import type { ShadowRendererGPU } from '../gpu/renderers/ShadowRendererGPU';
 
 // Import shader sources
 import meshShader from '../gpu/shaders/vegetation/vegetation-mesh.wgsl?raw';
@@ -41,10 +43,10 @@ const MAX_DRAW_SLOTS = 1024;
 /** Bitmask for vegetation CSM shadow bindings */
 const VEG_CSM_MASK = ENV_BINDING_MASK.CSM_SHADOW;
 
-/** DepthUniforms: mat4x4f(64) + vec3f+f32(16) = 80 bytes */
-const DEPTH_UNIFORMS_SIZE = 80;
+/** VegDepthParams: vec3f cameraPosition + f32 shadowCastDistance = 16 bytes */
+const VEG_DEPTH_PARAMS_SIZE = 16;
 
-/** Maximum shadow passes per frame */
+/** Maximum shadow passes per frame (one per cascade/spot light) */
 const MAX_SHADOW_SLOTS = 64;
 
 // ==================== Types ====================
@@ -73,11 +75,16 @@ export class VegetationMeshRenderer {
   private pipeline: RenderPipelineWrapper | null = null;
   private bindGroupLayout: GPUBindGroupLayout | null = null;
   
-  // Shadow (depth-only) pipeline
+  // Shadow (depth-only) pipeline — split bind groups:
+  // Group 0: shared mat4 from ShadowRendererGPU (dynamic offset)
+  // Group 1: vegetation-specific (vegDepthParams, instances, texture, sampler)
   private shadowPipeline: RenderPipelineWrapper | null = null;
-  private shadowBindGroupLayout: GPUBindGroupLayout | null = null;
-  private shadowUniformsBuffer: GPUBuffer | null = null;
+  private shadowGroup1Layout: GPUBindGroupLayout | null = null;
+  private shadowVegParamsBuffer: GPUBuffer | null = null;
   private shadowCurrentSlot = 0;
+  
+  /** Reference to the ShadowRendererGPU that owns the shared depth-pass resources */
+  private shadowRendererRef: ShadowRendererGPU | null = null;
   
   // Dynamic uniform buffer (holds per-draw uniforms including wind + light)
   private uniformsBuffer: GPUBuffer | null = null;
@@ -363,13 +370,37 @@ export class VegetationMeshRenderer {
   
   // ==================== Shadow Casting (Depth-Only) ====================
   
+  /**
+   * Set the ShadowRendererGPU reference for shared depth-pass resources.
+   * Must be called before any shadow rendering.
+   */
+  setShadowRenderer(sr: ShadowRendererGPU): void {
+    this.shadowRendererRef = sr;
+  }
+
+  /**
+   * Initialize split-bind-group shadow pipeline:
+   * Group 0 = shared mat4 from ShadowRendererGPU (dynamic offset)
+   * Group 1 = vegetation-specific (vegDepthParams, instances, texture, sampler)
+   */
   private _initShadowPipeline(): void {
     if (this.shadowPipeline) return;
     
-    this.shadowBindGroupLayout = this.ctx.device.createBindGroupLayout({
-      label: 'vegetation-mesh-shadow-layout',
+    // Group 0: shared from ShadowRendererGPU
+    const shadowGroup0Layout = this.shadowRendererRef
+      ? this.shadowRendererRef.getShadowBindGroupLayout()
+      : this.ctx.device.createBindGroupLayout({
+          label: 'veg-shadow-group0-fallback',
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true } },
+          ],
+        });
+
+    // Group 1: vegetation-specific data
+    this.shadowGroup1Layout = this.ctx.device.createBindGroupLayout({
+      label: 'vegetation-mesh-shadow-group1-layout',
       entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: DEPTH_UNIFORMS_SIZE } },
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: VEG_DEPTH_PARAMS_SIZE } },
         { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
@@ -381,7 +412,7 @@ export class VegetationMeshRenderer {
       vertexShader: depthShader,
       vertexEntryPoint: 'vertexMain',
       fragmentEntryPoint: 'fragmentMain',
-      bindGroupLayouts: [this.shadowBindGroupLayout],
+      bindGroupLayouts: [shadowGroup0Layout, this.shadowGroup1Layout],
       vertexBuffers: [CommonVertexLayouts.positionNormalUV()],
       colorFormats: [],
       blendStates: [],
@@ -392,15 +423,21 @@ export class VegetationMeshRenderer {
       cullMode: 'none',
     });
     
-    this.shadowUniformsBuffer = this.ctx.device.createBuffer({
-      label: 'vegetation-mesh-shadow-uniforms',
+    // VegDepthParams buffer: per-slot camera position + cast distance (16 bytes each, 256-byte aligned)
+    this.shadowVegParamsBuffer = this.ctx.device.createBuffer({
+      label: 'vegetation-mesh-shadow-veg-params',
       size: UNIFORM_ALIGNMENT * MAX_SHADOW_SLOTS,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     
-    console.log('[VegetationMeshRenderer] Shadow pipeline initialized');
+    console.log('[VegetationMeshRenderer] Shadow pipeline initialized (split bind groups)');
   }
   
+  /**
+   * Pre-write vegetation shadow params for each cascade/slot.
+   * The light-space matrices are now written to the shared ShadowRendererGPU buffer
+   * by ShadowPass; this method only writes vegetation-specific params (camera pos + cast distance).
+   */
   prepareShadowPasses(
     matrices: { lightSpaceMatrix: Float32Array | ArrayLike<number>; lightPosition: [number, number, number] }[],
     cameraPosition?: [number, number, number],
@@ -412,19 +449,22 @@ export class VegetationMeshRenderer {
     const camPos = cameraPosition ?? [0, 0, 0];
     const castDist = shadowCastDistance ?? 200.0;
     
+    // Write VegDepthParams (16 bytes) per slot to the veg params buffer
     for (let i = 0; i < matrices.length; i++) {
-      const { lightSpaceMatrix } = matrices[i];
-      const data = new Float32Array(DEPTH_UNIFORMS_SIZE / 4);
-      for (let j = 0; j < 16; j++) data[j] = lightSpaceMatrix[j];
-      // Write camera position (for distance culling from camera, not light)
-      data[16] = camPos[0];
-      data[17] = camPos[1];
-      data[18] = camPos[2];
-      data[19] = castDist;
-      this.ctx.queue.writeBuffer(this.shadowUniformsBuffer!, i * UNIFORM_ALIGNMENT, data);
+      const data = new Float32Array(VEG_DEPTH_PARAMS_SIZE / 4); // 4 floats
+      data[0] = camPos[0];
+      data[1] = camPos[1];
+      data[2] = camPos[2];
+      data[3] = castDist;
+      this.ctx.queue.writeBuffer(this.shadowVegParamsBuffer!, i * UNIFORM_ALIGNMENT, data);
     }
   }
   
+  /**
+   * Render vegetation depth-only using split bind groups:
+   * Group 0 = shared shadow matrix from ShadowRendererGPU (dynamic offset by slotIndex)
+   * Group 1 = vegetation params + instances + texture
+   */
   renderDepthOnly(
     passEncoder: GPURenderPassEncoder,
     mesh: VegetationMesh,
@@ -432,30 +472,35 @@ export class VegetationMeshRenderer {
     drawArgsBuffer: GPUBuffer,
     slotIndex: number,
   ): number {
-    if (!this.shadowPipeline || !this.shadowBindGroupLayout || !this.shadowUniformsBuffer) return 0;
+    if (!this.shadowPipeline || !this.shadowGroup1Layout || !this.shadowVegParamsBuffer || !this.shadowRendererRef) return 0;
     if (mesh.subMeshes.length === 0) return 0;
     
     passEncoder.setPipeline(this.shadowPipeline.pipeline);
     
+    // Group 0: shared shadow bind group with dynamic offset for light-space matrix
+    const shadowDynamicOffset = slotIndex * SHADOW_SLOT_SIZE;
+    passEncoder.setBindGroup(0, this.shadowRendererRef.getShadowBindGroup(), [shadowDynamicOffset]);
+    
     let drawCalls = 0;
-    const baseOffset = slotIndex * UNIFORM_ALIGNMENT;
+    const vegParamsOffset = slotIndex * UNIFORM_ALIGNMENT;
     
     for (let subMeshIdx = 0; subMeshIdx < mesh.subMeshes.length; subMeshIdx++) {
       const subMesh = mesh.subMeshes[subMeshIdx];
       const texture = subMesh.baseColorTexture ?? this.defaultTexture!;
       
-      const bindGroup = this.ctx.device.createBindGroup({
-        label: `veg-mesh-shadow-bg-s${subMeshIdx}`,
-        layout: this.shadowBindGroupLayout,
+      // Group 1: vegetation-specific bind group
+      const group1 = this.ctx.device.createBindGroup({
+        label: `veg-mesh-shadow-g1-s${subMeshIdx}`,
+        layout: this.shadowGroup1Layout,
         entries: [
-          { binding: 0, resource: { buffer: this.shadowUniformsBuffer, size: DEPTH_UNIFORMS_SIZE } },
+          { binding: 0, resource: { buffer: this.shadowVegParamsBuffer, size: VEG_DEPTH_PARAMS_SIZE } },
           { binding: 1, resource: { buffer: culledInstanceBuffer } },
           { binding: 2, resource: texture.view },
           { binding: 3, resource: this.sampler! },
         ],
       });
       
-      passEncoder.setBindGroup(0, bindGroup, [baseOffset]);
+      passEncoder.setBindGroup(1, group1, [vegParamsOffset]);
       passEncoder.setVertexBuffer(0, subMesh.vertexBuffer);
       passEncoder.setIndexBuffer(subMesh.indexBuffer, subMesh.indexFormat);
       passEncoder.drawIndexedIndirect(drawArgsBuffer, 16 + subMeshIdx * 20);
@@ -470,7 +515,7 @@ export class VegetationMeshRenderer {
   destroy(): void {
     this.uniformsBuffer?.destroy();
     this.defaultTexture?.destroy();
-    this.shadowUniformsBuffer?.destroy();
+    this.shadowVegParamsBuffer?.destroy();
     
     this.uniformsBuffer = null;
     this.defaultTexture = null;
@@ -478,8 +523,9 @@ export class VegetationMeshRenderer {
     this.pipeline = null;
     this.bindGroupLayout = null;
     this.shadowPipeline = null;
-    this.shadowBindGroupLayout = null;
-    this.shadowUniformsBuffer = null;
+    this.shadowGroup1Layout = null;
+    this.shadowVegParamsBuffer = null;
+    this.shadowRendererRef = null;
     this.sceneEnvironment = null;
     this.initialized = false;
   }

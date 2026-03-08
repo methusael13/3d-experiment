@@ -5,6 +5,10 @@
  * Uses light-space matrix instead of camera view-projection.
  * Alpha cutout for leaf transparency.
  * Distance-based discard to limit shadow cast range.
+ *
+ * Bind group layout (split for shared shadow resources):
+ * - Group 0: Shared light-space matrix from ShadowRendererGPU (dynamic offset)
+ * - Group 1: Vegetation-specific data (camera pos, instances, texture, sampler)
  */
 
 // ==================== Shared Instance Struct ====================
@@ -16,18 +20,25 @@ struct PlantInstance {
 
 // ==================== Uniforms ====================
 
-struct DepthUniforms {
+// Group 0: Shared shadow matrix (from ShadowRendererGPU dynamic buffer)
+struct ShadowUniforms {
   lightSpaceMatrix: mat4x4f,
+}
+
+// Group 1: Vegetation-specific depth pass params
+struct VegDepthParams {
   cameraPosition: vec3f,         // Camera world position for distance culling
   shadowCastDistance: f32,        // Max distance from camera for shadow casting
 }
 
 // ==================== Bindings ====================
 
-@group(0) @binding(0) var<uniform> uniforms: DepthUniforms;
-@group(0) @binding(1) var<storage, read> instances: array<PlantInstance>;
-@group(0) @binding(2) var baseColorTexture: texture_2d<f32>;
-@group(0) @binding(3) var texSampler: sampler;
+@group(0) @binding(0) var<uniform> shadow: ShadowUniforms;
+
+@group(1) @binding(0) var<uniform> vegParams: VegDepthParams;
+@group(1) @binding(1) var<storage, read> instances: array<PlantInstance>;
+@group(1) @binding(2) var baseColorTexture: texture_2d<f32>;
+@group(1) @binding(3) var texSampler: sampler;
 
 // ==================== Vertex IO ====================
 
@@ -71,15 +82,15 @@ fn vertexMain(
   let worldPos = worldPosBase + rotatedPos * scale + vec3f(0.0, scale * 0.5, 0.0);
   
   // Distance-based discard: skip instances beyond shadowCastDistance from camera
-  let distToCamera = distance(worldPosBase, uniforms.cameraPosition);
-  if (distToCamera > uniforms.shadowCastDistance) {
+  let distToCamera = distance(worldPosBase, vegParams.cameraPosition);
+  if (distToCamera > vegParams.shadowCastDistance) {
     output.position = vec4f(0.0, 0.0, 0.0, 0.0);
     return output;
   }
   
   // No wind animation in shadow pass — keeps shadows stable
   
-  output.position = uniforms.lightSpaceMatrix * vec4f(worldPos, 1.0);
+  output.position = shadow.lightSpaceMatrix * vec4f(worldPos, 1.0);
   output.uv = uv;
   
   return output;

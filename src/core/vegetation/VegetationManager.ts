@@ -35,6 +35,7 @@ import { createDefaultVegetationConfig, createDefaultWindParams } from './types'
 import { DirectionalLight } from '../sceneObjects/lights/DirectionalLight';
 import type { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
 import { Vec3 } from '../types';
+import { ShadowRendererGPU } from '../gpu/renderers';
 
 // ==================== VegetationManager ====================
 
@@ -610,6 +611,14 @@ export class VegetationManager {
    */
   setSceneEnvironment(env: SceneEnvironment | null): void {
     this.renderer.setSceneEnvironment(env);
+  }
+  
+  /**
+   * Set the ShadowRendererGPU reference for shared depth-pass resources.
+   * Passed through to the vegetation renderer for shadow casting.
+   */
+  setShadowRenderer(sr: ShadowRendererGPU): void {
+    this.renderer.setShadowRenderer(sr);
   }
   
   /**

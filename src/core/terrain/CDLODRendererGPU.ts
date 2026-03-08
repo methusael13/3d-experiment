@@ -33,6 +33,8 @@ import {
   type TerrainMaterialParams,
 } from './types';
 import { TerrainBiomeTextureResources, type BiomeType, type TextureType } from './TerrainBiomeTextureResources';
+import { MAX_SHADOW_SLOTS, SHADOW_SLOT_SIZE } from '../gpu/renderers/shared/constants';
+import type { ShadowRendererGPU } from '../gpu/renderers/ShadowRendererGPU';
 
 /**
  * CDLOD GPU Renderer configuration
@@ -212,18 +214,17 @@ export class CDLODRendererGPU {
   // Pipeline
   private pipeline: RenderPipelineWrapper | null = null;
   private wireframePipeline: GPURenderPipeline | null = null;
+  // Shadow pipeline — split bind groups:
+  // Group 0: shared mat4 from ShadowRendererGPU (dynamic offset)
+  // Group 1: terrain-specific (TerrainShadowParams uniform + heightmap texture)
   private shadowPipeline: GPURenderPipeline | null = null;
-  private shadowBindGroupLayout: GPUBindGroupLayout | null = null;
-  private shadowBindGroup: GPUBindGroup | null = null;
-  private shadowUniformBuffer: UnifiedGPUBuffer | null = null;
+  private shadowGroup1Layout: GPUBindGroupLayout | null = null;
+  private shadowGroup1BindGroup: GPUBindGroup | null = null;
+  private terrainShadowParamsBuffer: UnifiedGPUBuffer | null = null;
+  /** Reference to the ShadowRendererGPU that owns shared depth-pass resources */
+  private shadowRendererRef: ShadowRendererGPU | null = null;
   private bindGroupLayout: GPUBindGroupLayout | null = null;
   private pipelineLayout: GPUPipelineLayout | null = null;
-  
-  // Dynamic uniform buffer for CSM shadow passes (same approach as ObjectRendererGPU)
-  // Each slot is 256-byte aligned (WebGPU requirement for dynamic offsets)
-  // Slot layout: [cascade0, cascade1, cascade2, cascade3, singleMap]
-  private static readonly SHADOW_SLOT_SIZE = 256; // Must be 256-byte aligned
-  private static readonly MAX_SHADOW_SLOTS = 5;   // 4 cascades + 1 single map
   
   // Buffers using unified abstraction
   private gridVertexBuffer: UnifiedGPUBuffer | null = null;
@@ -554,13 +555,12 @@ export class CDLODRendererGPU {
       size: 224, // Will be aligned to 256
     });
     
-    // Shadow uniform buffer with dynamic offsets for CSM
-    // Each slot: 96 bytes (mat4 + vec4 + vec4) padded to 256-byte alignment
-    // Total: 5 slots × 256 bytes = 1280 bytes
-    const totalShadowSize = CDLODRendererGPU.SHADOW_SLOT_SIZE * CDLODRendererGPU.MAX_SHADOW_SLOTS;
-    this.shadowUniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
-      label: 'cdlod-shadow-uniforms-dynamic',
-      size: totalShadowSize,
+    // TerrainShadowParams buffer for shadow pass Group 1 (32 bytes per slot, 256-byte aligned)
+    // Contains: vec3 cameraPosition + pad (16) + terrainSize + heightScale + gridSize + skirtDepth (16)
+    const terrainShadowParamsSize = SHADOW_SLOT_SIZE * MAX_SHADOW_SLOTS;
+    this.terrainShadowParamsBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
+      label: 'cdlod-terrain-shadow-params',
+      size: terrainShadowParamsSize,
     });
   }
   
@@ -1313,25 +1313,43 @@ export class CDLODRendererGPU {
   // ============ Shadow Pass ============
   
   /**
-   * Create shadow pass pipeline and resources
-   * Uses depth-only rendering with the same vertex layout as main render
+   * Set the ShadowRendererGPU reference for shared depth-pass resources.
+   */
+  setShadowRenderer(sr: ShadowRendererGPU): void {
+    this.shadowRendererRef = sr;
+    // Rebuild shadow pipeline to use the real shared bind group layout
+    this.createShadowPipeline();
+  }
+
+  /**
+   * Create shadow pass pipeline with split bind groups:
+   * Group 0 = shared mat4 from ShadowRendererGPU (dynamic offset)
+   * Group 1 = terrain-specific (TerrainShadowParams uniform + heightmap texture)
    */
   private createShadowPipeline(): void {
-    // Create bind group layout for shadow pass (dynamic offset for CSM support)
-    // Binding 0: uniforms with dynamic offset (lightSpaceMatrix, terrain params)
-    // Binding 1: heightmap texture
-    this.shadowBindGroupLayout = this.ctx.device.createBindGroupLayout({
-      label: 'cdlod-shadow-bind-group-layout',
+    // Group 0: shared from ShadowRendererGPU
+    const shadowGroup0Layout = this.shadowRendererRef
+      ? this.shadowRendererRef.getShadowBindGroupLayout()
+      : this.ctx.device.createBindGroupLayout({
+          label: 'cdlod-shadow-group0-fallback',
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true } },
+          ],
+        });
+
+    // Group 1: terrain-specific data (params uniform with dynamic offset + heightmap texture)
+    this.shadowGroup1Layout = this.ctx.device.createBindGroupLayout({
+      label: 'cdlod-shadow-group1-layout',
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true } },
         { binding: 1, visibility: GPUShaderStage.VERTEX, texture: { sampleType: 'unfilterable-float' } },
       ],
     });
     
-    // Create pipeline layout
+    // Create pipeline layout with 2 bind groups
     const pipelineLayout = this.ctx.device.createPipelineLayout({
       label: 'cdlod-shadow-pipeline-layout',
-      bindGroupLayouts: [this.shadowBindGroupLayout],
+      bindGroupLayouts: [shadowGroup0Layout, this.shadowGroup1Layout],
     });
     
     // Create shader module
@@ -1352,106 +1370,79 @@ export class CDLODRendererGPU {
       // No fragment shader - depth-only rendering
       primitive: {
         topology: 'triangle-list',
-        cullMode: 'none',  // No culling for shadow maps - ensures shadows cast even when light is inside geometry
+        cullMode: 'none',
         frontFace: 'ccw',
       },
       depthStencil: {
         format: 'depth32float',
         depthWriteEnabled: true,
-        depthCompare: 'less',  // Standard depth for shadow map (not reversed-Z)
+        depthCompare: 'less',
       },
     });
   }
   
   /**
-   * Update shadow bind group with current heightmap texture
-   * Uses dynamic offset support - size must match shader's ShadowUniforms struct (96 bytes)
+   * Update shadow Group 1 bind group with current heightmap texture.
+   * TerrainShadowParams size = 32 bytes (vec3+pad + 4 floats).
    */
-  private updateShadowBindGroup(heightmapTexture?: UnifiedGPUTexture): void {
-    if (!this.shadowBindGroupLayout || !this.shadowUniformBuffer) {
+  private updateShadowGroup1BindGroup(heightmapTexture?: UnifiedGPUTexture): void {
+    if (!this.shadowGroup1Layout || !this.terrainShadowParamsBuffer) {
       return;
     }
     
     const heightmap = heightmapTexture || this.defaultHeightmap!;
     
-    // Create bind group with explicit size (96 bytes = what shader expects)
-    this.shadowBindGroup = this.ctx.device.createBindGroup({
-      label: 'cdlod-shadow-bind-group',
-      layout: this.shadowBindGroupLayout,
+    this.shadowGroup1BindGroup = this.ctx.device.createBindGroup({
+      label: 'cdlod-shadow-group1-bind-group',
+      layout: this.shadowGroup1Layout,
       entries: [
-        { binding: 0, resource: { buffer: this.shadowUniformBuffer.buffer, size: 96 } },
+        { binding: 0, resource: { buffer: this.terrainShadowParamsBuffer.buffer, size: 32 } },
         { binding: 1, resource: heightmap.view },
       ],
     });
   }
   
   /**
-   * Pre-write all shadow uniforms to the dynamic uniform buffer.
-   * Must be called ONCE before recording any shadow render passes.
-   * 
-   * Each slot contains the full ShadowUniforms struct (96 bytes = 24 floats)
-   * padded to 256-byte alignment.
-   * 
-   * @param matrices - Array of { lightSpaceMatrix, lightPosition } for each slot
-   * @param terrainSize - Terrain world size
-   * @param heightScale - Terrain height scale
+   * Pre-write terrain shadow params to the dynamic uniform buffer.
+   * Light-space matrices are now written by ShadowRendererGPU.writeShadowMatrices().
+   * This method only writes the terrain-specific params (camera pos + terrain config).
    */
   writeShadowUniforms(
     matrices: { lightSpaceMatrix: mat4; lightPosition: vec3 }[],
     terrainSize: number,
     heightScale: number,
   ): void {
-    if (!this.shadowUniformBuffer) return;
+    if (!this.terrainShadowParamsBuffer) return;
     
-    const slotSize = CDLODRendererGPU.SHADOW_SLOT_SIZE;
-    const floatsPerSlot = slotSize / 4; // 64 floats per 256-byte slot
+    const floatsPerSlot = SHADOW_SLOT_SIZE / 4; // 64 floats per 256-byte slot
     const totalFloats = floatsPerSlot * matrices.length;
     const data = new Float32Array(totalFloats);
     
     for (let i = 0; i < matrices.length; i++) {
       const base = i * floatsPerSlot;
-      const { lightSpaceMatrix, lightPosition } = matrices[i];
+      const { lightPosition } = matrices[i];
       
-      // mat4 lightSpaceMatrix (16 floats)
-      data.set(lightSpaceMatrix as Float32Array, base);
-      
+      // TerrainShadowParams struct (32 bytes = 8 floats):
       // vec3 cameraPosition + pad (4 floats)
-      data[base + 16] = lightPosition[0];
-      data[base + 17] = lightPosition[1];
-      data[base + 18] = lightPosition[2];
-      data[base + 19] = 0; // padding
+      data[base + 0] = lightPosition[0];
+      data[base + 1] = lightPosition[1];
+      data[base + 2] = lightPosition[2];
+      data[base + 3] = 0; // padding
       
       // terrainSize, heightScale, gridSize, skirtDepth (4 floats)
-      data[base + 20] = terrainSize;
-      data[base + 21] = heightScale;
-      data[base + 22] = this.config.gridSize;
-      data[base + 23] = this.config.skirtDepthMultiplier;
+      data[base + 4] = terrainSize;
+      data[base + 5] = heightScale;
+      data[base + 6] = this.config.gridSize;
+      data[base + 7] = this.config.skirtDepthMultiplier;
     }
     
-    this.shadowUniformBuffer.write(this.ctx, data);
+    this.terrainShadowParamsBuffer.write(this.ctx, data);
   }
   
   /**
-   * Render terrain to shadow map using a pre-written uniform slot.
-   * 
-   * Call writeShadowUniforms() once before recording render passes,
-   * then call this method for each cascade/single-map pass with the
-   * appropriate slotIndex to select the correct light-space matrix
-   * via dynamic uniform buffer offset.
-   * 
-   * LOD STRATEGY: Uses the CAMERA position for LOD distance calculation
-   * but the LIGHT's view-projection matrix for frustum culling. This ensures:
-   * - Terrain outside the camera view but inside the cascade volume is included
-   *   (so off-screen terrain can still cast shadows into the visible area)
-   * - LOD levels and morph factors are determined by camera distance, matching
-   *   the main pass for terrain that appears in both views (eliminating
-   *   self-shadowing artifacts from LOD/morph mismatch)
-   * 
-   * @param passEncoder - Shadow map render pass encoder
-   * @param slotIndex - Index into the pre-written uniform slots (0-4)
-   * @param lightSpaceMatrix - Light's view-projection matrix (used for frustum culling)
-   * @param lightPosition - Light position (unused, kept for API compat)
-   * @param heightmapTexture - Optional heightmap texture
+   * Render terrain to shadow map using split bind groups:
+   * Group 0 = shared shadow matrix from ShadowRendererGPU (dynamic offset)
+   * Group 1 = terrain params + heightmap (dynamic offset)
    */
   renderShadowPass(
     passEncoder: GPURenderPassEncoder,
@@ -1460,35 +1451,31 @@ export class CDLODRendererGPU {
     lightPosition: vec3,
     heightmapTexture?: UnifiedGPUTexture,
   ): void {
-    if (!this.shadowPipeline || !this.shadowUniformBuffer ||
+    if (!this.shadowPipeline || !this.terrainShadowParamsBuffer || !this.shadowRendererRef ||
         !this.gridVertexBuffer || !this.gridIndexBuffer || !this.shadowInstanceBuffer) {
       return;
     }
 
-    // Select nodes using CAMERA position for LOD + LIGHT frustum for culling.
-    // - lightSpaceMatrix → frustum planes → includes off-screen terrain in cascade volume
-    // - lastCameraPosition → LOD distance → matches main pass for visible terrain
     const shadowSelection = this.quadtree.select(this.lastCameraPosition, lightSpaceMatrix);
     if (shadowSelection.nodes.length === 0) {
       return;
     }
     
-    // Update shadow instance buffer with camera-distance-based LOD + morph
     this.updateShadowInstanceBuffer(shadowSelection.nodes);
+    this.updateShadowGroup1BindGroup(heightmapTexture);
     
-    // Update bind group with heightmap (bind group is reusable across slots)
-    this.updateShadowBindGroup(heightmapTexture);
-    
-    if (!this.shadowBindGroup) {
+    if (!this.shadowGroup1BindGroup) {
       return;
     }
     
-    // Calculate dynamic offset for this slot (256-byte aligned)
-    const dynamicOffset = slotIndex * CDLODRendererGPU.SHADOW_SLOT_SIZE;
+    // Group 0: shared shadow bind group with dynamic offset for light-space matrix
+    const shadowDynamicOffset = slotIndex * SHADOW_SLOT_SIZE;
+    // Group 1: terrain params with dynamic offset
+    const terrainParamsOffset = slotIndex * SHADOW_SLOT_SIZE;
     
-    // Draw shadow pass with shadow instance buffer (camera LOD, light frustum)
     passEncoder.setPipeline(this.shadowPipeline);
-    passEncoder.setBindGroup(0, this.shadowBindGroup, [dynamicOffset]);
+    passEncoder.setBindGroup(0, this.shadowRendererRef.getShadowBindGroup(), [shadowDynamicOffset]);
+    passEncoder.setBindGroup(1, this.shadowGroup1BindGroup, [terrainParamsOffset]);
     passEncoder.setVertexBuffer(0, this.gridVertexBuffer.buffer);
     passEncoder.setVertexBuffer(1, this.shadowInstanceBuffer.buffer);
     passEncoder.setIndexBuffer(this.gridIndexBuffer.buffer, 'uint32');
@@ -1531,7 +1518,7 @@ export class CDLODRendererGPU {
     this.shadowInstanceBuffer?.destroy();
     this.uniformBuffer?.destroy();
     this.materialBuffer?.destroy();
-    this.shadowUniformBuffer?.destroy();
+    this.terrainShadowParamsBuffer?.destroy();
     this.defaultHeightmap?.destroy();
     this.defaultNormalMap?.destroy();
     this.defaultShadowMap?.destroy();
@@ -1545,7 +1532,7 @@ export class CDLODRendererGPU {
     this.shadowInstanceBuffer = null;
     this.uniformBuffer = null;
     this.materialBuffer = null;
-    this.shadowUniformBuffer = null;
+    this.terrainShadowParamsBuffer = null;
     this.defaultHeightmap = null;
     this.defaultNormalMap = null;
     this.defaultShadowMap = null;
@@ -1555,9 +1542,10 @@ export class CDLODRendererGPU {
     this.wireframePipeline = null;
     this.shadowPipeline = null;
     this.bindGroup = null;
-    this.shadowBindGroup = null;
+    this.shadowGroup1BindGroup = null;
     this.bindGroupLayout = null;
-    this.shadowBindGroupLayout = null;
+    this.shadowGroup1Layout = null;
+    this.shadowRendererRef = null;
     this.linearSampler = null;
     this.shadowSampler = null;
   }

@@ -24,6 +24,7 @@ import { BiomeMaskGenerator, BiomeParams, createDefaultBiomeParams, PlantRegistr
 import { CDLODRendererGPU, CDLODGPUConfig, CDLODRenderParams, TerrainMaterial } from './CDLODRendererGPU';
 import { QuadtreeConfig } from './TerrainQuadtree';
 import { BiomeType, TextureType } from './TerrainBiomeTextureResources';
+import { ShadowRendererGPU } from '../gpu/renderers';
 
 /**
  * Terrain generation configuration
@@ -1053,6 +1054,15 @@ export class TerrainManager {
    */
   getVegetationManager(): VegetationManager | null {
     return this.vegetationManager;
+  }
+  
+  /**
+   * Set the ShadowRendererGPU reference for shared depth-pass resources.
+   * Passed through to the CDLODRendererGPU and VegetationManager.
+   */
+  setShadowRenderer(sr: ShadowRendererGPU): void {
+    this.renderer?.setShadowRenderer(sr);
+    this.vegetationManager?.setShadowRenderer(sr);
   }
   
   /**

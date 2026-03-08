@@ -209,6 +209,10 @@ export class GPUForwardPipeline {
       resolution: 2048,
       shadowRadius: this.shadowRadius,
     });
+
+    // Wire the shared shadow renderer into the object renderer so it can
+    // use the shared depth-pass resources (bind group layout + buffer).
+    this.objectRenderer.setShadowRenderer(this.shadowRenderer);
     
     // Create Dynamic Sky IBL for image-based lighting
     this.dynamicSkyIBL = new DynamicSkyIBL(ctx);

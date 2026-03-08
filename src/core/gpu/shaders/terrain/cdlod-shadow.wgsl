@@ -5,15 +5,23 @@
  * Uses the same vertex layout AND vertex transformation logic as the main
  * CDLOD shader (cdlod.wgsl) to ensure shadow geometry matches exactly.
  * 
+ * Bind group layout (split for shared shadow resources):
+ * - Group 0: Shared light-space matrix from ShadowRendererGPU (dynamic offset)
+ * - Group 1: Terrain-specific shadow params + heightmap texture
+ *
  * Key requirements for artifact-free shadows:
  * - Same CDLOD morphing logic as main pass
  * - Same mip-level height sampling as main pass
  * - Same skirt depth formula as main pass
  */
 
-// Shadow pass uniform buffer
-struct ShadowUniforms {
+// Group 0: Shared shadow matrix (from ShadowRendererGPU dynamic buffer)
+struct ShadowMatrix {
   lightSpaceMatrix: mat4x4f,
+}
+
+// Group 1: Terrain-specific shadow params
+struct TerrainShadowParams {
   cameraPosition: vec3f,
   _pad0: f32,
   terrainSize: f32,
@@ -22,8 +30,9 @@ struct ShadowUniforms {
   skirtDepth: f32,
 }
 
-@group(0) @binding(0) var<uniform> uniforms: ShadowUniforms;
-@group(0) @binding(1) var heightmapTexture: texture_2d<f32>;
+@group(0) @binding(0) var<uniform> shadow: ShadowMatrix;
+@group(1) @binding(0) var<uniform> terrain: TerrainShadowParams;
+@group(1) @binding(1) var heightmapTexture: texture_2d<f32>;
 
 // ============================================================================
 // Height Sampling (matches cdlod.wgsl sampleHeightSmooth exactly)
@@ -31,8 +40,8 @@ struct ShadowUniforms {
 
 // Convert world XZ position to heightmap UV coordinates
 fn worldToUV(worldXZ: vec2f) -> vec2f {
-  let terrainOrigin = vec2f(-uniforms.terrainSize * 0.5);
-  return (worldXZ - terrainOrigin) / uniforms.terrainSize;
+  let terrainOrigin = vec2f(-terrain.terrainSize * 0.5);
+  return (worldXZ - terrainOrigin) / terrain.terrainSize;
 }
 
 // Sample height at texel coordinates with clamping (matches cdlod.wgsl)
@@ -98,7 +107,7 @@ struct VertexInput {
 fn vs_shadow(input: VertexInput) -> @builtin(position) vec4f {
   // Calculate world XZ position from grid + instance offset/scale
   // (matches cdlod.wgsl exactly)
-  var worldXZ = input.position * input.nodeScale * (uniforms.gridSize - 1.0) + input.nodeOffset;
+  var worldXZ = input.position * input.nodeScale * (terrain.gridSize - 1.0) + input.nodeOffset;
   
   // ===== CDLOD Morphing (matches cdlod.wgsl exactly) =====
   // Vertices at "odd" positions in the parent grid need to morph
@@ -130,15 +139,15 @@ fn vs_shadow(input: VertexInput) -> @builtin(position) vec4f {
   let normalizedHeight = sampleHeightSmooth(morphedXZ, input.nodeLOD);
   
   // Apply heightScale to convert normalized height to world units
-  var worldY = normalizedHeight * uniforms.heightScale;
+  var worldY = normalizedHeight * terrain.heightScale;
   
   // Apply skirt offset (matches cdlod.wgsl skirt formula)
   if (input.isSkirt > 0.5) {
-    let skirtOffset = input.nodeScale * (uniforms.gridSize - 1.0) * 0.15;
+    let skirtOffset = input.nodeScale * (terrain.gridSize - 1.0) * 0.15;
     worldY -= skirtOffset;
   }
   
   // Transform to light space
   let worldPos = vec4f(morphedXZ.x, worldY, morphedXZ.y, 1.0);
-  return uniforms.lightSpaceMatrix * worldPos;
+  return shadow.lightSpaceMatrix * worldPos;
 }

@@ -18,6 +18,7 @@ import { VegetationCullingPipeline, type CullResult } from './VegetationCullingP
 import type { WindParams, VegetationLightParams } from './types';
 import type { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
 import { extractFrustumPlanes } from '../utils/mathUtils';
+import { ShadowRendererGPU } from '../gpu/renderers';
 
 // ==================== Types ====================
 
@@ -379,6 +380,14 @@ export class VegetationRenderer {
    */
   setSceneEnvironment(env: SceneEnvironment | null): void {
     this._sceneEnvironment = env;
+  }
+  
+  /**
+   * Set the ShadowRendererGPU reference for shared depth-pass resources.
+   * Passed through to sub-renderers that need it for shadow casting.
+   */
+  setShadowRenderer(sr: ShadowRendererGPU): void {
+    this.meshRenderer.setShadowRenderer(sr);
   }
   
   private _sceneEnvironment: SceneEnvironment | null = null;

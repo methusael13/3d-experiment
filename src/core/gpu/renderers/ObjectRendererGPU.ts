@@ -36,6 +36,8 @@ import { registerWGSLShader, getWGSLShaderSource } from '../../../demos/sceneBui
 // Import shared environment (provides Group 3 bind group with shadow + IBL)
 import { SceneEnvironment, PlaceholderTextures } from './shared';
 import { ENVIRONMENT_BINDINGS, ENV_BINDING_MASK } from './shared/types';
+import { SHADOW_SLOT_SIZE } from './shared/constants';
+import type { ShadowRendererGPU } from './ShadowRendererGPU';
 
 // ============ Types ============
 
@@ -218,26 +220,18 @@ export class ObjectRendererGPU {
   // Default SceneEnvironment for fallback when none provided
   private defaultSceneEnvironment!: SceneEnvironment;
   
-  // Shadow pass resources
+  // Shadow pass resources (pipeline + per-model layout only; shared buffer/layout/bind group from ShadowRendererGPU)
   private shadowPipeline: GPURenderPipeline | null = null;
-  private shadowBindGroupLayout: GPUBindGroupLayout | null = null;
+  private shadowModelBindGroupLayout: GPUBindGroupLayout | null = null;
+  /** Reference to the ShadowRendererGPU that owns the shared depth-pass resources */
+  private shadowRenderer: ShadowRendererGPU | null = null;
+  /** Track if shadow pipeline needs rebuild after shadowRenderer is set late */
+  private shadowPipelineNeedsRebuild = false;
   
   // Selection mask pipeline (renders selected meshes to a flat mask texture)
   private selectionMaskPipeline: GPURenderPipeline | null = null;
   private selectionMaskGlobalBuffer: GPUBuffer | null = null;
   private selectionMaskGlobalBindGroup: GPUBindGroup | null = null;
-  private shadowModelBindGroupLayout: GPUBindGroupLayout | null = null;
-  private shadowUniformBuffer: UnifiedGPUBuffer | null = null;
-  private shadowBindGroup: GPUBindGroup | null = null;
-  
-  // Dynamic uniform buffer for CSM shadow passes
-  // Each slot is 256-byte aligned (WebGPU requirement for dynamic offsets)
-  // Slot layout: [cascade0, cascade1, cascade2, cascade3, singleMap]
-  static readonly SHADOW_SLOT_SIZE = 256; // Must be 256-byte aligned
-  /** Base slots for directional shadows: 4 CSM cascades + 1 single map */
-  static readonly DIRECTIONAL_SHADOW_SLOTS = 5;
-  /** Total slots = directional + max spot shadow atlas layers */
-  static readonly MAX_SHADOW_SLOTS = ObjectRendererGPU.DIRECTIONAL_SHADOW_SLOTS + 16; // 16 = ShadowRendererGPU.MAX_SHADOW_ATLAS_LAYERS
   
   // Registered meshes
   private meshes: Map<number, GPUMeshInternal> = new Map();
@@ -250,8 +244,10 @@ export class ObjectRendererGPU {
   private _emptyBindGroupLayout: GPUBindGroupLayout | null = null;
   private _emptyBindGroup: GPUBindGroup | null = null;
   
-  constructor(ctx: GPUContext) {
+  constructor(ctx: GPUContext, shadowRenderer?: ShadowRendererGPU) {
     this.ctx = ctx;
+    this.shadowRenderer = shadowRenderer ?? null;
+    this.shadowPipelineNeedsRebuild = !this.shadowRenderer; // need rebuild when set later
     
     // Create global uniform buffer
     // GlobalUniforms: mat4x4f viewProj (64) + vec3f+pad camera (16) + vec3f+pad lightDir (16) + 
@@ -319,7 +315,7 @@ export class ObjectRendererGPU {
     // Create placeholder texture bind group
     this.placeholderTextureBindGroup = this.createTextureBindGroup(null);
     
-    // Create shadow pass resources
+    // Create shadow pass resources (uses fallback layout if shadowRenderer not yet available)
     this.createShadowPipeline();
     
     // Register shader for live editing
@@ -1058,31 +1054,28 @@ export class ObjectRendererGPU {
   // ============ Shadow Pass ============
   
   /**
-   * Create shadow pass pipeline and resources
-   * Uses a dynamic uniform buffer with 256-byte aligned slots to support
-   * multiple light-space matrices (CSM cascades + single map) without
-   * the writeBuffer race condition.
+   * Create shadow pass pipeline and resources.
+   * Group 0 = shared light-space matrix from ShadowRendererGPU (dynamic offset).
+   * Group 1 = per-mesh model matrix (owned by this renderer).
+   *
+   * The shader (object-shadow.wgsl) already uses:
+   *   @group(0) @binding(0) var<uniform> shadow: ShadowUniforms;  // mat4
+   *   @group(1) @binding(0) var<uniform> model: ModelUniforms;    // mat4
+   * No shader changes needed.
    */
   private createShadowPipeline(): void {
-    const slotSize = ObjectRendererGPU.SHADOW_SLOT_SIZE;
-    const totalSize = slotSize * ObjectRendererGPU.MAX_SHADOW_SLOTS;
-    
-    // Shadow uniform buffer: 21 slots × 256 bytes = 5376 bytes
-    // Each slot holds one mat4x4f (64 bytes) padded to 256-byte alignment
-    this.shadowUniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
-      label: 'object-shadow-uniforms-dynamic',
-      size: totalSize,
-    });
-    
-    // Bind group layout for shadow pass global uniforms (dynamic offset)
-    this.shadowBindGroupLayout = this.ctx.device.createBindGroupLayout({
-      label: 'object-shadow-global-layout',
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true } },
-      ],
-    });
-    
-    // Bind group layout for per-model uniforms (reuse model matrix from existing layout)
+    // Group 0: shared from ShadowRendererGPU (dynamic offset mat4)
+    // If shadowRenderer is not yet available we create a compatible layout ourselves.
+    const shadowGroup0Layout = this.shadowRenderer
+      ? this.shadowRenderer.getShadowBindGroupLayout()
+      : this.ctx.device.createBindGroupLayout({
+          label: 'object-shadow-global-layout-fallback',
+          entries: [
+            { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform', hasDynamicOffset: true } },
+          ],
+        });
+
+    // Group 1: per-model uniforms (model matrix)
     this.shadowModelBindGroupLayout = this.ctx.device.createBindGroupLayout({
       label: 'object-shadow-model-layout',
       entries: [
@@ -1093,7 +1086,7 @@ export class ObjectRendererGPU {
     // Create pipeline layout
     const pipelineLayout = this.ctx.device.createPipelineLayout({
       label: 'object-shadow-pipeline-layout',
-      bindGroupLayouts: [this.shadowBindGroupLayout, this.shadowModelBindGroupLayout],
+      bindGroupLayouts: [shadowGroup0Layout, this.shadowModelBindGroupLayout],
     });
     
     // Create shader module
@@ -1132,62 +1125,41 @@ export class ObjectRendererGPU {
         depthCompare: 'less',  // Standard depth for shadow map (not reversed-Z)
       },
     });
-    
-    // Create shadow bind group with dynamic offset support
-    // The size must match what the shader expects (64 bytes for mat4x4f)
-    this.shadowBindGroup = this.ctx.device.createBindGroup({
-      label: 'object-shadow-bindgroup',
-      layout: this.shadowBindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: this.shadowUniformBuffer!.buffer, size: 64 } },
-      ],
-    });
   }
   
   /**
-   * Pre-write all shadow matrices to the dynamic uniform buffer starting at slot 0.
-   * Must be called ONCE before recording any shadow render passes.
-   * 
-   * @param matrices - Array of light-space matrices to write.
-   *   For CSM: [cascade0, cascade1, cascade2, cascade3, singleMap]
-   *   For single map only: [singleMap]
+   * Late-bind the ShadowRendererGPU when it is created after this renderer.
+   * Rebuilds the shadow pipeline to use the real shared bind group layout.
    */
-  writeShadowMatrices(matrices: (mat4 | Float32Array)[]): void {
-    this.writeShadowMatricesAt(0, matrices);
+  setShadowRenderer(sr: ShadowRendererGPU): void {
+    this.shadowRenderer = sr;
+    if (this.shadowPipelineNeedsRebuild) {
+      this.createShadowPipeline();
+      this.shadowPipelineNeedsRebuild = false;
+    }
   }
 
   /**
-   * Write shadow matrices to the dynamic uniform buffer starting at a specific slot.
-   * Only writes to the specified slot range, leaving other slots untouched.
-   * 
-   * @param startSlot - First slot index to write to
-   * @param matrices - Array of light-space matrices to write at consecutive slots
+   * @deprecated Use ShadowRendererGPU.writeShadowMatrices() instead.
+   * Kept as a thin delegate for backward compatibility during migration.
+   */
+  writeShadowMatrices(matrices: (mat4 | Float32Array)[]): void {
+    this.shadowRenderer?.writeShadowMatrices(matrices);
+  }
+
+  /**
+   * @deprecated Use ShadowRendererGPU.writeShadowMatricesAt() instead.
+   * Kept as a thin delegate for backward compatibility during migration.
    */
   writeShadowMatricesAt(startSlot: number, matrices: (mat4 | Float32Array)[]): void {
-    if (!this.shadowUniformBuffer || matrices.length === 0) return;
-    
-    const slotSize = ObjectRendererGPU.SHADOW_SLOT_SIZE;
-    const floatsPerSlot = slotSize / 4; // 64 floats per 256-byte slot
-    const totalFloats = floatsPerSlot * matrices.length;
-    const data = new Float32Array(totalFloats);
-    
-    for (let i = 0; i < matrices.length; i++) {
-      // Write mat4 (16 floats = 64 bytes) at the start of each 256-byte slot
-      data.set(matrices[i] as Float32Array, i * floatsPerSlot);
-    }
-    
-    // Write at byte offset for the starting slot
-    const byteOffset = startSlot * slotSize;
-    this.ctx.queue.writeBuffer(this.shadowUniformBuffer.buffer, byteOffset, data.buffer, data.byteOffset, data.byteLength);
+    this.shadowRenderer?.writeShadowMatricesAt(startSlot, matrices);
   }
   
   /**
    * Render all objects to shadow map using a pre-written matrix slot.
    * 
-   * Call writeShadowMatrices() once before recording render passes,
-   * then call this method for each cascade/single-map pass with the
-   * appropriate slotIndex to select the correct light-space matrix
-   * via dynamic uniform buffer offset.
+   * Uses the shared bind group from ShadowRendererGPU for Group 0 (light-space matrix)
+   * and its own per-mesh model bind group for Group 1.
    * 
    * Filters objects based on:
    * 1. Per-object castsShadow flag (explicit toggle)
@@ -1205,8 +1177,7 @@ export class ObjectRendererGPU {
     shadowParams?: ShadowPassParams,
     excludeMeshIds?: Set<number>,
   ): number {
-    if (!this.shadowPipeline || !this.shadowUniformBuffer || !this.shadowBindGroup ||
-        !this.shadowModelBindGroupLayout) {
+    if (!this.shadowPipeline || !this.shadowModelBindGroupLayout || !this.shadowRenderer) {
       return 0;
     }
     
@@ -1215,11 +1186,11 @@ export class ObjectRendererGPU {
     }
     
     // Calculate dynamic offset for this slot (256-byte aligned)
-    const dynamicOffset = slotIndex * ObjectRendererGPU.SHADOW_SLOT_SIZE;
+    const dynamicOffset = slotIndex * SHADOW_SLOT_SIZE;
 
-    // Set pipeline and global bind group with dynamic offset
+    // Set pipeline and shared Group 0 bind group with dynamic offset
     passEncoder.setPipeline(this.shadowPipeline);
-    passEncoder.setBindGroup(0, this.shadowBindGroup, [dynamicOffset]);
+    passEncoder.setBindGroup(0, this.shadowRenderer.getShadowBindGroup(), [dynamicOffset]);
     
     // Precompute distance culling params
     const useDistanceCulling = shadowParams && shadowParams.shadowRadius > 0;
@@ -1450,12 +1421,10 @@ export class ObjectRendererGPU {
     this.placeholderNormalTexture.destroy();
     // defaultSceneEnvironment resources cleaned up when PlaceholderTextures singleton is released
     
-    // Destroy shadow resources
-    this.shadowUniformBuffer?.destroy();
+    // Destroy shadow resources (pipeline + model layout only; shared buffer owned by ShadowRendererGPU)
     this.shadowPipeline = null;
-    this.shadowBindGroupLayout = null;
     this.shadowModelBindGroupLayout = null;
-    this.shadowBindGroup = null;
+    this.shadowRenderer = null;
     
     // Destroy selection mask resources
     this.selectionMaskGlobalBuffer?.destroy();

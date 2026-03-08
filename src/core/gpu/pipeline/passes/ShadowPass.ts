@@ -19,6 +19,7 @@ import { TerrainComponent } from '../../../ecs/components/TerrainComponent';
 import type { VariantMeshPool } from '../VariantMeshPool';
 import type { Vec3 } from '../../../types';
 import { Logger } from '@/core/utils/logger';
+import { SPOT_SHADOW_SLOT_BASE } from '../../renderers/shared/constants';
 
 // ============================================================================
 // Types
@@ -53,6 +54,8 @@ export class ShadowPass extends BaseRenderPass {
   private meshPool: VariantMeshPool;
 
   private _logger: Logger = Logger.createLogger('ShadowPass', 2000);
+  /** Track whether we've wired the shadow renderer to the terrain component */
+  private _terrainShadowWired = false;
 
   constructor(deps: ShadowPassDependencies) {
     super();
@@ -65,6 +68,19 @@ export class ShadowPass extends BaseRenderPass {
     const { shadowEnabled } = ctx.options;
 
     if (!shadowEnabled) return;
+
+    // Lazily wire the shared shadow renderer into the terrain component
+    // (only needs to happen once, after both exist)
+    if (!this._terrainShadowWired && ctx.world) {
+      const terrainEntity = ctx.world.queryFirst('terrain');
+      if (terrainEntity) {
+        const tc = terrainEntity.getComponent<TerrainComponent>('terrain');
+        if (tc) {
+          tc.setShadowRenderer(this.shadowRenderer);
+          this._terrainShadowWired = true;
+        }
+      }
+    }
 
     // Read light direction from ECS (via cached helper)
     const dirLight = ctx.getDirectionalLight();
@@ -113,17 +129,6 @@ export class ShadowPass extends BaseRenderPass {
    * - TerrainComponent.renderDepthOnly() for terrain geometry
    * - ObjectRendererGPU.renderShadowPass() for batched object meshes
    */
-  /**
-   * First slot index reserved for spot light matrices in the shadow uniform buffer.
-   * Derived from ObjectRendererGPU.DIRECTIONAL_SHADOW_SLOTS so it stays in sync.
-   * Spot lights use slots after the directional slots so their matrices are never
-   * overwritten by the directional shadow restore that happens after spot rendering.
-   */
-  private static get SPOT_SHADOW_SLOT_BASE(): number {
-    // Import would be circular, so we read the static constant lazily
-    return 5; // Must match ObjectRendererGPU.DIRECTIONAL_SHADOW_SLOTS
-  }
-
   private executeSpotShadows(ctx: RenderContext): number {
     if (!ctx.world) return 0;
 
@@ -134,9 +139,7 @@ export class ShadowPass extends BaseRenderPass {
 
     if (spotEntities.length === 0) return 0;
 
-    const shadowConfig = this.shadowRenderer.getConfig();
     let drawCalls = 0;
-
     // Pre-write spot light matrices into dedicated slots (5+) using writeShadowMatricesAt.
     // This writes ONLY to the spot light region of the buffer, leaving the directional
     // shadow slots (0-4) completely untouched. This is critical because in WebGPU all
@@ -149,13 +152,13 @@ export class ShadowPass extends BaseRenderPass {
     for (let i = 0; i < spotEntities.length; i++) {
       const light = spotEntities[i].getComponent<LightComponent>('light')!;
       const lightMatrix = this.shadowRenderer.getSpotShadowMatrix(light.shadowAtlasIndex);
-      const slotIndex = ShadowPass.SPOT_SHADOW_SLOT_BASE + i;
+      const slotIndex = SPOT_SHADOW_SLOT_BASE + i;
       spotOnlyMatrices.push(lightMatrix);
       spotMatrices.push({ matrix: lightMatrix, slotIndex });
     }
 
     // Write only spot slots starting at SPOT_SHADOW_SLOT_BASE (leaves directional slots intact)
-    this.objectRenderer.writeShadowMatricesAt(ShadowPass.SPOT_SHADOW_SLOT_BASE, spotOnlyMatrices);
+    this.shadowRenderer.writeShadowMatricesAt(SPOT_SHADOW_SLOT_BASE, spotOnlyMatrices);
 
     // Get terrain component for depth rendering (queried once for all spot lights)
     let terrainComponent: TerrainComponent | null = null;
@@ -194,7 +197,7 @@ export class ShadowPass extends BaseRenderPass {
 
       // Render terrain shadow depth from spot light perspective
       if (terrainComponent) {
-        drawCalls += terrainComponent.renderDepthOnly(passEncoder, 0, lightMatrix, lightPos);
+        drawCalls += terrainComponent.renderDepthOnly(passEncoder, slotIndex, lightMatrix, lightPos);
       }
 
       // Render batched object shadows using the pre-written dedicated slot
@@ -224,7 +227,7 @@ export class ShadowPass extends BaseRenderPass {
 
     // Pre-write single matrix when called standalone (not from executeCSM)
     if (slotIndex === 0) {
-      this.objectRenderer.writeShadowMatrices([lightSpaceMatrix]);
+      this.shadowRenderer.writeShadowMatrices([lightSpaceMatrix]);
     }
 
     // Begin shadow render pass
@@ -280,7 +283,7 @@ export class ShadowPass extends BaseRenderPass {
       matrices.push(m);
       casterMatrices.push({ lightSpaceMatrix: m as mat4, lightPosition: lightPosArray });
     }
-    this.objectRenderer.writeShadowMatrices(matrices);
+    this.shadowRenderer.writeShadowMatrices(matrices);
 
     // Pre-write terrain shadow uniforms via ECS TerrainComponent
     let terrainComponent: TerrainComponent | null = null;

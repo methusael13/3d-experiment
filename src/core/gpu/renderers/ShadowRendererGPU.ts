@@ -17,6 +17,7 @@ import {
   calculateCascadeLightMatrix,
   type CascadeLightResult,
 } from './shared/CSMUtils';
+import { MAX_SHADOW_SLOTS, SHADOW_SLOT_SIZE } from './shared/constants';
 
 export { MAX_CASCADES };
 
@@ -138,6 +139,18 @@ export class ShadowRendererGPU {
 
   // Debug visualization
   private depthVisualizer: DepthTextureVisualizer | null = null;
+
+  // ── Shared Depth-Pass Resources ──────────────────────────────────────
+  // Single source of truth for shadow depth rendering across all renderers.
+  // Each renderer's shadow pipeline uses this as Group 0 (dynamic offset)
+  // and their own renderer-specific data as Group 1+.
+
+  /** Shared dynamic uniform buffer for light-space matrices (256-byte aligned slots) */
+  private _shadowUniformBuffer: UnifiedGPUBuffer | null = null;
+  /** Shared bind group layout: binding 0 = mat4 uniform with hasDynamicOffset */
+  private _shadowBindGroupLayout: GPUBindGroupLayout | null = null;
+  /** Shared bind group referencing the dynamic uniform buffer */
+  private _shadowBindGroup: GPUBindGroup | null = null;
   
   constructor(ctx: GPUContext, config?: Partial<ShadowConfig>) {
     this.ctx = ctx;
@@ -147,6 +160,7 @@ export class ShadowRendererGPU {
     this.createCSMUniformBuffer();
     this.initializeCascades();
     this.createSpotShadowAtlas();
+    this.createSharedDepthPassResources();
   }
   
   /** Create depth-only shadow map texture(s) */
@@ -591,6 +605,108 @@ export class ShadowRendererGPU {
     );
   }
   
+  // ============ Shared Depth-Pass Resources ============
+
+  /**
+   * Create the shared dynamic uniform buffer, bind group layout, and bind group
+   * used by all renderers for shadow depth passes.
+   *
+   * Layout: Group 0, Binding 0 = mat4x4f (64 bytes visible, 256-byte stride)
+   *         with hasDynamicOffset: true
+   */
+  private createSharedDepthPassResources(): void {
+    const totalSize = SHADOW_SLOT_SIZE * MAX_SHADOW_SLOTS;
+
+    this._shadowUniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
+      label: 'shadow-shared-uniforms-dynamic',
+      size: totalSize,
+    });
+
+    this._shadowBindGroupLayout = this.ctx.device.createBindGroupLayout({
+      label: 'shadow-shared-bind-group-layout',
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: { type: 'uniform', hasDynamicOffset: true },
+        },
+      ],
+    });
+
+    this._shadowBindGroup = this.ctx.device.createBindGroup({
+      label: 'shadow-shared-bind-group',
+      layout: this._shadowBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this._shadowUniformBuffer.buffer, size: 64 } },
+      ],
+    });
+  }
+
+  /**
+   * Get the shared shadow bind group layout (Group 0 for all shadow pipelines).
+   * Renderers use this when creating their shadow render pipelines.
+   */
+  getShadowBindGroupLayout(): GPUBindGroupLayout {
+    return this._shadowBindGroupLayout!;
+  }
+
+  /**
+   * Get the shared shadow bind group (Group 0 for all shadow draw calls).
+   * Pass a dynamic offset of `slotIndex * SHADOW_SLOT_SIZE` to select the matrix.
+   */
+  getShadowBindGroup(): GPUBindGroup {
+    return this._shadowBindGroup!;
+  }
+
+  /**
+   * Get the shared shadow uniform buffer (for direct writeBuffer access if needed).
+   */
+  getShadowUniformBuffer(): UnifiedGPUBuffer {
+    return this._shadowUniformBuffer!;
+  }
+
+  /**
+   * Pre-write all shadow matrices to the shared dynamic uniform buffer starting at slot 0.
+   * Must be called ONCE before recording any shadow render passes.
+   *
+   * @param matrices - Array of light-space matrices to write.
+   *   For CSM: [cascade0, cascade1, cascade2, cascade3, singleMap]
+   *   For single map only: [singleMap]
+   */
+  writeShadowMatrices(matrices: (mat4 | Float32Array)[]): void {
+    this.writeShadowMatricesAt(0, matrices);
+  }
+
+  /**
+   * Write shadow matrices to the shared dynamic uniform buffer starting at a specific slot.
+   * Only writes to the specified slot range, leaving other slots untouched.
+   *
+   * @param startSlot - First slot index to write to
+   * @param matrices - Array of light-space matrices to write at consecutive slots
+   */
+  writeShadowMatricesAt(startSlot: number, matrices: (mat4 | Float32Array)[]): void {
+    if (!this._shadowUniformBuffer || matrices.length === 0) return;
+
+    const floatsPerSlot = SHADOW_SLOT_SIZE / 4; // 64 floats per 256-byte slot
+    const totalFloats = floatsPerSlot * matrices.length;
+    const data = new Float32Array(totalFloats);
+
+    for (let i = 0; i < matrices.length; i++) {
+      // Write mat4 (16 floats = 64 bytes) at the start of each 256-byte slot
+      data.set(matrices[i] as Float32Array, i * floatsPerSlot);
+    }
+
+    // Write at byte offset for the starting slot
+    const byteOffset = startSlot * SHADOW_SLOT_SIZE;
+    this.ctx.queue.writeBuffer(
+      this._shadowUniformBuffer.buffer,
+      byteOffset,
+      data.buffer,
+      data.byteOffset,
+      data.byteLength,
+    );
+  }
+
   // ============ Spot Shadow Atlas ============
 
   /** Create the spot/point shadow atlas texture array */
@@ -754,6 +870,7 @@ export class ShadowRendererGPU {
     this.csmUniformBuffer?.destroy();
     this.depthVisualizer?.destroy();
     this.spotShadowAtlasTexture?.destroy();
+    this._shadowUniformBuffer?.destroy();
     
     this.shadowMap = null;
     this.shadowMapArrayTexture = null;
@@ -764,5 +881,8 @@ export class ShadowRendererGPU {
     this.spotShadowAtlasTexture = null;
     this.spotShadowAtlasView = null;
     this.spotShadowAtlasLayerViews = [];
+    this._shadowUniformBuffer = null;
+    this._shadowBindGroupLayout = null;
+    this._shadowBindGroup = null;
   }
 }

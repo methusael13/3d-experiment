@@ -3,6 +3,7 @@ import { Component } from '../Component';
 import type { ComponentType } from '../types';
 import type { TerrainManager } from '../../terrain/TerrainManager';
 import type { AABB } from '../../sceneObjects/types';
+import { ShadowRendererGPU } from '@/core/gpu/renderers';
 
 /**
  * Terrain component — holds a reference to the TerrainManager subsystem.
@@ -49,6 +50,15 @@ export class TerrainComponent extends Component {
    * Pre-write shadow uniforms for all passes (CSM cascades + single map).
    * Delegates to CDLODRenderer + VegetationManager.
    */
+  /**
+   * Set the ShadowRendererGPU reference for shared depth-pass resources.
+   * Passed through to the terrain manager's CDLODRendererGPU and VegetationManager.
+   * Should be called once when the shadow renderer becomes available.
+   */
+  setShadowRenderer(sr: ShadowRendererGPU): void {
+    this.manager.setShadowRenderer(sr);
+  }
+
   prepareShadowPasses(matrices: { lightSpaceMatrix: mat4; lightPosition: [number, number, number] }[]): void {
     if (!this.isShadowReady) return;
 
