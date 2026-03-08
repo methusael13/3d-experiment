@@ -4,6 +4,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-height: 200px;
 }
 
 /* "Add Component" dropdown trigger */
@@ -41,13 +42,14 @@
   top: 100%;
   left: 0;
   right: 0;
-  z-index: 50;
+  z-index: 1000;
   margin-top: 2px;
+  max-height: 300px;
+  overflow-y: auto;
   background: var(--sb-bg-panel);
   border: 1px solid var(--sb-border);
   border-radius: var(--sb-radius-sm);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-  overflow: hidden;
 }
 
 .dropdownItem {
