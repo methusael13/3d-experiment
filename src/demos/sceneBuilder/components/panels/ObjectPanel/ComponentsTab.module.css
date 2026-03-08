@@ -37,12 +37,8 @@
 }
 
 .dropdownMenu {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  right: 0;
-  z-index: 1000;
-  margin-bottom: 2px;
+  /* position: fixed is set inline with computed coordinates */
+  z-index: 10000;
   max-height: 240px;
   overflow-y: auto;
   background: var(--sb-bg-panel);

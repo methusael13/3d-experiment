@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'preact/hooks';
+import { useCallback, useState, useRef } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import type { Entity } from '@/core/ecs/Entity';
 import type { Component } from '@/core/ecs/Component';
@@ -180,6 +180,21 @@ export function ComponentsTab({
   shadowRenderer,
 }: ComponentsTabProps) {
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  const toggleDropdown = useCallback(() => {
+    if (dropdownOpen) {
+      setDropdownOpen(false);
+      return;
+    }
+    // Compute position from button rect for fixed-position dropdown
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect();
+      setDropdownPos({ top: rect.bottom + 2, left: rect.left, width: rect.width });
+    }
+    setDropdownOpen(true);
+  }, [dropdownOpen]);
 
   const handleAdd = useCallback(
     (type: ComponentType) => {
@@ -261,14 +276,23 @@ export function ComponentsTab({
       {available.length > 0 && (
         <div class={styles.dropdown}>
           <button
+            ref={btnRef}
             class={styles.addBtn}
             type="button"
-            onClick={() => setDropdownOpen((o) => !o)}
+            onClick={toggleDropdown}
           >
             + Add Component
           </button>
-          {dropdownOpen && (
-            <div class={styles.dropdownMenu}>
+          {dropdownOpen && dropdownPos && (
+            <div
+              class={styles.dropdownMenu}
+              style={{
+                position: 'fixed',
+                top: dropdownPos.top,
+                left: dropdownPos.left,
+                width: dropdownPos.width,
+              }}
+            >
               {available.map((reg) => (
                 <button
                   key={reg.type}
