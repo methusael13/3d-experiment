@@ -70,10 +70,105 @@ struct CSMUniforms {
 @group(0) @binding(2) var baseColorTexture: texture_2d<f32>;
 @group(0) @binding(3) var texSampler: sampler;
 
-// Group 1: Environment shadow (CSM)
+// Group 1: Environment shadow (CSM) + multi-light + spot shadow
 @group(1) @binding(1) var shadowSampler: sampler_comparison;
 @group(1) @binding(7) var shadowMapArray: texture_depth_2d_array;
 @group(1) @binding(8) var<uniform> csm: CSMUniforms;
+
+// Multi-light buffers (bindings 10-12)
+@group(1) @binding(10) var<uniform> env_lightCounts: VegLightCounts;
+@group(1) @binding(11) var<storage, read> env_pointLights: array<VegPointLightData>;
+@group(1) @binding(12) var<storage, read> env_spotLights: array<VegSpotLightData>;
+
+// Spot shadow atlas (bindings 13-14)
+@group(1) @binding(13) var env_spotShadowAtlas: texture_depth_2d_array;
+@group(1) @binding(14) var env_spotShadowSampler: sampler_comparison;
+
+// ==================== Multi-Light Data Structures ====================
+
+struct VegPointLightData {
+  position: vec3f,
+  range: f32,
+  color: vec3f,
+  intensity: f32,
+};
+
+struct VegSpotLightData {
+  position: vec3f,
+  range: f32,
+  direction: vec3f,
+  intensity: f32,
+  color: vec3f,
+  innerCos: f32,
+  outerCos: f32,
+  shadowAtlasIndex: i32,
+  cookieAtlasIndex: i32,
+  cookieIntensity: f32,
+  lightSpaceMatrix: mat4x4f,
+};
+
+struct VegLightCounts {
+  numPoint: u32,
+  numSpot: u32,
+  _pad0: u32,
+  _pad1: u32,
+};
+
+// ==================== Multi-Light Helper Functions ====================
+
+fn vegAttenuateDistance(distance: f32, range: f32) -> f32 {
+  if (range <= 0.0) { return 0.0; }
+  let ratio = distance / range;
+  if (ratio >= 1.0) { return 0.0; }
+  let window = pow(saturate(1.0 - ratio * ratio), 2.0);
+  let invDist2 = 1.0 / (distance * distance + 0.01);
+  return window * invDist2;
+}
+
+fn vegAttenuateSpotCone(cosAngle: f32, innerCos: f32, outerCos: f32) -> f32 {
+  return saturate((cosAngle - outerCos) / max(innerCos - outerCos, 0.001));
+}
+
+fn sampleVegSpotShadow(worldPos: vec3f, lightSpaceMatrix: mat4x4f, atlasIndex: i32) -> f32 {
+  if (atlasIndex < 0) { return 1.0; }
+  let lsp = lightSpaceMatrix * vec4f(worldPos, 1.0);
+  let pc = lsp.xyz / lsp.w;
+  let suv = pc.xy * 0.5 + 0.5;
+  if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0 || pc.z > 1.0) { return 1.0; }
+  let uv = vec2f(suv.x, 1.0 - suv.y);
+  return textureSampleCompareLevel(env_spotShadowAtlas, env_spotShadowSampler, uv, atlasIndex, pc.z - 0.002);
+}
+
+fn computeVegMultiLight(worldPos: vec3f, normal: vec3f) -> vec3f {
+  var totalLight = vec3f(0.0);
+
+  let numPoint = min(env_lightCounts.numPoint, 64u);
+  for (var i = 0u; i < numPoint; i++) {
+    let light = env_pointLights[i];
+    let toLight = light.position - worldPos;
+    let dist = length(toLight);
+    let L = toLight / max(dist, 0.001);
+    let NdotL = max(dot(normal, L), 0.0);
+    let atten = vegAttenuateDistance(dist, light.range);
+    totalLight += light.color * light.intensity * NdotL * atten;
+  }
+
+  let numSpot = min(env_lightCounts.numSpot, 32u);
+  for (var i = 0u; i < numSpot; i++) {
+    let light = env_spotLights[i];
+    let toLight = light.position - worldPos;
+    let dist = length(toLight);
+    let L = toLight / max(dist, 0.001);
+    let NdotL = max(dot(normal, L), 0.0);
+    let atten = vegAttenuateDistance(dist, light.range);
+    let cosAngle = dot(-L, normalize(light.direction));
+    let spotFalloff = vegAttenuateSpotCone(cosAngle, light.innerCos, light.outerCos);
+    let shadow = sampleVegSpotShadow(worldPos, light.lightSpaceMatrix, light.shadowAtlasIndex);
+    totalLight += light.color * light.intensity * NdotL * atten * spotFalloff * shadow;
+  }
+
+  return totalLight;
+}
 
 // ==================== Vertex IO ====================
 
@@ -302,14 +397,17 @@ fn fragmentMain(input: VertexOutput) -> FragmentOutput {
   // Direct sun light with shadow + sun color tint (matches grass-blade shader)
   let diffuseColor = uniforms.sunColor * NdotL * shadowFactor;
   
-  // Combine ambient + shadowed direct
+  // Multi-light contribution (point + spot lights with spot shadows)
+  let multiLight = computeVegMultiLight(input.worldPos, normal);
+  
+  // Combine ambient + shadowed direct + multi-light
   let lighting = ambientColor + diffuseColor;
   
   var finalColor: vec3f;
   if (DEBUG_RENDER_MODE_COLOR) {
     finalColor = DEBUG_MESH_COLOR * (ambientColor.r + diffuseColor.r);
   } else {
-    finalColor = baseColor.rgb * lighting;
+    finalColor = baseColor.rgb * lighting + baseColor.rgb * multiLight;
   }
   
   fragOutput.color = vec4f(finalColor, baseColor.a);

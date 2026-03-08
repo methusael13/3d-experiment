@@ -40,8 +40,8 @@ const UNIFORM_ALIGNMENT = 256;
 /** Maximum draw calls per frame — increased to support many tiles × plant types × submeshes */
 const MAX_DRAW_SLOTS = 1024;
 
-/** Bitmask for vegetation CSM shadow bindings */
-const VEG_CSM_MASK = ENV_BINDING_MASK.CSM_SHADOW;
+/** Bitmask for vegetation environment bindings: CSM shadow + multi-light + spot shadow */
+const VEG_CSM_MASK = ENV_BINDING_MASK.CSM_SHADOW | ENV_BINDING_MASK.MULTI_LIGHT | ENV_BINDING_MASK.SPOT_SHADOW;
 
 /** VegDepthParams: vec3f cameraPosition + f32 shadowCastDistance = 16 bytes */
 const VEG_DEPTH_PARAMS_SIZE = 16;
