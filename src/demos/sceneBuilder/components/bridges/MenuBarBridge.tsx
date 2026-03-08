@@ -8,11 +8,10 @@ import { useCallback, useMemo, useRef } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
 import { MenuBar, type MenuDefinition, type MenuAction } from '../layout';
 import { shaderPanelVisible, toggleShaderPanel } from './ShaderDebugPanelBridge';
-import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity, createPointLightEntity, createSpotLightEntity } from '@/core/ecs/factories';
+import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity, createPointLightEntity, createSpotLightEntity, createEmptyEntity } from '@/core/ecs/factories';
 import { PrimitiveGeometryComponent } from '@/core/ecs/components/PrimitiveGeometryComponent';
 import { TransformComponent } from '@/core/ecs/components/TransformComponent';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
-import { FPSCameraComponent } from '@/core/ecs/components/FPSCameraComponent';
 import { FPSCameraSystem } from '@/core/ecs/systems/FPSCameraSystem';
 import { TerrainManager } from '@/core/terrain/TerrainManager';
 import { OceanManager } from '@/core/ocean/OceanManager';
@@ -300,71 +299,40 @@ export function ConnectedMenuBar() {
     console.log('[MenuBar] Expand View - TODO');
   }, []);
   
-  // FPS camera entity ID ref (for cleanup)
-  const fpsCameraEntityIdRef = useRef<string | null>(null);
-  
-  const handleFPSCamera = useCallback(() => {
+  const handlePlayMode = useCallback(() => {
     const viewport = store.viewport;
     const world = store.world;
     if (!viewport || !world) {
-      console.warn('[MenuBar] FPS Camera - viewport or world not available');
+      console.warn('[MenuBar] Play Mode - viewport or world not available');
       return;
     }
     
-    // If already in FPS mode, exit
+    const fpsSystem = world.getSystem<FPSCameraSystem>('fps-camera');
+    if (!fpsSystem) {
+      console.warn('[MenuBar] Play Mode - FPSCameraSystem not registered');
+      return;
+    }
+    
+    // If already in play mode, exit
     if (fpsModeActive.value) {
-      const fpsSystem = world.getSystem<FPSCameraSystem>('fps-camera');
-      if (fpsSystem) {
-        fpsSystem.exit();
-      }
-      return;
-    }
-    
-    const inputManager = viewport.getInputManager();
-    if (!inputManager) {
-      console.warn('[MenuBar] FPS Camera - InputManager not available');
-      return;
-    }
-    
-    // Create FPS camera entity — spawning is handled by FPSCameraSystem on first update
-    const fpsCamEntity = world.createEntity('FPS Camera');
-    const fpsCam = new FPSCameraComponent();
-    fpsCam.active = true;
-    
-    // Set aspect ratio from canvas
-    const canvas = (viewport as any).canvas as HTMLCanvasElement | undefined;
-    if (canvas) {
-      fpsCam.setAspectRatio(canvas.width, canvas.height);
-    }
-    
-    fpsCamEntity.addComponent(fpsCam);
-    fpsCameraEntityIdRef.current = fpsCamEntity.id;
-    
-    // Create and add FPSCameraSystem with exit callback
-    const fpsSystem = new FPSCameraSystem(inputManager, () => {
-      // Exit callback: clean up entity, system, and UI state
+      fpsSystem.exit();
       fpsModeActive.value = false;
       viewport.setFPSMode(false);
-      
-      // Remove entity
-      if (fpsCameraEntityIdRef.current) {
-        world.destroyEntity(fpsCameraEntityIdRef.current);
-        fpsCameraEntityIdRef.current = null;
-      }
-      
-      // Remove system
-      world.removeSystem('fps-camera');
-      
-      console.log('[MenuBar] FPS Camera mode exited');
+      return;
+    }
+    
+    // Set exit callback to update UI signals when play mode exits (e.g., via Escape)
+    fpsSystem.setOnExitCallback(() => {
+      fpsModeActive.value = false;
+      viewport.setFPSMode(false);
     });
     
-    // Subscribe to input events immediately
-    fpsSystem.initialize?.();
-    
-    world.addSystem(fpsSystem, 5);
-    
-    // Request pointer lock
-    inputManager.requestPointerLock();
+    // Enter play mode — finds the active FPS camera component in the world
+    const success = fpsSystem.enter(world);
+    if (!success) {
+      console.warn('[MenuBar] Play Mode — no active FPS Camera component found in the world');
+      return;
+    }
     
     // Activate viewport FPS mode (switches input channel, hides gizmos)
     fpsModeActive.value = true;
@@ -377,11 +345,12 @@ export function ConnectedMenuBar() {
     
     const newState = !debugCameraModeActive.value;
     if (newState && fpsModeActive.value) {
-      // Exit FPS mode if entering debug camera mode
+      // Exit play mode if entering debug camera mode
       const world = store.world;
       const fpsSystem = world?.getSystem<FPSCameraSystem>('fps-camera');
       if (fpsSystem) {
         fpsSystem.exit();
+        fpsModeActive.value = false;
       }
     }
     
@@ -527,6 +496,13 @@ export function ConnectedMenuBar() {
     });
     world.select(entity.id);
   }, [store]);
+
+  const handleAddEmpty = useCallback(() => {
+    const world = store.world;
+    if (!world) return;
+    const entity = createEmptyEntity(world);
+    world.select(entity.id);
+  }, [store]);
   
   // ==================== Menu Definitions ====================
   
@@ -562,7 +538,7 @@ export function ConnectedMenuBar() {
         { id: 'axes', label: 'Show Axes', checked: viewportState.value.showAxes, onClick: handleToggleAxes },
         { separator: true, id: 'sep2', label: '' },
         { id: 'expand', label: 'Expand View', onClick: handleExpandView },
-        { id: 'fps', label: 'FPS Camera', checked: fpsModeActive.value, onClick: handleFPSCamera },
+        { id: 'play', label: 'Play Mode', checked: fpsModeActive.value, onClick: handlePlayMode },
         { id: 'debugCamera', label: 'Debug Camera', checked: debugCameraModeActive.value, onClick: handleToggleDebugCamera },
         { separator: true, id: 'sep3', label: '' },
         { id: 'shaderEditor', label: 'Shader Editor', checked: shaderPanelVisible.value, onClick: handleToggleShaderEditor },
@@ -583,6 +559,8 @@ export function ConnectedMenuBar() {
       id: 'add',
       label: 'Add',
       items: [
+        { id: 'empty', label: '📦 Empty Entity', onClick: handleAddEmpty },
+        { separator: true, id: 'sep0', label: '' },
         { id: 'cube', label: 'Cube', onClick: () => handleAddPrimitive('cube') },
         { id: 'plane', label: 'Plane', onClick: () => handleAddPrimitive('plane') },
         { id: 'sphere', label: 'UV Sphere', onClick: () => handleAddPrimitive('sphere') },
@@ -597,9 +575,9 @@ export function ConnectedMenuBar() {
   ], [
     handleSaveScene, handleLoadScene,
     handleSelectAll, handleDuplicate, handleDeleteSelected, handleGroupSelection, handleUngroup,
-    handleSetViewportMode, handleToggleGrid, handleToggleAxes, handleExpandView, handleFPSCamera, handleCameraPreset,
+    handleSetViewportMode, handleToggleGrid, handleToggleAxes, handleExpandView, handlePlayMode, handleCameraPreset,
     handleToggleShaderEditor, handleToggleDebugCamera,
-    handleAddPrimitive, handleAddTerrain, handleAddWater, handleAddPointLight, handleAddSpotLight,
+    handleAddPrimitive, handleAddTerrain, handleAddWater, handleAddPointLight, handleAddSpotLight, handleAddEmpty,
     hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value, fpsModeActive.value, debugCameraModeActive.value,
   ]);
   

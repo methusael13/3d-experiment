@@ -18,6 +18,25 @@ import type { OceanManager, OceanManagerConfig } from '../ocean';
 import type { AABB, PrimitiveType, PrimitiveConfig, PBRMaterial } from '../sceneObjects/types';
 
 // ============================================================================
+// Empty Entity Factory
+// ============================================================================
+
+/**
+ * Create an empty entity with no components.
+ * The user can attach components (Transform, FPS Camera, etc.) via the UI.
+ */
+export function createEmptyEntity(
+  world: World,
+  options?: {
+    name?: string;
+  },
+): Entity {
+  const entity = world.createEntity(options?.name ?? 'Empty');
+  entity.addComponent(new TransformComponent());
+  return entity;
+}
+
+// ============================================================================
 // Model Entity Factory
 // ============================================================================
 

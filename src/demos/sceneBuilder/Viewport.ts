@@ -140,7 +140,7 @@ export class Viewport {
   private transformGizmo: TransformGizmoManager | null = null;
 
   // Input management
-  private inputManager: InputManager | null = null;
+  private inputManager: InputManager;
 
   // Camera
   private cameraController: CameraController | null = null;
@@ -222,6 +222,9 @@ export class Viewport {
     this.renderWidth = Math.floor(this.logicalWidth * this.dpr);
     this.renderHeight = Math.floor(this.logicalHeight * this.dpr);
 
+    // Create InputManager for event routing
+    this.inputManager = new InputManager(this.canvas);
+
     // Initialize ECS World with all systems
     this._world = new World();
     const transformSystem = new TransformSystem();
@@ -243,6 +246,11 @@ export class Viewport {
     const frustumCullEntity = this._world.createEntity('__FrustumCull');
     frustumCullEntity.internal = true;
     frustumCullEntity.addComponent(new FrustumCullComponent());
+
+    // FPS Camera system — persistent, no-ops until enter() is called
+    const fpsSystem = new FPSCameraSystem(this.inputManager);
+    fpsSystem.initialize?.();
+    this._world.addSystem(fpsSystem);                     // priority 5 — runs early, before other systems
 
     this._world.addSystem(new LightingSystem());         // priority 80 — compute direction/color from azimuth/elevation
     this._world.addSystem(new ShadowCasterSystem());     // priority 90
@@ -375,9 +383,6 @@ export class Viewport {
   // ==================== Camera ====================
 
   private initCamera(): void {
-    // Create InputManager for event routing
-    this.inputManager = new InputManager(this.canvas);
-
     // Create CameraController with InputManager
     this.cameraController = new CameraController({
       width: this.logicalWidth,

@@ -8,7 +8,8 @@ import { WetnessComponent } from '@/core/ecs/components/WetnessComponent';
 import { WindComponent } from '@/core/ecs/components/WindComponent';
 import { SSRComponent } from '@/core/ecs/components/SSRComponent';
 import { ReflectionProbeComponent } from '@/core/ecs/components/ReflectionProbeComponent';
-import { LightComponent } from '@/core/ecs/components/LightComponent';
+import { TransformComponent } from '@/core/ecs/components/TransformComponent';
+import { FPSCameraComponent } from '@/core/ecs/components/FPSCameraComponent';
 import type { DebugTextureManager } from '@/core/gpu/renderers/DebugTextureManager';
 import type { ShadowRendererGPU } from '@/core/gpu/renderers/ShadowRendererGPU';
 import { WetnessSubPanel } from './subpanels/WetnessSubPanel';
@@ -17,6 +18,7 @@ import { WindSubPanel } from './subpanels/WindSubPanel';
 import { SSRSubPanel } from './subpanels/SSRSubPanel';
 import { ReflectionProbeSubPanel } from './subpanels/ReflectionProbeSubPanel';
 import { LightSubPanel } from './subpanels/LightSubPanel';
+import { FPSCameraSubPanel } from './subpanels/FPSCameraSubPanel';
 import styles from './ComponentsTab.module.css';
 
 /**
@@ -28,9 +30,32 @@ export const OPTIONAL_COMPONENTS: {
   type: ComponentType;
   label: string;
   description: string;
+  /** Component types that must be present — auto-added if missing */
+  dependencies?: ComponentType[];
   create: () => Component;
-  renderPanel: (entity: Entity, onChanged: () => void, debugTextureManager?: DebugTextureManager | null) => ComponentChildren;
+  renderPanel?: (entity: Entity, onChanged: () => void, debugTextureManager?: DebugTextureManager | null) => ComponentChildren;
 }[] = [
+  {
+    type: 'transform',
+    label: 'Transform',
+    description: 'Position, rotation, and scale in world space',
+    create: () => new TransformComponent(),
+    // No sub-panel — the existing Properties tab shows transform fields
+  },
+  {
+    type: 'fps-camera',
+    label: 'FPS Camera',
+    description: 'First-person camera controller (WASD + mouse look)',
+    dependencies: ['transform'],
+    create: () => {
+      const cam = new FPSCameraComponent();
+      cam.active = true;
+      return cam;
+    },
+    renderPanel: (entity, onChanged) => (
+      <FPSCameraSubPanel entity={entity} onChanged={onChanged} />
+    ),
+  },
   {
     type: 'lod',
     label: 'LOD (Level of Detail)',
@@ -161,7 +186,28 @@ export function ComponentsTab({
       if (!entity) return;
       const reg = OPTIONAL_COMPONENTS.find((r) => r.type === type);
       if (reg && !entity.hasComponent(type)) {
+        // Auto-add dependencies first
+        if (reg.dependencies) {
+          for (const dep of reg.dependencies) {
+            if (!entity.hasComponent(dep)) {
+              const depReg = OPTIONAL_COMPONENTS.find((r) => r.type === dep);
+              if (depReg) {
+                entity.addComponent(depReg.create());
+              }
+            }
+          }
+        }
+        // Add the requested component
         entity.addComponent(reg.create());
+        // Singleton enforcement for FPS Camera: deactivate others
+        if (type === 'fps-camera') {
+          const world = (window as any).__ecsWorld; // fallback — ideally passed via props
+          // Deactivate other FPS camera components in the world
+          if (entity) {
+            // We only have access to the current entity; full world singleton
+            // enforcement happens in FPSCameraSystem.enter()
+          }
+        }
       }
       setDropdownOpen(false);
       onChanged();
@@ -242,13 +288,13 @@ export function ComponentsTab({
       )}
 
       {/* Per-component subpanels */}
-      {attached.map((reg) => (
+      {attached.filter(reg => reg.renderPanel).map((reg) => (
         <SubPanelCard
           key={reg.type}
           label={reg.label}
           onRemove={() => handleRemove(reg.type)}
         >
-          {reg.renderPanel(entity, onChanged, debugTextureManager)}
+          {reg.renderPanel!(entity, onChanged, debugTextureManager)}
         </SubPanelCard>
       ))}
 

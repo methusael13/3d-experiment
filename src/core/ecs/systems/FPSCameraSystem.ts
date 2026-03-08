@@ -14,6 +14,7 @@ import type { ComponentType, SystemContext } from '../types';
 import { FPSCameraComponent } from '../components/FPSCameraComponent';
 import { TerrainComponent } from '../components/TerrainComponent';
 import type { InputManager, InputEvent } from '../../../demos/sceneBuilder/InputManager';
+import { World } from '../World';
 
 // Default grid bounds half-size (matches FPSCameraComponent default)
 const DEFAULT_BOUNDS_HALF = 100;
@@ -37,10 +38,12 @@ export class FPSCameraSystem extends System {
   // Track the FPS camera component for input handlers
   private activeCam: FPSCameraComponent | null = null;
 
-  constructor(inputManager: InputManager, onExit?: () => void) {
+  /** Whether play mode is active (pointer locked, processing input) */
+  private playing = false;
+
+  constructor(inputManager: InputManager) {
     super();
     this.inputManager = inputManager;
-    this.onExitCallback = onExit ?? null;
   }
 
   // ==================== Lifecycle ====================
@@ -168,18 +171,63 @@ export class FPSCameraSystem extends System {
     }
   }
 
-  // ==================== Exit ====================
+  // ==================== Enter / Exit Play Mode ====================
 
   /**
-   * Exit FPS mode — deactivates camera and calls exit callback.
+   * Set the callback invoked when play mode exits (e.g., to update UI signals).
+   */
+  setOnExitCallback(cb: (() => void) | null): void {
+    this.onExitCallback = cb;
+  }
+
+  /**
+   * Enter play mode — find the active FPSCameraComponent in the world,
+   * lock the pointer, and start processing input.
+   * Returns true if an active FPS camera was found, false otherwise (no-op).
+   */
+  enter(world: World): boolean {
+    // Find an entity with an active fps-camera component
+    const entities = world.query('fps-camera');
+    let targetCam: FPSCameraComponent | null = null;
+    for (const entity of entities) {
+      const cam = entity.getComponent<FPSCameraComponent>('fps-camera');
+      if (cam?.active) {
+        targetCam = cam;
+        break;
+      }
+    }
+
+    if (!targetCam) {
+      console.warn('[FPSCameraSystem] No active FPS Camera component found in the world');
+      return false;
+    }
+
+    this.activeCam = targetCam;
+    this.playing = true;
+    this.inputManager.requestPointerLock();
+    console.log('[FPSCameraSystem] Entered play mode');
+    return true;
+  }
+
+  /**
+   * Exit play mode — release pointer lock, stop processing input.
+   * Does NOT remove the entity or deactivate the component — the component
+   * persists in the world for re-entry.
    */
   exit(): void {
     if (this.activeCam) {
-      this.activeCam.active = false;
       this.activeCam.resetKeys();
     }
+    this.activeCam = null;
+    this.playing = false;
     this.inputManager.exitPointerLock();
     this.onExitCallback?.();
+    console.log('[FPSCameraSystem] Exited play mode');
+  }
+
+  /** Whether the system is currently in play mode */
+  get isPlaying(): boolean {
+    return this.playing;
   }
 
   // ==================== Spawn ====================
@@ -243,6 +291,8 @@ export class FPSCameraSystem extends System {
   // ==================== Update ====================
 
   update(entities: Entity[], deltaTime: number, context: SystemContext): void {
+    if (!this.playing) return;
+
     for (const entity of entities) {
       const cam = entity.getComponent<FPSCameraComponent>('fps-camera');
       if (!cam || !cam.active) continue;
