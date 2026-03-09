@@ -1,7 +1,6 @@
 import { mat4 } from 'gl-matrix';
 import { Component } from '../Component';
 import type { ComponentType } from '../types';
-import type { Vec3 } from '../../types';
 
 // ==================== Reversed-Z Perspective ====================
 
@@ -44,17 +43,17 @@ const MIN_PITCH = -MAX_PITCH;
 const DEFAULT_BOUNDS_HALF = 100;
 
 /**
- * FPSCameraComponent — First-person camera state for terrain/ground exploration.
+ * FPSCameraComponent — First-person camera config/state component.
  *
- * Holds position, orientation, movement parameters, key state, and cached matrices.
+ * Position and orientation live on TransformComponent (single source of truth).
+ * This component holds camera-specific config, movement state, and cached matrices.
  * Processed by FPSCameraSystem.
  */
 export class FPSCameraComponent extends Component {
   readonly type: ComponentType = 'fps-camera';
 
-  // ==================== Position & Orientation ====================
+  // ==================== Orientation (extracted from TransformComponent rotation) ====================
 
-  position: Vec3 = [0, 0, 0];
   yaw = 0;   // Horizontal rotation (radians)
   pitch = 0; // Vertical rotation (radians)
 
@@ -139,22 +138,23 @@ export class FPSCameraComponent extends Component {
   }
 
   /**
-   * Recompute view and VP matrices from current position/orientation.
+   * Recompute view and VP matrices from a given position and current yaw/pitch.
+   * Position comes from TransformComponent (the single source of truth).
    */
-  updateMatrices(): void {
+  updateMatrices(position: [number, number, number] | Float32Array): void {
     // Calculate look direction from yaw and pitch
     const lookDirX = Math.sin(this.yaw) * Math.cos(this.pitch);
     const lookDirY = Math.sin(this.pitch);
     const lookDirZ = Math.cos(this.yaw) * Math.cos(this.pitch);
 
     // Target = position + lookDir
-    const targetX = this.position[0] + lookDirX;
-    const targetY = this.position[1] + lookDirY;
-    const targetZ = this.position[2] + lookDirZ;
+    const targetX = position[0] + lookDirX;
+    const targetY = position[1] + lookDirY;
+    const targetZ = position[2] + lookDirZ;
 
     mat4.lookAt(
       this.viewMatrix,
-      this.position as any,
+      position as any,
       [targetX, targetY, targetZ] as any,
       [0, 1, 0],
     );

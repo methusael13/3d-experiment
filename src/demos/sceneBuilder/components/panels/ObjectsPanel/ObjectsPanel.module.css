@@ -19,8 +19,9 @@
   list-style: none;
   margin: 0 0 12px 0;
   padding: 0;
-  max-height: 200px;
+  max-height: 300px;
   overflow-y: auto;
+  min-height: 40px;
 }
 
 .objectList::-webkit-scrollbar {
@@ -36,6 +37,67 @@
   background: var(--sb-border);
   border-radius: 2px;
 }
+
+/* ==================== Hierarchy Tree Node ==================== */
+
+.treeNode {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: var(--sb-font-sm);
+  color: var(--sb-text-secondary);
+  cursor: pointer;
+  border-radius: var(--sb-radius-sm);
+  transition: background 0.15s, color 0.15s;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.treeNode:hover {
+  background: var(--sb-bg-hover);
+  color: var(--sb-text-primary);
+}
+
+.treeNode.selected {
+  background: var(--sb-accent);
+  color: #fff;
+}
+
+.treeNode.dragOver {
+  background: rgba(var(--sb-accent-rgb, 66, 133, 244), 0.25);
+  outline: 1px dashed var(--sb-accent);
+  outline-offset: -1px;
+}
+
+.expandToggle {
+  font-size: 8px;
+  width: 12px;
+  min-width: 12px;
+  text-align: center;
+  cursor: pointer;
+  color: var(--sb-text-muted);
+  flex-shrink: 0;
+}
+
+.treeNode.selected .expandToggle {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.nodeName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.objectIcon {
+  font-size: 12px;
+  margin-right: 2px;
+  flex-shrink: 0;
+}
+
+/* ==================== Legacy flat list + group styles ==================== */
 
 .objectItem {
   padding: 6px 8px;
@@ -129,12 +191,6 @@
 .childIndent {
   color: var(--sb-text-muted);
   font-size: 10px;
-}
-
-.objectIcon {
-  font-size: 12px;
-  margin-right: 4px;
-  flex-shrink: 0;
 }
 
 .groupChild.selected .childIndent {

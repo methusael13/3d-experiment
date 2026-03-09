@@ -37,6 +37,7 @@ import {
   LightingSystem,
 } from '../../core/ecs/systems';
 import { FPSCameraComponent } from '../../core/ecs/components/FPSCameraComponent';
+import { TransformComponent } from '../../core/ecs/components/TransformComponent';
 import { FrustumCullComponent } from '../../core/ecs/components/FrustumCullComponent';
 import { LightComponent } from '../../core/ecs/components/LightComponent';
 import { createDirectionalLightEntity } from '../../core/ecs/factories';
@@ -488,11 +489,11 @@ export class Viewport {
       const transform = entity.getComponent<import('../../core/ecs/components/TransformComponent').TransformComponent>('transform');
       if (!transform) continue;
 
-      const pos = transform.position;
+      const wp = transform.worldPosition;
       const dist = rayIntersectsSphere(
         rayOrigin as [number, number, number],
         rayDir as [number, number, number],
-        [pos[0], pos[1], pos[2]],
+        wp,
         radius,
       );
       if (dist !== null && dist < closestDist) {
@@ -648,11 +649,12 @@ export class Viewport {
       // FPS camera mode — read matrices from ECS FPSCameraComponent
       const fpsCamEntity = this._world.queryFirst('fps-camera');
       const fpsCam = fpsCamEntity?.getComponent<FPSCameraComponent>('fps-camera');
-      if (fpsCam && fpsCam.active) {
+      const fpsCamTransform = fpsCamEntity?.getComponent<TransformComponent>('transform');
+      if (fpsCam && fpsCam.active && fpsCamTransform) {
         viewCameraAdapter = {
           getViewMatrix: () => fpsCam.viewMatrix as Float32Array,
           getProjectionMatrix: () => fpsCam.projMatrix as Float32Array,
-          getPosition: () => [...fpsCam.position] as number[],
+          getPosition: () => [fpsCamTransform.position[0], fpsCamTransform.position[1], fpsCamTransform.position[2]] as number[],
           near: fpsCam.near,
           far: fpsCam.far,
         };

@@ -17,11 +17,56 @@ export class TransformComponent extends Component {
   scale: vec3 = vec3.fromValues(1, 1, 1);
   originPivot: 'top' | 'center' | 'bottom' = 'center';
 
-  /** Cached model matrix — recomputed by TransformSystem when dirty */
+  /**
+   * The local matrix (position × rotation × scale), computed from the component's
+   * position/rotationQuat/scale. For root entities this equals modelMatrix.
+   */
+  localMatrix: mat4 = mat4.create();
+
+  /**
+   * The world matrix. For root entities: same as localMatrix.
+   * For children: parentWorldMatrix × localMatrix.
+   * This is what was previously called modelMatrix — the name stays for compatibility.
+   */
   modelMatrix: mat4 = mat4.create();
 
   /** Set to true when position/rotation/scale change; cleared by TransformSystem */
   dirty: boolean = true;
+
+  // ==================== World-space accessors ====================
+
+  /**
+   * Get world-space position extracted from modelMatrix.
+   * For root entities this equals `position`. For children this is the
+   * actual world position after parent transforms are applied.
+   * Use this in any system that needs world-space coordinates.
+   */
+  get worldPosition(): [number, number, number] {
+    return [this.modelMatrix[12], this.modelMatrix[13], this.modelMatrix[14]];
+  }
+
+  /**
+   * Get world-space rotation quaternion extracted from modelMatrix.
+   * For root entities this equals `rotationQuat`. For children this is the
+   * combined rotation of all parent transforms × local rotation.
+   */
+  get worldRotationQuat(): quat {
+    const m = this.modelMatrix;
+    // Extract scale to remove it from rotation columns
+    const sx = Math.sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+    const sy = Math.sqrt(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]);
+    const sz = Math.sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10]);
+    // Build a pure rotation matrix (remove scale)
+    const rotMat = mat4.create();
+    if (sx > 0) { rotMat[0] = m[0] / sx; rotMat[1] = m[1] / sx; rotMat[2] = m[2] / sx; }
+    if (sy > 0) { rotMat[4] = m[4] / sy; rotMat[5] = m[5] / sy; rotMat[6] = m[6] / sy; }
+    if (sz > 0) { rotMat[8] = m[8] / sz; rotMat[9] = m[9] / sz; rotMat[10] = m[10] / sz; }
+    rotMat[15] = 1;
+    const q = quat.create();
+    mat4.getRotation(q, rotMat);
+    quat.normalize(q, q);
+    return q;
+  }
 
   /** Set by TransformSystem when matrix was recomputed this frame; cleared by MeshRenderSystem after GPU upload */
   _updatedThisFrame: boolean = false;

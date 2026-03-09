@@ -287,7 +287,7 @@ export class LightVisualizerGPU {
 
       const transform = entity.getComponent<TransformComponent>('transform');
       const pos: vec3 = transform
-        ? [transform.position[0], transform.position[1], transform.position[2]]
+        ? transform.worldPosition
         : [0, 0, 0];
 
       const color = HELPER_COLOR;

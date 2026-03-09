@@ -45,9 +45,10 @@ export class LODSystem extends System {
       if (!transform || !lod) continue;
 
       // Compute distance from entity position to camera
-      const dx = transform.position[0] - cx;
-      const dy = transform.position[1] - cy;
-      const dz = transform.position[2] - cz;
+      const wp = transform.worldPosition;
+      const dx = wp[0] - cx;
+      const dy = wp[1] - cy;
+      const dz = wp[2] - cz;
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
       // Find LOD level from thresholds

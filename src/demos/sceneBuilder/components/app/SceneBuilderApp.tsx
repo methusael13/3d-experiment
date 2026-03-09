@@ -128,7 +128,7 @@ export function SceneBuilderApp({
 
   const objectsForPanel = store.objects.value.map((e: Entity) => {
     const group = e.getComponent<GroupComponent>('group');
-    return { id: e.id, name: e.name, groupId: group?.groupId, icon: getEntityIcon(e) };
+    return { id: e.id, name: e.name, groupId: group?.groupId, icon: getEntityIcon(e), parentId: e.parentId, childIds: e.childIds };
   });
   
   return (
@@ -152,6 +152,10 @@ export function SceneBuilderApp({
             onSelectAll={store.selectAll}
             onClearSelection={store.clearSelection}
             onToggleGroup={store.toggleGroup}
+            onSetParent={(childId: string, parentId: string | null) => {
+              store.world?.setParent(childId, parentId, true);
+              store.syncFromWorld();
+            }}
           />
           
           {/* Object Panel - shows when object selected */}

@@ -49,6 +49,10 @@ export interface ObjectPanelProps {
   onPrimitiveConfigChange?: (config: Partial<PrimitiveConfig>) => void;
   onShowNormalsChange?: (show: boolean) => void;
 
+  // Hierarchy
+  parentName?: string | null;
+  onUnparent?: () => void;
+
   // Components tab
   entity: Entity | null;
   activeComponents: ComponentType[];
@@ -81,6 +85,8 @@ export function ObjectPanel({
   onDelete,
   onPrimitiveConfigChange,
   onShowNormalsChange,
+  parentName,
+  onUnparent,
   entity,
   activeComponents,
   onComponentsChanged,
@@ -111,6 +117,8 @@ export function ObjectPanel({
             originPivot={originPivot}
             onOriginPivotChange={onOriginPivotChange}
             onDelete={onDelete}
+            parentName={parentName}
+            onUnparent={onUnparent}
           />
         ),
       },

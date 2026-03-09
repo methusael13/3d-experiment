@@ -26,6 +26,10 @@ export interface TransformTabProps {
   originPivot?: OriginPivot;
   onOriginPivotChange?: (pivot: OriginPivot) => void;
   onDelete: () => void;
+  /** Parent entity name (if this entity has a parent) */
+  parentName?: string | null;
+  /** Callback to unparent this entity */
+  onUnparent?: () => void;
 }
 
 export function TransformTab({
@@ -43,6 +47,8 @@ export function TransformTab({
   originPivot = 'center',
   onOriginPivotChange,
   onDelete,
+  parentName,
+  onUnparent,
 }: TransformTabProps) {
   const isSingleSelection = selectionCount === 1;
 
@@ -112,6 +118,26 @@ export function TransformTab({
           onInput={handleNameInput}
         />
       </div>
+
+      {/* Parent display (only for child entities) */}
+      {parentName && (
+        <div class={styles.controlGroup}>
+          <label class={styles.controlLabel}>Parent</label>
+          <div class={styles.parentRow}>
+            <span class={styles.parentName}>{parentName}</span>
+            {onUnparent && (
+              <button
+                class={styles.unparentBtn}
+                onClick={onUnparent}
+                title="Unparent (make root)"
+                type="button"
+              >
+                ×
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Transform Inputs */}
       <VectorInput

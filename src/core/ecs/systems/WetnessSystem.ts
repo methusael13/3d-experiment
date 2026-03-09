@@ -93,9 +93,10 @@ export class WetnessSystem extends System {
         continue;
       }
 
-      const entityX = transform.position[0];
-      const entityY = transform.position[1];
-      const entityZ = transform.position[2];
+      const wp = transform.worldPosition;
+      const entityX = wp[0];
+      const entityY = wp[1];
+      const entityZ = wp[2];
 
       let waterSurfaceY: number;
 

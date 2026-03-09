@@ -118,7 +118,7 @@ export class LightingSystem extends System {
         // Default forward: (0, -1, 0) — pointing down. Rotation rotates this.
         const transform = entity.getComponent<TransformComponent>('transform');
         if (transform) {
-          light.direction = LightingSystem.directionFromQuat(transform.rotationQuat);
+          light.direction = LightingSystem.directionFromQuat(transform.worldRotationQuat);
         }
         spotEntities.push(entity);
       }
@@ -132,13 +132,15 @@ export class LightingSystem extends System {
         const t = e.getComponent<TransformComponent>('transform');
         const l = e.getComponent<LightComponent>('light');
         if (!t || !l) return true; // keep if no transform
-        return this.sphereInFrustum(t.position[0], t.position[1], t.position[2], l.range ?? 10);
+        const wp = t.worldPosition;
+        return this.sphereInFrustum(wp[0], wp[1], wp[2], l.range ?? 10);
       });
       visibleSpots = spotEntities.filter(e => {
         const t = e.getComponent<TransformComponent>('transform');
         const l = e.getComponent<LightComponent>('light');
         if (!t || !l) return true;
-        return this.sphereInFrustum(t.position[0], t.position[1], t.position[2], l.range ?? 10);
+        const wp = t.worldPosition;
+        return this.sphereInFrustum(wp[0], wp[1], wp[2], l.range ?? 10);
       });
     }
 
@@ -223,7 +225,7 @@ export class LightingSystem extends System {
       if (light.shadowAtlasIndex < 0) continue; // No slot available
 
       // Compute perspective light-space matrix for this spot light
-      const pos = transform?.position ?? [0, 0, 0];
+      const pos = transform ? transform.worldPosition : [0, 0, 0] as [number, number, number];
       const dir = light.direction;
       const range = light.range ?? 10;
       const outerAngle = light.outerConeAngle ?? Math.PI / 4;

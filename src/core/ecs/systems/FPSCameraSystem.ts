@@ -5,13 +5,18 @@
  * samples terrain height (or falls back to Y=0 ground plane),
  * and updates the FPSCameraComponent matrices each frame.
  *
+ * Position lives on TransformComponent (single source of truth).
+ * FPSCameraComponent holds camera config, orientation (yaw/pitch), and cached matrices.
+ *
  * Priority: 5 (runs early, before other systems)
  */
 
+import { quat } from 'gl-matrix';
 import { System } from '../System';
 import type { Entity } from '../Entity';
 import type { ComponentType, SystemContext } from '../types';
 import { FPSCameraComponent } from '../components/FPSCameraComponent';
+import { TransformComponent } from '../components/TransformComponent';
 import { TerrainComponent } from '../components/TerrainComponent';
 import type { InputManager, InputEvent } from '../../../demos/sceneBuilder/InputManager';
 import { World } from '../World';
@@ -235,8 +240,9 @@ export class FPSCameraSystem extends System {
   /**
    * Position the camera at spawn point based on terrain or ground plane.
    * Called once on first update when needsSpawn is true.
+   * Writes position to TransformComponent (single source of truth).
    */
-  private spawnCamera(cam: FPSCameraComponent, context: SystemContext): void {
+  private spawnCamera(cam: FPSCameraComponent, transform: TransformComponent, context: SystemContext): void {
     const world = context.world;
     const terrainEntity = world.queryFirst('terrain');
 
@@ -260,7 +266,7 @@ export class FPSCameraSystem extends System {
         }
 
         if (typeof manager.hasCPUHeightfield === 'function' && manager.hasCPUHeightfield()) {
-          groundHeight = manager.sampleHeightAt(cam.position[0], cam.position[2]);
+          groundHeight = manager.sampleHeightAt(transform.position[0], transform.position[2]);
         }
       }
     }
@@ -272,20 +278,23 @@ export class FPSCameraSystem extends System {
     cam.boundsMaxZ = boundsMaxZ;
 
     // Clamp spawn XZ to bounds
-    cam.position[0] = Math.max(boundsMinX, Math.min(boundsMaxX, cam.position[0]));
-    cam.position[2] = Math.max(boundsMinZ, Math.min(boundsMaxZ, cam.position[2]));
+    transform.position[0] = Math.max(boundsMinX, Math.min(boundsMaxX, transform.position[0]));
+    transform.position[2] = Math.max(boundsMinZ, Math.min(boundsMaxZ, transform.position[2]));
 
     // Set Y from ground + player height
-    cam.position[1] = groundHeight + cam.playerHeight;
+    transform.position[1] = groundHeight + cam.playerHeight;
 
     // Reset orientation
     cam.yaw = 0;
     cam.pitch = 0;
 
-    // Compute initial matrices
-    cam.updateMatrices();
+    // Mark transform dirty so TransformSystem propagates to children
+    transform.dirty = true;
 
-    console.log(`[FPSCameraSystem] Spawned at (${cam.position[0].toFixed(1)}, ${cam.position[1].toFixed(1)}, ${cam.position[2].toFixed(1)}), ground: ${groundHeight.toFixed(1)}`);
+    // Compute initial matrices
+    cam.updateMatrices(transform.position as [number, number, number]);
+
+    console.log(`[FPSCameraSystem] Spawned at (${transform.position[0].toFixed(1)}, ${transform.position[1].toFixed(1)}, ${transform.position[2].toFixed(1)}), ground: ${groundHeight.toFixed(1)}`);
   }
 
   // ==================== Update ====================
@@ -295,14 +304,15 @@ export class FPSCameraSystem extends System {
 
     for (const entity of entities) {
       const cam = entity.getComponent<FPSCameraComponent>('fps-camera');
-      if (!cam || !cam.active) continue;
+      const transform = entity.getComponent<TransformComponent>('transform');
+      if (!cam || !cam.active || !transform) continue;
 
       // Cache active cam for input handlers
       this.activeCam = cam;
 
       // 0. Handle initial spawn: query terrain/ground and set starting position
       if (cam.needsSpawn) {
-        this.spawnCamera(cam, context);
+        this.spawnCamera(cam, transform, context);
         cam.needsSpawn = false;
       }
 
@@ -328,8 +338,8 @@ export class FPSCameraSystem extends System {
         dx = (dx / len) * speed;
         dz = (dz / len) * speed;
 
-        cam.position[0] += dx;
-        cam.position[2] += dz;
+        transform.position[0] += dx;
+        transform.position[2] += dz;
       }
 
       // 2. Query terrain for height and bounds, or fallback to ground plane
@@ -357,14 +367,14 @@ export class FPSCameraSystem extends System {
 
           // Sample height from terrain
           if (typeof manager.hasCPUHeightfield === 'function' && manager.hasCPUHeightfield()) {
-            groundHeight = manager.sampleHeightAt(cam.position[0], cam.position[2]);
+            groundHeight = manager.sampleHeightAt(transform.position[0], transform.position[2]);
           }
         }
       }
 
       // 3. Clamp position to bounds
-      cam.position[0] = Math.max(boundsMinX, Math.min(boundsMaxX, cam.position[0]));
-      cam.position[2] = Math.max(boundsMinZ, Math.min(boundsMaxZ, cam.position[2]));
+      transform.position[0] = Math.max(boundsMinX, Math.min(boundsMaxX, transform.position[0]));
+      transform.position[2] = Math.max(boundsMinZ, Math.min(boundsMaxZ, transform.position[2]));
 
       // Update stored bounds for reference
       cam.boundsMinX = boundsMinX;
@@ -373,10 +383,23 @@ export class FPSCameraSystem extends System {
       cam.boundsMaxZ = boundsMaxZ;
 
       // 4. Set Y from ground height + player height
-      cam.position[1] = groundHeight + cam.playerHeight;
+      transform.position[1] = groundHeight + cam.playerHeight;
 
-      // 5. Update matrices
-      cam.updateMatrices();
+      // 5. Write yaw/pitch to TransformComponent rotation so children inherit orientation
+      //    Compose quaternion: first rotate around Y by yaw, then around X by -pitch
+      //    Pitch is negated because the camera convention (positive pitch = look up)
+      //    is opposite to the rotation convention (positive X rotation = tilt forward/down)
+      const yawQuat = quat.create();
+      quat.setAxisAngle(yawQuat, [0, 1, 0], cam.yaw);
+      const pitchQuat = quat.create();
+      quat.setAxisAngle(pitchQuat, [1, 0, 0], -cam.pitch);
+      quat.multiply(transform.rotationQuat, yawQuat, pitchQuat);
+
+      // 6. Mark transform dirty so TransformSystem propagates to children
+      transform.dirty = true;
+
+      // 7. Update view/VP matrices from TransformComponent position
+      cam.updateMatrices(transform.position as [number, number, number]);
     }
   }
 }

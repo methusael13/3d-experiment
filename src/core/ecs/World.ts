@@ -1,7 +1,9 @@
+import { mat4, vec3, quat } from 'gl-matrix';
 import type { ComponentType, SystemContext } from './types';
 import { Entity } from './Entity';
 import type { System } from './System';
 import { SceneGraph } from '../sceneGraph';
+import type { TransformComponent } from './components/TransformComponent';
 
 /**
  * The World is the top-level container that manages entities and systems.
@@ -16,6 +18,12 @@ export class World {
 
   /** Spatial index for raycasting. Automatically synced with entity transforms. */
   private _sceneGraph: SceneGraph = new SceneGraph();
+
+  // ===================== Hierarchy Cache =====================
+
+  /** Cached topological order (parents before children). Invalidated on hierarchy change. */
+  private _hierarchyOrderCache: Entity[] | null = null;
+  private _hierarchyDirty = true;
 
   // ===================== Selection State =====================
 
@@ -42,6 +50,7 @@ export class World {
     this._sceneGraph.add(entity.id, {
       localBounds: { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
     });
+    this._hierarchyDirty = true;
     this.onEntityAdded?.(entity);
     return entity;
   }
@@ -60,13 +69,40 @@ export class World {
    * cleanup (entity.destroy()) is deferred until flushPendingDeletions()
    * is called — typically after the render frame submits GPU commands.
    * This prevents "destroyed texture used in a submit" crashes.
+   *
+   * @param id - Entity ID to destroy
+   * @param options - Optional: { cascade: true } to recursively destroy children.
+   *                  Default behavior: unparent children (preserve world transform).
    */
-  destroyEntity(id: string): boolean {
+  destroyEntity(id: string, options?: { cascade?: boolean }): boolean {
     const entity = this.entities.get(id);
     if (!entity) return false;
+
+    if (options?.cascade) {
+      // Recursively destroy all descendants first (depth-first)
+      for (const childId of [...entity.childIds]) {
+        this.destroyEntity(childId, { cascade: true });
+      }
+    } else {
+      // Unparent children (they become roots, preserving world transform)
+      for (const childId of [...entity.childIds]) {
+        this.setParent(childId, null, true);
+      }
+    }
+
+    // Remove from own parent
+    if (entity.parentId) {
+      const parent = this.entities.get(entity.parentId);
+      if (parent) {
+        parent.childIds = parent.childIds.filter((c) => c !== id);
+      }
+      entity.parentId = null;
+    }
+
     this.selectedIds.delete(id);
     this._sceneGraph.remove(id);
     this.entities.delete(id);
+    this._hierarchyDirty = true;
     this.onEntityRemoved?.(id);
     // Defer actual GPU resource cleanup
     this.pendingDeletions.push(entity);
@@ -121,6 +157,231 @@ export class World {
    */
   setSceneGraphWorldBounds(entityId: string, worldBounds: { min: any; max: any }): void {
     this._sceneGraph.setWorldBounds(entityId, worldBounds);
+  }
+
+  // ===================== Entity Hierarchy =====================
+
+  /**
+   * Set an entity's parent. Pass null to unparent (make root).
+   *
+   * When preserveWorldTransform is true (default), the child's local
+   * transform is recalculated so it maintains its current world position.
+   * When false, the child's existing transform values become local-space
+   * values relative to the new parent (the entity may visually jump).
+   */
+  setParent(childId: string, parentId: string | null, preserveWorldTransform: boolean = true): boolean {
+    const child = this.entities.get(childId);
+    if (!child) return false;
+
+    // Can't parent to self
+    if (parentId === childId) return false;
+
+    // Validate parent exists
+    if (parentId !== null) {
+      const parent = this.entities.get(parentId);
+      if (!parent) return false;
+
+      // Cycle detection
+      if (this.wouldCreateCycle(childId, parentId)) return false;
+    }
+
+    // Get child's current world matrix before reparenting (for preserveWorldTransform)
+    let childWorldMatrix: mat4 | null = null;
+    if (preserveWorldTransform) {
+      const childTransform = child.getComponent<TransformComponent>('transform');
+      if (childTransform) {
+        childWorldMatrix = mat4.clone(childTransform.modelMatrix);
+      }
+    }
+
+    // Remove from old parent
+    if (child.parentId !== null) {
+      const oldParent = this.entities.get(child.parentId);
+      if (oldParent) {
+        oldParent.childIds = oldParent.childIds.filter((c) => c !== childId);
+      }
+    }
+
+    // Set new parent
+    child.parentId = parentId;
+
+    // Add to new parent's children
+    if (parentId !== null) {
+      const newParent = this.entities.get(parentId)!;
+      if (!newParent.childIds.includes(childId)) {
+        newParent.childIds.push(childId);
+      }
+    }
+
+    // Preserve world transform: decompose inverse(newParent.worldMatrix) × child.worldMatrix
+    if (preserveWorldTransform && childWorldMatrix) {
+      const childTransform = child.getComponent<TransformComponent>('transform');
+      if (childTransform) {
+        if (parentId !== null) {
+          const parentEntity = this.entities.get(parentId)!;
+          const parentTransform = parentEntity.getComponent<TransformComponent>('transform');
+          if (parentTransform) {
+            const invParent = mat4.create();
+            mat4.invert(invParent, parentTransform.modelMatrix);
+            const localMatrix = mat4.create();
+            mat4.multiply(localMatrix, invParent, childWorldMatrix);
+            this._decomposeMatrix(localMatrix, childTransform);
+          }
+        } else {
+          // Unparenting to root — decompose world matrix back to TRS
+          this._decomposeMatrix(childWorldMatrix, childTransform);
+        }
+        childTransform.dirty = true;
+      }
+    } else {
+      // Even without preserving, mark dirty so hierarchy is recomputed
+      const childTransform = child.getComponent<TransformComponent>('transform');
+      if (childTransform) {
+        childTransform.dirty = true;
+      }
+    }
+
+    this._hierarchyDirty = true;
+    return true;
+  }
+
+  /**
+   * Decompose a 4×4 matrix into position/rotation/scale and write to TransformComponent.
+   */
+  private _decomposeMatrix(m: mat4, transform: TransformComponent): void {
+    // Extract translation
+    vec3.set(transform.position, m[12], m[13], m[14]);
+
+    // Extract scale from column vectors
+    const sx = Math.sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+    const sy = Math.sqrt(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]);
+    const sz = Math.sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10]);
+    vec3.set(transform.scale, sx, sy, sz);
+
+    // Extract rotation by removing scale from the rotation matrix
+    const rotMat = mat4.create();
+    if (sx > 0) { rotMat[0] = m[0] / sx; rotMat[1] = m[1] / sx; rotMat[2] = m[2] / sx; }
+    if (sy > 0) { rotMat[4] = m[4] / sy; rotMat[5] = m[5] / sy; rotMat[6] = m[6] / sy; }
+    if (sz > 0) { rotMat[8] = m[8] / sz; rotMat[9] = m[9] / sz; rotMat[10] = m[10] / sz; }
+    rotMat[15] = 1;
+
+    mat4.getRotation(transform.rotationQuat, rotMat);
+    quat.normalize(transform.rotationQuat, transform.rotationQuat);
+  }
+
+  /**
+   * Get the parent entity of a given entity, or null if it's a root.
+   */
+  getParent(entityId: string): Entity | null {
+    const entity = this.entities.get(entityId);
+    if (!entity || !entity.parentId) return null;
+    return this.entities.get(entity.parentId) ?? null;
+  }
+
+  /**
+   * Get direct children of an entity.
+   */
+  getChildren(entityId: string): Entity[] {
+    const entity = this.entities.get(entityId);
+    if (!entity) return [];
+    const result: Entity[] = [];
+    for (const childId of entity.childIds) {
+      const child = this.entities.get(childId);
+      if (child) result.push(child);
+    }
+    return result;
+  }
+
+  /**
+   * Get all descendants of an entity (recursive).
+   */
+  getDescendants(entityId: string): Entity[] {
+    const result: Entity[] = [];
+    const entity = this.entities.get(entityId);
+    if (!entity) return result;
+
+    const stack = [...entity.childIds];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      const child = this.entities.get(id);
+      if (child) {
+        result.push(child);
+        stack.push(...child.childIds);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Get all root entities (entities with no parent).
+   */
+  getRootEntities(): Entity[] {
+    const result: Entity[] = [];
+    for (const entity of this.entities.values()) {
+      if (entity.parentId === null) {
+        result.push(entity);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Get entities in topological order (parents before children).
+   * Used by TransformSystem for correct matrix propagation.
+   * Cached and only recomputed when hierarchy changes.
+   */
+  getHierarchyOrder(): Entity[] {
+    if (!this._hierarchyDirty && this._hierarchyOrderCache) {
+      return this._hierarchyOrderCache;
+    }
+
+    const result: Entity[] = [];
+    const roots = this.getRootEntities();
+
+    // BFS: process parents before children
+    const queue = [...roots];
+    while (queue.length > 0) {
+      const entity = queue.shift()!;
+      result.push(entity);
+      for (const childId of entity.childIds) {
+        const child = this.entities.get(childId);
+        if (child) queue.push(child);
+      }
+    }
+
+    this._hierarchyOrderCache = result;
+    this._hierarchyDirty = false;
+    return result;
+  }
+
+  /**
+   * Check if making parentId the parent of childId would create a cycle.
+   * Walks ancestors of the proposed parent to see if childId is found.
+   */
+  wouldCreateCycle(childId: string, parentId: string): boolean {
+    let current: string | null = parentId;
+    while (current !== null) {
+      if (current === childId) return true;
+      const entity = this.entities.get(current);
+      if (!entity) break;
+      current = entity.parentId;
+    }
+    return false;
+  }
+
+  /**
+   * Get the depth of an entity in the hierarchy (0 for root).
+   */
+  getDepth(entityId: string): number {
+    let depth = 0;
+    let current: string | null = this.entities.get(entityId)?.parentId ?? null;
+    while (current !== null) {
+      depth++;
+      const entity = this.entities.get(current);
+      if (!entity) break;
+      current = entity.parentId;
+    }
+    return depth;
   }
 
   // ===================== Selection =====================

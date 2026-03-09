@@ -161,7 +161,24 @@ export function ConnectedObjectPanel() {
 
   const entity = selectedEntity.value;
   const tc = entity?.getComponent<TransformComponent>('transform');
-  
+
+  // Hierarchy: parent name for display
+  const parentName = useComputed(() => {
+    const _ = store.transformVersion.value;
+    const e = selectedEntity.value;
+    if (!e || !e.parentId) return null;
+    const parent = store.world?.getEntity(e.parentId);
+    return parent?.name ?? null;
+  });
+
+  const handleUnparent = () => {
+    const e = selectedEntity.value;
+    if (e && e.parentId && store.world) {
+      store.world.setParent(e.id, null, true);
+      store.syncFromWorld();
+    }
+  };
+
   return (
     <ObjectPanel
       visible={visible.value}
@@ -191,6 +208,8 @@ export function ConnectedObjectPanel() {
       onDelete={handleDelete}
       onPrimitiveConfigChange={handlePrimitiveConfigChange}
       onShowNormalsChange={handleShowNormalsChange}
+      parentName={parentName.value}
+      onUnparent={handleUnparent}
       entity={entity ?? null}
       activeComponents={activeComponents.value}
       onComponentsChanged={handleComponentsChanged}

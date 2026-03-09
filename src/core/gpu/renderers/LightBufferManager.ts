@@ -116,9 +116,10 @@ export class LightBufferManager {
 
       const offset = i * (POINT_LIGHT_STRIDE / 4); // offset in float32 units
       // position
-      this.pointLightsData[offset + 0] = transform?.position[0] ?? 0;
-      this.pointLightsData[offset + 1] = transform?.position[1] ?? 0;
-      this.pointLightsData[offset + 2] = transform?.position[2] ?? 0;
+      const wp = transform?.worldPosition;
+      this.pointLightsData[offset + 0] = wp?.[0] ?? 0;
+      this.pointLightsData[offset + 1] = wp?.[1] ?? 0;
+      this.pointLightsData[offset + 2] = wp?.[2] ?? 0;
       // range
       this.pointLightsData[offset + 3] = light.range ?? 10;
       // color (pre-multiplied by intensity in effectiveColor? No — separate for shader flexibility)
@@ -140,9 +141,10 @@ export class LightBufferManager {
 
       const offset = i * (SPOT_LIGHT_STRIDE / 4); // offset in float32 units
       // position
-      this.spotLightsData[offset + 0] = transform?.position[0] ?? 0;
-      this.spotLightsData[offset + 1] = transform?.position[1] ?? 0;
-      this.spotLightsData[offset + 2] = transform?.position[2] ?? 0;
+      const swp = transform?.worldPosition;
+      this.spotLightsData[offset + 0] = swp?.[0] ?? 0;
+      this.spotLightsData[offset + 1] = swp?.[1] ?? 0;
+      this.spotLightsData[offset + 2] = swp?.[2] ?? 0;
       // range
       this.spotLightsData[offset + 3] = light.range ?? 10;
       // direction (computed by LightingSystem for spot lights, or from transform forward)

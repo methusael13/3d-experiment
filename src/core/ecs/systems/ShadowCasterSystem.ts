@@ -47,9 +47,10 @@ export class ShadowCasterSystem extends System {
       if (shadow.maxShadowDistance !== Infinity) {
         const transform = entity.getComponent<TransformComponent>('transform');
         if (transform) {
-          const dx = transform.position[0] - this.cameraPosition[0];
-          const dy = transform.position[1] - this.cameraPosition[1];
-          const dz = transform.position[2] - this.cameraPosition[2];
+          const wp = transform.worldPosition;
+          const dx = wp[0] - this.cameraPosition[0];
+          const dy = wp[1] - this.cameraPosition[1];
+          const dz = wp[2] - this.cameraPosition[2];
           const distSq = dx * dx + dy * dy + dz * dz;
           const maxDistSq = shadow.maxShadowDistance * shadow.maxShadowDistance;
           if (distSq > maxDistSq) continue;

@@ -12,6 +12,15 @@ export class Entity {
   name: string;
   /** When true, this entity is hidden from UI panels (e.g., internal system entities like frustum cull). */
   internal = false;
+
+  // ==================== Hierarchy ====================
+
+  /** Parent entity ID, or null if this is a root entity */
+  parentId: string | null = null;
+
+  /** Ordered list of child entity IDs */
+  childIds: string[] = [];
+
   private components = new Map<ComponentType, Component>();
 
   constructor(name: string = 'Entity') {

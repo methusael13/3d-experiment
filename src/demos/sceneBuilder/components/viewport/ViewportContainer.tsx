@@ -5,7 +5,7 @@
 
 import { useRef, useEffect, useCallback } from 'preact/hooks';
 import { useSignalEffect } from '@preact/signals';
-import { vec3, quat as quatType } from 'gl-matrix';
+import { vec3, mat4, quat as quatType } from 'gl-matrix';
 import { Viewport, type ViewportOptions } from '../../Viewport';
 import { getSceneBuilderStore } from '../state';
 import { ViewportToolbar } from '../layout';
@@ -98,7 +98,23 @@ export function ViewportContainer({
           if (!transform) continue;
           
           if (type === 'position') {
-            transform.setPosition(value as Vec3);
+            // Gizmo emits world-space position. For children, convert to local space.
+            if (entity.parentId) {
+              const parent = world.getParent(entity.id);
+              const parentTransform = parent?.getComponent<TransformComponent>('transform');
+              if (parentTransform) {
+                const invParent = mat4.create();
+                mat4.invert(invParent, parentTransform.modelMatrix);
+                const worldPos = vec3.fromValues((value as Vec3)[0], (value as Vec3)[1], (value as Vec3)[2]);
+                const localPos = vec3.create();
+                vec3.transformMat4(localPos, worldPos, invParent);
+                transform.setPosition([localPos[0], localPos[1], localPos[2]]);
+              } else {
+                transform.setPosition(value as Vec3);
+              }
+            } else {
+              transform.setPosition(value as Vec3);
+            }
           } else if (type === 'rotation') {
             transform.setRotationQuat(value as quatType);
           } else if (type === 'scale') {
@@ -188,7 +204,12 @@ export function ViewportContainer({
       return;
     }
     
-    const pos: Vec3 = [transform.position[0], transform.position[1], transform.position[2]];
+    // For root entities, read local position directly (it IS world position,
+    // and is always up-to-date even before TransformSystem runs).
+    // For child entities, use worldPosition from modelMatrix (updated by TransformSystem).
+    const pos: Vec3 = entity.parentId
+      ? [transform.modelMatrix[12], transform.modelMatrix[13], transform.modelMatrix[14]]
+      : [transform.position[0], transform.position[1], transform.position[2]];
     const scl: Vec3 = [transform.scale[0], transform.scale[1], transform.scale[2]];
     viewport.setGizmoTargetWithQuat(pos, transform.rotationQuat, scl);
   }, []);
