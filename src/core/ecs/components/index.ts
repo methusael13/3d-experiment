@@ -14,5 +14,7 @@ export { WetnessComponent } from './WetnessComponent';
 export { SSRComponent } from './SSRComponent';
 export { ReflectionProbeComponent } from './ReflectionProbeComponent';
 export { PrimitiveGeometryComponent } from './PrimitiveGeometryComponent';
-export { FPSCameraComponent } from './FPSCameraComponent';
+export { PlayerComponent } from './PlayerComponent';
+export { CharacterPhysicsComponent } from './CharacterPhysicsComponent';
+export { CameraComponent } from './CameraComponent';
 export { FrustumCullComponent } from './FrustumCullComponent';

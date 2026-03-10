@@ -26,7 +26,9 @@ export class RotateGizmo extends BaseGizmo {
   }
   
   /**
-   * Get rotation plane info for an axis (respects local/world orientation)
+   * Get rotation plane info for an axis (respects local/world orientation).
+   * In local mode, uses WORLD rotation (parentWorldRot * localRot) so the
+   * rings match what the user sees, not just the local transform.
    */
   private getRotationPlaneInfo(axis: 'x' | 'y' | 'z') {
     // World-space basis for each axis
@@ -52,8 +54,9 @@ export class RotateGizmo extends BaseGizmo {
       return worldBasis[axis];
     }
     
-    // Local mode: rotate the basis vectors by object's rotation
-    const rotMat = this.getRotationMatrix();
+    // Local mode: rotate basis vectors by the entity's WORLD rotation
+    // (parentWorldRot * localRot) so rings match the visual orientation
+    const rotMat = this.getWorldRotationMatrix();
     const basis = worldBasis[axis];
     
     const rotateVec = (v: Vec3): Vec3 => {
@@ -128,7 +131,8 @@ export class RotateGizmo extends BaseGizmo {
   }
   
   /**
-   * Get point on circle for an axis (respects local/world orientation)
+   * Get point on circle for an axis (respects local/world orientation).
+   * In local mode uses WORLD rotation so rings match the visual orientation.
    */
   private getCirclePoint(axis: 'x' | 'y' | 'z', angle: number, radius: number): Vec3 {
     // Local space point on circle
@@ -146,7 +150,7 @@ export class RotateGizmo extends BaseGizmo {
     }
     
     if (this.orientation === 'local') {
-      const rotMat = this.getRotationMatrix();
+      const rotMat = this.getWorldRotationMatrix();
       const result = vec3.create();
       vec3.transformMat4(result, localPoint as unknown as vec3, rotMat);
       localPoint = [result[0], result[1], result[2]];
@@ -156,7 +160,8 @@ export class RotateGizmo extends BaseGizmo {
   }
   
   /**
-   * Get normal vector for circle segment (respects local/world orientation)
+   * Get normal vector for circle segment (respects local/world orientation).
+   * In local mode uses WORLD rotation so rings match the visual orientation.
    */
   private getCircleNormal(axis: 'x' | 'y' | 'z', angle: number): Vec3 {
     let localNormal: Vec3;
@@ -173,7 +178,7 @@ export class RotateGizmo extends BaseGizmo {
     }
     
     if (this.orientation === 'local') {
-      const rotMat = this.getRotationMatrix();
+      const rotMat = this.getWorldRotationMatrix();
       const result = vec3.create();
       vec3.transformMat4(result, localNormal as unknown as vec3, rotMat);
       localNormal = [result[0], result[1], result[2]];
@@ -267,15 +272,25 @@ export class RotateGizmo extends BaseGizmo {
     // Skip tiny movements (numerical noise)
     if (Math.abs(deltaAngle) < 0.0001) return true;
     
-    // Get the rotation axis (local axis in local mode, world axis in world mode)
-    const rotationAxis = this.getAxisDirection(this.activeAxis);
+    // Get the rotation axis in world space
+    // In world mode: standard basis vector
+    // In local mode: world-rotated basis vector (parentWorldRot * localRot applied)
+    const rotationAxis = this.getWorldAxisDirection(this.activeAxis);
     
-    // Create delta rotation quaternion around the rotation axis
-    const deltaQuat = quat.create();
-    quat.setAxisAngle(deltaQuat, rotationAxis as unknown as vec3, deltaAngle);
+    // Create delta rotation quaternion around the world-space rotation axis
+    const deltaWorldQuat = quat.create();
+    quat.setAxisAngle(deltaWorldQuat, rotationAxis as unknown as vec3, deltaAngle);
     
-    // Pre-multiply: applies rotation in world frame (around specified axis)
-    quat.multiply(this.targetRotationQuat, deltaQuat, this.targetRotationQuat);
+    // Convert world-space delta to local-space delta:
+    // localDelta = inv(parentWorldRot) * deltaWorld * parentWorldRot
+    // Then: newLocal = localDelta * localRot
+    const invParent = quat.create();
+    quat.invert(invParent, this.parentWorldRotation);
+    const localDelta = quat.create();
+    quat.multiply(localDelta, invParent, deltaWorldQuat);
+    quat.multiply(localDelta, localDelta, this.parentWorldRotation);
+    
+    quat.multiply(this.targetRotationQuat, localDelta, this.targetRotationQuat);
     quat.normalize(this.targetRotationQuat, this.targetRotationQuat);
     
     // Update last vector for next frame

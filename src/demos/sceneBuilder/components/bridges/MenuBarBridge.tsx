@@ -8,11 +8,11 @@ import { useCallback, useMemo, useRef } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
 import { MenuBar, type MenuDefinition, type MenuAction } from '../layout';
 import { shaderPanelVisible, toggleShaderPanel } from './ShaderDebugPanelBridge';
-import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity, createPointLightEntity, createSpotLightEntity, createEmptyEntity } from '@/core/ecs/factories';
+import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity, createPointLightEntity, createSpotLightEntity, createEmptyEntity, createPlayerEntity } from '@/core/ecs/factories';
 import { PrimitiveGeometryComponent } from '@/core/ecs/components/PrimitiveGeometryComponent';
 import { TransformComponent } from '@/core/ecs/components/TransformComponent';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
-import { FPSCameraSystem } from '@/core/ecs/systems/FPSCameraSystem';
+import { PlayerSystem } from '@/core/ecs/systems/PlayerSystem';
 import { TerrainManager } from '@/core/terrain/TerrainManager';
 import { OceanManager } from '@/core/ocean/OceanManager';
 import { generatePrimitiveGeometry } from '@/core/utils/primitiveGeometry';
@@ -307,30 +307,30 @@ export function ConnectedMenuBar() {
       return;
     }
     
-    const fpsSystem = world.getSystem<FPSCameraSystem>('fps-camera');
-    if (!fpsSystem) {
-      console.warn('[MenuBar] Play Mode - FPSCameraSystem not registered');
+    const playerSystem = world.getSystem<PlayerSystem>('player');
+    if (!playerSystem) {
+      console.warn('[MenuBar] Play Mode - PlayerSystem not registered');
       return;
     }
     
     // If already in play mode, exit
     if (fpsModeActive.value) {
-      fpsSystem.exit();
+      playerSystem.exit();
       fpsModeActive.value = false;
       viewport.setFPSMode(false);
       return;
     }
     
     // Set exit callback to update UI signals when play mode exits (e.g., via Escape)
-    fpsSystem.setOnExitCallback(() => {
+    playerSystem.setOnExitCallback(() => {
       fpsModeActive.value = false;
       viewport.setFPSMode(false);
     });
     
-    // Enter play mode — finds the active FPS camera component in the world
-    const success = fpsSystem.enter(world);
+    // Enter play mode — finds the active Player component in the world
+    const success = playerSystem.enter(world);
     if (!success) {
-      console.warn('[MenuBar] Play Mode — no active FPS Camera component found in the world');
+      console.warn('[MenuBar] Play Mode — no active Player component found in the world');
       return;
     }
     
@@ -347,9 +347,9 @@ export function ConnectedMenuBar() {
     if (newState && fpsModeActive.value) {
       // Exit play mode if entering debug camera mode
       const world = store.world;
-      const fpsSystem = world?.getSystem<FPSCameraSystem>('fps-camera');
-      if (fpsSystem) {
-        fpsSystem.exit();
+      const playerSystem = world?.getSystem<PlayerSystem>('player');
+      if (playerSystem) {
+        playerSystem.exit();
         fpsModeActive.value = false;
       }
     }
@@ -497,6 +497,24 @@ export function ConnectedMenuBar() {
     world.select(entity.id);
   }, [store]);
 
+  const handleAddPlayer = useCallback(() => {
+    const world = store.world;
+    if (!world) return;
+
+    // Only allow one player entity
+    const existing = world.queryFirst('player');
+    if (existing) {
+      console.warn('[MenuBar] Player entity already exists in the world');
+      world.select(existing.id);
+      return;
+    }
+
+    const entity = createPlayerEntity(world, {
+      active: true,
+    });
+    world.select(entity.id);
+  }, [store]);
+
   const handleAddEmpty = useCallback(() => {
     const world = store.world;
     if (!world) return;
@@ -560,6 +578,7 @@ export function ConnectedMenuBar() {
       label: 'Add',
       items: [
         { id: 'empty', label: '📦 Empty Entity', onClick: handleAddEmpty },
+        { id: 'player', label: '🎮 Player', onClick: handleAddPlayer },
         { separator: true, id: 'sep0', label: '' },
         { id: 'cube', label: 'Cube', onClick: () => handleAddPrimitive('cube') },
         { id: 'plane', label: 'Plane', onClick: () => handleAddPrimitive('plane') },
@@ -577,7 +596,7 @@ export function ConnectedMenuBar() {
     handleSelectAll, handleDuplicate, handleDeleteSelected, handleGroupSelection, handleUngroup,
     handleSetViewportMode, handleToggleGrid, handleToggleAxes, handleExpandView, handlePlayMode, handleCameraPreset,
     handleToggleShaderEditor, handleToggleDebugCamera,
-    handleAddPrimitive, handleAddTerrain, handleAddWater, handleAddPointLight, handleAddSpotLight, handleAddEmpty,
+    handleAddPrimitive, handleAddTerrain, handleAddWater, handleAddPointLight, handleAddSpotLight, handleAddEmpty, handleAddPlayer,
     hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value, fpsModeActive.value, debugCameraModeActive.value,
   ]);
   

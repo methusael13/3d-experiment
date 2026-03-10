@@ -22,12 +22,13 @@ export type ComponentType =
   | 'ocean'
   | 'light'
   | 'camera'
+  | 'player'
   | 'lod'
   | 'wetness'
   | 'ssr'
   | 'reflection-probe'
-  | 'fps-camera'
-  | 'frustum-cull'; // Extensible for future/external components
+  | 'frustum-cull'
+  | 'character-physics'; // Extensible for future/external components
 
 /**
  * Context provided to systems each frame.

@@ -9,7 +9,8 @@ import { WindComponent } from '@/core/ecs/components/WindComponent';
 import { SSRComponent } from '@/core/ecs/components/SSRComponent';
 import { ReflectionProbeComponent } from '@/core/ecs/components/ReflectionProbeComponent';
 import { TransformComponent } from '@/core/ecs/components/TransformComponent';
-import { FPSCameraComponent } from '@/core/ecs/components/FPSCameraComponent';
+import { PlayerComponent } from '@/core/ecs/components/PlayerComponent';
+import { CameraComponent } from '@/core/ecs/components/CameraComponent';
 import type { DebugTextureManager } from '@/core/gpu/renderers/DebugTextureManager';
 import type { ShadowRendererGPU } from '@/core/gpu/renderers/ShadowRendererGPU';
 import { WetnessSubPanel } from './subpanels/WetnessSubPanel';
@@ -18,7 +19,8 @@ import { WindSubPanel } from './subpanels/WindSubPanel';
 import { SSRSubPanel } from './subpanels/SSRSubPanel';
 import { ReflectionProbeSubPanel } from './subpanels/ReflectionProbeSubPanel';
 import { LightSubPanel } from './subpanels/LightSubPanel';
-import { FPSCameraSubPanel } from './subpanels/FPSCameraSubPanel';
+import { PlayerSubPanel } from './subpanels/PlayerSubPanel';
+import { CameraSubPanel } from './subpanels/CameraSubPanel';
 import styles from './ComponentsTab.module.css';
 
 /**
@@ -43,17 +45,27 @@ export const OPTIONAL_COMPONENTS: {
     // No sub-panel — the existing Properties tab shows transform fields
   },
   {
-    type: 'fps-camera',
-    label: 'FPS Camera',
-    description: 'First-person camera controller (WASD + mouse look)',
+    type: 'player',
+    label: 'Player',
+    description: 'First-person player controller (WASD + mouse look)',
     dependencies: ['transform'],
     create: () => {
-      const cam = new FPSCameraComponent();
-      cam.active = true;
-      return cam;
+      const player = new PlayerComponent();
+      player.active = true;
+      return player;
     },
     renderPanel: (entity, onChanged) => (
-      <FPSCameraSubPanel entity={entity} onChanged={onChanged} />
+      <PlayerSubPanel entity={entity} onChanged={onChanged} />
+    ),
+  },
+  {
+    type: 'camera',
+    label: 'Camera',
+    description: 'Camera projection (FOV, near/far, view matrices)',
+    dependencies: ['transform'],
+    create: () => new CameraComponent(),
+    renderPanel: (entity, onChanged) => (
+      <CameraSubPanel entity={entity} onChanged={onChanged} />
     ),
   },
   {
@@ -214,14 +226,9 @@ export function ComponentsTab({
         }
         // Add the requested component
         entity.addComponent(reg.create());
-        // Singleton enforcement for FPS Camera: deactivate others
-        if (type === 'fps-camera') {
-          const world = (window as any).__ecsWorld; // fallback — ideally passed via props
-          // Deactivate other FPS camera components in the world
-          if (entity) {
-            // We only have access to the current entity; full world singleton
-            // enforcement happens in FPSCameraSystem.enter()
-          }
+        // When adding player, also auto-add camera if not present (common composition)
+        if (type === 'player' && !entity.hasComponent('camera')) {
+          entity.addComponent(new CameraComponent());
         }
       }
       setDropdownOpen(false);

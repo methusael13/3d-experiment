@@ -158,6 +158,17 @@ export class TransformGizmoManager {
     this.scaleGizmo.setOrientation(newOrientation);
   }
   
+  /**
+   * Set the parent entity's world rotation for all gizmos.
+   * Required for correct rotation constraint on child entities.
+   */
+  setParentWorldRotation(parentRot: quat): void {
+    this.translateGizmo.setParentWorldRotation(parentRot);
+    this.rotateGizmo.setParentWorldRotation(parentRot);
+    this.scaleGizmo.setParentWorldRotation(parentRot);
+    this.uniformScaleGizmo.setParentWorldRotation(parentRot);
+  }
+  
   setTarget(position: Vec3, rotation: Vec3, scale: Vec3): void {
     // Store current target for re-applying on mode change
     // Also convert Euler to quat for authoritative storage

@@ -212,6 +212,27 @@ export function ViewportContainer({
       : [transform.position[0], transform.position[1], transform.position[2]];
     const scl: Vec3 = [transform.scale[0], transform.scale[1], transform.scale[2]];
     viewport.setGizmoTargetWithQuat(pos, transform.rotationQuat, scl);
+
+    // Compute parent's world rotation for correct gizmo rotation constraint on child entities
+    {
+      const parentWorldRot = quatType.create();
+      if (entity.parentId) {
+        // Accumulate parent chain rotations (root → ... → parent)
+        let current = world.getEntity(entity.parentId) ?? undefined;
+        const rotChain: quatType[] = [];
+        while (current) {
+          const tc = current.getComponent<TransformComponent>('transform');
+          if (tc) rotChain.push(tc.rotationQuat);
+          current = current.parentId ? world.getEntity(current.parentId) ?? undefined : undefined;
+        }
+        // Multiply from root down: worldRot = root * ... * parent
+        for (let i = rotChain.length - 1; i >= 0; i--) {
+          quatType.multiply(parentWorldRot, parentWorldRot, rotChain[i]);
+        }
+      }
+      // For root entities parentWorldRot stays identity
+      viewport.setGizmoParentWorldRotation(parentWorldRot);
+    }
   }, []);
   
   // Sync gizmo mode changes

@@ -1,7 +1,7 @@
 # Architecture Assessment Report
 
 **Project:** 3d-experiment  
-**Date:** 2026-02-03  
+**Date:** 2026-02-03 (reviewed 2026-09-03)  
 **Goal:** Evaluate the current architecture as a foundation for a graphics engine extensible into a game engine.
 
 ---
@@ -42,8 +42,8 @@ The ECS layer is well-designed for its intended scale:
 - **Entity:** Lightweight container with a `Map<ComponentType, Component>` — good for hundreds of entities
 - **World:** Manages entities, systems, selection, groups, and spatial queries via a BVH-backed `SceneGraph`
 - **Systems:** Priority-sorted, query matching entities by component sets each frame
-- **Components:** 19 component types covering transform, mesh, material, bounds, shadow, visibility, light, LOD, wetness, SSR, reflection probes, wind, FPS camera, frustum culling, etc.
-- **Factories:** Clean entity creation functions (`createModelEntity`, `createPrimitiveEntity`, `createTerrainEntity`, `createOceanEntity`, `createPointLightEntity`, etc.)
+- **Components:** 21 component types covering transform, mesh, material, bounds, shadow, visibility, group, primitive-geometry, wind, vegetation, biome-mask, terrain, ocean, light, camera, LOD, wetness, SSR, reflection probes, FPS camera, and frustum culling.
+- **Factories:** 8 clean entity creation functions (`createEmptyEntity`, `createModelEntity`, `createPrimitiveEntity`, `createTerrainEntity`, `createOceanEntity`, `createPointLightEntity`, `createSpotLightEntity`, `createDirectionalLightEntity`)
 
 The deferred deletion pattern (`flushPendingDeletions`) is a mature solution for GPU resource lifetime — entities are logically removed immediately but GPU cleanup is deferred until after the frame's command buffer is submitted.
 
@@ -112,7 +112,7 @@ The single biggest architectural issue is the coexistence of two parallel scene 
 | Transform sync | `Scene.updateObjectTransform()` | `TransformSystem` |
 | Used by | Demo SceneBuilderStore (for some operations) | Viewport, rendering pipeline |
 
-Both maintain their own `SceneGraph`, both track selection, both manage groups. The `Scene` class is ~700 lines of selection/group/transform logic that largely duplicates what `World` does. The `SceneObject` hierarchy (7 classes) duplicates the component data that the ECS holds.
+Both maintain their own `SceneGraph`, both track selection, both manage groups. The `Scene` class is ~1,280 lines of selection/group/transform/serialization logic that largely duplicates what `World` does. The `SceneObject` hierarchy (13 classes including abstract bases) duplicates the component data that the ECS holds.
 
 **Impact:** This creates confusion about which is the source of truth, forces double bookkeeping, and blocks clean separation of the engine from the demo.
 
@@ -120,9 +120,9 @@ Both maintain their own `SceneGraph`, both track selection, both manage groups. 
 
 ### 3.2 Viewport Is a God Object
 
-`Viewport.ts` (~800 lines) combines:
+`Viewport.ts` (~1,295 lines) combines:
 - WebGPU initialization
-- ECS World ownership and system registration
+- ECS World ownership and system registration (12 systems)
 - Camera management (orbit, FPS, debug)
 - Input management
 - Gizmo management
@@ -131,7 +131,7 @@ Both maintain their own `SceneGraph`, both track selection, both manage groups. 
 - Reflection probe wiring
 - Frustum cull matrix computation
 - Debug camera overlay rendering
-- 20+ public setter methods for pipeline config forwarding
+- 23 public setter methods for pipeline config forwarding
 
 This is a textbook god object. For a game engine, the Viewport's responsibilities should be split:
 
@@ -255,10 +255,10 @@ Systems shouldn't be manually fed data by the frame loop. Instead:
 - Queries ECS entities
 - Computes shader variant feature sets per entity
 - Groups entities by variant
-- Writes GPU uniform data
-- Manages the `VariantRenderer`
+- Writes GPU uniform data (transforms, wind, wetness)
+- Receives global feature flags (`iblActive`, `shadowsActive`, `multiLightActive`) via manual property assignment from the Viewport
 
-A cleaner separation: ECS systems compute *data*; the rendering pipeline *consumes* that data. The MeshRenderSystem should populate render-list data structures that the pipeline reads, without directly owning or calling render APIs.
+The system explicitly does *not* issue draw calls — it prepares `ShaderVariantGroup` data structures consumed by render passes. However, it still uploads GPU uniforms directly (via `ObjectRendererGPU.writeMeshExtraUniforms()`), blurring the line between ECS logic and GPU operations. A cleaner separation: ECS systems compute *data*; the rendering pipeline *consumes* that data. The MeshRenderSystem should populate render-list data structures that the pipeline reads, without directly writing to GPU buffers.
 
 ### 4.4 `SceneObject` ID Collision Risk
 

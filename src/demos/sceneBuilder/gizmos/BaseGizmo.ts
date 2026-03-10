@@ -69,8 +69,11 @@ export abstract class BaseGizmo {
   // Target transform
   protected targetPosition: Vec3 = [0, 0, 0];
   protected targetRotation: Vec3 = [0, 0, 0];
-  protected targetRotationQuat: quat = quat.create(); // Internal quaternion representation
+  protected targetRotationQuat: quat = quat.create(); // Internal quaternion representation (local)
   protected targetScale: Vec3 = [1, 1, 1];
+  
+  /** Parent's world rotation (identity for root entities). Used to convert world↔local deltas. */
+  protected parentWorldRotation: quat = quat.create();
   
   // State
   protected enabled = false;
@@ -216,6 +219,15 @@ export abstract class BaseGizmo {
   }
   
   /**
+   * Set the parent entity's world rotation.
+   * For root entities, pass identity quaternion.
+   * This is used to correctly orient gizmo rings and convert world↔local rotation deltas.
+   */
+  setParentWorldRotation(parentRot: quat): void {
+    quat.copy(this.parentWorldRotation, parentRot);
+  }
+  
+  /**
    * Set target position and scale only, preserving the internal rotation quaternion.
    * Used when syncing after drag end to avoid Euler→Quat conversion drift.
    */
@@ -263,12 +275,32 @@ export abstract class BaseGizmo {
   }
   
   /**
-   * Get rotation matrix from internal quaternion
-   * Uses mat4.fromQuat for numerical stability
+   * Get rotation matrix from internal quaternion (local rotation).
+   * Uses mat4.fromQuat for numerical stability.
    */
   protected getRotationMatrix(): mat4 {
     const rotMat = mat4.create();
     mat4.fromQuat(rotMat, this.targetRotationQuat);
+    return rotMat;
+  }
+  
+  /**
+   * Get world rotation quaternion: parentWorldRotation * localRotation.
+   * For root entities (parentWorldRotation = identity), this equals localRotation.
+   */
+  protected getWorldRotationQuat(): quat {
+    const worldRot = quat.create();
+    quat.multiply(worldRot, this.parentWorldRotation, this.targetRotationQuat);
+    return worldRot;
+  }
+  
+  /**
+   * Get rotation matrix from world rotation (parentWorldRot * localRot).
+   */
+  protected getWorldRotationMatrix(): mat4 {
+    const worldRot = this.getWorldRotationQuat();
+    const rotMat = mat4.create();
+    mat4.fromQuat(rotMat, worldRot);
     return rotMat;
   }
   
@@ -347,9 +379,10 @@ export abstract class BaseGizmo {
   }
   
   /**
-   * Get axis direction in world space based on orientation mode
-   * In world mode, returns standard basis vectors
-   * In local mode, returns rotated basis vectors
+   * Get axis direction based on orientation mode, using LOCAL rotation only.
+   * In world mode, returns standard basis vectors.
+   * In local mode, returns basis vectors rotated by local rotation only.
+   * @deprecated For rotation gizmo, use getWorldAxisDirection instead.
    */
   protected getAxisDirection(axis: 'x' | 'y' | 'z'): Vec3 {
     // Standard basis vectors
@@ -363,8 +396,34 @@ export abstract class BaseGizmo {
       return basisVectors[axis];
     }
     
-    // Local mode: rotate the basis vector by object's rotation
+    // Local mode: rotate the basis vector by object's local rotation
     const rotMat = this.getRotationMatrix();
+    const basis = vec3.fromValues(...basisVectors[axis]);
+    const result = vec3.create();
+    vec3.transformMat4(result, basis, rotMat);
+    
+    return [result[0], result[1], result[2]];
+  }
+  
+  /**
+   * Get axis direction in world space, accounting for parent rotation.
+   * In world mode: returns standard basis vectors.
+   * In local mode: returns basis vectors rotated by WORLD rotation (parentWorldRot * localRot).
+   * This is the correct axis for visual rendering and delta computation.
+   */
+  protected getWorldAxisDirection(axis: 'x' | 'y' | 'z'): Vec3 {
+    const basisVectors: Record<'x' | 'y' | 'z', Vec3> = {
+      x: [1, 0, 0],
+      y: [0, 1, 0],
+      z: [0, 0, 1],
+    };
+    
+    if (this.orientation === 'world') {
+      return basisVectors[axis];
+    }
+    
+    // Local mode: rotate the basis vector by world rotation (parent * local)
+    const rotMat = this.getWorldRotationMatrix();
     const basis = vec3.fromValues(...basisVectors[axis]);
     const result = vec3.create();
     vec3.transformMat4(result, basis, rotMat);
@@ -376,15 +435,16 @@ export abstract class BaseGizmo {
   
   /**
    * Build model matrix with screen-space scaling for WebGPU rendering.
-   * Applies local rotation if in local mode.
+   * Applies WORLD rotation if in local mode (so gizmo visually matches
+   * the entity's actual orientation including parent rotation).
    */
   protected buildGPUModelMatrix(): mat4 {
     const model = mat4.create();
     mat4.translate(model, model, this.targetPosition as unknown as vec3);
     
-    // Apply local rotation if in local mode
+    // Apply world rotation if in local mode (parentWorldRot * localRot)
     if (this.orientation === 'local') {
-      const rotMat = this.getRotationMatrix();
+      const rotMat = this.getWorldRotationMatrix();
       mat4.multiply(model, model, rotMat);
     }
     

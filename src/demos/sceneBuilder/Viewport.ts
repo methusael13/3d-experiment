@@ -32,11 +32,15 @@ import {
   WetnessSystem,
   SSRSystem,
   ReflectionProbeSystem,
-  FPSCameraSystem,
+  PlayerSystem,
+  CharacterMovementSystem,
+  TerrainCollisionSystem,
+  CameraSystem,
   FrustumCullSystem,
   LightingSystem,
 } from '../../core/ecs/systems';
-import { FPSCameraComponent } from '../../core/ecs/components/FPSCameraComponent';
+import { PlayerComponent } from '../../core/ecs/components/PlayerComponent';
+import { CameraComponent } from '../../core/ecs/components/CameraComponent';
 import { TransformComponent } from '../../core/ecs/components/TransformComponent';
 import { FrustumCullComponent } from '../../core/ecs/components/FrustumCullComponent';
 import { LightComponent } from '../../core/ecs/components/LightComponent';
@@ -44,6 +48,7 @@ import { createDirectionalLightEntity } from '../../core/ecs/factories';
 import { ReflectionProbeCaptureRenderer } from '../../core/gpu/renderers/ReflectionProbeCaptureRenderer';
 import { LightBufferManager } from '../../core/gpu/renderers/LightBufferManager';
 import { LightVisualizerGPU } from '../../core/gpu/renderers/LightVisualizerGPU';
+import { PlayerVisualizerGPU } from '../../core/gpu/renderers/PlayerVisualizerGPU';
 
 // ==================== Type Definitions ====================
 
@@ -195,6 +200,9 @@ export class Viewport {
   // Light visualizer for wireframe helpers (arrows, spheres, cones)
   private lightVisualizer: LightVisualizerGPU | null = null;
 
+  // Player visualizer for wireframe helpers (sphere + look-direction arrow)
+  private playerVisualizer: PlayerVisualizerGPU | null = null;
+
   private gpuContext: GPUContext | null = null;
   private gpuPipeline: GPUForwardPipeline | null = null;
 
@@ -227,10 +235,33 @@ export class Viewport {
     this.inputManager = new InputManager(this.canvas);
 
     // Initialize ECS World with all systems
+    // Execution order: PlayerSystem(5) → CameraSystem(6) → TransformSystem(7) → Bounds(10) → ...
     this._world = new World();
+
+    // Player system — persistent, no-ops until enter() is called
+    // Runs first to write position/rotation to TransformComponent before hierarchy propagation
+    const playerSystem = new PlayerSystem(this.inputManager);
+    playerSystem.initialize?.();
+    this._world.addSystem(playerSystem);                  // priority 5 — runs early, writes position/rotation
+
+    // Character movement system — converts input + physics into position changes
+    // Only runs on entities with CharacterPhysicsComponent (new physics-based pipeline)
+    this._world.addSystem(new CharacterMovementSystem()); // priority 20 — after input, before terrain collision
+
+    // Terrain collision system — samples heightmap, snaps to ground, detects grounding
+    // Only runs on entities with CharacterPhysicsComponent
+    this._world.addSystem(new TerrainCollisionSystem());  // priority 25 — after movement, before camera/transform
+
+    // Camera system — computes view/projection matrices from transform + player orientation
+    this._world.addSystem(new CameraSystem());            // priority 6 — reads player yaw/pitch
+
+    // Transform system — propagates parent-child hierarchy AFTER player/camera write
+    // This ensures child entities (e.g. spot lights attached to player) get the current frame's rotation
     const transformSystem = new TransformSystem();
     transformSystem.world = this._world;
-    this._world.addSystem(transformSystem);              // priority 0
+    transformSystem.priority = 7;                          // priority 7 — AFTER PlayerSystem(5)+CameraSystem(6)
+    this._world.addSystem(transformSystem);
+
     const boundsSystem = new BoundsSystem();
     boundsSystem.world = this._world;
     this._world.addSystem(boundsSystem);                 // priority 10
@@ -247,11 +278,6 @@ export class Viewport {
     const frustumCullEntity = this._world.createEntity('__FrustumCull');
     frustumCullEntity.internal = true;
     frustumCullEntity.addComponent(new FrustumCullComponent());
-
-    // FPS Camera system — persistent, no-ops until enter() is called
-    const fpsSystem = new FPSCameraSystem(this.inputManager);
-    fpsSystem.initialize?.();
-    this._world.addSystem(fpsSystem);                     // priority 5 — runs early, before other systems
 
     this._world.addSystem(new LightingSystem());         // priority 80 — compute direction/color from azimuth/elevation
     this._world.addSystem(new ShadowCasterSystem());     // priority 90
@@ -339,7 +365,9 @@ export class Viewport {
       }
       // Create light visualizer for wireframe light helpers
       this.lightVisualizer = new LightVisualizerGPU(this.gpuContext);
-      console.log('[Viewport] LightBufferManager + ShadowRenderer + LightVisualizer wired');
+      // Create player visualizer for wireframe player helpers
+      this.playerVisualizer = new PlayerVisualizerGPU(this.gpuContext);
+      console.log('[Viewport] LightBufferManager + ShadowRenderer + LightVisualizer + PlayerVisualizer wired');
 
       // Wire up ReflectionProbeSystem with its capture renderer
       const probeSystem = this._world.getSystem<ReflectionProbeSystem>('reflection-probe');
@@ -367,9 +395,11 @@ export class Viewport {
     this.animationLoop?.stop();
     this.animationLoop = null;
 
-    // Destroy light visualizer and buffer manager
+    // Destroy light visualizer, player visualizer, and buffer manager
     this.lightVisualizer?.destroy();
     this.lightVisualizer = null;
+    this.playerVisualizer?.destroy();
+    this.playerVisualizer = null;
     this.lightBufferManager?.destroy();
     this.lightBufferManager = null;
 
@@ -646,21 +676,21 @@ export class Viewport {
       viewCameraAdapter = this.adaptCamera(this.debugCameraController.getCamera());
       separateSceneCamera = sceneCameraAdapter;
     } else if (this.fpsMode) {
-      // FPS camera mode — read matrices from ECS FPSCameraComponent
-      const fpsCamEntity = this._world.queryFirst('fps-camera');
-      const fpsCam = fpsCamEntity?.getComponent<FPSCameraComponent>('fps-camera');
-      const fpsCamTransform = fpsCamEntity?.getComponent<TransformComponent>('transform');
-      if (fpsCam && fpsCam.active && fpsCamTransform) {
+      // FPS camera mode — read matrices from ECS CameraComponent
+      const camEntity = this._world.queryFirst('camera');
+      const cam = camEntity?.getComponent<CameraComponent>('camera');
+      const camTransform = camEntity?.getComponent<TransformComponent>('transform');
+      if (cam && camTransform) {
         viewCameraAdapter = {
-          getViewMatrix: () => fpsCam.viewMatrix as Float32Array,
-          getProjectionMatrix: () => fpsCam.projMatrix as Float32Array,
-          getPosition: () => [fpsCamTransform.position[0], fpsCamTransform.position[1], fpsCamTransform.position[2]] as number[],
-          near: fpsCam.near,
-          far: fpsCam.far,
+          getViewMatrix: () => cam.viewMatrix as Float32Array,
+          getProjectionMatrix: () => cam.projMatrix as Float32Array,
+          getPosition: () => [camTransform.position[0], camTransform.position[1], camTransform.position[2]] as number[],
+          near: cam.near,
+          far: cam.far,
         };
         sceneCameraAdapter = viewCameraAdapter;
       } else {
-        // FPS entity exists but not active — fall through to normal mode
+        // Camera entity not found — fall through to normal mode
         viewCameraAdapter = sceneCameraAdapter;
       }
     } else {
@@ -790,6 +820,15 @@ export class Viewport {
       this.lightVisualizer.update(this._world);
       const vpMatrix = this.cameraController!.getCamera().getViewProjectionMatrix();
       this.renderLightHelperOverlay(vpMatrix as Float32Array);
+    }
+
+    // Render player helper wireframes (skip in FPS mode — you ARE the player)
+    if (!this.fpsMode && this.playerVisualizer?.enabled) {
+      this.playerVisualizer.update(this._world);
+      if (this.playerVisualizer.drawCount > 0) {
+        const vpMatrix = this.cameraController!.getCamera().getViewProjectionMatrix();
+        this.renderPlayerHelperOverlay(vpMatrix as Float32Array);
+      }
     }
 
     // Render gizmo via TransformGizmoManager (skip in FPS mode and debug camera mode)
@@ -928,6 +967,41 @@ export class Viewport {
   }
 
   /**
+   * Render player helper wireframes overlay (sphere + look-direction arrow)
+   */
+  private renderPlayerHelperOverlay(vpMatrix: Float32Array): void {
+    if (!this.gpuContext || !this.playerVisualizer || this.playerVisualizer.drawCount === 0) return;
+
+    const outputTexture = this.gpuContext.context?.getCurrentTexture();
+    if (!outputTexture) return;
+
+    const outputView = outputTexture.createView();
+    const encoder = this.gpuContext.device.createCommandEncoder({
+      label: 'player-helper-overlay-encoder',
+    });
+
+    const passEncoder = encoder.beginRenderPass({
+      label: 'player-helper-overlay-pass',
+      colorAttachments: [{
+        view: outputView,
+        loadOp: 'load',
+        storeOp: 'store',
+      }],
+    });
+
+    const cam = this.cameraController!.getCamera();
+    const camPos = cam.getPosition();
+    this.playerVisualizer.render(
+      passEncoder,
+      vpMatrix,
+      [camPos[0], camPos[1], camPos[2]] as [number, number, number],
+      this.logicalHeight,
+    );
+    passEncoder.end();
+    this.gpuContext.queue.submit([encoder.finish()]);
+  }
+
+  /**
    * Render gizmo overlay using WebGPU
    * Creates a separate render pass after the main pipeline to render gizmos
    */
@@ -1052,6 +1126,10 @@ export class Viewport {
 
   setGizmoOrientation(orientation: GizmoOrientation): void {
     this.transformGizmo?.setOrientation(orientation);
+  }
+
+  setGizmoParentWorldRotation(parentRot: import('gl-matrix').quat): void {
+    this.transformGizmo?.setParentWorldRotation(parentRot);
   }
 
   // ==================== Viewport Settings ====================

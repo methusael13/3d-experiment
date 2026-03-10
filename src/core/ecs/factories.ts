@@ -12,6 +12,9 @@ import { PrimitiveGeometryComponent } from './components/PrimitiveGeometryCompon
 import { LightComponent } from './components/LightComponent';
 import { TerrainComponent } from './components/TerrainComponent';
 import { OceanComponent } from './components/OceanComponent';
+import { PlayerComponent } from './components/PlayerComponent';
+import { CharacterPhysicsComponent } from './components/CharacterPhysicsComponent';
+import { CameraComponent } from './components/CameraComponent';
 import type { GPUContext } from '../gpu/GPUContext';
 import type { TerrainManager, TerrainManagerConfig } from '../terrain';
 import type { OceanManager, OceanManagerConfig } from '../ocean';
@@ -292,6 +295,87 @@ export function createSpotLightEntity(
 /**
  * Create a directional light entity.
  */
+// ============================================================================
+// Player Entity Factory
+// ============================================================================
+
+/**
+ * Create a player entity with the full physics-based movement pipeline.
+ *
+ * Assembles: TransformComponent, PlayerComponent, CharacterPhysicsComponent,
+ * CameraComponent, BoundsComponent, VisibilityComponent.
+ *
+ * When this entity has a CharacterPhysicsComponent, PlayerSystem (input) delegates
+ * movement to CharacterMovementSystem and TerrainCollisionSystem automatically.
+ *
+ * For FPS mode: the camera is on the same entity, using yaw/pitch from PlayerComponent.
+ * The entity position represents the eye position (ground + playerHeight).
+ */
+export function createPlayerEntity(
+  world: World,
+  options?: {
+    name?: string;
+    position?: [number, number, number];
+    moveSpeed?: number;
+    runSpeed?: number;
+    sprintMultiplier?: number;
+    jumpForce?: number;
+    playerHeight?: number;
+    mouseSensitivity?: number;
+    gravity?: number;
+    groundFriction?: number;
+    airDrag?: number;
+    fov?: number;
+    near?: number;
+    far?: number;
+    active?: boolean;
+  },
+): Entity {
+  const entity = world.createEntity(options?.name ?? 'Player');
+
+  // Transform: position (eye position = ground + playerHeight)
+  const transform = entity.addComponent(new TransformComponent());
+  if (options?.position) {
+    vec3.set(transform.position, options.position[0], options.position[1], options.position[2]);
+  }
+
+  // Player controller: input state, orientation, movement config
+  const player = entity.addComponent(new PlayerComponent({
+    moveSpeed: options?.moveSpeed,
+    runSpeed: options?.runSpeed,
+    sprintMultiplier: options?.sprintMultiplier,
+    jumpForce: options?.jumpForce,
+    playerHeight: options?.playerHeight,
+    mouseSensitivity: options?.mouseSensitivity,
+  }));
+  player.active = options?.active ?? false;
+
+  // Character physics: velocity, gravity, ground detection, collision shape
+  entity.addComponent(new CharacterPhysicsComponent({
+    gravity: options?.gravity,
+    height: options?.playerHeight ?? 1.8,
+    groundFriction: options?.groundFriction,
+    airDrag: options?.airDrag,
+  }));
+
+  // Camera: projection & view matrices for FPS rendering
+  entity.addComponent(new CameraComponent({
+    fov: options?.fov,
+    near: options?.near,
+    far: options?.far,
+  }));
+
+  // Bounds + Visibility for engine integration
+  entity.addComponent(new BoundsComponent());
+  entity.addComponent(new VisibilityComponent());
+
+  return entity;
+}
+
+// ============================================================================
+// Light Entity Factories
+// ============================================================================
+
 export function createDirectionalLightEntity(
   world: World,
   options?: {

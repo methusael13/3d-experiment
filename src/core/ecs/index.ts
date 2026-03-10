@@ -21,7 +21,9 @@ export {
   WindComponent,
   LODComponent,
   WetnessComponent,
-  FPSCameraComponent,
+  PlayerComponent,
+  CharacterPhysicsComponent,
+  CameraComponent,
   FrustumCullComponent,
 } from './components';
 
@@ -34,7 +36,10 @@ export {
   WetnessSystem,
   MeshRenderSystem,
   ShadowCasterSystem,
-  FPSCameraSystem,
+  PlayerSystem,
+  CharacterMovementSystem,
+  TerrainCollisionSystem,
+  CameraSystem,
   FrustumCullSystem,
   LightingSystem,
 } from './systems';
@@ -49,6 +54,7 @@ export {
   createDirectionalLightEntity,
   createPointLightEntity,
   createSpotLightEntity,
+  createPlayerEntity,
 } from './factories';
 export type { ModelEntityMeta, PrimitiveEntityMeta } from './factories';
 
