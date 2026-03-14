@@ -20,7 +20,20 @@ import {
   createDefaultIslandMaskParams,
 } from './HeightmapGenerator';
 import { ErosionSimulator, HydraulicErosionParams, ThermalErosionParams } from './ErosionSimulator';
+import { TerrainLayerCompositor, CompositorResult } from './TerrainLayerCompositor';
+import {
+  NoiseLayerGenerator,
+  RockLayerGenerator,
+  IslandLayerGenerator,
+  FlattenLayerGenerator,
+} from './layers';
 import { BiomeMaskGenerator, BiomeParams, createDefaultBiomeParams, PlantRegistry, VegetationManager } from '../vegetation';
+import {
+  TerrainLayer,
+  TerrainLayerType,
+  TerrainLayerBounds,
+  createTerrainLayer,
+} from './types';
 import { CDLODRendererGPU, CDLODGPUConfig, CDLODRenderParams, TerrainMaterial } from './CDLODRendererGPU';
 import { QuadtreeConfig } from './TerrainQuadtree';
 import { BiomeType, TextureType } from './TerrainBiomeTextureResources';
@@ -152,6 +165,11 @@ export class TerrainManager {
   private biomeMaskGenerator: BiomeMaskGenerator | null = null;
   private plantRegistry: PlantRegistry | null = null;
   
+  // Layer system
+  private layerCompositor: TerrainLayerCompositor | null = null;
+  private layers: TerrainLayer[] = [];
+  private erosionMask: UnifiedGPUTexture | null = null;
+  
   // Generated textures
   private heightmap: UnifiedGPUTexture | null = null;
   private normalMap: UnifiedGPUTexture | null = null;
@@ -183,6 +201,13 @@ export class TerrainManager {
     
     // Create erosion simulator
     this.erosionSimulator = new ErosionSimulator(this.ctx);
+    
+    // Create layer compositor and register built-in layer generators
+    this.layerCompositor = new TerrainLayerCompositor(this.ctx);
+    this.layerCompositor.registerGenerator(new NoiseLayerGenerator(this.heightmapGenerator));
+    this.layerCompositor.registerGenerator(new RockLayerGenerator(this.ctx));
+    this.layerCompositor.registerGenerator(new IslandLayerGenerator(this.heightmapGenerator));
+    this.layerCompositor.registerGenerator(new FlattenLayerGenerator());
     
     // Create biome mask generator
     this.biomeMaskGenerator = new BiomeMaskGenerator(this.ctx);
@@ -223,9 +248,22 @@ export class TerrainManager {
   }
   
   /**
-   * Generate terrain with the current configuration
+   * Generate terrain with the current configuration.
+   * 
+   * This is the single unified generation pipeline:
+   * 1. Generate base heightmap (warped fBm via HeightmapGenerator)
+   * 2. If layers exist, composite them onto the base heightmap
+   * 3. If simulateErosion is true, run hydraulic + thermal erosion
+   * 4. Generate normal map
+   * 5. CPU readback + vegetation reconnection
+   *
+   * @param simulateErosion  If true, runs erosion simulation. Defaults to false
+   *                         for fast live updates (layer changes, noise tweaks).
+   *                         Should only be true when the user explicitly presses Update.
+   * @param progressCallback Optional progress reporting callback
    */
   async generate(
+    simulateErosion: boolean = false,
     progressCallback?: GenerationProgressCallback
   ): Promise<void> {
     if (!this.isInitialized) {
@@ -245,89 +283,52 @@ export class TerrainManager {
         ...createDefaultGenerationConfig(),
         ...this.config.generationConfig,
       };
-      console.log('Generating with config: ', genConfig);
+      console.log('[TerrainManager] Generating with config (erosion=%s)', simulateErosion, genConfig);
       
       // Step 1: Generate base heightmap
       progressCallback?.('Generating heightmap...', 0);
       
       this.heightmap = this.heightmapGenerator!.generateHeightmap(
         genConfig.resolution,
-        genConfig.noise
+        genConfig.noise,
+        false, // No mipmaps — generated after compositing/erosion
       );
       
       // Give GPU time to process
       await this.ctx.device.queue.onSubmittedWorkDone();
-      progressCallback?.('Heightmap generated', 20);
+      progressCallback?.('Heightmap generated', 15);
       
-      // Step 2: Apply erosion if enabled
-      if (genConfig.enableHydraulicErosion || genConfig.enableThermalErosion) {
-        progressCallback?.('Initializing erosion...', 25);
+      // Step 2: Composite layers (if any enabled layers exist)
+      const enabledLayers = this.layers.filter(l => l.enabled);
+      if (enabledLayers.length > 0 && this.layerCompositor) {
+        progressCallback?.('Compositing layers...', 20);
         
-        this.erosionSimulator!.initialize(this.heightmap);
+        const result = this.layerCompositor.composite(
+          this.heightmap,
+          enabledLayers,
+          this.config.worldSize,
+          genConfig.resolution,
+        );
         
-        // Apply hydraulic erosion
-        if (genConfig.enableHydraulicErosion && genConfig.hydraulicIterations > 0) {
-          const hydraulicTotal = genConfig.hydraulicIterations;
-          const hydraulicBatch = Math.min(5, hydraulicTotal);
-          
-          // Include heightScale for proper erosion strength scaling
-          const hydraulicParamsWithScale = {
-            ...genConfig.hydraulicParams,
-            heightScale: this.config.heightScale,
-          };
-          
-          for (let i = 0; i < hydraulicTotal; i += hydraulicBatch) {
-            const batch = Math.min(hydraulicBatch, hydraulicTotal - i);
-            this.erosionSimulator!.applyHydraulicErosion(batch, hydraulicParamsWithScale);
-            
-            const progress = 25 + (i / hydraulicTotal) * 30;
-            progressCallback?.(`Hydraulic erosion: ${i + batch}/${hydraulicTotal}`, progress);
-            
-            // Allow UI to update
-            await this.ctx.device.queue.onSubmittedWorkDone();
-          }
-          const configStr = JSON.stringify(hydraulicParamsWithScale, null, 2);
-          console.debug(
-            `[TerrainManager] Applied hydraulic erosion, total iterations: ${hydraulicTotal} and config: ${configStr}`
-          );
-        }
+        // Base heightmap is no longer needed (compositor produced a new one)
+        this.heightmap.destroy();
+        this.heightmap = result.heightmap;
+        this.erosionMask = result.erosionMask;
         
-        // Apply thermal erosion
-        if (genConfig.enableThermalErosion && genConfig.thermalIterations > 0) {
-          const thermalTotal = genConfig.thermalIterations;
-          const thermalBatch = Math.min(5, thermalTotal);
-          
-          for (let i = 0; i < thermalTotal; i += thermalBatch) {
-            const batch = Math.min(thermalBatch, thermalTotal - i);
-            this.erosionSimulator!.applyThermalErosion(batch, genConfig.thermalParams);
-            
-            const progress = 55 + (i / thermalTotal) * 20;
-            progressCallback?.(`Thermal erosion: ${i + batch}/${thermalTotal}`, progress);
-            
-            await this.ctx.device.queue.onSubmittedWorkDone();
-          }
-          const configStr = JSON.stringify(genConfig.thermalParams, null, 2);
-          console.debug(
-            `[TerrainManager] Applied thermal erosion, total iterations: ${thermalTotal} and config: ${configStr}`
-          );
-        }
+        await this.ctx.device.queue.onSubmittedWorkDone();
+        progressCallback?.('Layers composited', 30);
         
-        // Get final eroded heightmap
-        const erodedHeightmap = this.erosionSimulator!.getResultHeightmap();
-        if (erodedHeightmap) {
-          // Destroy original heightmap
-          this.heightmap.destroy();
-          this.heightmap = erodedHeightmap;
-        }
-        
-        // Store flow map for vegetation system
-        this.flowMap = this.erosionSimulator!.getFlowMap();
+        console.log(`[TerrainManager] Composited ${enabledLayers.length} layers`);
       }
       
-      progressCallback?.('Generating normal map...', 80);
+      // Step 3: Apply erosion (only when explicitly requested)
+      if (simulateErosion) {
+        await this.runErosion(genConfig, progressCallback);
+      }
       
-      // Step 3: Generate normal map
-      // Pass terrain world size and height scale for correct gradient calculation
+      progressCallback?.('Generating normal map...', 85);
+      
+      // Step 4: Generate normal map
       this.normalMap = this.heightmapGenerator!.generateNormalMap(
         this.heightmap,
         this.config.worldSize,
@@ -338,10 +339,10 @@ export class TerrainManager {
       await this.ctx.device.queue.onSubmittedWorkDone();
       progressCallback?.('Complete', 100);
       
-      // Readback heightmap to CPU for collision/FPS camera
+      // Step 5: Readback heightmap to CPU for collision/FPS camera
       await this.readbackHeightmap();
       
-      // Connect vegetation manager to terrain data + quadtree LOD info
+      // Step 6: Connect vegetation manager to terrain data + quadtree LOD info
       if (this.vegetationManager && this.plantRegistry && this.heightmap) {
         const qtConfig = this.renderer?.getQuadtree()?.getConfig();
         this.vegetationManager.connectToTerrain(
@@ -356,6 +357,76 @@ export class TerrainManager {
     } finally {
       this.isGenerating = false;
     }
+  }
+  
+  /**
+   * Run erosion simulation on the current heightmap.
+   * Extracted as a private helper to avoid duplication.
+   */
+  private async runErosion(
+    genConfig: TerrainGenerationConfig,
+    progressCallback?: GenerationProgressCallback,
+  ): Promise<void> {
+    if (!this.heightmap) return;
+    
+    const wantHydraulic = genConfig.enableHydraulicErosion && genConfig.hydraulicIterations > 0;
+    const wantThermal = genConfig.enableThermalErosion && genConfig.thermalIterations > 0;
+    
+    if (!wantHydraulic && !wantThermal) return;
+    
+    progressCallback?.('Initializing erosion...', 35);
+    this.erosionSimulator!.initialize(this.heightmap);
+    
+    // Apply hydraulic erosion
+    if (wantHydraulic) {
+      const hydraulicTotal = genConfig.hydraulicIterations;
+      const hydraulicBatch = Math.min(5, hydraulicTotal);
+      const hydraulicParamsWithScale = {
+        ...genConfig.hydraulicParams,
+        heightScale: this.config.heightScale,
+      };
+      
+      for (let i = 0; i < hydraulicTotal; i += hydraulicBatch) {
+        const batch = Math.min(hydraulicBatch, hydraulicTotal - i);
+        this.erosionSimulator!.applyHydraulicErosion(batch, hydraulicParamsWithScale);
+        
+        const progress = 35 + (i / hydraulicTotal) * 25;
+        progressCallback?.(`Hydraulic erosion: ${i + batch}/${hydraulicTotal}`, progress);
+        
+        await this.ctx.device.queue.onSubmittedWorkDone();
+      }
+      console.debug(
+        `[TerrainManager] Applied hydraulic erosion, total iterations: ${hydraulicTotal}`
+      );
+    }
+    
+    // Apply thermal erosion
+    if (wantThermal) {
+      const thermalTotal = genConfig.thermalIterations;
+      const thermalBatch = Math.min(5, thermalTotal);
+      
+      for (let i = 0; i < thermalTotal; i += thermalBatch) {
+        const batch = Math.min(thermalBatch, thermalTotal - i);
+        this.erosionSimulator!.applyThermalErosion(batch, genConfig.thermalParams);
+        
+        const progress = 60 + (i / thermalTotal) * 20;
+        progressCallback?.(`Thermal erosion: ${i + batch}/${thermalTotal}`, progress);
+        
+        await this.ctx.device.queue.onSubmittedWorkDone();
+      }
+      console.debug(
+        `[TerrainManager] Applied thermal erosion, total iterations: ${thermalTotal}`
+      );
+    }
+    
+    // Get final eroded heightmap
+    const erodedHeightmap = this.erosionSimulator!.getResultHeightmap();
+    if (erodedHeightmap) {
+      this.heightmap = erodedHeightmap;
+    }
+    
+    // Store flow map for vegetation system
+    this.flowMap = this.erosionSimulator!.getFlowMap();
   }
   
   /**
@@ -551,8 +622,8 @@ export class TerrainManager {
     this.erosionSimulator?.destroy();
     this.erosionSimulator = new ErosionSimulator(this.ctx);
     
-    // Generate new terrain
-    await this.generate(progressCallback);
+    // Generate new terrain (regenerate always runs erosion)
+    await this.generate(true, progressCallback);
   }
   
   /**
@@ -778,6 +849,15 @@ export class TerrainManager {
   
   setHeightScale(scale: number): void {
     this.config.heightScale = scale;
+  }
+  
+  /**
+   * Set or clear the bounds overlay for terrain-conforming layer bounds visualization.
+   * Pass null to disable the overlay.
+   * Takes effect on next render frame.
+   */
+  setBoundsOverlay(bounds: { centerX: number; centerZ: number; halfExtentX: number; halfExtentZ: number; rotation: number; featherWidth: number } | null): void {
+    this.renderer?.setBoundsOverlay(bounds);
   }
   
   setDebugMode(enabled: boolean): void {
@@ -1072,6 +1152,124 @@ export class TerrainManager {
     return this.vegetationManager !== null;
   }
   
+  // ============ Terrain Layers ============
+  
+  /**
+   * Add a new terrain layer to the stack.
+   * The layer order is automatically assigned to the end of the stack.
+   * Call regenerate() after adding layers to apply them.
+   *
+   * @param type The layer type to create
+   * @param overrides Optional overrides for the layer defaults
+   * @returns The created layer
+   */
+  addLayer(type: TerrainLayerType, overrides?: Partial<TerrainLayer>): TerrainLayer {
+    const order = this.layers.length;
+    const layer = createTerrainLayer(type, { order, ...overrides });
+    this.layers.push(layer);
+    console.log(`[TerrainManager] Added ${type} layer: "${layer.name}" (id=${layer.id})`);
+    return layer;
+  }
+  
+  /**
+   * Remove a layer by ID.
+   * Invalidates the cached layer heightmap.
+   */
+  removeLayer(layerId: string): boolean {
+    const idx = this.layers.findIndex(l => l.id === layerId);
+    if (idx === -1) return false;
+    
+    this.layers.splice(idx, 1);
+    this.layerCompositor?.invalidateLayer(layerId);
+    
+    // Reorder remaining layers
+    this.layers.forEach((l, i) => { l.order = i; });
+    
+    console.log(`[TerrainManager] Removed layer: ${layerId}`);
+    return true;
+  }
+  
+  /**
+   * Update a layer's parameters.
+   * Invalidates the cached layer heightmap so it regenerates on next composite.
+   */
+  updateLayer(layerId: string, updates: Partial<TerrainLayer>): boolean {
+    const layer = this.layers.find(l => l.id === layerId);
+    if (!layer) return false;
+    
+    // Don't allow changing id or type
+    const { id, type, ...safeUpdates } = updates as any;
+    Object.assign(layer, safeUpdates);
+    
+    // Invalidate cached heightmap for this layer
+    this.layerCompositor?.invalidateLayer(layerId);
+    
+    return true;
+  }
+  
+  /**
+   * Reorder a layer to a new position in the stack.
+   */
+  reorderLayer(layerId: string, newOrder: number): boolean {
+    const idx = this.layers.findIndex(l => l.id === layerId);
+    if (idx === -1) return false;
+    
+    const [layer] = this.layers.splice(idx, 1);
+    const clampedOrder = Math.max(0, Math.min(newOrder, this.layers.length));
+    this.layers.splice(clampedOrder, 0, layer);
+    
+    // Update order values
+    this.layers.forEach((l, i) => { l.order = i; });
+    
+    return true;
+  }
+  
+  /**
+   * Get all layers (sorted by order).
+   */
+  getLayers(): ReadonlyArray<TerrainLayer> {
+    return [...this.layers].sort((a, b) => a.order - b.order);
+  }
+  
+  /**
+   * Get a specific layer by ID.
+   */
+  getLayer(layerId: string): TerrainLayer | undefined {
+    return this.layers.find(l => l.id === layerId);
+  }
+  
+  /**
+   * Get the number of layers.
+   */
+  getLayerCount(): number {
+    return this.layers.length;
+  }
+  
+  /**
+   * Get the layer compositor (for advanced usage).
+   */
+  getLayerCompositor(): TerrainLayerCompositor | null {
+    return this.layerCompositor;
+  }
+  
+  /**
+   * Get the erosion mask texture from the last composite run.
+   * Values: 1.0 = fully erodable, 0.0 = protected by non-erodable layers.
+   */
+  getErosionMask(): UnifiedGPUTexture | null {
+    return this.erosionMask;
+  }
+  
+  /**
+   * @deprecated Use generate(simulateErosion, progressCallback) instead.
+   * Kept temporarily for backwards compatibility with callers that haven't migrated yet.
+   */
+  async generateWithLayers(
+    progressCallback?: GenerationProgressCallback
+  ): Promise<void> {
+    return this.generate(false, progressCallback);
+  }
+  
   // ============ Cleanup ============
   
   destroy(): void {
@@ -1080,6 +1278,7 @@ export class TerrainManager {
     
     this.heightmapGenerator?.destroy();
     this.erosionSimulator?.destroy();
+    this.layerCompositor?.destroy();
     this.renderer?.destroy();
     this.vegetationManager?.destroy();
     this.biomeMaskGenerator?.destroy();
@@ -1087,9 +1286,13 @@ export class TerrainManager {
     this.normalMap?.destroy();
     this.islandMask?.destroy();
     this.biomeMask?.destroy();
+    // erosionMask is owned by layerCompositor — don't double-destroy
     
     this.heightmapGenerator = null;
     this.erosionSimulator = null;
+    this.layerCompositor = null;
+    this.layers = [];
+    this.erosionMask = null;
     this.renderer = null;
     this.vegetationManager = null;
     this.biomeMaskGenerator = null;

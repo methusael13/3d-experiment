@@ -55,6 +55,10 @@ export class GizmoRendererGPU {
   private uniformBuffers: [UnifiedGPUBuffer, UnifiedGPUBuffer, UnifiedGPUBuffer];
   private bindGroups: [GPUBindGroup, GPUBindGroup, GPUBindGroup];
 
+  // Dynamic geometry buffer for LayerBoundsGizmo (reused each frame)
+  private dynamicVertexBuffer: UnifiedGPUBuffer;
+  private static readonly DYNAMIC_BUFFER_MAX_VERTICES = 2048;
+
   // Pre-built geometry buffers
 
   // Translate gizmo: axis lines (3 lines, 6 vertices)
@@ -136,6 +140,12 @@ export class GizmoRendererGPU {
       cullMode: 'none', // No culling for gizmos (always visible)
       colorFormats: [ctx.format], // Swap chain format (viewport overlay)
       // No depth testing - gizmos always visible on top
+    });
+
+    // Create dynamic vertex buffer for LayerBoundsGizmo (arbitrary geometry each frame)
+    this.dynamicVertexBuffer = UnifiedGPUBuffer.createVertex(this.ctx, {
+      label: 'gizmo-dynamic-vertex',
+      size: GizmoRendererGPU.DYNAMIC_BUFFER_MAX_VERTICES * 12, // vec3f per vertex = 12 bytes
     });
 
     // Generate geometry buffers
@@ -471,6 +481,69 @@ export class GizmoRendererGPU {
     }
   }
 
+  // ==================== Dynamic Geometry (LayerBoundsGizmo) ====================
+
+  /** Identity model matrix for dynamic geometry (world-space vertices) */
+  private static readonly IDENTITY_MODEL = mat4.create();
+
+  /**
+   * Render arbitrary line-list geometry with a single color.
+   * Used by LayerBoundsGizmo for bounds outlines, feather dashes, and crosshairs.
+   *
+   * @param vertices Flat array of xyz floats (2 vertices per line segment)
+   * @param color RGBA color for all lines
+   */
+  renderDynamicLines(
+    passEncoder: GPURenderPassEncoder,
+    vpMatrix: mat4 | Float32Array,
+    vertices: number[],
+    color: GizmoColor
+  ): void {
+    const vertexCount = vertices.length / 3;
+    if (vertexCount === 0 || vertexCount > GizmoRendererGPU.DYNAMIC_BUFFER_MAX_VERTICES) return;
+
+    // Upload vertex data to dynamic buffer
+    const data = new Float32Array(vertices);
+    this.dynamicVertexBuffer.write(this.ctx, data);
+
+    // Use uniform buffer slot 0 with identity model matrix
+    this.updateAxisUniforms(0, vpMatrix, GizmoRendererGPU.IDENTITY_MODEL as unknown as Float32Array, color);
+
+    passEncoder.setPipeline(this.linePipeline.pipeline);
+    passEncoder.setVertexBuffer(0, this.dynamicVertexBuffer.buffer);
+    passEncoder.setBindGroup(0, this.bindGroups[0]);
+    passEncoder.draw(vertexCount);
+  }
+
+  /**
+   * Render arbitrary triangle-list geometry with a single color.
+   * Used by LayerBoundsGizmo for handle diamonds and squares.
+   *
+   * @param vertices Flat array of xyz floats (3 vertices per triangle)
+   * @param color RGBA color for all triangles
+   */
+  renderDynamicTriangles(
+    passEncoder: GPURenderPassEncoder,
+    vpMatrix: mat4 | Float32Array,
+    vertices: number[],
+    color: GizmoColor
+  ): void {
+    const vertexCount = vertices.length / 3;
+    if (vertexCount === 0 || vertexCount > GizmoRendererGPU.DYNAMIC_BUFFER_MAX_VERTICES) return;
+
+    // Upload vertex data to dynamic buffer
+    const data = new Float32Array(vertices);
+    this.dynamicVertexBuffer.write(this.ctx, data);
+
+    // Use uniform buffer slot 0 with identity model matrix
+    this.updateAxisUniforms(0, vpMatrix, GizmoRendererGPU.IDENTITY_MODEL as unknown as Float32Array, color);
+
+    passEncoder.setPipeline(this.trianglePipeline.pipeline);
+    passEncoder.setVertexBuffer(0, this.dynamicVertexBuffer.buffer);
+    passEncoder.setBindGroup(0, this.bindGroups[0]);
+    passEncoder.draw(vertexCount);
+  }
+
   /**
    * Clean up GPU resources
    */
@@ -478,6 +551,7 @@ export class GizmoRendererGPU {
     for (const buffer of this.uniformBuffers) {
       buffer.destroy();
     }
+    this.dynamicVertexBuffer.destroy();
     this.translateLinesBuffer.destroy();
     this.translateArrowsBuffer.destroy();
     this.rotateRingBuffer.destroy();

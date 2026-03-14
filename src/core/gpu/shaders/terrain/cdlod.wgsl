@@ -33,6 +33,15 @@ struct Uniforms {
   seaFloorDepth: f32,             // 49 - ocean floor depth (negative, e.g., -0.3)
   _pad2: f32,                     // 50
   _pad3: f32,                     // 51
+  // Bounds overlay parameters (for layer bounds visualization)
+  boundsOverlayCenterX: f32,      // 52
+  boundsOverlayCenterZ: f32,      // 53
+  boundsOverlayHalfExtentX: f32,  // 54
+  boundsOverlayHalfExtentZ: f32,  // 55
+  boundsOverlayRotation: f32,     // 56 - rotation in radians
+  boundsOverlayFeatherWidth: f32, // 57
+  boundsOverlayEnabled: f32,      // 58 - 0 = disabled, 1 = enabled
+  _pad4_overlay: f32,             // 59
 }
 
 // Material uniforms (group 0, binding 1)
@@ -352,6 +361,43 @@ fn sampleBiomeMaskWeights(uv: vec2f) -> vec3f {
   let clampedUV = clamp(uv, vec2f(0.0), vec2f(1.0));
   let biome = textureSample(biomeMask, texSampler, clampedUV);
   return vec3f(biome.r, biome.g, biome.b);
+}
+
+// ============================================================================
+// Bounds Overlay SDF (for layer bounds visualization on terrain surface)
+// ============================================================================
+
+// Compute oriented-rect mask for the bounds overlay.
+// Returns 1.0 inside the rect, feathered to 0.0 outside.
+// Ported from terrain-layer-composite.wgsl computeOrientedRectMask().
+fn computeBoundsOverlayMask(worldXZ: vec2f) -> f32 {
+  if (uniforms.boundsOverlayEnabled < 0.5) {
+    return 0.0;
+  }
+
+  let center = vec2f(uniforms.boundsOverlayCenterX, uniforms.boundsOverlayCenterZ);
+  let halfExtent = vec2f(uniforms.boundsOverlayHalfExtentX, uniforms.boundsOverlayHalfExtentZ);
+  let rotation = uniforms.boundsOverlayRotation;
+  let featherWidth = uniforms.boundsOverlayFeatherWidth;
+
+  // Transform world position to layer-local space
+  let cosR = cos(rotation);
+  let sinR = sin(rotation);
+  let offset = worldXZ - center;
+  let local = vec2f(
+    offset.x * cosR + offset.y * sinR,
+    -offset.x * sinR + offset.y * cosR
+  );
+
+  // Box SDF: distance to nearest edge (positive = outside)
+  let d = abs(local) - halfExtent;
+  let outside = length(max(d, vec2f(0.0)));
+
+  // Feathered falloff: 1.0 inside, smoothstep to 0.0 over featherWidth
+  if (featherWidth <= 0.0) {
+    return select(0.0, 1.0, outside <= 0.0);
+  }
+  return 1.0 - smoothstep(0.0, featherWidth, outside);
 }
 
 // Simplified IBL for terrain - diffuse only (terrain is non-metallic)
@@ -1386,6 +1432,15 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
   let multiLight = computeTerrainMultiLight(input.worldPosition, normal) * albedo;
 
   var finalColor = aoAmbientColor + albedo * diffuse + multiLight;
+  
+  // ===== Bounds Overlay (terrain-conforming layer bounds visualization) =====
+  // Rendered as a semi-transparent cyan tint on the terrain surface
+  let boundsOverlayMask = computeBoundsOverlayMask(worldXZ);
+  if (boundsOverlayMask > 0.001) {
+    let overlayColor = vec3f(0.2, 0.8, 1.0); // Cyan
+    let overlayOpacity = boundsOverlayMask * 0.30; // 30% at full mask
+    finalColor = mix(finalColor, overlayColor, overlayOpacity);
+  }
   
   // Selection highlighting is now handled via a separate outline pass (SelectionOutlinePass)
 

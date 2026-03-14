@@ -7,6 +7,8 @@ import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks'
 import { useComputed } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
 import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, type MaterialParams as TerrainMaterialParams, type DetailParams, type BiomeType, type BiomeTextureConfig } from '../panels';
+import type { LayersSectionProps } from '../panels';
+import type { TerrainLayer, TerrainLayerType, TerrainLayerBounds } from '../../../../core/terrain/types';
 import type { Asset } from '../hooks/useAssetLibrary';
 import { BiomeMaskPanelBridge } from './BiomeMaskPanelBridge';
 import { VegetationPanelBridge } from './VegetationPanelBridge';
@@ -194,6 +196,134 @@ export function ConnectedTerrainPanel({
   
   // Vegetation editor visibility
   const [vegetationEditorVisible, setVegetationEditorVisible] = useState(false);
+  
+  // ==================== Layer System State ====================
+  const [layers, setLayers] = useState<TerrainLayer[]>([]);
+  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
+  
+  const getManager = useCallback((): TerrainManager | null => {
+    const info = selectedTerrainInfoRef.current.value;
+    return (info?.type === 'webgpu' && info.manager) ? info.manager : null;
+  }, []);
+  
+  /** Sync local layer state from TerrainManager */
+  const syncLayers = useCallback(() => {
+    const manager = getManager();
+    if (manager) {
+      setLayers([...manager.getLayers()]);
+    }
+  }, [getManager]);
+  
+  /** Trigger layer re-compositing after any layer mutation (no erosion — fast preview) */
+  const regenerateWithLayers = useCallback(async () => {
+    const manager = getManager();
+    if (!manager) return;
+    setProgress({ stage: 'Compositing layers...', percent: 10 });
+    await manager.generate(false, (stage, percent) => setProgress({ stage, percent }));
+    setProgress({ stage: 'Complete', percent: 100 });
+    setTimeout(() => setProgress(undefined), 1000);
+  }, [getManager]);
+
+  const handleAddLayer = useCallback(async (type: TerrainLayerType) => {
+    const manager = getManager();
+    if (!manager) return;
+    const layer = manager.addLayer(type);
+    syncLayers();
+    setSelectedLayerId(layer.id);
+    await regenerateWithLayers();
+  }, [getManager, syncLayers, regenerateWithLayers]);
+  
+  const handleRemoveLayer = useCallback(async (layerId: string) => {
+    const manager = getManager();
+    if (!manager) return;
+    manager.removeLayer(layerId);
+    syncLayers();
+    if (selectedLayerId === layerId) setSelectedLayerId(null);
+    await regenerateWithLayers();
+  }, [getManager, syncLayers, selectedLayerId, regenerateWithLayers]);
+  
+  // Debounced layer regeneration for parameter slider changes
+  const debouncedLayerRegen = useMemo(() => debounce(async () => {
+    await regenerateWithLayers();
+  }, 300), [regenerateWithLayers]);
+
+  // Cleanup debounce timer on unmount
+  useEffect(() => () => debouncedLayerRegen.cancel(), [debouncedLayerRegen]);
+
+  const handleUpdateLayer = useCallback((layerId: string, updates: Partial<TerrainLayer>) => {
+    const manager = getManager();
+    if (!manager) return;
+    manager.updateLayer(layerId, updates);
+    syncLayers();
+    // Debounce regeneration for slider-driven updates (rockParams, blendFactor, etc.)
+    debouncedLayerRegen();
+  }, [getManager, syncLayers, debouncedLayerRegen]);
+  
+  const handleReorderLayer = useCallback(async (layerId: string, direction: 'up' | 'down') => {
+    const manager = getManager();
+    if (!manager) return;
+    const layer = manager.getLayer(layerId);
+    if (!layer) return;
+    const newOrder = direction === 'up' ? layer.order - 1 : layer.order + 1;
+    manager.reorderLayer(layerId, newOrder);
+    syncLayers();
+    await regenerateWithLayers();
+  }, [getManager, syncLayers, regenerateWithLayers]);
+  
+  const handleToggleLayerVisibility = useCallback(async (layerId: string) => {
+    const manager = getManager();
+    if (!manager) return;
+    const layer = manager.getLayer(layerId);
+    if (!layer) return;
+    manager.updateLayer(layerId, { enabled: !layer.enabled });
+    syncLayers();
+    await regenerateWithLayers();
+  }, [getManager, syncLayers, regenerateWithLayers]);
+  
+  const handleLayerBoundsChange = useCallback((_layerId: string, bounds: TerrainLayerBounds | null) => {
+    // Push bounds to the viewport's LayerBoundsGizmo for visual feedback
+    const viewport = store.viewport;
+    viewport?.setLayerBounds(bounds);
+  }, [store]);
+
+  // When selectedLayerId changes, push the selected layer's bounds to the viewport gizmo
+  // and wire up the gizmo drag callback to update the layer
+  useEffect(() => {
+    const viewport = store.viewport;
+    if (!viewport) return;
+    
+    if (selectedLayerId) {
+      const manager = getManager();
+      const layer = manager?.getLayer(selectedLayerId);
+      const hasBounds = !!layer?.bounds;
+      viewport.setLayerBounds(layer?.bounds ?? null);
+      
+      // Hide standard transform gizmo when bounds are active (avoids visual clutter)
+      if (hasBounds) {
+        viewport.setGizmoEnabled(false);
+      }
+      
+      // Wire gizmo drag → layer update + live shader overlay update
+      viewport.setOnLayerBoundsChange((newBounds: TerrainLayerBounds) => {
+        const mgr = getManager();
+        if (mgr && selectedLayerId) {
+          mgr.updateLayer(selectedLayerId, { bounds: newBounds });
+          syncLayers();
+        }
+        // Push updated bounds to CDLOD shader overlay for live terrain-conforming visualization
+        viewport.setLayerBounds(newBounds);
+      });
+    } else {
+      viewport.setLayerBounds(null);
+      viewport.setOnLayerBoundsChange(null);
+    }
+
+    return () => {
+      // Cleanup: hide gizmo and remove callback when unmounting or layer deselected
+      viewport.setLayerBounds(null);
+      viewport.setOnLayerBoundsChange(null);
+    };
+  }, [selectedLayerId, store, getManager, syncLayers]);
   
   // Refs to hold current values for debounced callbacks (avoids stale closures)
   const noiseParamsRef = useRef(noiseParams);
@@ -538,6 +668,17 @@ export function ConnectedTerrainPanel({
       isTerrainReady={isTerrainReady}
       hasFlowMap={hasFlowMap}
       onBiomeTextureSelect={handleBiomeTextureSelect}
+      layersProps={{
+        layers,
+        selectedLayerId,
+        onSelectLayer: setSelectedLayerId,
+        onAddLayer: handleAddLayer,
+        onRemoveLayer: handleRemoveLayer,
+        onUpdateLayer: handleUpdateLayer,
+        onReorderLayer: handleReorderLayer,
+        onToggleLayerVisibility: handleToggleLayerVisibility,
+        onBoundsChange: handleLayerBoundsChange,
+      }}
     />
     
     {/* Biome Mask Editor Dockable Window */}

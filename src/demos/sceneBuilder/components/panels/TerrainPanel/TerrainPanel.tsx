@@ -5,6 +5,7 @@ import { ErosionSection, type ErosionParams } from './ErosionSection';
 import { VegetationSection } from './VegetationSection';
 import { MaterialSection, type MaterialParams, type BiomeType } from './MaterialSection';
 import { DetailSection, type DetailParams } from './DetailSection';
+import { LayersSection, type LayersSectionProps } from './LayersSection';
 import type { Asset } from '../../hooks/useAssetLibrary';
 import styles from './TerrainPanel.module.css';
 
@@ -88,6 +89,9 @@ export interface TerrainPanelProps {
   
   // Biome texture callback
   onBiomeTextureSelect?: (biome: BiomeType, asset: Asset | null, tilingScale: number) => void;
+
+  // Layer system (optional — only rendered when layersProps is provided)
+  layersProps?: LayersSectionProps;
 }
 
 export function TerrainPanel({
@@ -118,6 +122,7 @@ export function TerrainPanel({
   isTerrainReady,
   hasFlowMap,
   onBiomeTextureSelect,
+  layersProps,
 }: TerrainPanelProps) {
   const [isUpdating, setIsUpdating] = useState(false);
 
@@ -224,6 +229,14 @@ export function TerrainPanel({
         <ErosionSection params={erosionParams} onParamsChange={onErosionParamsChange} />
 
         <div class={styles.divider} />
+
+        {/* Layers Section (WebGPU only) */}
+        {layersProps && (
+          <>
+            <LayersSection {...layersProps} />
+            <div class={styles.divider} />
+          </>
+        )}
 
         {/* Vegetation Section (WebGPU only) */}
         {isWebGPU && (

@@ -389,7 +389,7 @@ export class Scene {
       // Initialize and generate terrain
       console.log('[Viewport] Initializing terrain...');
       manager.initialize();
-      await manager.generate((stage, progress) => {
+      await manager.generate(true, (stage: string, progress: number) => {
         console.log(`[Viewport] Terrain ${stage}: ${progress.toFixed(0)}%`);
       });
       console.log('[Viewport] Terrain generation complete');

@@ -129,6 +129,11 @@ export class ErosionSimulator {
   private thermalBindGroupLayout: GPUBindGroupLayout | null = null;
   private thermalParamsBuffer: UnifiedGPUBuffer | null = null;
   
+  // Erosion mask texture (from TerrainLayerCompositor — 1.0 = erodable, 0.0 = protected)
+  // If null, a 1x1 white placeholder is used (all erodable)
+  private erosionMaskTexture: UnifiedGPUTexture | null = null;
+  private erosionMaskPlaceholder: UnifiedGPUTexture | null = null;
+  
   // Iteration tracking
   private hydraulicIterationCount = 0;
   private thermalIterationCount = 0;
@@ -201,6 +206,23 @@ export class ErosionSimulator {
       sampled: true,
     });
     
+    // Create 1x1 white placeholder for erosion mask (all erodable by default)
+    this.erosionMaskPlaceholder = UnifiedGPUTexture.create2D(this.ctx, {
+      label: 'erosion-mask-placeholder-1x1',
+      width: 1,
+      height: 1,
+      format: 'r32float',
+      sampled: true,
+      copyDst: true,
+    });
+    // Write 1.0 (fully erodable) to the placeholder
+    this.ctx.queue.writeTexture(
+      { texture: this.erosionMaskPlaceholder.texture },
+      new Float32Array([1.0]),
+      { bytesPerRow: 4 },
+      { width: 1, height: 1 },
+    );
+    
     // Initialize pipelines
     this.initializeHydraulicPipeline();
     this.initializeThermalPipeline();
@@ -211,7 +233,7 @@ export class ErosionSimulator {
    * Initialize hydraulic erosion pipelines
    */
   private initializeHydraulicPipeline(): void {
-    // Bind group layout for hydraulic erosion (6 bindings including flow accumulation)
+    // Bind group layout for hydraulic erosion (7 bindings including flow accumulation + erosion mask)
     this.hydraulicBindGroupLayout = new BindGroupLayoutBuilder('hydraulic-erosion-layout')
       .uniformBuffer(0, 'compute')
       .texture(1, 'compute', 'unfilterable-float')
@@ -219,6 +241,7 @@ export class ErosionSimulator {
       .storageBufferRW(3, 'compute')  // erosionMap
       .storageBufferRW(4, 'compute')  // flowAccumulation (atomic u32)
       .storageTexture(5, 'r32float', 'compute', 'write-only')  // flowMapOut
+      .texture(6, 'compute', 'unfilterable-float')  // erosion mask (read-only)
       .build(this.ctx);
     
     // Create pipelines for each entry point
@@ -394,6 +417,7 @@ export class ErosionSimulator {
           .buffer(3, this.erosionMapBuffer!)
           .buffer(4, this.flowAccumulationBuffer!)
           .texture(5, this.flowMapTexture!)
+          .texture(6, this.getEffectiveErosionMask())
           .build(this.ctx, this.hydraulicBindGroupLayout);
         
         const encoder = this.ctx.device.createCommandEncoder({
@@ -428,6 +452,7 @@ export class ErosionSimulator {
           .buffer(3, this.erosionMapBuffer!)
           .buffer(4, this.flowAccumulationBuffer!)
           .texture(5, this.flowMapTexture!)
+          .texture(6, this.getEffectiveErosionMask())
           .build(this.ctx, this.hydraulicBindGroupLayout);
         
         const encoder = this.ctx.device.createCommandEncoder({
@@ -458,6 +483,7 @@ export class ErosionSimulator {
           .buffer(3, this.erosionMapBuffer!)
           .buffer(4, this.flowAccumulationBuffer!)
           .texture(5, this.flowMapTexture!)
+          .texture(6, this.getEffectiveErosionMask())
           .build(this.ctx, this.hydraulicBindGroupLayout);
         
         const encoder = this.ctx.device.createCommandEncoder({
@@ -501,6 +527,7 @@ export class ErosionSimulator {
       .buffer(3, this.erosionMapBuffer!)
       .buffer(4, this.flowAccumulationBuffer!)
       .texture(5, this.flowMapTexture!)
+      .texture(6, this.getEffectiveErosionMask())
       .build(this.ctx, this.hydraulicBindGroupLayout);
     
     const encoder = this.ctx.device.createCommandEncoder({
@@ -611,6 +638,22 @@ export class ErosionSimulator {
   }
   
   /**
+   * Set the erosion mask texture from TerrainLayerCompositor.
+   * Pass null to revert to the 1x1 white placeholder (all erodable).
+   * The mask is NOT owned by the simulator — do not destroy it here.
+   */
+  setErosionMask(mask: UnifiedGPUTexture | null): void {
+    this.erosionMaskTexture = mask;
+  }
+  
+  /**
+   * Get the effective erosion mask texture (external mask or 1x1 placeholder)
+   */
+  private getEffectiveErosionMask(): UnifiedGPUTexture {
+    return this.erosionMaskTexture ?? this.erosionMaskPlaceholder!;
+  }
+  
+  /**
    * Reset iteration counts
    */
   resetIterationCounts(): void {
@@ -629,6 +672,8 @@ export class ErosionSimulator {
     this.flowMapTexture?.destroy();
     this.hydraulicParamsBuffer?.destroy();
     this.thermalParamsBuffer?.destroy();
+    this.erosionMaskPlaceholder?.destroy();
+    // erosionMaskTexture is NOT owned by us — don't destroy it
     
     this.heightmapA = null;
     this.heightmapB = null;

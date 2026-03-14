@@ -334,7 +334,7 @@ export function ConnectedMenuBar() {
       heightScale: 136,
     });
     await terrainManager.initialize();
-    await terrainManager.generate((stage, progress) => {
+    await terrainManager.generate(true, (stage: string, progress: number) => {
       console.log(`[MenuBar] Terrain ${stage}: ${progress.toFixed(0)}%`);
     });
     console.log('[MenuBar] Terrain generation complete');

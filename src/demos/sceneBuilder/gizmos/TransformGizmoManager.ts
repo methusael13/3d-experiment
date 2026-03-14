@@ -11,6 +11,8 @@ import { TranslateGizmo } from './TranslateGizmo';
 import { RotateGizmo } from './RotateGizmo';
 import { ScaleGizmo } from './ScaleGizmo';
 import { UniformScaleGizmo } from './UniformScaleGizmo';
+import { LayerBoundsGizmo, type BoundsChangeCallback } from './LayerBoundsGizmo';
+import type { TerrainLayerBounds } from '../../../core/terrain/types';
 import type { GPUContext } from '../../../core/gpu/GPUContext';
 import { GizmoRendererGPU } from '../../../core/gpu/renderers/GizmoRendererGPU';
 
@@ -28,6 +30,7 @@ export class TransformGizmoManager {
   private readonly rotateGizmo: RotateGizmo;
   private readonly scaleGizmo: ScaleGizmo;
   private readonly uniformScaleGizmo: UniformScaleGizmo;
+  private readonly layerBoundsGizmo: LayerBoundsGizmo;
   
   // WebGPU renderer (optional)
   private gpuContext: GPUContext | null = null;
@@ -62,6 +65,7 @@ export class TransformGizmoManager {
     this.rotateGizmo = new RotateGizmo(camera);
     this.scaleGizmo = new ScaleGizmo(camera);
     this.uniformScaleGizmo = new UniformScaleGizmo(camera);
+    this.layerBoundsGizmo = new LayerBoundsGizmo(camera);
     
     // Wire up callbacks
     this.translateGizmo.setOnChange((type, value) => this.handleChange(type, value));
@@ -128,9 +132,17 @@ export class TransformGizmoManager {
   renderGPU(passEncoder: GPURenderPassEncoder, vpMatrix: mat4 | Float32Array): void {
     if (!this.enabled || !this.gizmoRendererGPU) return;
     
-    // Delegate to active gizmo's renderGPU method
-    // This ensures proper local/world orientation handling
-    this.getActiveGizmo().renderGPU(passEncoder, vpMatrix, this.gizmoRendererGPU);
+    // When the layer bounds gizmo is active, skip the standard transform gizmo
+    // to avoid visual clutter (XYZ axes overlapping the bounds handles).
+    // The transform gizmo remains logically enabled for state management.
+    if (!this.layerBoundsGizmo.isEnabled) {
+      // Delegate to active gizmo's renderGPU method
+      // This ensures proper local/world orientation handling
+      this.getActiveGizmo().renderGPU(passEncoder, vpMatrix, this.gizmoRendererGPU);
+    }
+    
+    // Render layer bounds gizmo (independent of transform gizmo mode)
+    this.layerBoundsGizmo.renderGPU(passEncoder, vpMatrix, this.gizmoRendererGPU);
     
     // Always render uniform scale 2D overlay if active
     // This uses HTML canvas overlay, not WebGPU, but must be called from here
@@ -235,6 +247,7 @@ export class TransformGizmoManager {
     this.rotateGizmo.setCanvasSize(width, height);
     this.scaleGizmo.setCanvasSize(width, height);
     this.uniformScaleGizmo.setCanvasSize(width, height);
+    this.layerBoundsGizmo.setCanvasSize(width, height);
   }
   
   setOverlayContainer(container: HTMLElement): void {
@@ -251,6 +264,13 @@ export class TransformGizmoManager {
     // Store canvas size for the active gizmo
     this.setCanvasSize(canvasWidth, canvasHeight);
     
+    // Check layer bounds gizmo before transform gizmo
+    if (this.layerBoundsGizmo.isEnabled) {
+      if (this.layerBoundsGizmo.handleMouseDown(screenX, screenY)) {
+        return true;
+      }
+    }
+    
     return this.getActiveGizmo().handleMouseDown(screenX, screenY);
   }
   
@@ -261,10 +281,25 @@ export class TransformGizmoManager {
       return true;
     }
     
+    // Check layer bounds gizmo drag
+    if (this.layerBoundsGizmo.isDragging) {
+      return this.layerBoundsGizmo.handleMouseMove(screenX, screenY);
+    }
+    
+    // Update layer bounds hover state (non-consuming)
+    if (this.layerBoundsGizmo.isEnabled) {
+      this.layerBoundsGizmo.handleMouseMove(screenX, screenY);
+    }
+    
     return this.getActiveGizmo().handleMouseMove(screenX, screenY);
   }
   
   handleMouseUp(): void {
+    // Release layer bounds drag if active
+    if (this.layerBoundsGizmo.isDragging) {
+      this.layerBoundsGizmo.handleMouseUp();
+      return;
+    }
     this.getActiveGizmo().handleMouseUp();
   }
   
@@ -290,10 +325,43 @@ export class TransformGizmoManager {
     this.uniformScaleGizmo.setOnUniformScaleChange(callback);
   }
   
+  // ==================== Layer Bounds API ====================
+  
+  /**
+   * Set layer bounds data for visualization/editing.
+   * Pass null to hide the bounds gizmo.
+   * Call this when a layer with bounds is selected in the terrain panel.
+   */
+  setLayerBounds(bounds: TerrainLayerBounds | null): void {
+    this.layerBoundsGizmo.setBounds(bounds);
+    this.layerBoundsGizmo.setEnabled(bounds !== null);
+  }
+  
+  /**
+   * Get the current (possibly modified) layer bounds.
+   */
+  getLayerBounds(): TerrainLayerBounds | null {
+    return this.layerBoundsGizmo.getBounds();
+  }
+  
+  /**
+   * Set callback for when layer bounds change during drag.
+   */
+  setOnLayerBoundsChange(callback: BoundsChangeCallback | null): void {
+    this.layerBoundsGizmo.setOnChange(callback);
+  }
+  
+  /**
+   * Check if the layer bounds gizmo is currently being dragged.
+   */
+  get isLayerBoundsDragging(): boolean {
+    return this.layerBoundsGizmo.isDragging;
+  }
+  
   // ==================== State Getters ====================
   
   get isDragging(): boolean {
-    return this.getActiveGizmo().isDragging;
+    return this.getActiveGizmo().isDragging || this.layerBoundsGizmo.isDragging;
   }
   
   get currentMode(): GizmoMode {
@@ -350,6 +418,7 @@ export class TransformGizmoManager {
     this.rotateGizmo.destroy();
     this.scaleGizmo.destroy();
     this.uniformScaleGizmo.destroy();
+    this.layerBoundsGizmo.destroy();
     this.gizmoRendererGPU?.destroy();
     this.gizmoRendererGPU = null;
     this.gpuContext = null;

@@ -277,6 +277,14 @@ export class CDLODRendererGPU {
   // Current material state for live updates
   private currentMaterial: TerrainMaterial;
   
+  // Bounds overlay state (for layer bounds visualization in shader)
+  private boundsOverlay: {
+    centerX: number; centerZ: number;
+    halfExtentX: number; halfExtentZ: number;
+    rotation: number; featherWidth: number;
+    enabled: boolean;
+  } = { centerX: 0, centerZ: 0, halfExtentX: 10, halfExtentZ: 10, rotation: 0, featherWidth: 2, enabled: false };
+  
   // Shared SceneEnvironment for IBL (passed from pipeline)
   private sceneEnvironment: SceneEnvironment | null = null;
   
@@ -294,8 +302,8 @@ export class CDLODRendererGPU {
     this.instanceData = new Float32Array(this.config.maxInstances * 5);
     this.shadowInstanceData = new Float32Array(this.config.maxInstances * 5);
     
-    // Uniform builders (52 floats for uniforms including detail + island params, 56 floats for material with beach + shadows)
-    this.uniformBuilder = new UniformBuilder(52);
+    // Uniform builders (60 floats for uniforms including detail + island + bounds overlay params, 56 floats for material with beach + shadows)
+    this.uniformBuilder = new UniformBuilder(60);
     this.materialBuilder = new UniformBuilder(44); // Expanded for biome color shadow params + lightSpaceMatrix
     
     // Initialize material with defaults
@@ -537,11 +545,11 @@ export class CDLODRendererGPU {
       size: this.config.maxInstances * 5 * 4,
     });
     
-    // Uniform buffer for matrices and terrain params (208 bytes → 256 aligned)
-    // 52 floats: mat4(16) + mat4(16) + vec4(cameraPos+pad) + vec4(terrain params) + vec4(detail params 1) + vec4(detail params 2) + vec4(island params)
+    // Uniform buffer for matrices and terrain params (240 bytes → 256 aligned)
+    // 60 floats: mat4(16) + mat4(16) + vec4(cameraPos+pad) + vec4(terrain params) + vec4(detail params 1) + vec4(detail params 2) + vec4(island params) + vec4(bounds overlay 1) + vec4(bounds overlay 2)
     this.uniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'cdlod-uniforms',
-      size: 208, // Will be aligned to 256
+      size: 240, // Will be aligned to 256
     });
     
     // Material buffer (224 bytes → 256 aligned)
@@ -932,6 +940,19 @@ export class CDLODRendererGPU {
         island?.seaFloorDepth ?? -0.3,      // 49 - seaFloorDepth
         0.0,                                // 50 - _pad2
         0.0                                 // 51 - _pad3
+      )
+      // Bounds overlay parameters (52-59)
+      .vec4(
+        this.boundsOverlay.centerX,          // 52 - boundsOverlayCenterX
+        this.boundsOverlay.centerZ,          // 53 - boundsOverlayCenterZ
+        this.boundsOverlay.halfExtentX,      // 54 - boundsOverlayHalfExtentX
+        this.boundsOverlay.halfExtentZ       // 55 - boundsOverlayHalfExtentZ
+      )
+      .vec4(
+        this.boundsOverlay.rotation,         // 56 - boundsOverlayRotation (radians)
+        this.boundsOverlay.featherWidth,     // 57 - boundsOverlayFeatherWidth
+        this.boundsOverlay.enabled ? 1.0 : 0.0, // 58 - boundsOverlayEnabled
+        0.0                                  // 59 - _pad4_overlay
       );
     
     this.uniformBuffer!.write(this.ctx, this.uniformBuilder.build());
@@ -970,6 +991,27 @@ export class CDLODRendererGPU {
   }
   
   // ============ Configuration ============
+  
+  /**
+   * Set the bounds overlay for terrain-conforming layer bounds visualization.
+   * Pass null to disable the overlay. Bounds are converted from degrees to radians.
+   * Takes effect on next render frame (uniform is written in updateUniformBuffer).
+   */
+  setBoundsOverlay(bounds: { centerX: number; centerZ: number; halfExtentX: number; halfExtentZ: number; rotation: number; featherWidth: number } | null): void {
+    if (bounds) {
+      this.boundsOverlay = {
+        centerX: bounds.centerX,
+        centerZ: bounds.centerZ,
+        halfExtentX: bounds.halfExtentX,
+        halfExtentZ: bounds.halfExtentZ,
+        rotation: (bounds.rotation * Math.PI) / 180, // Convert degrees to radians
+        featherWidth: bounds.featherWidth,
+        enabled: true,
+      };
+    } else {
+      this.boundsOverlay.enabled = false;
+    }
+  }
   
   setDebugMode(enabled: boolean): void {
     this.config.debugMode = enabled;

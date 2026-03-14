@@ -91,11 +91,42 @@ export {
   type TextureType,
 } from './TerrainBiomeTextureResources';
 
-// Terrain types
+// Terrain layer system
+export {
+  TerrainLayerCompositor,
+  type CompositorResult,
+} from './TerrainLayerCompositor';
+
+// Layer generators (modular, pluggable per-type heightmap generators)
+export type { ITerrainLayerGenerator } from './layers/ITerrainLayerGenerator';
+export {
+  NoiseLayerGenerator,
+  RockLayerGenerator,
+  IslandLayerGenerator,
+  FlattenLayerGenerator,
+} from './layers';
+
+// Terrain types (biome textures + layer system)
 export type {
   BiomeTextureSet,
   TerrainMaterialParams,
   BiomeTextureUniformData,
+  TerrainLayer,
+  TerrainLayerType,
+  TerrainBlendMode,
+  TerrainLayerBounds,
+  RockLayerParams,
+  IslandLayerParams,
+  FlattenLayerParams,
 } from './types';
 
-export { createBiomeTextureUniform, biomeTextureUniformToFloat32Array } from './types';
+export {
+  createBiomeTextureUniform,
+  biomeTextureUniformToFloat32Array,
+  createTerrainLayer,
+  createDefaultRockLayerParams,
+  createDefaultIslandLayerParams,
+  createDefaultFlattenLayerParams,
+  generateLayerId,
+  MAX_COMPOSITOR_LAYERS_PER_PASS,
+} from './types';

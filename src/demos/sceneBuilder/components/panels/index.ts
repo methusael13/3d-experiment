@@ -30,3 +30,6 @@ export type {
   BiomeType,
   BiomeTextureConfig,
 } from './TerrainPanel';
+
+export { LayersSection } from './TerrainPanel/LayersSection';
+export type { LayersSectionProps } from './TerrainPanel/LayersSection';

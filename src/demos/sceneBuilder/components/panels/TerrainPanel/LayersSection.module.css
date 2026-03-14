@@ -1,0 +1,264 @@
+/* ============================================================================
+ * LayersSection - Terrain layer stack UI
+ * ============================================================================ */
+
+.layerList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
+/* Individual layer row */
+.layerRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid transparent;
+  border-radius: var(--sb-radius-sm, 3px);
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.layerRow:hover {
+  background: var(--sb-bg-hover, #3a3a3a);
+}
+
+.layerRow.selected {
+  border-color: var(--sb-accent, #4a90d9);
+  background: rgba(74, 144, 217, 0.1);
+}
+
+.layerRow.disabled {
+  opacity: 0.45;
+}
+
+/* Visibility toggle (eye icon) */
+.visibilityBtn {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--sb-text-muted, #888);
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+
+.visibilityBtn:hover {
+  color: var(--sb-text-primary, #f0f0f0);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.visibilityBtn.visible {
+  color: var(--sb-text-secondary, #ccc);
+}
+
+/* Layer type badge */
+.layerTypeBadge {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.layerTypeBadge.noise {
+  background: rgba(80, 160, 80, 0.2);
+  color: #6c6;
+}
+
+.layerTypeBadge.rock {
+  background: rgba(160, 120, 80, 0.2);
+  color: #ca8;
+}
+
+.layerTypeBadge.island {
+  background: rgba(80, 140, 200, 0.2);
+  color: #6ad;
+}
+
+.layerTypeBadge.flatten {
+  background: rgba(180, 180, 80, 0.2);
+  color: #cc8;
+}
+
+/* Layer name */
+.layerName {
+  flex: 1;
+  font-size: 11px;
+  color: var(--sb-text-primary, #f0f0f0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Reorder buttons */
+.reorderBtn {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--sb-text-muted, #666);
+  cursor: pointer;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.reorderBtn:hover {
+  color: var(--sb-text-primary, #f0f0f0);
+}
+
+.reorderBtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Delete button */
+.deleteBtn {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--sb-text-muted, #666);
+  cursor: pointer;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+
+.deleteBtn:hover {
+  color: #ff6666;
+  background: rgba(255, 100, 100, 0.1);
+}
+
+/* Add layer buttons row */
+.addLayerRow {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.addLayerBtn {
+  flex: 1;
+  padding: 4px 6px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid var(--sb-border, #555);
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-secondary, #ccc);
+  cursor: pointer;
+  font-size: 10px;
+  text-align: center;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.addLayerBtn:hover {
+  background: var(--sb-bg-hover, #444);
+  border-color: #666;
+}
+
+/* Selected layer detail panel */
+.layerDetail {
+  padding: 4px 0;
+}
+
+.detailRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.detailLabel {
+  font-size: 10px;
+  color: var(--sb-text-muted, #888);
+  min-width: 55px;
+  flex-shrink: 0;
+}
+
+.detailSelect {
+  flex: 1;
+  padding: 3px 6px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid var(--sb-border, #555);
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-primary, #f0f0f0);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.detailSelect:hover {
+  border-color: #666;
+}
+
+/* Bounds controls */
+.boundsToggleRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+
+.boundsFieldsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.boundsField {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.boundsFieldLabel {
+  font-size: 9px;
+  color: var(--sb-text-muted, #888);
+  min-width: 24px;
+}
+
+.boundsFieldInput {
+  flex: 1;
+  padding: 3px 5px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid var(--sb-border, #555);
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-primary, #f0f0f0);
+  font-family: monospace;
+  font-size: 10px;
+  min-width: 0;
+}
+
+.boundsFieldInput:focus {
+  outline: none;
+  border-color: var(--sb-accent, #4a90d9);
+}
+
+/* Empty state */
+.emptyState {
+  text-align: center;
+  padding: 12px 8px;
+  font-size: 11px;
+  color: var(--sb-text-muted, #666);
+  font-style: italic;
+}

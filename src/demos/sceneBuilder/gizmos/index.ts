@@ -11,6 +11,8 @@ export { TranslateGizmo } from './TranslateGizmo';
 export { RotateGizmo } from './RotateGizmo';
 export { ScaleGizmo } from './ScaleGizmo';
 export { UniformScaleGizmo } from './UniformScaleGizmo';
+export { LayerBoundsGizmo } from './LayerBoundsGizmo';
+export type { BoundsChangeCallback } from './LayerBoundsGizmo';
 
 // Manager and factory
 export { TransformGizmoManager } from './TransformGizmoManager';

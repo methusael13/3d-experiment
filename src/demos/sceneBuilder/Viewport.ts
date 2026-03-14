@@ -50,6 +50,8 @@ import { ReflectionProbeCaptureRenderer } from '../../core/gpu/renderers/Reflect
 import { LightBufferManager } from '../../core/gpu/renderers/LightBufferManager';
 import { LightVisualizerGPU } from '../../core/gpu/renderers/LightVisualizerGPU';
 import { PlayerVisualizerGPU } from '../../core/gpu/renderers/PlayerVisualizerGPU';
+import { TerrainLayerBounds } from '@/core/terrain';
+import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
 
 // ==================== Type Definitions ====================
 
@@ -1128,6 +1130,42 @@ export class Viewport {
 
   setGizmoOrientation(orientation: GizmoOrientation): void {
     this.transformGizmo?.setOrientation(orientation);
+  }
+
+  /**
+   * Set layer bounds for the LayerBoundsGizmo and CDLOD shader overlay.
+   * Pass null to hide the bounds gizmo and clear the shader overlay.
+   */
+  setLayerBounds(bounds: TerrainLayerBounds | null): void {
+    this.transformGizmo?.setLayerBounds(bounds);
+    
+    // Also push bounds to the terrain CDLOD shader overlay for terrain-conforming visualization
+    // Find the terrain entity and pass bounds to its TerrainManager
+    const terrainEntity = this._world.queryFirst('terrain');
+    if (terrainEntity) {
+      const terrainComp = terrainEntity.getComponent<TerrainComponent>('terrain');
+      if (terrainComp?.manager) {
+        if (bounds) {
+          terrainComp.manager.setBoundsOverlay({
+            centerX: bounds.centerX,
+            centerZ: bounds.centerZ,
+            halfExtentX: bounds.halfExtentX,
+            halfExtentZ: bounds.halfExtentZ,
+            rotation: bounds.rotation,
+            featherWidth: bounds.featherWidth,
+          });
+        } else {
+          terrainComp.manager.setBoundsOverlay(null);
+        }
+      }
+    }
+  }
+
+  /**
+   * Set callback for when layer bounds change during gizmo drag.
+   */
+  setOnLayerBoundsChange(callback: ((bounds: TerrainLayerBounds) => void) | null): void {
+    this.transformGizmo?.setOnLayerBoundsChange(callback);
   }
 
   setGizmoParentWorldRotation(parentRot: import('gl-matrix').quat): void {

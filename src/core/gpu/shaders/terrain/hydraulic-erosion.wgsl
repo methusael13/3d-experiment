@@ -34,6 +34,9 @@ struct ErosionParams {
 @group(0) @binding(3) var<storage, read_write> erosionMap: array<f32>;
 @group(0) @binding(4) var<storage, read_write> flowAccumulation: array<atomic<u32>>;
 @group(0) @binding(5) var flowMapOut: texture_storage_2d<r32float, write>;
+// Erosion mask: 1.0 = fully erodable, 0.0 = protected (e.g., rock layers)
+// When not provided by the compositor, a 1x1 white texture is bound (all erodable)
+@group(0) @binding(6) var erosionMaskTex: texture_2d<f32>;
 
 // ============================================================================
 // Random Number Generation
@@ -171,6 +174,24 @@ fn applyChange(pos: vec2f, amount: f32, isErosion: bool) {
 }
 
 // ============================================================================
+// Erosion Mask Sampling
+// ============================================================================
+
+// Sample erosion mask at texel position. Returns 1.0 if fully erodable, 0.0 if protected.
+// Uses nearest-neighbor sampling (mask is same resolution as heightmap or 1x1 placeholder).
+fn sampleErosionMask(pos: vec2f) -> f32 {
+  let maskDims = textureDimensions(erosionMaskTex);
+  let hmDims = textureDimensions(heightmapIn);
+  // Map heightmap texel coords to mask UV, then to mask texel coords
+  let uv = pos / vec2f(f32(hmDims.x), f32(hmDims.y));
+  let maskCoord = vec2i(
+    clamp(i32(uv.x * f32(maskDims.x)), 0, i32(maskDims.x) - 1),
+    clamp(i32(uv.y * f32(maskDims.y)), 0, i32(maskDims.y) - 1),
+  );
+  return textureLoad(erosionMaskTex, maskCoord, 0).r;
+}
+
+// ============================================================================
 // Droplet Simulation
 // ============================================================================
 
@@ -252,10 +273,12 @@ fn simulateDroplet(startPos: vec2f) {
       droplet.sediment -= amountToDeposit;
       applyChange(droplet.pos, amountToDeposit, false);
     } else {
-      // Erode terrain
+      // Erode terrain — modulated by erosion mask
+      // Protected regions (mask≈0) resist erosion; fully erodable regions (mask=1) erode normally
+      let maskValue = sampleErosionMask(droplet.pos);
       let amountToErode = min(
-        (capacity - droplet.sediment) * params.erosionRate,
-        -deltaHeight + params.minSlope
+        (capacity - droplet.sediment) * params.erosionRate * maskValue,
+        (-deltaHeight + params.minSlope) * maskValue
       );
       droplet.sediment += amountToErode;
       applyChange(droplet.pos, amountToErode, true);
