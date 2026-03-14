@@ -134,4 +134,12 @@ export class MaterialComponent extends Component {
       }
     }
   }
+
+  clone(): MaterialComponent {
+    const c = new MaterialComponent();
+    c.deserialize(this.serialize());
+    c.hasIntrinsicTextures = this.hasIntrinsicTextures;
+    c.setTextureFlags([...this._textureFlags] as [number, number, number, number]);
+    return c;
+  }
 }

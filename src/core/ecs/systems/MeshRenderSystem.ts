@@ -12,6 +12,7 @@ import { VisibilityComponent } from '../components/VisibilityComponent';
 import { WindSystem } from './WindSystem';
 import { SSRComponent } from '../components';
 import { ReflectionProbeComponent } from '../components/ReflectionProbeComponent';
+import { SkeletonComponent } from '../components/SkeletonComponent';
 import { GPUContext } from '@/core/gpu';
 
 /**
@@ -299,6 +300,12 @@ export class MeshRenderSystem extends System {
     // Multi-light feature (if scene has point/spot lights)
     if (this.multiLightActive) {
       features.push('multi-light');
+    }
+
+    // Skinning feature (entity has SkeletonComponent with initialized bone matrices)
+    const skelComp = entity.getComponent<SkeletonComponent>('skeleton');
+    if (skelComp?.skeleton && skelComp.boneMatrices) {
+      features.push('skinning');
     }
 
     // Reflection probe takes priority over SSR — probe cubemap + IBL fallback is sufficient

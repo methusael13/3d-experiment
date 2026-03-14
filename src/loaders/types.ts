@@ -23,6 +23,121 @@ export interface WireframeModel {
 
 // ============ GLB Types ============
 
+// ---- Skeleton & Animation Types ----
+
+/**
+ * A single bone/joint in the skeleton hierarchy.
+ * Index order matches the glTF skin.joints[] array.
+ */
+export interface GLBJoint {
+  /** Human-readable name from glTF node (e.g., "mixamorig:Hips") */
+  name: string;
+
+  /** Index of this joint in the GLBSkeleton.joints[] array */
+  index: number;
+
+  /**
+   * Parent joint index in GLBSkeleton.joints[] array.
+   * -1 for the root joint (no parent).
+   */
+  parentIndex: number;
+
+  /** Child joint indices in GLBSkeleton.joints[] array */
+  children: number[];
+
+  /**
+   * Local bind-pose transform (from glTF node TRS).
+   * This is the rest/bind pose of the joint — the default position
+   * when no animation is applied.
+   */
+  localBindTransform: {
+    translation: [number, number, number];
+    rotation: [number, number, number, number]; // quaternion [x, y, z, w]
+    scale: [number, number, number];
+  };
+}
+
+/**
+ * Skeleton data parsed from a glTF `skin` node.
+ *
+ * The skeleton is a tree of joints (bones). Each joint has a local bind-pose
+ * transform and an inverse bind matrix. At runtime, the AnimationSystem
+ * computes:
+ *
+ *   boneMatrix[i] = globalJointTransform[i] × inverseBindMatrix[i]
+ *
+ * which transforms vertices from bind-pose model space into animated
+ * world-relative space.
+ */
+export interface GLBSkeleton {
+  /** Ordered array of joints. Indices match glTF skin.joints[]. */
+  joints: GLBJoint[];
+
+  /**
+   * Inverse bind matrices — one mat4 per joint.
+   * Flat Float32Array of length `joints.length × 16`.
+   * Column-major order (same as gl-matrix / glTF).
+   *
+   * inverseBindMatrix[i] transforms a vertex from model space to
+   * joint-local space of joint i in its bind pose.
+   */
+  inverseBindMatrices: Float32Array;
+
+  /** Index into joints[] for the skeleton root */
+  rootJointIndex: number;
+}
+
+/**
+ * A single animation channel targeting one joint's TRS property.
+ */
+export interface GLBAnimationChannel {
+  /**
+   * Index into GLBSkeleton.joints[].
+   * -1 if the target node is not part of the skin (non-joint animation).
+   */
+  jointIndex: number;
+
+  /** Which transform property this channel animates */
+  path: 'translation' | 'rotation' | 'scale';
+
+  /**
+   * Keyframe timestamps in seconds.
+   * Monotonically increasing. First value is typically 0.
+   */
+  times: Float32Array;
+
+  /**
+   * Keyframe values, tightly packed:
+   * - translation: 3 floats per keyframe (x, y, z)
+   * - rotation:    4 floats per keyframe (x, y, z, w) quaternion
+   * - scale:       3 floats per keyframe (x, y, z)
+   *
+   * For CUBICSPLINE interpolation, each keyframe has 3× the values
+   * (in-tangent, value, out-tangent), but LINEAR is the common case.
+   */
+  values: Float32Array;
+
+  /** Interpolation method from glTF animation sampler */
+  interpolation: 'LINEAR' | 'STEP' | 'CUBICSPLINE';
+}
+
+/**
+ * A complete animation clip (e.g., "idle", "Walking", "Running").
+ * Contains all channels that animate the skeleton joints over time.
+ */
+export interface GLBAnimationClip {
+  /** Clip name from glTF (e.g., "mixamo.com" for unnamed, or "Idle") */
+  name: string;
+
+  /** Total duration in seconds (max timestamp across all channels) */
+  duration: number;
+
+  /** All channels in this clip */
+  channels: GLBAnimationChannel[];
+}
+
+// ---- Mesh Types ----
+
 /**
  * Mesh data extracted from GLB
  */
@@ -33,6 +148,21 @@ export interface GLBMesh {
   normals: Float32Array | null;
   tangents?: Float32Array | null;
   materialIndex: number | undefined;
+
+  /**
+   * Joint indices per vertex (from glTF JOINTS_0 attribute).
+   * vec4 per vertex — 4 bone influences per vertex.
+   * Values are indices into GLBSkeleton.joints[].
+   * Uint8Array for ≤256 joints (common), Uint16Array otherwise.
+   */
+  jointIndices?: Uint8Array | Uint16Array | null;
+
+  /**
+   * Joint weights per vertex (from glTF WEIGHTS_0 attribute).
+   * vec4 per vertex — sum of weights should be 1.0 for each vertex.
+   * Matches jointIndices element-by-element.
+   */
+  jointWeights?: Float32Array | null;
 }
 
 /**
@@ -125,6 +255,20 @@ export interface GLBModel {
    * Each node groups one or more meshes with a world transform.
    */
   nodes?: GLBNode[];
+
+  /**
+   * Skeleton hierarchy and bind-pose data.
+   * Present only if the glTF file contains a `skin` node.
+   * Null/undefined for static (non-skinned) models.
+   */
+  skeleton?: GLBSkeleton | null;
+
+  /**
+   * Animation clips parsed from glTF `animations[]`.
+   * Empty array if no animations are present.
+   * Each clip can be registered in AnimationComponent.clips by name.
+   */
+  animations?: GLBAnimationClip[];
 }
 
 /**

@@ -91,6 +91,7 @@ struct VertexInput {
   @location(0) position: vec3f,
   @location(1) normal: vec3f,
   @location(2) uv: vec2f,
+  /*{{EXTRA_VERTEX_INPUTS}}*/
 }
 
 struct VertexOutput {
@@ -219,6 +220,8 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
   // Local position — features may modify this before world transform
   var localPos = input.position;
+  // Default: use input normal; skinning feature overrides this via skinnedNormal
+  var skinnedNormal = input.normal;
 
   /*{{VERTEX_FEATURES}}*/
 
@@ -230,12 +233,13 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   output.clipPosition = globals.viewProjection * worldPos;
 
   // Transform normal to world space (assuming uniform scale)
+  // Uses skinnedNormal which is either input.normal (default) or the skinned normal
   let normalMatrix = mat3x3f(
     singleModel.model[0].xyz,
     singleModel.model[1].xyz,
     singleModel.model[2].xyz
   );
-  output.worldNormal = normalize(normalMatrix * input.normal);
+  output.worldNormal = normalize(normalMatrix * skinnedNormal);
 
   output.uv = input.uv;
 

@@ -8,4 +8,10 @@ export class VisibilityComponent extends Component {
   readonly type: ComponentType = 'visibility';
 
   visible: boolean = true;
+
+  clone(): VisibilityComponent {
+    const c = new VisibilityComponent();
+    c.visible = this.visible;
+    return c;
+  }
 }

@@ -150,4 +150,14 @@ export class TransformComponent extends Component {
     }
     this.dirty = true;
   }
+
+  clone(): TransformComponent {
+    const c = new TransformComponent();
+    vec3.copy(c.position, this.position);
+    quat.copy(c.rotationQuat, this.rotationQuat);
+    vec3.copy(c.scale, this.scale);
+    c.originPivot = this.originPivot;
+    c.dirty = true;
+    return c;
+  }
 }

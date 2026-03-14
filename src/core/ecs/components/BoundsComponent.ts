@@ -13,4 +13,16 @@ export class BoundsComponent extends Component {
   localBounds: AABB | null = null;
   worldBounds: AABB | null = null;
   dirty: boolean = true;
+
+  clone(): BoundsComponent {
+    const c = new BoundsComponent();
+    if (this.localBounds) {
+      c.localBounds = {
+        min: [...this.localBounds.min] as [number, number, number],
+        max: [...this.localBounds.max] as [number, number, number],
+      };
+    }
+    c.dirty = true;
+    return c;
+  }
 }

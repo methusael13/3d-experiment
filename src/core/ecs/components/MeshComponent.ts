@@ -7,6 +7,55 @@ import type { GPUMaterialTextures, GPUMaterial } from '../../gpu/renderers/Objec
 import { RES } from '../../gpu/shaders/composition/resourceNames';
 import type { GLBModel } from '../../../loaders';
 
+// ===================== Shared Texture Cache =====================
+
+/**
+ * Reference-counted set of GPU textures, keyed by model path.
+ * Multiple MeshComponents that share the same model can reference the
+ * same GPU textures instead of re-uploading bitmap data for each clone.
+ */
+interface SharedTextureEntry {
+  textures: UnifiedGPUTexture[];
+  textureMap: Map<number, UnifiedGPUTexture>;
+  refCount: number;
+}
+
+/** Global cache: modelPath → shared textures */
+const sharedTextureCache = new Map<string, SharedTextureEntry>();
+
+function acquireSharedTextures(modelPath: string): SharedTextureEntry | undefined {
+  const entry = sharedTextureCache.get(modelPath);
+  if (entry) {
+    entry.refCount++;
+    return entry;
+  }
+  return undefined;
+}
+
+function registerSharedTextures(
+  modelPath: string,
+  textures: UnifiedGPUTexture[],
+  textureMap: Map<number, UnifiedGPUTexture>,
+): SharedTextureEntry {
+  const entry: SharedTextureEntry = { textures, textureMap, refCount: 1 };
+  sharedTextureCache.set(modelPath, entry);
+  return entry;
+}
+
+function releaseSharedTextures(modelPath: string): void {
+  const entry = sharedTextureCache.get(modelPath);
+  if (!entry) return;
+  entry.refCount--;
+  if (entry.refCount <= 0) {
+    for (const texture of entry.textures) {
+      texture.destroy();
+    }
+    sharedTextureCache.delete(modelPath);
+  }
+}
+
+// ===================== MeshComponent =====================
+
 /**
  * Mesh component — holds GPU mesh data for model entities.
  *
@@ -15,6 +64,10 @@ import type { GLBModel } from '../../../loaders';
  *
  * Components provide data; the MeshRenderSystem determines shader variants
  * based on which components are present.
+ *
+ * **Texture sharing:** When cloned, the duplicate shares the original's GPU
+ * textures via a reference-counted cache keyed by modelPath. Only the vertex
+ * buffers (cheap) are re-uploaded for each clone's unique mesh IDs.
  */
 export class MeshComponent extends Component {
   readonly type: ComponentType = 'mesh';
@@ -28,15 +81,18 @@ export class MeshComponent extends Component {
   /** WebGPU mesh IDs (one per GLB mesh, registered with ObjectRendererGPU) */
   gpuMeshIds: number[] = [];
 
-  /** WebGPU textures (uploaded from GLB image data) */
+  /** WebGPU textures (owned or shared via cache) */
   gpuTextures: UnifiedGPUTexture[] = [];
+
+  /** Whether this component's textures are managed by the shared cache */
+  private _usesSharedTextures: boolean = false;
 
   /** WebGPU context reference */
   gpuContext: GPUContext | null = null;
 
   /**
    * Initialize WebGPU resources for this mesh.
-   * Uploads textures and registers meshes with ObjectRendererGPU.
+   * Uploads textures (or reuses shared cache) and registers meshes with ObjectRendererGPU.
    *
    * Mirrors ModelObject.initWebGPU() logic.
    */
@@ -47,38 +103,56 @@ export class MeshComponent extends Component {
 
     this.gpuContext = ctx;
 
-    // 1. Upload all textures to GPU
-    const textureMap = new Map<number, UnifiedGPUTexture>();
+    // 1. Resolve textures — try shared cache first, upload if needed
+    let textureMap: Map<number, UnifiedGPUTexture>;
 
-    for (let i = 0; i < this.model.texturesWithType.length; i++) {
-      const texInfo = this.model.texturesWithType[i];
-      if (!texInfo.image) continue;
+    const cached = this.modelPath ? acquireSharedTextures(this.modelPath) : undefined;
+    if (cached) {
+      // Reuse existing GPU textures — no bitmap decode/upload/mipmap needed
+      this.gpuTextures = cached.textures;
+      textureMap = cached.textureMap;
+      this._usesSharedTextures = true;
+      console.log(`[MeshComponent] Reusing shared textures for "${this.modelPath}" (refCount=${cached.refCount})`);
+    } else {
+      // Upload textures from scratch
+      textureMap = new Map<number, UnifiedGPUTexture>();
 
-      try {
-        const bitmap = await createImageBitmap(texInfo.image);
+      for (let i = 0; i < this.model.texturesWithType.length; i++) {
+        const texInfo = this.model.texturesWithType[i];
+        if (!texInfo.image) continue;
 
-        const gpuTexture = UnifiedGPUTexture.create2D(ctx, {
-          label: `mesh-texture-${i}-${texInfo.type}`,
-          width: bitmap.width,
-          height: bitmap.height,
-          format: 'rgba8unorm',
-          mipLevelCount: Math.floor(Math.log2(Math.max(bitmap.width, bitmap.height))) + 1,
-          renderTarget: true,
-        });
+        try {
+          const bitmap = await createImageBitmap(texInfo.image);
 
-        gpuTexture.uploadImageBitmap(ctx, bitmap);
-        gpuTexture.generateMipmaps(ctx);
+          const gpuTexture = UnifiedGPUTexture.create2D(ctx, {
+            label: `mesh-texture-${i}-${texInfo.type}`,
+            width: bitmap.width,
+            height: bitmap.height,
+            format: 'rgba8unorm',
+            mipLevelCount: Math.floor(Math.log2(Math.max(bitmap.width, bitmap.height))) + 1,
+            renderTarget: true,
+          });
 
-        this.gpuTextures.push(gpuTexture);
-        textureMap.set(i, gpuTexture);
+          gpuTexture.uploadImageBitmap(ctx, bitmap);
+          gpuTexture.generateMipmaps(ctx);
 
-        bitmap.close();
-      } catch (error) {
-        console.warn(`[MeshComponent] Failed to upload texture ${i}:`, error);
+          this.gpuTextures.push(gpuTexture);
+          textureMap.set(i, gpuTexture);
+
+          bitmap.close();
+        } catch (error) {
+          console.warn(`[MeshComponent] Failed to upload texture ${i}:`, error);
+        }
+      }
+
+      // Register in shared cache for future clones
+      if (this.modelPath) {
+        registerSharedTextures(this.modelPath, this.gpuTextures, textureMap);
+        this._usesSharedTextures = true;
       }
     }
 
-    // 2. Register each mesh with ObjectRendererGPU
+    // 2. Register each mesh with ObjectRendererGPU (new vertex/index/transform buffers per clone)
     for (const mesh of this.model.meshes) {
       if (!mesh.positions || !mesh.normals) {
         continue;
@@ -200,10 +274,16 @@ export class MeshComponent extends Component {
     }
     this.gpuMeshIds = [];
 
-    for (const texture of this.gpuTextures) {
-      texture.destroy();
+    // Release textures via shared cache (refcounted) or destroy directly
+    if (this._usesSharedTextures && this.modelPath) {
+      releaseSharedTextures(this.modelPath);
+    } else {
+      for (const texture of this.gpuTextures) {
+        texture.destroy();
+      }
     }
     this.gpuTextures = [];
+    this._usesSharedTextures = false;
 
     this.gpuContext = null;
   }
@@ -221,5 +301,19 @@ export class MeshComponent extends Component {
   destroy(): void {
     this.destroyWebGPU();
     this.model = null;
+  }
+
+  /**
+   * Clone this component's data for entity duplication.
+   * Shares the GLBModel (read-only). GPU textures will be shared
+   * via the refcounted texture cache when initWebGPU is called.
+   */
+  clone(): MeshComponent {
+    const c = new MeshComponent();
+    c.modelPath = this.modelPath;
+    c.model = this.model; // GLBModel is read-only, safe to share
+    // gpuMeshIds left empty — new entity registers its own mesh IDs
+    // gpuTextures will be resolved from shared cache during initWebGPU
+    return c;
   }
 }

@@ -11,6 +11,10 @@ import type {
   GLBMaterial, 
   GLBTexture, 
   GLBNode,
+  GLBJoint,
+  GLBSkeleton,
+  GLBAnimationChannel,
+  GLBAnimationClip,
   TextureType, 
   LoaderOptions,
   TextureColorSpace,
@@ -507,6 +511,25 @@ export class GLBLoader extends BaseLoader<GLBModel> {
             meshData.tangents = toTypedArray(rawData, accessor, bufferView) as Float32Array;
           }
           
+          // Skinning vertex attributes (JOINTS_0, WEIGHTS_0)
+          if (primitive.attributes.JOINTS_0 !== undefined) {
+            const rawData = await asset.accessorData(primitive.attributes.JOINTS_0);
+            const accessor = gltf.accessors![primitive.attributes.JOINTS_0] as GltfAccessor;
+            const bufferView = accessor.bufferView !== undefined 
+              ? gltf.bufferViews![accessor.bufferView] as GltfBufferView 
+              : null;
+            meshData.jointIndices = toTypedArray(rawData, accessor, bufferView) as Uint8Array | Uint16Array;
+          }
+          
+          if (primitive.attributes.WEIGHTS_0 !== undefined) {
+            const rawData = await asset.accessorData(primitive.attributes.WEIGHTS_0);
+            const accessor = gltf.accessors![primitive.attributes.WEIGHTS_0] as GltfAccessor;
+            const bufferView = accessor.bufferView !== undefined 
+              ? gltf.bufferViews![accessor.bufferView] as GltfBufferView 
+              : null;
+            meshData.jointWeights = toTypedArray(rawData, accessor, bufferView) as Float32Array;
+          }
+          
           if (primitive.indices !== undefined) {
             const rawData = await asset.accessorData(primitive.indices);
             const accessor = gltf.accessors![primitive.indices] as GltfAccessor;
@@ -529,10 +552,159 @@ export class GLBLoader extends BaseLoader<GLBModel> {
     // Parse scene graph nodes to build GLBNode[]
     result.nodes = parseSceneGraph(gltf, meshIndexRanges);
     
+    // ============ Skeleton Parsing ============
+    // Parse skeleton from first skin (most glTF files have one skin)
+    let nodeToJoint: Map<number, number> | null = null;
+    
+    if (gltf.skins && gltf.skins.length > 0) {
+      const skin = gltf.skins[0];
+      const jointNodeIndices: number[] = skin.joints;
+      
+      // Build node-index → joint-index mapping
+      nodeToJoint = new Map<number, number>();
+      jointNodeIndices.forEach((nodeIdx: number, jointIdx: number) => {
+        nodeToJoint!.set(nodeIdx, jointIdx);
+      });
+      
+      // Parse inverse bind matrices
+      let inverseBindMatrices = new Float32Array(jointNodeIndices.length * 16);
+      if (skin.inverseBindMatrices !== undefined) {
+        const rawData = await asset.accessorData(skin.inverseBindMatrices);
+        const accessor = gltf.accessors![skin.inverseBindMatrices] as GltfAccessor;
+        const bufferView = accessor.bufferView !== undefined
+          ? gltf.bufferViews![accessor.bufferView] as GltfBufferView
+          : null;
+        inverseBindMatrices = new Float32Array(toTypedArray(rawData, accessor, bufferView) as Float32Array);
+      } else {
+        // Default: identity matrices (uncommon but spec-valid)
+        for (let i = 0; i < jointNodeIndices.length; i++) {
+          const offset = i * 16;
+          inverseBindMatrices[offset + 0] = 1;
+          inverseBindMatrices[offset + 5] = 1;
+          inverseBindMatrices[offset + 10] = 1;
+          inverseBindMatrices[offset + 15] = 1;
+        }
+      }
+      
+      // Build joint array from glTF nodes
+      const gltfNodes = (gltf.nodes ?? []) as GltfNode[];
+      const joints: GLBJoint[] = jointNodeIndices.map((nodeIdx: number, jointIdx: number) => {
+        const node = gltfNodes[nodeIdx];
+        const t = node?.translation ?? [0, 0, 0];
+        const r = node?.rotation ?? [0, 0, 0, 1];
+        const s = node?.scale ?? [1, 1, 1];
+        
+        // Determine parent: walk joint list, check if any joint's glTF node
+        // lists this node as a child
+        let parentIndex = -1;
+        for (let pj = 0; pj < jointNodeIndices.length; pj++) {
+          const parentNode = gltfNodes[jointNodeIndices[pj]];
+          if (parentNode?.children?.includes(nodeIdx)) {
+            parentIndex = pj;
+            break;
+          }
+        }
+        
+        // Determine children: which joints have this joint as parent
+        const children: number[] = [];
+        if (node?.children) {
+          for (const childNodeIdx of node.children) {
+            const childJointIdx = nodeToJoint!.get(childNodeIdx);
+            if (childJointIdx !== undefined) {
+              children.push(childJointIdx);
+            }
+          }
+        }
+        
+        return {
+          name: node?.name ?? `Joint_${jointIdx}`,
+          index: jointIdx,
+          parentIndex,
+          children,
+          localBindTransform: {
+            translation: [t[0], t[1], t[2]] as [number, number, number],
+            rotation: [r[0], r[1], r[2], r[3]] as [number, number, number, number],
+            scale: [s[0], s[1], s[2]] as [number, number, number],
+          },
+        };
+      });
+      
+      // Find root joint (first joint with no parent)
+      const rootJointIndex = joints.findIndex(j => j.parentIndex === -1);
+      
+      result.skeleton = {
+        joints,
+        inverseBindMatrices,
+        rootJointIndex: rootJointIndex >= 0 ? rootJointIndex : 0,
+      };
+    }
+    
+    // ============ Animation Parsing ============
+    result.animations = [];
+    
+    if (gltf.animations && nodeToJoint) {
+      for (const anim of gltf.animations) {
+        const channels: GLBAnimationChannel[] = [];
+        let maxTime = 0;
+        
+        for (const channel of anim.channels) {
+          const sampler = anim.samplers[channel.sampler];
+          const targetNode = channel.target.node;
+          const targetPath = channel.target.path as string;
+          
+          // Skip non-TRS channels (e.g., morph target weights)
+          if (!['translation', 'rotation', 'scale'].includes(targetPath)) continue;
+          
+          // Resolve joint index
+          const jointIndex = targetNode !== undefined ? (nodeToJoint.get(targetNode) ?? -1) : -1;
+          if (jointIndex === -1) continue; // Not a skeleton joint, skip
+          
+          // Parse timestamps (sampler input)
+          const timesRaw = await asset.accessorData(sampler.input);
+          const timesAccessor = gltf.accessors![sampler.input] as GltfAccessor;
+          const timesBV = timesAccessor.bufferView !== undefined
+            ? gltf.bufferViews![timesAccessor.bufferView] as GltfBufferView
+            : null;
+          const times = toTypedArray(timesRaw, timesAccessor, timesBV) as Float32Array;
+          
+          // Parse keyframe values (sampler output)
+          const valuesRaw = await asset.accessorData(sampler.output);
+          const valuesAccessor = gltf.accessors![sampler.output] as GltfAccessor;
+          const valuesBV = valuesAccessor.bufferView !== undefined
+            ? gltf.bufferViews![valuesAccessor.bufferView] as GltfBufferView
+            : null;
+          const values = toTypedArray(valuesRaw, valuesAccessor, valuesBV) as Float32Array;
+          
+          // Track max time for clip duration
+          const lastTime = times[times.length - 1];
+          if (lastTime > maxTime) maxTime = lastTime;
+          
+          channels.push({
+            jointIndex,
+            path: targetPath as 'translation' | 'rotation' | 'scale',
+            times,
+            values,
+            interpolation: (sampler.interpolation ?? 'LINEAR') as 'LINEAR' | 'STEP' | 'CUBICSPLINE',
+          });
+        }
+        
+        if (channels.length > 0) {
+          result.animations.push({
+            name: anim.name ?? `Animation_${result.animations.length}`,
+            duration: maxTime,
+            channels,
+          });
+        }
+      }
+    }
+    
     // Bake node world transforms into vertex positions and normals
     // This ensures models exported from Z-up tools (Blender, 3ds Max) display correctly
-    // by applying the root node's coordinate system rotation to all vertices
-    bakeNodeTransforms(result);
+    // by applying the root node's coordinate system rotation to all vertices.
+    // Skip for skinned meshes — the skeleton handles transforms at runtime.
+    if (!result.skeleton) {
+      bakeNodeTransforms(result);
+    }
     
     // Extract materials (PBR Metallic-Roughness workflow)
     result.materials = (gltf.materials || []).map(mat => {
@@ -634,6 +806,29 @@ export async function loadGLB(url: string, options?: LoaderOptions): Promise<GLB
  * // Each has its own .model with only that tree's meshes
  * ```
  */
+/**
+ * Load animation clips from a GLB file (animation-only or full model).
+ * Returns parsed animation clips with their source skeleton for compatibility checking.
+ *
+ * For animation-only GLBs (no mesh), this is the primary loading function.
+ * For full model GLBs, this extracts just the animation data.
+ *
+ * @param url - URL to the GLB file containing animations
+ * @returns Object with clips array and source skeleton
+ */
+export async function loadAnimationClips(
+  url: string,
+): Promise<{
+  clips: GLBAnimationClip[];
+  skeleton: GLBSkeleton | null;
+}> {
+  const model = await loadGLB(url);
+  return {
+    clips: model.animations ?? [],
+    skeleton: model.skeleton ?? null,
+  };
+}
+
 export async function loadGLBNodes(url: string, options?: LoaderOptions): Promise<GLBNodeModel[]> {
   const fullModel = await loadGLB(url, options);
   

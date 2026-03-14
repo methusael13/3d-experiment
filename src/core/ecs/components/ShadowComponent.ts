@@ -19,4 +19,12 @@ export class ShadowComponent extends Component {
    * Defaults to Infinity (no distance limit).
    */
   maxShadowDistance: number = Infinity;
+
+  clone(): ShadowComponent {
+    const c = new ShadowComponent();
+    c.castsShadow = this.castsShadow;
+    c.receivesShadow = this.receivesShadow;
+    c.maxShadowDistance = this.maxShadowDistance;
+    return c;
+  }
 }

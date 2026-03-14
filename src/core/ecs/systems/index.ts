@@ -14,3 +14,4 @@ export { TerrainCollisionSystem } from './TerrainCollisionSystem';
 export { CameraSystem } from './CameraSystem';
 export { FrustumCullSystem } from './FrustumCullSystem';
 export { LightingSystem } from './LightingSystem';
+export { AnimationSystem } from './AnimationSystem';

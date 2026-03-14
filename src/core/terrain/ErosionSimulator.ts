@@ -120,6 +120,10 @@ export class ErosionSimulator {
   private hydraulicBindGroupLayout: GPUBindGroupLayout | null = null;
   private hydraulicParamsBuffer: UnifiedGPUBuffer | null = null;
   
+  // Pre-computed brush weight buffer
+  private brushWeightsBuffer: UnifiedGPUBuffer | null = null;
+  private cachedBrushRadius: number = -1;
+  
   // Thermal erosion pipeline
   private thermalPipeline: ComputePipelineWrapper | null = null;
   private thermalBindGroupLayout: GPUBindGroupLayout | null = null;
@@ -285,7 +289,15 @@ export class ErosionSimulator {
   }
   
   /**
-   * Run hydraulic erosion for specified number of iterations
+   * Run hydraulic erosion for specified number of iterations.
+   * 
+   * Key optimizations for high-resolution heightmaps (4K+):
+   * 1. Droplet count scales by resolution² (maintains world-space density)
+   * 2. Lifetime is NOT scaled — the increased droplet density compensates
+   *    for shorter per-droplet coverage, avoiding O(res³) total work
+   * 3. Large droplet counts are dispatched in batches (max ~20K per dispatch)
+   *    to prevent macOS GPU watchdog timeouts on long-running command buffers
+   * 4. Shader uses analytical brush weight normalization (no double-loop)
    */
   applyHydraulicErosion(
     iterations: number,
@@ -305,11 +317,12 @@ export class ErosionSimulator {
     const resScaleSquared = resScale ** 2;
     
     // Droplet count: scale by resolution² (same density per world area)
-    const scaledDropletCount = Math.floor(fullParams.dropletsPerIteration * resScaleSquared);
+    const totalDropletsPerIteration = Math.floor(fullParams.dropletsPerIteration * resScaleSquared);
     
-    // Lifetime: scale by resolution (droplet travels same world distance)
-    // At 4K, each step is 4x smaller in world space, so need 4x more steps
-    const scaledLifetime = Math.floor(fullParams.maxDropletLifetime * resScale);
+    // Lifetime: NOT scaled by resolution. The increased droplet count already
+    // compensates for the smaller per-droplet world-space footprint at high res.
+    // This avoids O(res³) total work — keeping it at O(res²) instead.
+    const lifetime = fullParams.maxDropletLifetime;
     
     // Erosion/Deposition rates: scale by resolution
     // deltaHeight per texel-step is ~resScale times smaller at higher res
@@ -317,28 +330,11 @@ export class ErosionSimulator {
     const scaledErosionRate = fullParams.erosionRate * resScale;
     const scaledDepositionRate = fullParams.depositionRate * resScale;
     
-    // Update params buffer
-    const paramsData = new Float32Array([
-      fullParams.inertia,
-      fullParams.sedimentCapacity,
-      fullParams.minCapacity,
-      scaledErosionRate,      // Scaled erosion rate
-      scaledDepositionRate,   // Scaled deposition rate
-      fullParams.evaporationRate,
-      fullParams.gravity,
-      fullParams.minSlope,
-    ]);
-    const paramsDataUint = new Uint32Array([
-      this.resolution,
-      scaledLifetime,         // Scaled lifetime
-      scaledDropletCount,     // Scaled droplet count
-    ]);
-    const seedData = new Float32Array([
-      this.hydraulicIterationCount, // Use iteration count as seed
-    ]);
-    const brushData = new Int32Array([
-      fullParams.brushRadius,
-    ]);
+    // Max droplets per single GPU dispatch to prevent GPU watchdog timeouts.
+    // Each droplet does ~lifetime steps × brush O(r²) work; at 4K with radius 12
+    // and lifetime 30, each droplet does ~30 × 625 = 18,750 buffer ops.
+    // 20K droplets × 18K ops = ~375M ops — within macOS ~2s watchdog limit.
+    const MAX_DROPLETS_PER_DISPATCH = 20000;
     
     // Create combined buffer (must match ErosionParams struct layout)
     const combinedBuffer = new ArrayBuffer(64);
@@ -346,25 +342,30 @@ export class ErosionSimulator {
     const uintView = new Uint32Array(combinedBuffer);
     const intView = new Int32Array(combinedBuffer);
     
-    // Copy data to combined buffer
     // Must match ErosionParams struct layout in hydraulic-erosion.wgsl:
-    // offset 0-7: f32 params (inertia, sedimentCapacity, minCapacity, erosionRate, depositionRate, evaporationRate, gravity, minSlope)
+    // offset 0-7: f32 params
     // offset 8-10: u32 params (mapSize, maxDropletLifetime, dropletCount)
     // offset 11: f32 seed
     // offset 12: i32 brushRadius
     // offset 13: f32 heightScale
-    // offset 14-15: padding
-    floatView.set(paramsData, 0); // offset 0-7
-    uintView.set(paramsDataUint, 8); // offset 8-10
-    floatView[11] = seedData[0]; // offset 11
-    intView[12] = brushData[0]; // offset 12
-    floatView[13] = fullParams.heightScale; // offset 13 - NEW
-    // padding at 14-15
-    
-    this.hydraulicParamsBuffer!.write(this.ctx, new Float32Array(combinedBuffer));
-    
-    const sourceHeightmap = this.currentTexture === 'A' ? this.heightmapA! : this.heightmapB!;
-    const targetHeightmap = this.currentTexture === 'A' ? this.heightmapB! : this.heightmapA!;
+    // offset 14: u32 dropletBatchOffset
+    // offset 15: f32 _pad2
+    floatView[0] = fullParams.inertia;
+    floatView[1] = fullParams.sedimentCapacity;
+    floatView[2] = fullParams.minCapacity;
+    floatView[3] = scaledErosionRate;
+    floatView[4] = scaledDepositionRate;
+    floatView[5] = fullParams.evaporationRate;
+    floatView[6] = fullParams.gravity;
+    floatView[7] = fullParams.minSlope;
+    uintView[8] = this.resolution;
+    uintView[9] = lifetime;   // NOT scaled by resolution
+    // uintView[10] = dropletCount — set per batch below
+    // floatView[11] = seed — set per iteration below
+    intView[12] = fullParams.brushRadius;
+    floatView[13] = fullParams.heightScale;
+    // uintView[14] = dropletBatchOffset — set per batch below
+    floatView[15] = 0; // _pad2
     
     // Clear flow accumulation buffer at start of erosion session
     const clearEncoder = this.ctx.device.createCommandEncoder({
@@ -374,48 +375,102 @@ export class ErosionSimulator {
     this.ctx.queue.submit([clearEncoder.finish()]);
     
     for (let i = 0; i < iterations; i++) {
+      const sourceHeightmap = this.currentTexture === 'A' ? this.heightmapA! : this.heightmapB!;
+      const targetHeightmap = this.currentTexture === 'A' ? this.heightmapB! : this.heightmapA!;
+      
       // Update seed for each iteration
       floatView[11] = this.hydraulicIterationCount + i;
-      this.hydraulicParamsBuffer!.write(this.ctx, new Float32Array(combinedBuffer));
       
-      // Create bind group with all 6 bindings
-      const bindGroup = new BindGroupBuilder('hydraulic-bind-group')
-        .buffer(0, this.hydraulicParamsBuffer!)
-        .texture(1, sourceHeightmap)
-        .texture(2, targetHeightmap)
-        .buffer(3, this.erosionMapBuffer!)
-        .buffer(4, this.flowAccumulationBuffer!)
-        .texture(5, this.flowMapTexture!)
-        .build(this.ctx, this.hydraulicBindGroupLayout);
+      // Step 1: Initialize erosion map (copy heightmap to buffer)
+      {
+        uintView[10] = totalDropletsPerIteration; // not used by init, but keep consistent
+        uintView[14] = 0;
+        this.hydraulicParamsBuffer!.write(this.ctx, new Float32Array(combinedBuffer));
+        
+        const bindGroup = new BindGroupBuilder('hydraulic-bind-group-init')
+          .buffer(0, this.hydraulicParamsBuffer!)
+          .texture(1, sourceHeightmap)
+          .texture(2, targetHeightmap)
+          .buffer(3, this.erosionMapBuffer!)
+          .buffer(4, this.flowAccumulationBuffer!)
+          .texture(5, this.flowMapTexture!)
+          .build(this.ctx, this.hydraulicBindGroupLayout);
+        
+        const encoder = this.ctx.device.createCommandEncoder({
+          label: 'hydraulic-init-encoder',
+        });
+        const initPass = encoder.beginComputePass({ label: 'hydraulic-init-pass' });
+        initPass.setPipeline(this.hydraulicInitPipeline.pipeline);
+        initPass.setBindGroup(0, bindGroup);
+        const initWorkgroups = calculateWorkgroupCount2D(this.resolution, this.resolution, 8, 8);
+        initPass.dispatchWorkgroups(initWorkgroups.x, initWorkgroups.y);
+        initPass.end();
+        this.ctx.queue.submit([encoder.finish()]);
+      }
       
-      const encoder = this.ctx.device.createCommandEncoder({
-        label: 'hydraulic-erosion-encoder',
-      });
-      
-      // Step 1: Initialize erosion map
-      const initPass = encoder.beginComputePass({ label: 'hydraulic-init-pass' });
-      initPass.setPipeline(this.hydraulicInitPipeline.pipeline);
-      initPass.setBindGroup(0, bindGroup);
-      const initWorkgroups = calculateWorkgroupCount2D(this.resolution, this.resolution, 8, 8);
-      initPass.dispatchWorkgroups(initWorkgroups.x, initWorkgroups.y);
-      initPass.end();
-      
-      // Step 2: Simulate droplets
-      const simPass = encoder.beginComputePass({ label: 'hydraulic-simulate-pass' });
-      simPass.setPipeline(this.hydraulicSimulatePipeline.pipeline);
-      simPass.setBindGroup(0, bindGroup);
-      const dropletWorkgroups = Math.ceil(scaledDropletCount / 64);  // Use scaled count
-      simPass.dispatchWorkgroups(dropletWorkgroups);
-      simPass.end();
+      // Step 2: Simulate droplets in batches to avoid GPU watchdog timeouts
+      let dropletsDispatched = 0;
+      while (dropletsDispatched < totalDropletsPerIteration) {
+        const batchSize = Math.min(
+          MAX_DROPLETS_PER_DISPATCH,
+          totalDropletsPerIteration - dropletsDispatched
+        );
+        
+        // Update per-batch uniforms
+        uintView[10] = batchSize;           // dropletCount for this batch
+        uintView[14] = dropletsDispatched;  // offset so each batch gets unique seeds
+        this.hydraulicParamsBuffer!.write(this.ctx, new Float32Array(combinedBuffer));
+        
+        const bindGroup = new BindGroupBuilder('hydraulic-bind-group-sim')
+          .buffer(0, this.hydraulicParamsBuffer!)
+          .texture(1, sourceHeightmap)
+          .texture(2, targetHeightmap)
+          .buffer(3, this.erosionMapBuffer!)
+          .buffer(4, this.flowAccumulationBuffer!)
+          .texture(5, this.flowMapTexture!)
+          .build(this.ctx, this.hydraulicBindGroupLayout);
+        
+        const encoder = this.ctx.device.createCommandEncoder({
+          label: `hydraulic-simulate-batch-${dropletsDispatched}`,
+        });
+        const simPass = encoder.beginComputePass({ label: 'hydraulic-simulate-pass' });
+        simPass.setPipeline(this.hydraulicSimulatePipeline.pipeline);
+        simPass.setBindGroup(0, bindGroup);
+        const dropletWorkgroups = Math.ceil(batchSize / 64);
+        simPass.dispatchWorkgroups(dropletWorkgroups);
+        simPass.end();
+        this.ctx.queue.submit([encoder.finish()]);
+        
+        dropletsDispatched += batchSize;
+      }
       
       // Step 3: Finalize - write erosion map back to texture
-      const finalPass = encoder.beginComputePass({ label: 'hydraulic-finalize-pass' });
-      finalPass.setPipeline(this.hydraulicFinalizePipeline.pipeline);
-      finalPass.setBindGroup(0, bindGroup);
-      finalPass.dispatchWorkgroups(initWorkgroups.x, initWorkgroups.y);
-      finalPass.end();
-      
-      this.ctx.queue.submit([encoder.finish()]);
+      {
+        // Restore full count for consistency
+        uintView[10] = totalDropletsPerIteration;
+        uintView[14] = 0;
+        this.hydraulicParamsBuffer!.write(this.ctx, new Float32Array(combinedBuffer));
+        
+        const bindGroup = new BindGroupBuilder('hydraulic-bind-group-final')
+          .buffer(0, this.hydraulicParamsBuffer!)
+          .texture(1, sourceHeightmap)
+          .texture(2, targetHeightmap)
+          .buffer(3, this.erosionMapBuffer!)
+          .buffer(4, this.flowAccumulationBuffer!)
+          .texture(5, this.flowMapTexture!)
+          .build(this.ctx, this.hydraulicBindGroupLayout);
+        
+        const encoder = this.ctx.device.createCommandEncoder({
+          label: 'hydraulic-finalize-encoder',
+        });
+        const finalPass = encoder.beginComputePass({ label: 'hydraulic-finalize-pass' });
+        finalPass.setPipeline(this.hydraulicFinalizePipeline.pipeline);
+        finalPass.setBindGroup(0, bindGroup);
+        const initWorkgroups = calculateWorkgroupCount2D(this.resolution, this.resolution, 8, 8);
+        finalPass.dispatchWorkgroups(initWorkgroups.x, initWorkgroups.y);
+        finalPass.end();
+        this.ctx.queue.submit([encoder.finish()]);
+      }
       
       // Swap textures
       this.currentTexture = this.currentTexture === 'A' ? 'B' : 'A';

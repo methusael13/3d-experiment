@@ -28,7 +28,9 @@ export type ComponentType =
   | 'ssr'
   | 'reflection-probe'
   | 'frustum-cull'
-  | 'character-physics'; // Extensible for future/external components
+  | 'character-physics'
+  | 'skeleton'
+  | 'animation'; // Extensible for future/external components
 
 /**
  * Context provided to systems each frame.

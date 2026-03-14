@@ -5,7 +5,7 @@
  */
 
 import { useEffect, useCallback, useRef } from 'preact/hooks';
-import { getSceneBuilderStore } from '../state';
+import { getSceneBuilderStore, duplicateSelected, deleteSelected, toggleSelectAll, groupSelection, ungroupSelection } from '../state';
 import type { InputEvent, InputManager } from '../../InputManager';
 import { Vec3 } from '@/core/types';
 
@@ -88,13 +88,12 @@ export function useKeyboardShortcuts() {
       }
     }
     
-    // ==================== Object Manipulation ====================
+    // ==================== Object Manipulation (delegated to shared sceneActions) ====================
     
     // D - Duplicate selected objects
     if ((key === 'd' || key === 'D') && !e.ctrlKey) {
-      if (world && store.selectionCount.value > 0) {
-        // TODO: Implement entity duplication
-        console.log('[useKeyboardShortcuts] Duplicate - TODO');
+      if (store.selectionCount.value > 0) {
+        duplicateSelected();
         e.originalEvent.preventDefault();
         return;
       }
@@ -102,11 +101,8 @@ export function useKeyboardShortcuts() {
     
     // Delete or Backspace - Delete selected objects
     if (key === 'Delete' || key === 'Backspace') {
-      if (world && store.selectionCount.value > 0) {
-        const selectedIds = Array.from(store.selectedIds.value);
-        for (const id of selectedIds) {
-          world.destroyEntity(id);
-        }
+      if (store.selectionCount.value > 0) {
+        deleteSelected();
         e.originalEvent.preventDefault();
         return;
       }
@@ -114,39 +110,24 @@ export function useKeyboardShortcuts() {
     
     // A - Select all toggle
     if ((key === 'a' || key === 'A') && !e.ctrlKey) {
-      if (world) {
-        const allEntities = world.getAllEntities();
-        const allSelected = store.selectionCount.value === allEntities.length;
-        
-        if (allSelected) {
-          world.clearSelection();
-        } else {
-          world.selectAll(allEntities.map(e => e.id));
-        }
-        e.originalEvent.preventDefault();
-        return;
-      }
+      toggleSelectAll();
+      e.originalEvent.preventDefault();
+      return;
     }
     
-    // ==================== Grouping ====================
+    // ==================== Grouping (delegated to shared sceneActions) ====================
     
     // Ctrl+G - Group selection
     if ((key === 'g' || key === 'G') && e.ctrlKey && !e.shiftKey) {
-      if (world && store.selectionCount.value >= 2) {
-        world.createGroupFromSelection();
-        store.syncFromWorld();
-        e.originalEvent.preventDefault();
-      }
+      groupSelection();
+      e.originalEvent.preventDefault();
       return;
     }
     
     // Ctrl+Shift+G - Ungroup
     if ((key === 'g' || key === 'G') && e.ctrlKey && e.shiftKey) {
-      if (world && store.selectionCount.value > 0) {
-        world.ungroupSelection();
-        store.syncFromWorld();
-        e.originalEvent.preventDefault();
-      }
+      ungroupSelection();
+      e.originalEvent.preventDefault();
       return;
     }
     

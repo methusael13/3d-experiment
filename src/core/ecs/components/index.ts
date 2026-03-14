@@ -18,3 +18,5 @@ export { PlayerComponent } from './PlayerComponent';
 export { CharacterPhysicsComponent } from './CharacterPhysicsComponent';
 export { CameraComponent } from './CameraComponent';
 export { FrustumCullComponent } from './FrustumCullComponent';
+export { SkeletonComponent } from './SkeletonComponent';
+export { AnimationComponent, type AnimationState } from './AnimationComponent';

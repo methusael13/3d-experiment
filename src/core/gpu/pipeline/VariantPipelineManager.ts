@@ -131,6 +131,13 @@ function buildTextureBindGroupLayout(
         visibility: GPUShaderStage.FRAGMENT,
         sampler: { type },
       });
+    } else if (res.kind === 'storage') {
+      // Read-only storage buffers (e.g., bone matrices for skeletal skinning)
+      entries.push({
+        binding: res.bindingIndex,
+        visibility: GPUShaderStage.VERTEX,
+        buffer: { type: 'read-only-storage' },
+      });
     }
   }
 
@@ -373,10 +380,35 @@ export class VariantPipelineManager {
       bindGroupLayouts: [
         this.globalBindGroupLayout,     // group 0: global uniforms (light VP written here)
         this.modelBindGroupLayout,      // group 1: model matrix + material (wind uniforms)
-        emptyLayout2,                   // group 2: textures (unused but declared in WGSL)
+        emptyLayout2,                   // group 2: textures (bone matrices storage buffer for skinning)
         emptyLayout3,                   // group 3: environment (unused but declared in WGSL)
       ],
     });
+
+    // Build vertex buffer descriptors.
+    // Buffer 0: standard interleaved (position + normal + uv) — always present.
+    // Buffer 1: skinning data (joint indices + weights) — only for skinned variants.
+    const isSkinned = composed.features.includes('skinning');
+    const vertexBuffers: GPUVertexBufferLayout[] = [
+      {
+        arrayStride: 32,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat },
+          { shaderLocation: 1, offset: 12, format: 'float32x3' as GPUVertexFormat },
+          { shaderLocation: 2, offset: 24, format: 'float32x2' as GPUVertexFormat },
+        ],
+      },
+    ];
+
+    if (isSkinned) {
+      vertexBuffers.push({
+        arrayStride: 20, // uint8x4 (4 bytes) + float32x4 (16 bytes)
+        attributes: [
+          { shaderLocation: 5, offset: 0, format: 'uint8x4' as GPUVertexFormat },     // jointIndices
+          { shaderLocation: 6, offset: 4, format: 'float32x4' as GPUVertexFormat },   // jointWeights
+        ],
+      });
+    }
 
     const pipeline = device.createRenderPipeline({
       label: `variant-depth-pipeline-${composed.featureKey}`,
@@ -384,16 +416,7 @@ export class VariantPipelineManager {
       vertex: {
         module: shaderModule,
         entryPoint: 'vs_main',
-        buffers: [
-          {
-            arrayStride: 32,
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: 'float32x3' },
-              { shaderLocation: 1, offset: 12, format: 'float32x3' },
-              { shaderLocation: 2, offset: 24, format: 'float32x2' },
-            ],
-          },
-        ],
+        buffers: vertexBuffers,
       },
       // No fragment stage — depth-only rendering
       primitive: {

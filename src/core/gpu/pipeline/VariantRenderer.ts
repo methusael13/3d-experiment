@@ -270,6 +270,26 @@ export class VariantRenderer {
     return ids;
   }
 
+  // ===================== Skinned Mesh ID Collection =====================
+
+  /**
+   * Collect all GPU mesh IDs that belong to skinned (skeletal animation) entities.
+   * Used by ShadowPass to exclude these from the legacy shadow path
+   * (they're rendered via composed depth-only with bone matrices instead).
+   */
+  getSkinnedMeshIds(meshRenderSystem: MeshRenderSystem): Set<number> {
+    const ids = new Set<number>();
+    for (const group of meshRenderSystem.getVariantGroups()) {
+      if (!group.featureIds.includes('skinning')) continue;
+      for (const entity of group.entities) {
+        for (const meshId of this.collectMeshIds(entity)) {
+          ids.add(meshId);
+        }
+      }
+    }
+    return ids;
+  }
+
   // ===================== Wind-Only Depth Rendering =====================
 
   /**
@@ -334,6 +354,101 @@ export class VariantRenderer {
           }
 
           passEncoder.setVertexBuffer(0, drawParams.vertexBuffer);
+
+          if (drawParams.indexBuffer) {
+            passEncoder.setIndexBuffer(drawParams.indexBuffer, drawParams.indexFormat);
+            passEncoder.drawIndexed(drawParams.indexCount, 1, 0, 0, 0);
+          } else {
+            passEncoder.draw(drawParams.vertexCount, 1, 0, 0);
+          }
+          drawCalls++;
+        }
+      }
+    }
+
+    return drawCalls;
+  }
+
+  // ===================== Skinned-Only Depth Rendering =====================
+
+  /**
+   * Render only skinned (skeletal animation) entities with depth-only pipelines.
+   * Used alongside the legacy shadow pass: the legacy path renders all non-skinned
+   * entities, then this renders skinned entities with correct bone-transformed
+   * vertex positions into the same shadow map.
+   *
+   * Key differences from wind depth rendering:
+   * - Binds the skin vertex buffer at slot 1 (joint indices + weights)
+   * - Group 2 bind group includes the boneMatrices storage buffer (not just placeholders)
+   * - Uses the skinning-aware depth-only pipeline (2 vertex buffer descriptors)
+   *
+   * Writes the light VP matrix to the global uniform buffer for the duration.
+   */
+  renderSkinnedDepthOnly(
+    passEncoder: GPURenderPassEncoder,
+    ctx: GPUContext,
+    meshRenderSystem: MeshRenderSystem,
+    lightSpaceMatrix: mat4 | Float32Array,
+  ): number {
+    const variantManager = this.ensureVariantManager(ctx);
+    const variantGroups = meshRenderSystem.getVariantGroups();
+
+    // Only process groups that include skinning feature
+    const skinnedGroups = variantGroups.filter(g => g.featureIds.includes('skinning'));
+    if (skinnedGroups.length === 0) return 0;
+
+    // Write light VP matrix so composed vs_main transforms into light clip space
+    this.meshPool.writeGlobalUniforms({
+      viewProjectionMatrix: lightSpaceMatrix,
+      cameraPosition: [0, 0, 0],
+    });
+
+    const emptyBG = this.meshPool.getEmptyBindGroup().bindGroup;
+    let drawCalls = 0;
+
+    for (const group of skinnedGroups) {
+      // Strip fragment-only features, keep 'skinning' (vertex-affecting)
+      const featureIds = this.buildDepthOnlyFeatures(group.featureIds);
+      const depthEntry = variantManager.getOrCreateDepthOnly(featureIds, 'depth32float', 'less');
+
+      passEncoder.setPipeline(depthEntry.pipeline);
+      passEncoder.setBindGroup(0, this.meshPool.getGlobalBindGroup());
+      passEncoder.setBindGroup(3, emptyBG);
+
+      for (const entity of group.entities) {
+        const shadow = entity.getComponent<ShadowComponent>('shadow');
+        if (shadow && !shadow.castsShadow) continue;
+
+        const meshIds = this.collectMeshIds(entity);
+        for (const meshId of meshIds) {
+          const drawParams = this.meshPool.getDrawParams(meshId);
+          const modelBG = this.meshPool.getModelBindGroup(meshId);
+          if (!drawParams || !modelBG) continue;
+
+          passEncoder.setBindGroup(1, modelBG);
+
+          // Build Group 2 bind group — includes boneMatrices storage buffer
+          // (VariantMeshPool.buildTextureBindGroup looks up 'boneMatrices' by name
+          // and binds the storage buffer alongside any PBR texture placeholders)
+          if (depthEntry.composed.bindingLayout.size > 0) {
+            const texBG = this.meshPool.buildTextureBindGroup(
+              meshId, depthEntry.composed, this.getDepthTextureLayout(ctx, variantManager, featureIds),
+            );
+            passEncoder.setBindGroup(2, texBG);
+          } else {
+            passEncoder.setBindGroup(2, emptyBG);
+          }
+
+          // Bind vertex buffer slot 0: standard interleaved (position + normal + uv)
+          passEncoder.setVertexBuffer(0, drawParams.vertexBuffer);
+
+          // Bind vertex buffer slot 1: skinning data (joint indices + weights)
+          // The depth-only pipeline for skinned variants has 2 buffer descriptors,
+          // so slot 1 must be bound for the draw call to work.
+          const skinBuffer = this.meshPool.getSkinBuffer(meshId);
+          if (skinBuffer) {
+            passEncoder.setVertexBuffer(1, skinBuffer);
+          }
 
           if (drawParams.indexBuffer) {
             passEncoder.setIndexBuffer(drawParams.indexBuffer, drawParams.indexFormat);

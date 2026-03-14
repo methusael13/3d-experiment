@@ -9,6 +9,7 @@ export type AssetType = 'model' | 'texture' | 'material' | 'unknown';
 // Category within a type (e.g., Models > Vegetation, Textures > IBL)
 export type AssetCategory = 
   | 'vegetation'  // model category
+  | 'animation'   // model category — animation-only GLBs (skeleton + keyframes)
   | 'ibl'         // texture category (HDR environments)
   | null;         // uncategorized
 

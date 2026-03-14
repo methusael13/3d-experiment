@@ -80,6 +80,12 @@ interface VariantMeshEntry {
 
   // Double-sided flag
   doubleSided: boolean;
+
+  // Skinning: separate vertex buffer for joint indices + weights (Buffer 1)
+  skinBuffer: GPUBuffer | null;
+
+  // Whether this mesh is skinned (has joint indices/weights)
+  skinned: boolean;
 }
 
 // ============ VariantMeshPool Class ============
@@ -224,6 +230,8 @@ export class VariantMeshPool {
       material,
       textureResources,
       doubleSided: material.doubleSided ?? false,
+      skinBuffer: null,
+      skinned: false,
     };
 
     this.meshes.set(id, entry);
@@ -533,6 +541,66 @@ export class VariantMeshPool {
    */
   isDoubleSided(meshId: number): boolean {
     return this.meshes.get(meshId)?.doubleSided ?? false;
+  }
+
+  /**
+   * Get the skinning vertex buffer (Buffer 1) for a mesh.
+   * Returns null for non-skinned meshes.
+   */
+  getSkinBuffer(meshId: number): GPUBuffer | null {
+    return this.meshes.get(meshId)?.skinBuffer ?? null;
+  }
+
+  /**
+   * Check if a mesh is skinned (has joint indices/weights vertex buffer).
+   */
+  isSkinned(meshId: number): boolean {
+    return this.meshes.get(meshId)?.skinned ?? false;
+  }
+
+  /**
+   * Set the skinning vertex buffer for a mesh (Buffer 1: joint indices + weights).
+   * Creates a separate GPU buffer with interleaved uint8x4 joint indices (4 bytes)
+   * + float32x4 joint weights (16 bytes) = 20 bytes per vertex.
+   */
+  setSkinBuffer(meshId: number, jointIndices: Uint8Array | Uint16Array, jointWeights: Float32Array): void {
+    const entry = this.meshes.get(meshId);
+    if (!entry) return;
+
+    // Destroy old skin buffer if it exists
+    entry.skinBuffer?.destroy();
+
+    const vertexCount = jointWeights.length / 4; // 4 weights per vertex
+    // 20 bytes per vertex: 4 bytes (uint8x4 joints) + 16 bytes (float32x4 weights)
+    const skinData = new ArrayBuffer(vertexCount * 20);
+    const dataView = new DataView(skinData);
+
+    for (let i = 0; i < vertexCount; i++) {
+      const offset = i * 20;
+      // Joint indices (4 bytes as uint8)
+      const ji = i * 4;
+      dataView.setUint8(offset + 0, jointIndices[ji + 0]);
+      dataView.setUint8(offset + 1, jointIndices[ji + 1]);
+      dataView.setUint8(offset + 2, jointIndices[ji + 2]);
+      dataView.setUint8(offset + 3, jointIndices[ji + 3]);
+      // Joint weights (16 bytes as float32)
+      const wi = i * 4;
+      dataView.setFloat32(offset + 4, jointWeights[wi + 0], true);
+      dataView.setFloat32(offset + 8, jointWeights[wi + 1], true);
+      dataView.setFloat32(offset + 12, jointWeights[wi + 2], true);
+      dataView.setFloat32(offset + 16, jointWeights[wi + 3], true);
+    }
+
+    entry.skinBuffer = this.ctx.device.createBuffer({
+      label: `variant-pool-skin-${meshId}`,
+      size: skinData.byteLength,
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    new Uint8Array(entry.skinBuffer.getMappedRange()).set(new Uint8Array(skinData));
+    entry.skinBuffer.unmap();
+
+    entry.skinned = true;
   }
 
   // ===================== Global Uniforms (Group 0) =====================

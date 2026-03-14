@@ -121,9 +121,6 @@ export function TerrainPanel({
 }: TerrainPanelProps) {
   const [isUpdating, setIsUpdating] = useState(false);
 
-  // Calculate heightScaleMax based on worldSize
-  const heightScaleMax = useMemo(() => Math.max(1, worldSize / 10 + 100), [worldSize]);
-
   const handleUpdate = useCallback(async () => {
     setIsUpdating(true);
     try {
@@ -218,7 +215,7 @@ export function TerrainPanel({
           params={noiseParams}
           onParamsChange={onNoiseParamsChange}
           onRandomizeSeed={handleRandomizeSeed}
-          heightScaleMax={heightScaleMax}
+          heightScaleMax={1000}
         />
 
         <div class={styles.divider} />

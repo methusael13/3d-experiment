@@ -8,4 +8,10 @@ export class GroupComponent extends Component {
   readonly type: ComponentType = 'group';
 
   groupId: string | null = null;
+
+  clone(): GroupComponent {
+    const c = new GroupComponent();
+    // New entity starts ungrouped — caller can add to a group later
+    return c;
+  }
 }

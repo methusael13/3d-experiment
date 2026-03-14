@@ -25,7 +25,10 @@ export {
   CharacterPhysicsComponent,
   CameraComponent,
   FrustumCullComponent,
+  SkeletonComponent,
+  AnimationComponent,
 } from './components';
+export type { AnimationState } from './components';
 
 // Systems
 export {
@@ -42,6 +45,7 @@ export {
   CameraSystem,
   FrustumCullSystem,
   LightingSystem,
+  AnimationSystem,
 } from './systems';
 export type { ShaderVariantGroup } from './systems';
 

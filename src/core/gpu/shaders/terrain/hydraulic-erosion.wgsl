@@ -24,7 +24,7 @@ struct ErosionParams {
   
   brushRadius: i32,       // Erosion brush radius
   heightScale: f32,       // World-space height scale for proper erosion strength
-  _pad1: f32,
+  dropletBatchOffset: u32, // Offset added to droplet index for batched dispatches
   _pad2: f32,
 }
 
@@ -107,8 +107,21 @@ fn getGradient(pos: vec2f) -> vec2f {
 // Erosion/Deposition Application
 // ============================================================================
 
+// Analytically approximate the weight sum for a circular linear-falloff brush.
+// For a discrete circular brush with weight w(d) = max(0, 1 - d/r), the sum
+// over all integer points inside the circle approximates the volume of a cone:
+//   weightSum ≈ π * r² / 3
+// This eliminates an entire O(r²) loop per applyChange() call.
+fn analyticalBrushWeightSum(radius: i32) -> f32 {
+  let r = f32(radius);
+  if (r < 0.5) { return 1.0; }
+  // Cone volume approximation: (π * r² / 3) — good for r >= 2
+  return 3.14159265 * r * r / 3.0;
+}
+
 // Apply erosion or deposition at position using soft brush
 // Brush radius is scaled by resolution to maintain consistent world-space coverage
+// Uses analytical weight normalization to avoid a redundant O(r²) pre-pass
 fn applyChange(pos: vec2f, amount: f32, isErosion: bool) {
   let dims = textureDimensions(heightmapIn);
   let mapSize = i32(dims.x);
@@ -121,32 +134,29 @@ fn applyChange(pos: vec2f, amount: f32, isErosion: bool) {
   let resScale = getResolutionScale();
   let radius = i32(f32(params.brushRadius) * resScale);
   
-  // Calculate weight sum for normalization
-  var weightSum: f32 = 0.0;
-  for (var dy = -radius; dy <= radius; dy++) {
-    for (var dx = -radius; dx <= radius; dx++) {
-      let dist = sqrt(f32(dx * dx + dy * dy));
-      if (dist <= f32(radius)) {
-        let weight = max(0.0, 1.0 - dist / f32(radius));
-        weightSum += weight;
-      }
-    }
-  }
+  // Use analytical approximation instead of a separate normalization loop
+  let weightSum = analyticalBrushWeightSum(radius);
   
   if (weightSum < 0.0001) {
     return;
   }
   
-  // Apply change with normalized weights
+  let invWeightSum = 1.0 / weightSum;
+  let fRadius = f32(radius);
+  let radiusSq = fRadius * fRadius;
+  
+  // Single pass: compute weight and apply in one loop
   for (var dy = -radius; dy <= radius; dy++) {
     for (var dx = -radius; dx <= radius; dx++) {
       let x = centerX + dx;
       let y = centerY + dy;
       
       if (x >= 0 && x < mapSize && y >= 0 && y < mapSize) {
-        let dist = sqrt(f32(dx * dx + dy * dy));
-        if (dist <= f32(radius)) {
-          let weight = max(0.0, 1.0 - dist / f32(radius)) / weightSum;
+        // Use squared distance check first (avoids sqrt for out-of-circle texels)
+        let distSq = f32(dx * dx + dy * dy);
+        if (distSq <= radiusSq) {
+          let dist = sqrt(distSq);
+          let weight = max(0.0, 1.0 - dist / fRadius) * invWeightSum;
           let idx = u32(y * mapSize + x);
           
           if (isErosion) {
@@ -285,6 +295,7 @@ fn initErosionMap(@builtin(global_invocation_id) globalId: vec3u) {
 }
 
 // Simulate droplets (run multiple times for full erosion)
+// Uses dropletBatchOffset to produce unique random seeds when dispatched in batches
 @compute @workgroup_size(64, 1, 1)
 fn simulateDroplets(@builtin(global_invocation_id) globalId: vec3u) {
   if (globalId.x >= params.dropletCount) {
@@ -292,7 +303,9 @@ fn simulateDroplets(@builtin(global_invocation_id) globalId: vec3u) {
   }
   
   // Generate random starting position
-  var seed = u32(globalId.x) + u32(params.seed * 1000000.0);
+  // Combine thread index with batch offset and iteration seed for unique values
+  let globalDropletIdx = globalId.x + params.dropletBatchOffset;
+  var seed = globalDropletIdx + u32(params.seed * 1000000.0);
   let startX = randomFloat(&seed) * f32(params.mapSize - 2u) + 1.0;
   let startY = randomFloat(&seed) * f32(params.mapSize - 2u) + 1.0;
   

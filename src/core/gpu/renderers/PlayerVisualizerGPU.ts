@@ -127,6 +127,7 @@ const ARROW_DATA = new Float32Array(generateArrow(ARROW_LENGTH));
 // ==================== Types ====================
 
 interface DrawItem {
+  /** Reference to shared vertex buffer (NOT owned — do not destroy) */
   buffer: UnifiedGPUBuffer;
   vertexCount: number;
   color: [number, number, number, number];
@@ -151,7 +152,13 @@ export class PlayerVisualizerGPU {
   private uniformBuffers: UnifiedGPUBuffer[] = [];
   private bindGroups: GPUBindGroup[] = [];
 
-  // Per-frame draw items
+  // Static geometry buffers (created once, reused every frame)
+  private sphereVertexBuffer: UnifiedGPUBuffer;
+  private arrowVertexBuffer: UnifiedGPUBuffer;
+  private sphereVertexCount: number;
+  private arrowVertexCount: number;
+
+  // Per-frame draw items (references shared buffers — NOT owned)
   private drawItems: DrawItem[] = [];
   private _drawCount = 0;
 
@@ -181,6 +188,21 @@ export class PlayerVisualizerGPU {
       this.bindGroups.push(bg);
     }
 
+    // Create static geometry buffers ONCE — these never change
+    this.sphereVertexBuffer = UnifiedGPUBuffer.createVertex(ctx, {
+      label: 'player-viz-sphere-geometry',
+      data: SPHERE_DATA,
+      writable: false, // read-only after creation
+    });
+    this.sphereVertexCount = SPHERE_DATA.length / 3;
+
+    this.arrowVertexBuffer = UnifiedGPUBuffer.createVertex(ctx, {
+      label: 'player-viz-arrow-geometry',
+      data: ARROW_DATA,
+      writable: false, // read-only after creation
+    });
+    this.arrowVertexCount = ARROW_DATA.length / 3;
+
     const vertexLayout: VertexBufferLayoutDesc = {
       arrayStride: 12,
       stepMode: 'vertex',
@@ -204,10 +226,12 @@ export class PlayerVisualizerGPU {
   /**
    * Rebuild draw items from ECS player entities.
    * Call once per frame before render().
+   * 
+   * Note: Draw items reference shared vertex buffers (sphere/arrow).
+   * No GPU buffers are created or destroyed per frame.
    */
   update(world: World): void {
-    // Destroy previous frame's vertex buffers
-    for (const item of this.drawItems) item.buffer.destroy();
+    // Clear previous frame's draw items (no buffers to destroy — they're shared)
     this.drawItems = [];
     this._drawCount = 0;
 
@@ -223,14 +247,10 @@ export class PlayerVisualizerGPU {
       const transform = entity.getComponent<TransformComponent>('transform');
       const pos: vec3 = transform ? transform.worldPosition : [0, 0, 0];
 
-      // 1. Sphere at player head
-      const sphereBuf = UnifiedGPUBuffer.createVertex(this.ctx, {
-        label: `player-viz-sphere-${entity.name ?? entity.id}`,
-        data: SPHERE_DATA,
-      });
+      // 1. Sphere at player head (reuse shared buffer)
       this.drawItems.push({
-        buffer: sphereBuf,
-        vertexCount: SPHERE_DATA.length / 3,
+        buffer: this.sphereVertexBuffer,
+        vertexCount: this.sphereVertexCount,
         color: PLAYER_BODY_COLOR,
         worldPosition: pos,
         yaw: 0,
@@ -241,14 +261,10 @@ export class PlayerVisualizerGPU {
 
       if (this._drawCount >= MAX_HELPERS) break;
 
-      // 2. Arrow showing look direction
-      const arrowBuf = UnifiedGPUBuffer.createVertex(this.ctx, {
-        label: `player-viz-arrow-${entity.name ?? entity.id}`,
-        data: ARROW_DATA,
-      });
+      // 2. Arrow showing look direction (reuse shared buffer)
       this.drawItems.push({
-        buffer: arrowBuf,
-        vertexCount: ARROW_DATA.length / 3,
+        buffer: this.arrowVertexBuffer,
+        vertexCount: this.arrowVertexCount,
         color: PLAYER_ARROW_COLOR,
         worldPosition: pos,
         yaw: player.yaw,
@@ -348,7 +364,10 @@ export class PlayerVisualizerGPU {
 
   destroy(): void {
     for (const ub of this.uniformBuffers) ub.destroy();
-    for (const item of this.drawItems) item.buffer.destroy();
+    // Destroy shared geometry buffers (owned by this class)
+    this.sphereVertexBuffer.destroy();
+    this.arrowVertexBuffer.destroy();
+    // Draw items only hold references to shared buffers — no per-item cleanup
     this.uniformBuffers = [];
     this.bindGroups = [];
     this.drawItems = [];

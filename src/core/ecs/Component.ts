@@ -23,4 +23,14 @@ export abstract class Component {
 
   /** Optional: Deserialize from saved data */
   deserialize?(data: Record<string, unknown>): void;
+
+  /**
+   * Optional: Create a shallow clone of this component for entity duplication.
+   * Subclasses should override to provide proper cloning.
+   *
+   * By default returns null, meaning the component cannot be auto-cloned
+   * and must be handled by explicit duplication logic (e.g., for GPU-owning
+   * components like MeshComponent or singleton components like TerrainComponent).
+   */
+  clone?(): Component | null;
 }

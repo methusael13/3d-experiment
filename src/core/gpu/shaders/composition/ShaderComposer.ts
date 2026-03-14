@@ -69,6 +69,7 @@ export class ShaderComposer {
     const extraBindings = this.buildTextureBindings(textureBindings);
     const environmentBindingsWgsl = this.buildEnvironmentBindings(environmentBindings);
     const extraVaryings = this.buildVaryings(orderedFeatures);
+    const extraVertexInputs = this.buildVertexInputs(orderedFeatures);
     const functions = this.buildFunctions(orderedFeatures);
     const vertexFeatures = this.buildVertexInject(orderedFeatures);
     const fragmentTextureSampling = this.buildFragmentTextureSampling(orderedFeatures);
@@ -81,6 +82,7 @@ export class ShaderComposer {
     wgsl = wgsl.replace('/*{{EXTRA_UNIFORM_FIELDS}}*/', extraUniformFields);
     wgsl = wgsl.replace('/*{{EXTRA_BINDINGS}}*/', extraBindings);
     wgsl = wgsl.replace('/*{{ENVIRONMENT_BINDINGS}}*/', environmentBindingsWgsl);
+    wgsl = wgsl.replace('/*{{EXTRA_VERTEX_INPUTS}}*/', extraVertexInputs);
     wgsl = wgsl.replace('/*{{EXTRA_VARYINGS}}*/', extraVaryings);
     wgsl = wgsl.replace('/*{{FUNCTIONS}}*/', functions);
     wgsl = wgsl.replace('/*{{VERTEX_FEATURES}}*/', vertexFeatures);
@@ -281,6 +283,11 @@ export class ShaderComposer {
         lines.push(
           `@group(2) @binding(${res.bindingIndex}) var ${name}: ${res.samplerType};`,
         );
+      } else if (res.kind === 'storage') {
+        // Read-only storage buffers in textures group (e.g., bone matrices for skinning)
+        lines.push(
+          `@group(2) @binding(${res.bindingIndex}) var<storage, read> ${name}: array<mat4x4f>;`,
+        );
       }
     }
     return lines.join('\n');
@@ -351,6 +358,20 @@ struct CSMUniforms {
     
     // Struct definitions first, then binding declarations
     return [...structDefs, ...lines].join('\n');
+  }
+
+  /**
+   * Build additional VertexInput fields from features (e.g., joint indices/weights for skinning).
+   * Injected into the VertexInput struct via the EXTRA_VERTEX_INPUTS marker.
+   */
+  private buildVertexInputs(features: ShaderFeature[]): string {
+    const inputs: string[] = [];
+    for (const feature of features) {
+      if (feature.vertexInputs) {
+        inputs.push(feature.vertexInputs);
+      }
+    }
+    return inputs.join('\n');
   }
 
   /**

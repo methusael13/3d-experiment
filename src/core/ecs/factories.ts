@@ -15,6 +15,8 @@ import { OceanComponent } from './components/OceanComponent';
 import { PlayerComponent } from './components/PlayerComponent';
 import { CharacterPhysicsComponent } from './components/CharacterPhysicsComponent';
 import { CameraComponent } from './components/CameraComponent';
+import { SkeletonComponent } from './components/SkeletonComponent';
+import { AnimationComponent, type AnimationState } from './components/AnimationComponent';
 import type { GPUContext } from '../gpu/GPUContext';
 import type { TerrainManager, TerrainManagerConfig } from '../terrain';
 import type { OceanManager, OceanManagerConfig } from '../ocean';

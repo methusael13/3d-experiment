@@ -102,6 +102,14 @@ export interface ShaderFeature {
   /** Additional VertexOutput fields needed for passing data to fragment */
   varyings?: string;
 
+  /**
+   * Additional VertexInput fields (e.g., joint indices/weights for skinning).
+   * Injected into the VertexInput struct via the EXTRA_VERTEX_INPUTS marker.
+   * Only used when this feature adds extra vertex attributes beyond the standard
+   * position/normal/uv layout.
+   */
+  vertexInputs?: string;
+
   /** Other feature IDs that must be composed before this one */
   dependencies?: string[];
 }

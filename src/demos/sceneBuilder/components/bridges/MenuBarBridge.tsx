@@ -5,7 +5,7 @@
 
 import { useComputed, signal } from '@preact/signals';
 import { useCallback, useMemo, useRef } from 'preact/hooks';
-import { getSceneBuilderStore } from '../state';
+import { getSceneBuilderStore, duplicateSelected, deleteSelected, selectAll, groupSelection, ungroupSelection } from '../state';
 import { MenuBar, type MenuDefinition, type MenuAction } from '../layout';
 import { shaderPanelVisible, toggleShaderPanel } from './ShaderDebugPanelBridge';
 import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity, createPointLightEntity, createSpotLightEntity, createEmptyEntity, createPlayerEntity } from '@/core/ecs/factories';
@@ -184,102 +184,13 @@ export function ConnectedMenuBar() {
     input.click();
   }, [store]);
   
-  // ==================== Edit Menu Actions ====================
+  // ==================== Edit Menu Actions (delegated to shared sceneActions) ====================
   
-  const handleGroupSelection = useCallback(() => {
-    const world = store.world;
-    if (!world || store.selectionCount.value < 2) return;
-    world.createGroupFromSelection();
-    store.syncFromWorld();
-  }, [store]);
-  
-  const handleUngroup = useCallback(() => {
-    const world = store.world;
-    if (!world || store.selectionCount.value === 0) return;
-    world.ungroupSelection();
-    store.syncFromWorld();
-  }, [store]);
-  
-  const handleDeleteSelected = useCallback(() => {
-    const world = store.world;
-    if (!world) return;
-    const selectedIds = new Set(world.getSelectedIds());
-    for (const id of selectedIds) {
-      world.destroyEntity(id);
-    }
-    // syncFromWorld is called automatically via world.onEntityRemoved callback
-  }, [store]);
-  
-  const handleDuplicate = useCallback(() => {
-    const world = store.world;
-    if (!world) return;
-    
-    const selected = world.getSelectedEntities();
-    const newIds: string[] = [];
-    
-    for (const entity of selected) {
-      const transform = entity.getComponent<TransformComponent>('transform');
-      const prim = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
-      const mesh = entity.getComponent<MeshComponent>('mesh');
-      
-      if (prim && transform) {
-        // Duplicate primitive entity
-        const newEntity = createPrimitiveEntity(world, {
-          primitiveType: prim.primitiveType,
-          name: entity.name + ' Copy',
-          config: { ...prim.config },
-        });
-        
-        const newTransform = newEntity.getComponent<TransformComponent>('transform');
-        if (newTransform) {
-          newTransform.setPosition([transform.position[0] + 1, transform.position[1], transform.position[2]]);
-          newTransform.setRotationQuat(transform.rotationQuat);
-          newTransform.setScale(transform.scale);
-        }
-        
-        const newPrim = newEntity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
-        if (newPrim) {
-          newPrim.geometryData = generatePrimitiveGeometry(prim.primitiveType, prim.config);
-        }
-        
-        newIds.push(newEntity.id);
-      } else if (mesh && transform) {
-        // Duplicate model entity — share the same GLBModel data, get new GPU meshes
-        const newEntity = createModelEntity(world, {
-          name: entity.name + ' Copy',
-          modelPath: mesh.modelPath,
-        });
-        
-        const newTransform = newEntity.getComponent<TransformComponent>('transform');
-        if (newTransform) {
-          newTransform.setPosition([transform.position[0] + 1, transform.position[1], transform.position[2]]);
-          newTransform.setRotationQuat(transform.rotationQuat);
-          newTransform.setScale(transform.scale);
-        }
-        
-        // Share model data (GLBModel is read-only, safe to share)
-        const newMesh = newEntity.getComponent<MeshComponent>('mesh');
-        if (newMesh && mesh.model) {
-          newMesh.modelPath = mesh.modelPath;
-          newMesh.model = mesh.model;
-          // GPU init happens via onEntityAdded callback
-        }
-        
-        newIds.push(newEntity.id);
-      }
-    }
-    
-    if (newIds.length > 0) {
-      world.selectAll(newIds);
-    }
-  }, [store]);
-  
-  const handleSelectAll = useCallback(() => {
-    const world = store.world;
-    if (!world) return;
-    const allEntities = world.getAllEntities();
-    world.selectAll(allEntities.map(e => e.id));
-  }, [store]);
+  const handleGroupSelection = useCallback(() => groupSelection(), []);
+  const handleUngroup = useCallback(() => ungroupSelection(), []);
+  const handleDeleteSelected = useCallback(() => deleteSelected(), []);
+  const handleDuplicate = useCallback(() => duplicateSelected(), []);
+  const handleSelectAll = useCallback(() => selectAll(), []);
   
   // ==================== View Menu Actions ====================
   

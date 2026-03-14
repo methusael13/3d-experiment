@@ -21,6 +21,7 @@ import { ReflectionProbeSubPanel } from './subpanels/ReflectionProbeSubPanel';
 import { LightSubPanel } from './subpanels/LightSubPanel';
 import { PlayerSubPanel } from './subpanels/PlayerSubPanel';
 import { CameraSubPanel } from './subpanels/CameraSubPanel';
+import { AnimationSubPanel } from './subpanels/AnimationSubPanel';
 import styles from './ComponentsTab.module.css';
 
 /**
@@ -129,6 +130,13 @@ export const INTRINSIC_COMPONENT_PANELS: {
     label: 'Light Properties',
     renderPanel: (entity, onChanged, debugTextureManager, shadowRenderer) => (
       <LightSubPanel entity={entity} onChanged={onChanged} debugTextureManager={debugTextureManager} shadowRenderer={shadowRenderer} />
+    ),
+  },
+  {
+    type: 'skeleton',
+    label: 'Animation',
+    renderPanel: (entity, onChanged) => (
+      <AnimationSubPanel entity={entity} onChanged={onChanged} />
     ),
   },
 ];

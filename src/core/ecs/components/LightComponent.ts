@@ -106,4 +106,10 @@ export class LightComponent extends Component {
     if (data.shadowMapResolution !== undefined)
       this.shadowMapResolution = data.shadowMapResolution as number;
   }
+
+  clone(): LightComponent {
+    const c = new LightComponent();
+    c.deserialize(this.serialize());
+    return c;
+  }
 }

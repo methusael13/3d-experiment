@@ -17,6 +17,8 @@ import { LightComponent } from '../../../ecs/components/LightComponent';
 import { TransformComponent } from '../../../ecs/components/TransformComponent';
 import { TerrainComponent } from '../../../ecs/components/TerrainComponent';
 import type { VariantMeshPool } from '../VariantMeshPool';
+import { VariantRenderer } from '../VariantRenderer';
+import type { MeshRenderSystem } from '../../../ecs/systems/MeshRenderSystem';
 import type { Vec3 } from '../../../types';
 import { Logger } from '@/core/utils/logger';
 import { SPOT_SHADOW_SLOT_BASE } from '../../renderers/shared/constants';
@@ -53,6 +55,9 @@ export class ShadowPass extends BaseRenderPass {
   private objectRenderer: ObjectRendererGPU;
   private meshPool: VariantMeshPool;
 
+  /** Variant renderer for skinned shadow rendering (skeletal animation depth-only) */
+  private variantRenderer: VariantRenderer | null = null;
+
   private _logger: Logger = Logger.createLogger('ShadowPass', 2000);
   /** Track whether we've wired the shadow renderer to the terrain component */
   private _terrainShadowWired = false;
@@ -62,6 +67,13 @@ export class ShadowPass extends BaseRenderPass {
     this.shadowRenderer = deps.shadowRenderer;
     this.objectRenderer = deps.objectRenderer;
     this.meshPool = deps.meshPool;
+  }
+
+  private ensureVariantRenderer(): VariantRenderer {
+    if (!this.variantRenderer) {
+      this.variantRenderer = new VariantRenderer(this.meshPool);
+    }
+    return this.variantRenderer;
   }
 
   execute(ctx: RenderContext): void {
@@ -167,6 +179,15 @@ export class ShadowPass extends BaseRenderPass {
       terrainComponent = terrainEntity.getComponent<TerrainComponent>('terrain') ?? null;
     }
 
+    // Collect skinned mesh IDs to exclude from the legacy shadow path
+    const meshRenderSystem = ctx.meshRenderSystem;
+    let skinnedMeshIds: Set<number> | undefined;
+    if (meshRenderSystem) {
+      const vr = this.ensureVariantRenderer();
+      skinnedMeshIds = vr.getSkinnedMeshIds(meshRenderSystem);
+      if (skinnedMeshIds.size === 0) skinnedMeshIds = undefined;
+    }
+
     for (let i = 0; i < spotEntities.length; i++) {
       const entity = spotEntities[i];
       const light = entity.getComponent<LightComponent>('light')!;
@@ -201,7 +222,16 @@ export class ShadowPass extends BaseRenderPass {
       }
 
       // Render batched object shadows using the pre-written dedicated slot
-      drawCalls += this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPos);
+      // (excludes skinned meshes — they need the variant pipeline with bone matrices)
+      drawCalls += this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPos, undefined, skinnedMeshIds);
+
+      // Render skinned entities via composed depth-only pipeline with bone transforms
+      if (skinnedMeshIds && meshRenderSystem) {
+        drawCalls += this.ensureVariantRenderer().renderSkinnedDepthOnly(
+          passEncoder, ctx.ctx, meshRenderSystem, lightMatrix,
+        );
+      }
+
       passEncoder.end();
     }
 
@@ -228,6 +258,16 @@ export class ShadowPass extends BaseRenderPass {
     // Pre-write single matrix when called standalone (not from executeCSM)
     if (slotIndex === 0) {
       this.shadowRenderer.writeShadowMatrices([lightSpaceMatrix]);
+    }
+
+    // Collect skinned mesh IDs to exclude from the legacy shadow path
+    // (skinned entities are rendered via the variant pipeline with bone transforms)
+    const meshRenderSystem = ctx.meshRenderSystem;
+    let skinnedMeshIds: Set<number> | undefined;
+    if (meshRenderSystem) {
+      const vr = this.ensureVariantRenderer();
+      skinnedMeshIds = vr.getSkinnedMeshIds(meshRenderSystem);
+      if (skinnedMeshIds.size === 0) skinnedMeshIds = undefined;
     }
 
     // Begin shadow render pass
@@ -257,7 +297,16 @@ export class ShadowPass extends BaseRenderPass {
     }
 
     // Render batched object shadows via legacy dynamic buffer path
-    drawCalls += this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPosArray);
+    // (excludes skinned meshes — they need the variant pipeline with bone matrices)
+    drawCalls += this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPosArray, undefined, skinnedMeshIds);
+
+    // Render skinned entities via composed depth-only pipeline with bone transforms
+    if (skinnedMeshIds && meshRenderSystem) {
+      drawCalls += this.ensureVariantRenderer().renderSkinnedDepthOnly(
+        passEncoder, ctx.ctx, meshRenderSystem, lightSpaceMatrix,
+      );
+    }
+
     passEncoder.end();
     return drawCalls;
   }
@@ -295,6 +344,15 @@ export class ShadowPass extends BaseRenderPass {
       }
     }
 
+    // Collect skinned mesh IDs to exclude from the legacy shadow path
+    const meshRenderSystem = ctx.meshRenderSystem;
+    let skinnedMeshIds: Set<number> | undefined;
+    if (meshRenderSystem) {
+      const vr = this.ensureVariantRenderer();
+      skinnedMeshIds = vr.getSkinnedMeshIds(meshRenderSystem);
+      if (skinnedMeshIds.size === 0) skinnedMeshIds = undefined;
+    }
+
     let drawCalls = 0;
     // Render each cascade using its pre-written slot
     for (let cascadeIdx = 0; cascadeIdx < shadowConfig.cascadeCount; cascadeIdx++) {
@@ -323,7 +381,16 @@ export class ShadowPass extends BaseRenderPass {
       }
 
       // Render batched object shadows via legacy dynamic buffer path
-      drawCalls += this.objectRenderer.renderShadowPass(passEncoder, cascadeIdx, lightPosArray);
+      // (excludes skinned meshes — they need the variant pipeline with bone matrices)
+      drawCalls += this.objectRenderer.renderShadowPass(passEncoder, cascadeIdx, lightPosArray, undefined, skinnedMeshIds);
+
+      // Render skinned entities via composed depth-only pipeline with bone transforms
+      if (skinnedMeshIds && meshRenderSystem) {
+        drawCalls += this.ensureVariantRenderer().renderSkinnedDepthOnly(
+          passEncoder, ctx.ctx, meshRenderSystem, cascadeLightMatrix,
+        );
+      }
+
       passEncoder.end();
     }
 

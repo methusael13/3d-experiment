@@ -38,6 +38,7 @@ import {
   CameraSystem,
   FrustumCullSystem,
   LightingSystem,
+  AnimationSystem,
 } from '../../core/ecs/systems';
 import { PlayerComponent } from '../../core/ecs/components/PlayerComponent';
 import { CameraComponent } from '../../core/ecs/components/CameraComponent';
@@ -281,6 +282,7 @@ export class Viewport {
 
     this._world.addSystem(new LightingSystem());         // priority 80 — compute direction/color from azimuth/elevation
     this._world.addSystem(new ShadowCasterSystem());     // priority 90
+    this._world.addSystem(new AnimationSystem());        // priority 95 — skeletal animation clip eval + bone matrices
     const ssrSystem = new SSRSystem();                   // priority 95 — LOD-gated SSR
     this._world.addSystem(ssrSystem);
     this._world.addSystem(new ReflectionProbeSystem());  // priority 96 — probe bake lifecycle

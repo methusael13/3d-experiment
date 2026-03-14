@@ -150,4 +150,14 @@ export class PrimitiveGeometryComponent extends Component {
       this.primitiveType = data.primitiveType as PrimitiveType;
     if (data.config) this.config = data.config as PrimitiveConfig;
   }
+
+  /**
+   * Clone this component's data. The clone shares geometryData (read-only vertex data)
+   * but starts with no GPU resources — those are created via initWebGPU() on the new entity.
+   */
+  clone(): PrimitiveGeometryComponent {
+    const c = new PrimitiveGeometryComponent(this.primitiveType, { ...this.config });
+    c.geometryData = this.geometryData; // shared read-only vertex data
+    return c;
+  }
 }

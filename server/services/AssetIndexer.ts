@@ -48,6 +48,10 @@ const DIR_TYPE_HINTS: Record<string, { type: AssetType; category?: AssetCategory
   'trees': { type: 'model', category: 'vegetation', subtype: 'tree' },
   'ferns': { type: 'model', category: 'vegetation', subtype: 'fern' },
   'flowers': { type: 'model', category: 'vegetation', subtype: 'flower' },
+  // Animation (type: model, category: animation)
+  'animations': { type: 'model', category: 'animation' },
+  'animation': { type: 'model', category: 'animation' },
+  'anims': { type: 'model', category: 'animation' },
   // Regular models
   'models': { type: 'model' },
   'assets': { type: 'model' },

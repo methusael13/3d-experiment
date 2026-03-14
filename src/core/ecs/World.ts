@@ -625,6 +625,61 @@ export class World {
     };
   }
 
+  // ===================== Entity Cloning =====================
+
+  /**
+   * Clone an entity: creates a new entity with cloned copies of all clonable components.
+   * Components that implement clone() are duplicated; components without clone() are skipped
+   * (e.g., singleton managers like TerrainComponent, OceanComponent).
+   *
+   * The new entity's TransformComponent position is offset by +1 on X to avoid overlapping.
+   * Returns the new entity, or null if cloning failed.
+   */
+  cloneEntity(sourceId: string): Entity | null {
+    const source = this.entities.get(sourceId);
+    if (!source) return null;
+
+    // Create entity directly (bypassing createEntity) so we can add all
+    // cloned components BEFORE firing onEntityAdded — the callback needs
+    // to see mesh/primitive data to initialize GPU resources.
+    const newEntity = new Entity(source.name + ' Copy');
+
+    let skippedCount = 0;
+    for (const component of source.getComponents()) {
+      if (typeof component.clone === 'function') {
+        const cloned = component.clone();
+        if (cloned) {
+          newEntity.addComponent(cloned);
+        } else {
+          skippedCount++;
+        }
+      } else {
+        skippedCount++;
+      }
+    }
+
+    if (skippedCount > 0) {
+      console.log(`[World.cloneEntity] Skipped ${skippedCount} non-clonable component(s) on "${source.name}"`);
+    }
+
+    // Offset position so the clone doesn't overlap the original
+    const transform = newEntity.getComponent<TransformComponent>('transform');
+    if (transform) {
+      transform.position[0] += 1;
+      transform.dirty = true;
+    }
+
+    // Now register with the world and fire onEntityAdded (entity has all components)
+    this.entities.set(newEntity.id, newEntity);
+    this._sceneGraph.add(newEntity.id, {
+      localBounds: { min: [-0.5, -0.5, -0.5], max: [0.5, 0.5, 0.5] },
+    });
+    this._hierarchyDirty = true;
+    this.onEntityAdded?.(newEntity);
+
+    return newEntity;
+  }
+
   // ===================== Groups =====================
 
   private groups = new Map<string, { name: string; childIds: Set<string> }>();

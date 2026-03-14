@@ -65,6 +65,9 @@ export const RES = {
   ISLAND_MASK_TEX: 'islandMaskTex',
   ISLAND_MASK_SAMP: 'islandMaskSamp',
   ISLAND_MASK_SCALE: 'islandMaskScale',
+
+  // ==================== Skinning (textures group — storage buffer) ====================
+  BONE_MATRICES: 'boneMatrices',
 } as const;
 
 export type ResourceName = (typeof RES)[keyof typeof RES];

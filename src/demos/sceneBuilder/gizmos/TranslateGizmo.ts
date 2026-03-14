@@ -101,10 +101,12 @@ export class TranslateGizmo extends BaseGizmo {
   handleMouseMove(screenX: number, screenY: number): boolean {
     if (!this.isDraggingFlag || !this.activeAxis) return false;
     
-    // Calculate delta based on screen movement
+    // Calculate delta based on screen movement, scaled by camera distance
+    // so translation feels consistent regardless of zoom level
     const dx = screenX - this.dragStartPos[0];
     const dy = screenY - this.dragStartPos[1];
-    const delta = (dx - dy) * 0.01;
+    const worldUnitsPerPixel = this.getScreenSpaceScale() / BaseGizmo.BASE_SCREEN_SIZE;
+    const delta = (dx - dy) * worldUnitsPerPixel;
     
     // Get axis direction (world or local based on orientation)
     const axisDir = this.getAxisDirection(this.activeAxis);
