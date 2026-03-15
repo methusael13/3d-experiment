@@ -120,6 +120,8 @@ export const ENVIRONMENT_BINDINGS = {
   SPOT_SHADOW_SAMPLER: 14,
   COOKIE_ATLAS: 15,
   COOKIE_SAMPLER: 16,
+  CLOUD_SHADOW_MAP: 17,
+  CLOUD_SHADOW_UNIFORMS: 18,
 } as const;
 
 /**
@@ -168,8 +170,11 @@ export const ENV_BINDING_MASK = {
   /** Cookie atlas (2d array + sampler) */
   COOKIE: (1 << ENVIRONMENT_BINDINGS.COOKIE_ATLAS) |
           (1 << ENVIRONMENT_BINDINGS.COOKIE_SAMPLER),
-  /** All resources including CSM + multi-light + shadow atlas + cookies */
-  ALL: 0x1FFFF, // All 17 bindings (0-16)
+  /** Cloud shadow resources (cloud shadow map + uniforms) */
+  CLOUD_SHADOW: (1 << ENVIRONMENT_BINDINGS.CLOUD_SHADOW_MAP) |
+                (1 << ENVIRONMENT_BINDINGS.CLOUD_SHADOW_UNIFORMS),
+  /** All resources including CSM + multi-light + shadow atlas + cookies + cloud shadow */
+  ALL: 0x7FFFF, // All 19 bindings (0-18)
 } as const;
 
 export type EnvironmentBindingMask = number;

@@ -135,6 +135,27 @@ struct BiomeTextureParams {
 @group(3) @binding(13) var env_spotShadowAtlas: texture_depth_2d_array;
 @group(3) @binding(14) var env_spotShadowSampler: sampler_comparison;
 
+// Cloud shadow map (bindings 17-18) from SceneEnvironment
+@group(3) @binding(17) var env_cloudShadowMap: texture_2d<f32>;
+@group(3) @binding(18) var<uniform> env_cloudShadowUniforms: CloudShadowSceneUniforms;
+
+struct CloudShadowSceneUniforms {
+  shadowCenter: vec2f,
+  shadowRadius: f32,
+  averageCoverage: f32,
+}
+
+fn sampleCloudShadowTerrain(worldPos: vec3f) -> f32 {
+  let offset = vec2f(worldPos.x, worldPos.z) - env_cloudShadowUniforms.shadowCenter;
+  let uv = offset / (env_cloudShadowUniforms.shadowRadius * 2.0) + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { return 1.0; }
+  return textureSampleLevel(env_cloudShadowMap, env_cubeSampler, uv, 0.0).r;
+}
+
+fn getOvercastShadowFade() -> f32 {
+  return 1.0 - smoothstep(0.6, 0.9, env_cloudShadowUniforms.averageCoverage);
+}
+
 // ============================================================================
 // CSM Uniform Structure (matches ShadowRendererGPU)
 // ============================================================================
@@ -1164,9 +1185,16 @@ fn calculateShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDi
     shadowValue = mix(hardShadow, softShadow, material.shadowSoftness);
   }
   
+  // Apply cloud shadow (multiply CSM shadow with cloud transmittance)
+  let cloudShadow = sampleCloudShadowTerrain(worldPos);
+  shadowValue = shadowValue * cloudShadow;
+  
+  // Apply overcast shadow fade (CSM shadows fade under heavy cloud cover)
+  let overcastFade = getOvercastShadowFade();
+  
   // Apply fade and enable flag
   let enabledFactor = step(0.5, material.shadowEnabled);
-  let finalFadeFactor = fadeFactor * enabledFactor;
+  let finalFadeFactor = fadeFactor * enabledFactor * overcastFade;
   
   return mix(1.0, shadowValue, finalFadeFactor);
 }

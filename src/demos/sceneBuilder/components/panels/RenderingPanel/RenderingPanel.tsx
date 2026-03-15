@@ -1,9 +1,10 @@
 import { useCallback } from 'preact/hooks';
 import { Panel, Slider, Checkbox, Select, Section } from '../../ui';
 import styles from './RenderingPanel.module.css';
-import type { SSAOEffectConfig, CompositeEffectConfig } from '@/core/gpu/postprocess';
+import type { SSAOEffectConfig, CompositeEffectConfig, AtmosphericFogConfig } from '@/core/gpu/postprocess';
 import type { SSRQualityLevel } from '@/core/gpu/pipeline/SSRConfig';
 import type { DebugViewMode } from '@/core/gpu/pipeline/passes/DebugViewPass';
+import type { CloudConfig } from '@/core/gpu/clouds/types';
 
 // Import CSS variables
 import '../../styles/variables.css';
@@ -38,7 +39,26 @@ export interface SSRSettings {
   quality: SSRQualityLevel;
 }
 
+/**
+ * Atmospheric fog settings for UI
+ */
+export interface AtmosphericFogSettings extends Required<AtmosphericFogConfig> {}
+
 export type { DebugViewMode };
+
+/**
+ * Cloud settings for UI
+ */
+export interface CloudSettings {
+  enabled: boolean;
+  coverage: number;
+  cloudType: number;
+  density: number;
+  cloudBase: number;
+  cloudThickness: number;
+  windSpeed: number;
+  windDirection: number;
+}
 
 export interface RenderingPanelProps {
   // Shadow settings
@@ -52,6 +72,14 @@ export interface RenderingPanelProps {
   // SSR settings
   ssrSettings: SSRSettings;
   onSSRSettingsChange: (settings: Partial<SSRSettings>) => void;
+
+  // Atmospheric fog settings
+  atmosphericFogSettings: AtmosphericFogSettings;
+  onAtmosphericFogSettingsChange: (settings: Partial<AtmosphericFogSettings>) => void;
+
+  // Cloud settings
+  cloudSettings: CloudSettings;
+  onCloudSettingsChange: (settings: Partial<CloudSettings>) => void;
 
   // Debug view
   debugViewMode: DebugViewMode;
@@ -106,6 +134,11 @@ const ssrQualityOptions = [
   { value: 'ultra', label: 'Ultra (256 steps)' },
 ];
 
+const fogModeOptions = [
+  { value: 'exp', label: 'Exponential (Natural)' },
+  { value: 'exp2', label: 'Exp² (Sharp Wall)' },
+];
+
 export function RenderingPanel({
   shadowSettings,
   showShadowThumbnail,
@@ -115,6 +148,10 @@ export function RenderingPanel({
   onSSAOSettingsChange,
   ssrSettings,
   onSSRSettingsChange,
+  atmosphericFogSettings,
+  onAtmosphericFogSettingsChange,
+  cloudSettings,
+  onCloudSettingsChange,
   debugViewMode,
   onDebugViewModeChange,
   compositeSettings,
@@ -470,6 +507,209 @@ export function RenderingPanel({
             checked={ssaoSettings.blur}
             onChange={handleSSAOBlur}
             disabled={ssaoControlsDisabled}
+          />
+        </div>
+      </Section>
+
+      {/* Post Processing - Atmosphere */}
+      <Section title="Atmosphere" defaultCollapsed={true}>
+        <Checkbox
+          label="Enable Atmospheric Fog"
+          checked={atmosphericFogSettings.enabled}
+          onChange={(enabled) => onAtmosphericFogSettingsChange({ enabled })}
+        />
+
+        <div class={`${styles.shadowControls} ${!atmosphericFogSettings.enabled ? styles.disabled : ''}`}>
+          {/* Aerial Perspective (Haze) */}
+          <div class={styles.controlGroup}>
+            <label class={styles.controlLabel} style={{ fontWeight: 600, fontSize: '11px', marginTop: '4px' }}>Aerial Perspective</label>
+          </div>
+
+          <Slider
+            label="Visibility Distance"
+            value={atmosphericFogSettings.visibilityDistance}
+            min={200}
+            max={10000}
+            step={100}
+            format={(v) => `${Math.round(v)}m`}
+            onChange={(v) => onAtmosphericFogSettingsChange({ visibilityDistance: v })}
+            disabled={!atmosphericFogSettings.enabled}
+          />
+
+          <Slider
+            label="Haze Intensity"
+            value={atmosphericFogSettings.hazeIntensity}
+            min={0}
+            max={2}
+            step={0.05}
+            format={(v) => v.toFixed(2)}
+            onChange={(v) => onAtmosphericFogSettingsChange({ hazeIntensity: v })}
+            disabled={!atmosphericFogSettings.enabled}
+          />
+
+          <Slider
+            label="Scale Height"
+            value={atmosphericFogSettings.hazeScaleHeight}
+            min={100}
+            max={5000}
+            step={50}
+            format={(v) => `${Math.round(v)}m`}
+            onChange={(v) => onAtmosphericFogSettingsChange({ hazeScaleHeight: v })}
+            disabled={!atmosphericFogSettings.enabled}
+          />
+
+          {/* Height Fog */}
+          <div class={styles.controlGroup}>
+            <label class={styles.controlLabel} style={{ fontWeight: 600, fontSize: '11px', marginTop: '8px' }}>Height Fog</label>
+          </div>
+
+          <Checkbox
+            label="Enable Height Fog"
+            checked={atmosphericFogSettings.heightFogEnabled}
+            onChange={(v) => onAtmosphericFogSettingsChange({ heightFogEnabled: v })}
+            disabled={!atmosphericFogSettings.enabled}
+          />
+
+          <div class={styles.controlGroup}>
+            <label class={styles.controlLabel}>Fog Mode</label>
+            <Select
+              value={atmosphericFogSettings.fogMode}
+              options={fogModeOptions}
+              onChange={(v) => onAtmosphericFogSettingsChange({ fogMode: v as 'exp' | 'exp2' })}
+              disabled={!atmosphericFogSettings.enabled || !atmosphericFogSettings.heightFogEnabled}
+            />
+          </div>
+
+          <Slider
+            label="Fog Visibility"
+            value={atmosphericFogSettings.fogVisibilityDistance}
+            min={50}
+            max={10000}
+            step={50}
+            format={(v) => `${Math.round(v)}m`}
+            onChange={(v) => onAtmosphericFogSettingsChange({ fogVisibilityDistance: v })}
+            disabled={!atmosphericFogSettings.enabled || !atmosphericFogSettings.heightFogEnabled}
+          />
+
+          <Slider
+            label="Fog Height"
+            value={atmosphericFogSettings.fogHeight}
+            min={-900}
+            max={900}
+            step={5}
+            format={(v) => `${Math.round(v)}m`}
+            onChange={(v) => onAtmosphericFogSettingsChange({ fogHeight: v })}
+            disabled={!atmosphericFogSettings.enabled || !atmosphericFogSettings.heightFogEnabled}
+          />
+
+          <Slider
+            label="Height Falloff"
+            value={atmosphericFogSettings.fogHeightFalloff}
+            min={0.005}
+            max={1.0}
+            step={0.005}
+            format={(v) => v.toFixed(3)}
+            onChange={(v) => onAtmosphericFogSettingsChange({ fogHeightFalloff: v })}
+            disabled={!atmosphericFogSettings.enabled || !atmosphericFogSettings.heightFogEnabled}
+          />
+
+          <Slider
+            label="Sun Scattering"
+            value={atmosphericFogSettings.fogSunScattering}
+            min={0}
+            max={1}
+            step={0.05}
+            format={(v) => v.toFixed(2)}
+            onChange={(v) => onAtmosphericFogSettingsChange({ fogSunScattering: v })}
+            disabled={!atmosphericFogSettings.enabled || !atmosphericFogSettings.heightFogEnabled}
+          />
+        </div>
+      </Section>
+
+      {/* Volumetric Clouds */}
+      <Section title="Volumetric Clouds" defaultCollapsed={true}>
+        <Checkbox
+          label="Enable Clouds"
+          checked={cloudSettings.enabled}
+          onChange={(enabled) => onCloudSettingsChange({ enabled })}
+        />
+
+        <div class={`${styles.shadowControls} ${!cloudSettings.enabled ? styles.disabled : ''}`}>
+          <Slider
+            label="Coverage"
+            value={cloudSettings.coverage}
+            min={0}
+            max={1}
+            step={0.05}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={(v) => onCloudSettingsChange({ coverage: v })}
+            disabled={!cloudSettings.enabled}
+          />
+
+          <Slider
+            label="Cloud Type"
+            value={cloudSettings.cloudType}
+            min={0}
+            max={1}
+            step={0.05}
+            format={(v) => v < 0.3 ? 'Stratus' : v < 0.65 ? 'Stratocumulus' : 'Cumulus'}
+            onChange={(v) => onCloudSettingsChange({ cloudType: v })}
+            disabled={!cloudSettings.enabled}
+          />
+
+          <Slider
+            label="Density"
+            value={cloudSettings.density}
+            min={0.01}
+            max={0.1}
+            step={0.005}
+            format={(v) => v.toFixed(3)}
+            onChange={(v) => onCloudSettingsChange({ density: v })}
+            disabled={!cloudSettings.enabled}
+          />
+
+          <Slider
+            label="Cloud Base"
+            value={cloudSettings.cloudBase}
+            min={500}
+            max={5000}
+            step={100}
+            format={(v) => `${Math.round(v)}m`}
+            onChange={(v) => onCloudSettingsChange({ cloudBase: v })}
+            disabled={!cloudSettings.enabled}
+          />
+
+          <Slider
+            label="Thickness"
+            value={cloudSettings.cloudThickness}
+            min={500}
+            max={5000}
+            step={100}
+            format={(v) => `${Math.round(v)}m`}
+            onChange={(v) => onCloudSettingsChange({ cloudThickness: v })}
+            disabled={!cloudSettings.enabled}
+          />
+
+          <Slider
+            label="Wind Speed"
+            value={cloudSettings.windSpeed}
+            min={0}
+            max={50}
+            step={1}
+            format={(v) => `${Math.round(v)} m/s`}
+            onChange={(v) => onCloudSettingsChange({ windSpeed: v })}
+            disabled={!cloudSettings.enabled}
+          />
+
+          <Slider
+            label="Wind Direction"
+            value={cloudSettings.windDirection}
+            min={0}
+            max={360}
+            step={5}
+            format={(v) => `${Math.round(v)}°`}
+            onChange={(v) => onCloudSettingsChange({ windDirection: v })}
+            disabled={!cloudSettings.enabled}
           />
         </div>
       </Section>

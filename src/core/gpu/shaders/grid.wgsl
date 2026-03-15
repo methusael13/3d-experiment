@@ -58,6 +58,19 @@ struct GridUniforms {
 @group(3) @binding(13) var env_spotShadowAtlas: texture_depth_2d_array;
 @group(3) @binding(14) var env_spotShadowSampler: sampler_comparison;
 
+// Cloud shadow map (bindings 17-18) from SceneEnvironment
+@group(3) @binding(17) var env_gridCloudShadowMap: texture_2d<f32>;
+@group(3) @binding(18) var<uniform> env_gridCloudShadowUniforms: vec4f; // xy=center, z=radius, w=averageCoverage
+
+fn sampleCloudShadowGrid(worldPos: vec3f) -> f32 {
+  let csCenter = env_gridCloudShadowUniforms.xy;
+  let csRadius = env_gridCloudShadowUniforms.z;
+  let offset = vec2f(worldPos.x, worldPos.z) - csCenter;
+  let uv = offset / (csRadius * 2.0) + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { return 1.0; }
+  return textureSampleLevel(env_gridCloudShadowMap, env_cubeSampler, uv, 0.0).r;
+}
+
 // ============================================================================
 // Multi-Light Structures (must match lights.wgsl / LightBufferManager.ts)
 // ============================================================================
@@ -479,8 +492,10 @@ fn fs_ground(input: GroundVertexOutput) -> @location(0) vec4f {
   let lightDir = normalize(uniforms.lightDirection);
   let NdotL = max(dot(normal, lightDir), 0.0);
 
-  // Shadow
-  let shadowFactor = sampleShadow(input.worldPos);
+  // Shadow (CSM + cloud shadow combined)
+  let csmShadow = sampleShadow(input.worldPos);
+  let cloudShadow = sampleCloudShadowGrid(input.worldPos);
+  let shadowFactor = csmShadow * cloudShadow;
 
   // === Debug Visualization ===
   if (GRID_DEBUG_MODE > 0) {

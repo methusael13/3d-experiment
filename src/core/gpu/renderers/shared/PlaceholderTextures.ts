@@ -61,6 +61,12 @@ export class PlaceholderTextures {
   private _cookieAtlasView: GPUTextureView;
   private _cookieSampler: GPUSampler;
   
+  // Cloud shadow placeholder (1x1 rgba16float with transmittance = 1.0 = no shadow)
+  private _cloudShadowMap: GPUTexture;
+  private _cloudShadowMapView: GPUTextureView;
+  private _cloudShadowSampler: GPUSampler;
+  private _cloudShadowUniformBuffer: GPUBuffer;
+  
   private constructor(ctx: GPUContext) {
     const device = ctx.device;
     
@@ -306,6 +312,41 @@ export class PlaceholderTextures {
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
     });
+    
+    // ============ Cloud Shadow Placeholder ============
+    
+    // 1x1 rgba16float with R=1.0 (fully lit = no cloud shadow)
+    this._cloudShadowMap = device.createTexture({
+      label: 'placeholder-cloud-shadow-map',
+      size: { width: 1, height: 1 },
+      format: 'rgba16float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    this._cloudShadowMapView = this._cloudShadowMap.createView();
+    // Default: fully lit (no cloud shadow)
+    
+    this._cloudShadowSampler = device.createSampler({
+      label: 'placeholder-cloud-shadow-sampler',
+      magFilter: 'linear',
+      minFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    });
+    
+    // Cloud shadow scene uniform buffer (16 bytes: center.xy, radius, averageCoverage)
+    // Default: center=0,0, radius=1, averageCoverage=0 (clear sky)
+    this._cloudShadowUniformBuffer = device.createBuffer({
+      label: 'placeholder-cloud-shadow-uniforms',
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    const csData = new Float32Array(this._cloudShadowUniformBuffer.getMappedRange());
+    csData[0] = 0; // shadowCenter.x
+    csData[1] = 0; // shadowCenter.y
+    csData[2] = 0; // shadowRadius = 0 → UV goes to infinity → bounds check returns 1.0 (no shadow)
+    csData[3] = 0; // averageCoverage (clear)
+    this._cloudShadowUniformBuffer.unmap();
   }
   
   /**
@@ -336,6 +377,8 @@ export class PlaceholderTextures {
       inst._csmArray.destroy();
       inst._spotShadowAtlas.destroy();
       inst._cookieAtlas.destroy();
+      inst._cloudShadowMap.destroy();
+      inst._cloudShadowUniformBuffer.destroy();
       PlaceholderTextures.instance = null;
     }
   }
@@ -373,4 +416,8 @@ export class PlaceholderTextures {
   get spotShadowSampler(): GPUSampler { return this._spotShadowSampler; }
   get cookieAtlasView(): GPUTextureView { return this._cookieAtlasView; }
   get cookieSampler(): GPUSampler { return this._cookieSampler; }
+  
+  get cloudShadowMapView(): GPUTextureView { return this._cloudShadowMapView; }
+  get cloudShadowSampler(): GPUSampler { return this._cloudShadowSampler; }
+  get cloudShadowUniformBuffer(): GPUBuffer { return this._cloudShadowUniformBuffer; }
 }

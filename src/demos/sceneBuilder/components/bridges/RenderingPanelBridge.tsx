@@ -4,8 +4,8 @@
 
 import { useState, useCallback } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
-import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings, type SSRSettings, type DebugViewMode } from '../panels';
-import type { CompositeEffectConfig } from '@/core/gpu/postprocess';
+import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings, type SSRSettings, type AtmosphericFogSettings, type CloudSettings, type DebugViewMode } from '../panels';
+import type { CompositeEffectConfig, AtmosphericFogConfig } from '@/core/gpu/postprocess';
 import type { SSRQualityLevel } from '@/core/gpu/pipeline/SSRConfig';
 
 // ==================== Local Rendering State ====================
@@ -80,6 +80,19 @@ export function ConnectedRenderingPanel({
   const [compositeSettings, setCompositeSettings] = useState<Required<CompositeEffectConfig>>(
     defaultRenderingState.compositeSettings
   );
+  const [atmosphericFogSettings, setAtmosphericFogSettings] = useState<AtmosphericFogSettings>({
+    enabled: false,
+    visibilityDistance: 3000,
+    hazeIntensity: 0.8,
+    hazeScaleHeight: 800,
+    heightFogEnabled: false,
+    fogVisibilityDistance: 1500,
+    fogMode: 'exp' as const,
+    fogHeight: 0,
+    fogHeightFalloff: 0.05,
+    fogColor: [0.85, 0.88, 0.92],
+    fogSunScattering: 0.3,
+  });
   
   // Handlers
 
@@ -171,6 +184,41 @@ export function ConnectedRenderingPanel({
     });
   }, [store]);
   
+  const handleAtmosphericFogSettingsChange = useCallback((settings: Partial<AtmosphericFogSettings>) => {
+    setAtmosphericFogSettings((prev: AtmosphericFogSettings) => {
+      const updated = { ...prev, ...settings };
+      // Update viewport atmospheric fog settings if available
+      const viewport = store.viewport;
+      if (viewport) {
+        viewport.setAtmosphericFogSettings(updated);
+      }
+      return updated;
+    });
+  }, [store]);
+  
+  // Cloud state
+  const [cloudSettings, setCloudSettings] = useState<CloudSettings>({
+    enabled: false,
+    coverage: 0.4,
+    cloudType: 0.75,
+    density: 0.04,
+    cloudBase: 1500,
+    cloudThickness: 2500,
+    windSpeed: 5,
+    windDirection: 45,
+  });
+  
+  const handleCloudSettingsChange = useCallback((settings: Partial<CloudSettings>) => {
+    setCloudSettings((prev: CloudSettings) => {
+      const updated = { ...prev, ...settings };
+      const viewport = store.viewport;
+      if (viewport) {
+        viewport.setCloudSettings(updated);
+      }
+      return updated;
+    });
+  }, [store]);
+  
   return (
     <RenderingPanel
       shadowSettings={shadowSettings}
@@ -181,6 +229,10 @@ export function ConnectedRenderingPanel({
       onSSAOSettingsChange={handleSSAOSettingsChange}
       ssrSettings={ssrSettings}
       onSSRSettingsChange={handleSSRSettingsChange}
+      atmosphericFogSettings={atmosphericFogSettings}
+      onAtmosphericFogSettingsChange={handleAtmosphericFogSettingsChange}
+      cloudSettings={cloudSettings}
+      onCloudSettingsChange={handleCloudSettingsChange}
       debugViewMode={debugViewMode}
       onDebugViewModeChange={handleDebugViewModeChange}
       compositeSettings={compositeSettings}

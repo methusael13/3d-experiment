@@ -59,6 +59,10 @@ export const RES = {
   COOKIE_ATLAS: 'cookieAtlas',
   COOKIE_SAMPLER: 'cookieSampler',
 
+  // ==================== Cloud Shadow (environment) ====================
+  CLOUD_SHADOW_MAP: 'cloudShadowMap',
+  CLOUD_SHADOW_UNIFORMS: 'cloudShadowUniforms',
+
   // ==================== Terrain (shared by terrain + shadow) ====================
   TERRAIN_HEIGHTMAP: 'terrainHeightmap',
   TERRAIN_NORMALMAP: 'terrainNormalMap',

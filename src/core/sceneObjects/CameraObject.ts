@@ -63,7 +63,7 @@ export class CameraObject extends SceneObject {
   public near: number = 0.1;
   
   /** Far clipping plane */
-  public far: number = 100;
+  public far: number = 2000;
   
   /** Orthographic size (half-height of view volume) */
   public orthoSize: number = 5;

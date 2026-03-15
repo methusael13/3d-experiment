@@ -42,6 +42,20 @@ export const shadowFeature: ShaderFeature = {
       group: 'environment',
       provider: 'SceneEnvironment',
     },
+    {
+      name: RES.CLOUD_SHADOW_MAP,
+      kind: 'texture',
+      textureType: 'texture_2d<f32>',
+      group: 'environment',
+      provider: 'SceneEnvironment',
+    },
+    {
+      name: RES.CLOUD_SHADOW_UNIFORMS,
+      kind: 'uniform',
+      wgslType: 'vec4f', // Placeholder — actual struct is CloudShadowSceneUniforms (center.xy, radius, coverage)
+      group: 'environment',
+      provider: 'SceneEnvironment',
+    },
   ],
 
   functions: `
@@ -136,18 +150,43 @@ fn sampleCSMShadow(worldPos: vec4f, viewDepth: f32, normal: vec3f, lightDir: vec
   return shadow0;
 }
 
+// ============ Cloud Shadow Sampling ============
+// cloudShadowUniforms: vec4f = (shadowCenter.xy, shadowRadius, averageCoverage)
+fn sampleCloudShadowObject(worldPos: vec3f) -> f32 {
+  let csCenter = cloudShadowUniforms.xy;
+  let csRadius = cloudShadowUniforms.z;
+  let offset = vec2f(worldPos.x, worldPos.z) - csCenter;
+  let uv = offset / (csRadius * 2.0) + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { return 1.0; }
+  return textureSampleLevel(cloudShadowMap, iblCubemapSampler, uv, 0.0).r;
+}
+
+fn getOvercastShadowFadeObject() -> f32 {
+  let avgCoverage = cloudShadowUniforms.w;
+  return 1.0 - smoothstep(0.6, 0.9, avgCoverage);
+}
+
 fn sampleShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDir: vec3f) -> f32 {
   if (globals.shadowEnabled < 0.5) {
     return 1.0;
   }
 
+  var csmShadow = 1.0;
   if (globals.csmEnabled > 0.5) {
     let cameraFwd = normalize(csmUniforms.cameraForward.xyz);
     let viewDepth = abs(dot(worldPos - globals.cameraPosition, cameraFwd));
-    return sampleCSMShadow(vec4f(worldPos, 1.0), viewDepth, normal, lightDir);
+    csmShadow = sampleCSMShadow(vec4f(worldPos, 1.0), viewDepth, normal, lightDir);
   } else {
-    return sampleSingleShadow(lightSpacePos, normal, lightDir);
+    csmShadow = sampleSingleShadow(lightSpacePos, normal, lightDir);
   }
+
+  // Apply cloud shadow (multiply CSM with cloud transmittance)
+  let cloudShadow = sampleCloudShadowObject(worldPos);
+  let combined = csmShadow * cloudShadow;
+
+  // Fade CSM shadows under overcast (cloud layer diffuses sunlight)
+  let overcastFade = getOvercastShadowFadeObject();
+  return mix(1.0, combined, overcastFade);
 }
 `,
 

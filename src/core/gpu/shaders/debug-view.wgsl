@@ -42,19 +42,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   if (mode == 1) {
     // Depth visualization: linearized, remapped to grayscale
     let rawDepth = textureLoad(depthTexture, texCoord, 0);
-    if (rawDepth < 0.0001) {
-      return vec4f(0.0, 0.0, 0.2, 1.0); // Sky = dark blue
+    // Reversed-Z: depth buffer is cleared to 0.0 (far plane). Exact zero = sky.
+    // With large far planes, valid geometry can have very small depth values (e.g. 0.00005),
+    // so we must use a tight threshold to avoid misclassifying distant terrain as sky.
+    if (rawDepth == 0.0) {
+      return vec4f(0.2, 0.0, 0.3, 1.0); // Sky = purple (clearly distinct from depth)
     }
     let linearDepth = linearizeDepthReversed(rawDepth, near, far);
-    // Remap: 0m = white, 500m+ = black
-    let normalized = 1.0 - saturate(linearDepth / 500.0);
+    // Remap: 0m = white, far plane = black (adapts to actual camera far plane)
+    let normalized = 1.0 - saturate(linearDepth / far);
     return vec4f(vec3f(normalized), 1.0);
   }
 
   if (mode == 2) {
     // Normals visualization
     let rawDepth = textureLoad(depthTexture, texCoord, 0);
-    if (rawDepth < 0.0001) {
+    // Reversed-Z: exact zero = sky (cleared value). Use tight threshold.
+    if (rawDepth == 0.0) {
       return vec4f(0.0, 0.0, 0.0, 1.0); // Sky = black
     }
     

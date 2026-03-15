@@ -65,6 +65,10 @@ export class SceneEnvironment {
   private currentLightBufferManager: LightBufferManager | null = null;
   private currentShadowRenderer: ShadowRendererGPU | null = null;
 
+  // Cloud shadow resources
+  private currentCloudShadowView: GPUTextureView | null = null;
+  private currentCloudShadowUniformBuffer: GPUBuffer | null = null;
+
   // Track if bind group needs rebuild
   private needsRebuild: boolean = false;
 
@@ -136,6 +140,9 @@ export class SceneEnvironment {
         // Cookie atlas (15-16)
         { binding: ENVIRONMENT_BINDINGS.COOKIE_ATLAS, resource: this.placeholders.cookieAtlasView },
         { binding: ENVIRONMENT_BINDINGS.COOKIE_SAMPLER, resource: this.placeholders.cookieSampler },
+        // Cloud shadow (17-18)
+        { binding: ENVIRONMENT_BINDINGS.CLOUD_SHADOW_MAP, resource: this.currentCloudShadowView ?? this.placeholders.cloudShadowMapView },
+        { binding: ENVIRONMENT_BINDINGS.CLOUD_SHADOW_UNIFORMS, resource: { buffer: this.currentCloudShadowUniformBuffer ?? this.placeholders.cloudShadowUniformBuffer } },
       ],
     });
   }
@@ -208,6 +215,20 @@ export class SceneEnvironment {
   setSSR(view: GPUTextureView | null): void {
     if (this.currentSSRView !== view) {
       this.currentSSRView = view;
+      this.needsRebuild = true;
+      this.invalidateMaskedBindGroups();
+    }
+  }
+
+  /**
+   * Set cloud shadow resources (bindings 17-18)
+   * @param view Cloud shadow map texture view (null to use placeholder)
+   * @param uniformBuffer Cloud shadow scene uniform buffer (null to use placeholder)
+   */
+  setCloudShadow(view: GPUTextureView | null, uniformBuffer: GPUBuffer | null): void {
+    if (this.currentCloudShadowView !== view || this.currentCloudShadowUniformBuffer !== uniformBuffer) {
+      this.currentCloudShadowView = view;
+      this.currentCloudShadowUniformBuffer = uniformBuffer;
       this.needsRebuild = true;
       this.invalidateMaskedBindGroups();
     }
@@ -451,6 +472,22 @@ export class SceneEnvironment {
       });
     }
     
+    // Cloud shadow (bindings 17-18)
+    if (mask & (1 << ENVIRONMENT_BINDINGS.CLOUD_SHADOW_MAP)) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.CLOUD_SHADOW_MAP,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: 'float' },
+      });
+    }
+    if (mask & (1 << ENVIRONMENT_BINDINGS.CLOUD_SHADOW_UNIFORMS)) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.CLOUD_SHADOW_UNIFORMS,
+        visibility: GPUShaderStage.FRAGMENT,
+        buffer: { type: 'uniform' },
+      });
+    }
+    
     return entries;
   }
   
@@ -593,6 +630,17 @@ export class SceneEnvironment {
     }
     if (mask & (1 << ENVIRONMENT_BINDINGS.COOKIE_SAMPLER)) {
       entries.push({ binding: ENVIRONMENT_BINDINGS.COOKIE_SAMPLER, resource: this.placeholders.cookieSampler });
+    }
+    
+    // Cloud shadow (bindings 17-18)
+    if (mask & (1 << ENVIRONMENT_BINDINGS.CLOUD_SHADOW_MAP)) {
+      entries.push({ binding: ENVIRONMENT_BINDINGS.CLOUD_SHADOW_MAP, resource: this.currentCloudShadowView ?? this.placeholders.cloudShadowMapView });
+    }
+    if (mask & (1 << ENVIRONMENT_BINDINGS.CLOUD_SHADOW_UNIFORMS)) {
+      entries.push({
+        binding: ENVIRONMENT_BINDINGS.CLOUD_SHADOW_UNIFORMS,
+        resource: { buffer: this.currentCloudShadowUniformBuffer ?? this.placeholders.cloudShadowUniformBuffer },
+      });
     }
     
     return this.ctx.device.createBindGroup({

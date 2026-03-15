@@ -31,7 +31,7 @@ struct TerrainShadowParams {
 }
 
 @group(0) @binding(0) var<uniform> shadow: ShadowMatrix;
-@group(1) @binding(0) var<uniform> terrain: TerrainShadowParams;
+@group(1) @bxinding(0) var<uniform> terrain: TerrainShadowParams;
 @group(1) @binding(1) var heightmapTexture: texture_2d<f32>;
 
 // ============================================================================

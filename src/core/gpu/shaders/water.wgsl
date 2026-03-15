@@ -80,6 +80,23 @@ struct CSMUniforms {
 @group(3) @binding(13) var env_waterSpotShadowAtlas: texture_depth_2d_array;
 @group(3) @binding(14) var env_waterSpotShadowSampler: sampler_comparison;
 
+// Cloud shadow map (bindings 17-18) from SceneEnvironment
+@group(3) @binding(17) var env_waterCloudShadowMap: texture_2d<f32>;
+@group(3) @binding(18) var<uniform> env_waterCloudShadowUniforms: WaterCloudShadowUniforms;
+
+struct WaterCloudShadowUniforms {
+  shadowCenter: vec2f,
+  shadowRadius: f32,
+  averageCoverage: f32,
+}
+
+fn sampleCloudShadowWater(worldPos: vec3f) -> f32 {
+  let offset = vec2f(worldPos.x, worldPos.z) - env_waterCloudShadowUniforms.shadowCenter;
+  let uv = offset / (env_waterCloudShadowUniforms.shadowRadius * 2.0) + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { return 1.0; }
+  return textureSampleLevel(env_waterCloudShadowMap, env_cubeSampler, uv, 0.0).r;
+}
+
 // ============ Multi-Light Structures (water) ============
 
 struct WaterPointLightData {
@@ -629,9 +646,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     baseColor = mix(baseColor, refractedColor, refractionMix);
   }
 
-  // ===== Shadow =====
+  // ===== Shadow (CSM + cloud shadow combined) =====
   let waterNormalUp = vec3f(0.0, 1.0, 0.0);
-  let shadow = waterSampleShadow(input.lightSpacePos, input.worldPosition, waterNormalUp, sunDir);
+  let csmShadow = waterSampleShadow(input.lightSpacePos, input.worldPosition, waterNormalUp, sunDir);
+  let cloudShadow = sampleCloudShadowWater(input.worldPosition);
+  let shadow = csmShadow * cloudShadow;
   baseColor *= mix(0.4, 1.0, shadow);
 
   let shadowedReflection = reflection * mix(0.3, 1.0, shadow);

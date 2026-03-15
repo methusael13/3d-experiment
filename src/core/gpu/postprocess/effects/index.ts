@@ -8,3 +8,8 @@ export type { SSAOEffectConfig } from './SSAOEffect';
 
 export { CompositeEffect } from './CompositeEffect';
 export type { CompositeEffectConfig } from './CompositeEffect';
+
+export { AtmosphericFogEffect } from './AtmosphericFogEffect';
+export type { AtmosphericFogConfig } from './AtmosphericFogEffect';
+
+export { CloudCompositeEffect } from './CloudCompositeEffect';

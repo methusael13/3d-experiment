@@ -30,10 +30,14 @@ import {
   PostProcessPipeline, 
   SSAOEffect, 
   CompositeEffect,
+  AtmosphericFogEffect,
+  CloudCompositeEffect,
   type SSAOEffectConfig,
   type CompositeEffectConfig,
+  type AtmosphericFogConfig,
   type EffectUniforms,
 } from '../postprocess';
+import { CloudRayMarcher, CloudShadowGenerator, type CloudConfig } from '../clouds';
 import { RenderContextImpl, type RenderContextOptions } from './RenderContext';
 import type { World } from '../../ecs/World';
 import type { RenderPass } from './RenderPass';
@@ -173,6 +177,11 @@ export class GPUForwardPipeline {
   private shadowEnabled = true;
   private shadowSoftShadows = true;
   private shadowRadius = 200;
+  
+  // Volumetric clouds
+  private cloudRayMarcher: CloudRayMarcher | null = null;
+  private cloudShadowGenerator: CloudShadowGenerator | null = null;
+  private cloudEnabled = false;
   
   // Animation time
   private time = 0;
@@ -489,7 +498,24 @@ export class GPUForwardPipeline {
     ssaoEffect.enabled = false; // SSAO is optional, disabled by default
     this.postProcessPipeline.addEffect(ssaoEffect, 100);
     
-    // Add Composite effect (order 200 - runs after SSAO)
+    // Add Atmospheric Fog effect (order 150 - runs between SSAO and Composite, starts DISABLED)
+    const fogEffect = new AtmosphericFogEffect({
+      enabled: false,
+      visibilityDistance: 3000,
+      hazeIntensity: 0.8,
+      hazeScaleHeight: 800,
+      heightFogEnabled: false,
+      fogVisibilityDistance: 1500,
+      fogMode: 'exp' as const,
+      fogHeight: 0,
+      fogHeightFalloff: 0.05,
+      fogColor: [0.85, 0.88, 0.92],
+      fogSunScattering: 0.3,
+    });
+    fogEffect.enabled = false; // Disabled by default
+    this.postProcessPipeline.addEffect(fogEffect, 150);
+    
+    // Add Composite effect (order 200 - runs after SSAO + Fog)
     // ALWAYS enabled - handles tonemapping + gamma correction
     const compositeEffect = new CompositeEffect(this.ctx.format, {
       tonemapping: 3, // ACES
@@ -497,6 +523,24 @@ export class GPUForwardPipeline {
       exposure: 1.0,
     });
     this.postProcessPipeline.addEffect(compositeEffect, 200);
+    
+    // Add Cloud Composite effect (order 125 — before fog @150, after SSAO @100, starts DISABLED)
+    // Cloud ray march output is fed to this effect each frame when clouds are enabled
+    const cloudCompositeEffect = new CloudCompositeEffect();
+    cloudCompositeEffect.enabled = false;
+    this.postProcessPipeline.addEffect(cloudCompositeEffect, 125);
+    
+    // Register cloud debug textures
+    this.debugTextureManager.register(
+      'cloud-result',
+      'float',
+      () => this.cloudRayMarcher?.outputView ?? null
+    );
+    this.debugTextureManager.register(
+      'weather-map',
+      'float',
+      () => this.cloudRayMarcher?.weatherMapGenerator.textureView ?? null
+    );
   }
   
   /**
@@ -553,6 +597,9 @@ export class GPUForwardPipeline {
     
     // Resize SSR pass
     this.ssrPass?.resize(width, height);
+    
+    // Resize cloud ray marcher
+    this.cloudRayMarcher?.resize(width, height);
     
     // Resize post-processing pipeline
     if (this.postProcessPipeline) {
@@ -723,6 +770,66 @@ export class GPUForwardPipeline {
       }
     }
     
+    // ========== CLOUD SHADOW MAP (compute, before scene passes use it) ==========
+    if (this.cloudEnabled && this.cloudRayMarcher?.isReady && this.cloudShadowGenerator) {
+      const dirLight = renderCtx.getDirectionalLight();
+      const config = this.cloudRayMarcher.getConfig();
+      
+      // Dispatch cloud shadow map generation
+      if (config.cloudShadows) {
+        this.cloudShadowGenerator.execute(
+          encoder,
+          this.cloudRayMarcher.noiseGenerator,
+          this.cloudRayMarcher.weatherMapGenerator,
+          config,
+          dirLight.direction,
+          renderCtx.cameraPosition,
+          this.cloudRayMarcher.currentWeatherOffsetX,
+          this.cloudRayMarcher.currentWeatherOffsetZ,
+        );
+        
+        // Wire cloud shadow map + uniforms into SceneEnvironment (bindings 17-18)
+        this.sceneEnvironment.setCloudShadow(
+          this.cloudShadowGenerator.textureView,
+          this.cloudShadowGenerator.sceneUniformBuffer,
+        );
+      } else {
+        this.sceneEnvironment.setCloudShadow(null, null);
+      }
+    }
+    
+    // ========== CLOUD RAY MARCH (compute, between scene and post-processing) ==========
+    if (this.cloudEnabled && this.cloudRayMarcher?.isReady) {
+      const dirLight = renderCtx.getDirectionalLight();
+      // Scale sunIntensity by sunIntensityFactor (fades to ~0 at night for moonlight)
+      const cloudSunIntensity = mergedOptions.sunIntensity * dirLight.sunIntensityFactor;
+      this.cloudRayMarcher.execute(
+        encoder,
+        renderCtx.viewMatrix,
+        renderCtx.projectionMatrix,
+        renderCtx.cameraPosition,
+        dirLight.direction,
+        dirLight.effectiveColor,
+        cloudSunIntensity,
+        this.time,
+        deltaTime,
+        nearPlane,
+        farPlane,
+      );
+      
+      // Feed cloud texture to the composite effect
+      const cloudComposite = this.postProcessPipeline?.getEffect<CloudCompositeEffect>('cloudComposite');
+      if (cloudComposite) {
+        cloudComposite.setCloudTexture(this.cloudRayMarcher.outputView);
+      }
+    } else {
+      // No clouds — clear the cloud texture on the composite effect
+      const cloudComposite = this.postProcessPipeline?.getEffect<CloudCompositeEffect>('cloudComposite');
+      if (cloudComposite) {
+        cloudComposite.setCloudTexture(null);
+      }
+    }
+    
     // ========== POST-PROCESSING ==========
     if (useHDR && this.postProcessPipeline && this.sceneColorTexture) {
       // Ensure depth is copied for post-processing effects
@@ -749,7 +856,22 @@ export class GPUForwardPipeline {
         inverseViewMatrix: new Float32Array(inverseViewMatrix),
       };
       
-      // Execute post-processing pipeline (tonemapping, SSAO, etc.)
+      // Feed sun data to atmospheric fog effect (before execute)
+      const fogEffect = this.postProcessPipeline.getEffect<AtmosphericFogEffect>('atmosphericFog');
+      if (fogEffect) {
+        const lightDir = mergedOptions.lightDirection;
+        const len = Math.sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
+        const sunDir: [number, number, number] = len > 0
+          ? [lightDir[0] / len, lightDir[1] / len, lightDir[2] / len]
+          : [0, 1, 0];
+        fogEffect.setSunData(
+          sunDir,
+          mergedOptions.lightColor as [number, number, number],
+          mergedOptions.sunIntensity,
+        );
+      }
+      
+      // Execute post-processing pipeline (tonemapping, SSAO, fog, etc.)
       // This writes the final composited result to outputView (backbuffer)
       this.postProcessPipeline.execute(
         encoder,
@@ -861,6 +983,110 @@ export class GPUForwardPipeline {
    */
   getPostProcessPipeline(): PostProcessPipeline | null {
     return this.postProcessPipeline;
+  }
+  
+  // ========== Atmospheric Fog Methods ==========
+  
+  /**
+   * Enable/disable atmospheric fog post-processing
+   */
+  setAtmosphericFogEnabled(enabled: boolean): void {
+    this.postProcessPipeline?.setEnabled('atmosphericFog', enabled);
+  }
+  
+  /**
+   * Check if atmospheric fog is enabled
+   */
+  isAtmosphericFogEnabled(): boolean {
+    return this.postProcessPipeline?.isEnabled('atmosphericFog') ?? false;
+  }
+  
+  /**
+   * Configure atmospheric fog parameters
+   */
+  setAtmosphericFogConfig(config: Partial<AtmosphericFogConfig>): void {
+    if (this.postProcessPipeline) {
+      const fogEffect = this.postProcessPipeline.getEffect<AtmosphericFogEffect>('atmosphericFog');
+      if (fogEffect) {
+        fogEffect.setConfig(config);
+      }
+    }
+  }
+  
+  /**
+   * Get atmospheric fog configuration
+   */
+  getAtmosphericFogConfig(): AtmosphericFogConfig | null {
+    if (this.postProcessPipeline) {
+      const fogEffect = this.postProcessPipeline.getEffect<AtmosphericFogEffect>('atmosphericFog');
+      return fogEffect?.getConfig() ?? null;
+    }
+    return null;
+  }
+  
+  // ========== Volumetric Cloud Methods ==========
+  
+  /**
+   * Enable/disable volumetric clouds.
+   * Lazily initializes the cloud ray marcher on first enable.
+   */
+  setCloudEnabled(enabled: boolean): void {
+    this.cloudEnabled = enabled;
+    
+    // Lazily create the cloud ray marcher when first enabled
+    if (enabled && !this.cloudRayMarcher) {
+      this.cloudRayMarcher = new CloudRayMarcher(this.ctx);
+      this.cloudRayMarcher.init(this.width, this.height);
+      
+      // Create cloud shadow generator (Phase 2)
+      this.cloudShadowGenerator = new CloudShadowGenerator(this.ctx);
+      this.cloudShadowGenerator.init();
+      this.cloudShadowGenerator.setShadowRadius(this.shadowRadius);
+      
+      // Register cloud shadow debug texture
+      this.debugTextureManager.register(
+        'cloud-shadow',
+        'depth',
+        () => this.cloudShadowGenerator?.textureView ?? null
+      );
+    }
+    
+    // Enable/disable the cloud composite post-process effect
+    this.postProcessPipeline?.setEnabled('cloudComposite', enabled);
+    
+    // Clear cloud shadow from SceneEnvironment when disabled
+    if (!enabled) {
+      this.sceneEnvironment.setCloudShadow(null, null);
+    }
+  }
+  
+  /**
+   * Check if volumetric clouds are enabled
+   */
+  isCloudEnabled(): boolean {
+    return this.cloudEnabled;
+  }
+  
+  /**
+   * Configure cloud settings
+   */
+  setCloudConfig(config: Partial<CloudConfig>): void {
+    // If enabling clouds, ensure ray marcher is created
+    if (config.enabled !== undefined) {
+      this.setCloudEnabled(config.enabled);
+    }
+    
+    // Apply config to ray marcher
+    if (this.cloudRayMarcher) {
+      this.cloudRayMarcher.setConfig(config);
+    }
+  }
+  
+  /**
+   * Get current cloud configuration
+   */
+  getCloudConfig(): CloudConfig | null {
+    return this.cloudRayMarcher?.getConfig() ?? null;
   }
   
   // ========== SSR Methods ==========
@@ -978,6 +1204,8 @@ export class GPUForwardPipeline {
     this.normalsTexture?.destroy();
     this.selectionOutlineRenderer.destroy();
     this.debugTextureManager.destroy();
+    this.cloudRayMarcher?.destroy();
+    this.cloudShadowGenerator?.destroy();
     
     // Destroy render passes
     for (const pass of this.passes) {

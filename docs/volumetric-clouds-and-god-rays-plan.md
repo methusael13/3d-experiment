@@ -6,12 +6,13 @@
 2. [Volumetric Cloud System](#2-volumetric-cloud-system)
 3. [God Rays (Volumetric Light Scattering)](#3-god-rays-volumetric-light-scattering)
 4. [Cloud Shadows on Terrain](#4-cloud-shadows-on-terrain)
-5. [Integration with Existing Systems](#5-integration-with-existing-systems)
-6. [Performance Budget & Optimization](#6-performance-budget--optimization)
-7. [UI Controls](#7-ui-controls)
-8. [Implementation Phases](#8-implementation-phases)
-9. [File Structure](#9-file-structure)
-10. [References](#10-references)
+5. [Froxel-Based Volumetric Fog](#5-froxel-based-volumetric-fog)
+6. [Integration with Existing Systems](#6-integration-with-existing-systems)
+7. [Performance Budget & Optimization](#7-performance-budget--optimization)
+8. [UI Controls](#8-ui-controls)
+9. [Implementation Phases](#9-implementation-phases)
+10. [File Structure](#10-file-structure)
+11. [References](#11-references)
 
 ---
 
@@ -91,18 +92,63 @@ Clouds are rendered as a **dedicated compute pass** that ray-marches through a c
 └─────────────────────────────────────────────────┘
 ```
 
-### 2.2 Cloud Layer Model
+### 2.2 Cloud Type System
+
+The system supports multiple cloud types, each with distinct visual characteristics and height profiles. The weather map's **Cloud Type** channel (G) selects the active type, and the density function adapts accordingly.
+
+| Cloud Type | Real-World Equivalent | Height Profile | Noise Character | Coverage Range | Altitude |
+|------------|----------------------|----------------|-----------------|----------------|----------|
+| **Cumulus** (default) | Cumulus mediocris / humilis | Round bottom, flat top, billowy | Perlin-Worley dominant, high detail erosion | 0.0–0.6 | 1,500–4,000m |
+| **Stratocumulus** | Stratocumulus | Thin lumpy sheet, less vertical | Worley dominant, moderate erosion | 0.4–0.8 | 800–2,000m |
+| **Stratus / Overcast** | Stratus, Nimbostratus | Very thin uniform layer, nearly flat | Minimal noise, low-frequency only | 0.8–1.0 | 500–1,500m |
+| **Cumulonimbus** | Cumulonimbus (storm) | Tall tower, anvil top, dark base | High-amplitude Worley, dense base | 0.3–0.7 | 500–10,000m |
+
+The density function (§2.4) branches on cloud type to select the appropriate **height gradient**:
+
+```wgsl
+fn heightGradient(heightFrac: f32, cloudType: f32) -> f32 {
+    // cloudType: 0.0 = stratus, 0.5 = stratocumulus, 1.0 = cumulus
+    if (cloudType < 0.25) {
+        // Stratus/overcast: thin flat slab
+        return smoothstep(0.0, 0.05, heightFrac) * smoothstep(1.0, 0.95, heightFrac);
+    } else if (cloudType < 0.6) {
+        // Stratocumulus: slightly lumpy layer
+        return smoothstep(0.0, 0.08, heightFrac) * smoothstep(1.0, 0.7, heightFrac);
+    } else {
+        // Cumulus: round bottom, puffy top (default)
+        return smoothstep(0.0, 0.1, heightFrac) * smoothstep(1.0, 0.6, heightFrac);
+    }
+}
+```
+
+For stratus/overcast, the detail erosion noise strength is also reduced (wispy edges look wrong on flat uniform layers).
+
+### 2.2.1 Cirrus Layer (High-Altitude Ice Clouds)
+
+A separate **2D scrolling layer** rendered above the volumetric cloud shell at 8,000–12,000m. Cirrus clouds are too thin and streaky for volumetric ray-marching; a textured quad is more appropriate and extremely cheap.
+
+| Property | Value |
+|----------|-------|
+| Altitude | 8,000–12,000 m |
+| Rendering | Fullscreen quad in sky pass, alpha-blended |
+| Texture | Tileable 2D cirrus noise (512×512, `r8unorm`) |
+| Animation | UV offset scrolled by wind × 2 (jet-stream speed) |
+| Cost | ~0.05ms (single texture sample per pixel) |
+
+Cirrus opacity is controlled by the weather preset (0 = none, 1 = dense cirrus). It's rendered **before** the volumetric cloud composite so volumetric clouds correctly occlude cirrus behind them.
+
+### 2.3 Cloud Layer Model
 
 Clouds exist in a **spherical shell** between two altitudes above the Earth's surface:
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Cloud base altitude | 1,500 m | Cumulus base |
-| Cloud top altitude | 4,000 m | Cumulus tops |
+| Cloud base altitude | 1,500 m | Cumulus base (adjustable per cloud type) |
+| Cloud top altitude | 4,000 m | Cumulus tops (up to 10,000m for cumulonimbus) |
 | Layer thickness | 2,500 m | Ray march domain |
 | Earth radius | 6,360,000 m | Matches `sky.wgsl` |
 
-The ray-march domain is defined by two concentric spheres: `R_earth + cloud_base` and `R_earth + cloud_top`.
+The ray-march domain is defined by two concentric spheres: `R_earth + cloud_base` and `R_earth + cloud_top`. The base and top altitudes shift based on the active cloud type.
 
 ### 2.3 Noise Textures (Compute Shader Generation)
 
@@ -525,9 +571,471 @@ No changes to the shader bind group layout — just one additional texture in th
 
 ---
 
-## 5. Integration with Existing Systems
+## 5. Froxel-Based Volumetric Fog
 
-### 5.1 Pipeline Pass Ordering
+### 5.1 Overview & Motivation
+
+The current atmospheric fog system (`atmospheric-fog.wgsl`) is a **screen-space post-process** that analytically computes fog along each view ray. While efficient, it can only respond to the single directional light (sun/moon). It cannot produce:
+
+- **Point light glow spheres** in fog (e.g., a streetlamp illuminating surrounding mist)
+- **Spot light cones/beams** visible in foggy air (e.g., headlights, flashlights)
+- **Volumetric shadows** (objects blocking light through fog, creating dark shafts)
+- **Light shafts / god rays** from local lights through occluders
+- **Heterogeneous fog** (local fog pockets, density noise for wispy effects)
+
+Froxel-based volumetric fog solves all of these by evaluating **every light source** at every point in a 3D frustum-aligned voxel grid, then integrating the accumulated scattering/extinction along each view ray.
+
+### 5.2 Architecture Overview
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│              Froxel Volumetric Fog Pipeline                   │
+│                                                              │
+│  ┌────────────────┐   ┌─────────────────┐                   │
+│  │ Density         │   │ Light Culling   │                   │
+│  │ Injection       │   │ (Cluster/Froxel)│                   │
+│  │ (Compute)       │   │ (Compute)       │                   │
+│  └───────┬────────┘   └────────┬────────┘                   │
+│          │                      │                            │
+│          ▼                      ▼                            │
+│  ┌──────────────────────────────────────┐                    │
+│  │ Scattering + Extinction Injection    │                    │
+│  │ Per-froxel: accumulate all lights    │                    │
+│  │ (Compute — main pass)               │                    │
+│  └───────────────────┬──────────────────┘                    │
+│                      │                                       │
+│          ┌───────────▼──────────────┐                        │
+│          │ Temporal Reprojection    │                         │
+│          │ (smooth over frames)     │                         │
+│          └───────────┬──────────────┘                        │
+│                      │                                       │
+│          ┌───────────▼──────────────┐                        │
+│          │ Front-to-Back Integration│                         │
+│          │ (ray march through grid) │                         │
+│          └───────────┬──────────────┘                        │
+│                      │                                       │
+│          ┌───────────▼──────────────┐                        │
+│          │ Apply to Scene           │                         │
+│          │ (sample 3D tex per pixel)│                         │
+│          └──────────────────────────┘                        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 5.3 Froxel Grid Specification
+
+The frustum is divided into a 3D grid of "frustum voxels" (froxels):
+
+| Property | Value | Notes |
+|----------|-------|-------|
+| Width | 160 | ~12px per froxel at 1920×1080 |
+| Height | 90 | ~12px per froxel at 1080 |
+| Depth slices | 64 | Exponential distribution |
+| Format (scatter) | `rgba16float` | RGB = in-scattered light, A = extinction |
+| Format (integrated) | `rgba16float` | RGB = accumulated scatter, A = transmittance |
+| Total 3D texture size | 160×90×64 = ~921,600 voxels | ~7.2 MB per texture |
+
+#### Exponential Depth Slicing
+
+More resolution near the camera (where fog detail matters most), fewer slices at distance:
+
+```wgsl
+// World-space depth → slice index
+fn depthToSlice(linearDepth: f32) -> f32 {
+    return log(linearDepth / near) / log(far / near) * f32(NUM_DEPTH_SLICES);
+}
+
+// Slice index → world-space depth (center of slice)
+fn sliceToDepth(slice: f32) -> f32 {
+    return near * pow(far / near, slice / f32(NUM_DEPTH_SLICES));
+}
+
+// Thickness of a given slice (for integration)
+fn sliceThickness(slice: u32) -> f32 {
+    let d0 = sliceToDepth(f32(slice));
+    let d1 = sliceToDepth(f32(slice + 1u));
+    return d1 - d0;
+}
+```
+
+With near=0.1, far=2000:
+- Slice 0: 0.1m–0.13m (very thin near camera)
+- Slice 16: 1.7m–2.2m
+- Slice 32: 28m–37m
+- Slice 48: 470m–620m
+- Slice 63: 1520m–2000m
+
+### 5.4 Pass 1: Fog Density Injection
+
+A compute shader writes fog density into each froxel. This supports multiple density sources:
+
+```wgsl
+@compute @workgroup_size(8, 8, 1)
+fn injectFogDensity(@builtin(global_invocation_id) gid: vec3u) {
+    if (any(gid.xy >= vec2u(GRID_WIDTH, GRID_HEIGHT)) || gid.z >= NUM_DEPTH_SLICES) { return; }
+
+    let worldPos = froxelToWorld(gid);
+
+    // ── Source 1: Global height fog (matches existing AtmosphericFog settings) ──
+    let heightAboveFog = worldPos.y - u.fogHeight;
+    var density = u.fogBaseDensity * exp(-u.fogHeightFalloff * heightAboveFog);
+
+    // ── Source 2: 3D noise for heterogeneous/wispy fog ──
+    if (u.noiseEnabled > 0.5) {
+        let noiseUV = worldPos * u.noiseScale + u.noiseOffset; // animated by wind
+        let noise = textureSampleLevel(fogNoise3D, noiseSampler, noiseUV, 0.0).r;
+        // Modulate density: noise can add local pockets or thin the fog
+        density *= mix(1.0, noise * 2.0, u.noiseStrength);
+    }
+
+    // ── Source 3: Local fog volumes (future — sphere/box emitters) ──
+    // for each fog volume overlapping this froxel:
+    //     density += volumeContribution(worldPos, volume);
+
+    // Store: density is extinction coefficient σ_t
+    let extinction = max(0.0, density);
+    textureStore(densityGrid, gid, vec4f(0.0, 0.0, 0.0, extinction));
+}
+```
+
+#### 3D Noise Texture for Heterogeneous Fog
+
+| Property | Value |
+|----------|-------|
+| Size | 64³ or 128³ |
+| Format | `r8unorm` (single channel) |
+| Content | Tileable 3D Perlin/Worley FBM |
+| Animation | UV offset scrolled by wind direction × speed |
+
+This noise creates wispy, non-uniform fog that looks natural rather than a flat gradient.
+
+### 5.5 Pass 2: Light Injection (Scattering Computation)
+
+The most performance-critical pass. For each froxel, accumulate in-scattered light from **all** light sources that illuminate it.
+
+> **Existing Engine Infrastructure:** The engine already has a full multi-light system that the froxel fog can leverage directly:
+> - **`LightBufferManager`** (`renderers/LightBufferManager.ts`): Manages GPU storage buffers for up to 16 point lights and 16 spot lights. Buffers are at SceneEnvironment Group 3 bindings 10–12 (`LightCounts` uniform, `PointLightData[]` storage, `SpotLightData[]` storage). Updated each frame by `LightingSystem`.
+> - **`lights.wgsl`** (`shaders/common/lights.wgsl`): Already defines `PointLightData`, `SpotLightData`, `LightCounts` structs and `attenuateDistance()` / `attenuateSpotCone()` functions matching the GPU buffer layout.
+> - **Spot shadow atlas**: `ShadowRendererGPU` already maintains a spot shadow atlas (`texture_depth_2d_array`) at binding 13, with a comparison sampler at binding 14. Each `SpotLightData` carries a `shadowAtlasIndex` and `lightSpaceMatrix` for shadow lookup.
+> - **Cookie atlas**: Light cookie support exists at bindings 15–16 (2D array + sampler).
+>
+> The froxel scattering compute shader should **bind these existing buffers directly** rather than creating a separate light system. The `FroxelLightList` clustered assignment pass reads from the same `PointLightData[]`/`SpotLightData[]` storage buffers. For spot shadow sampling, use the existing atlas via `textureLoadCompare` on binding 13 with the light's `lightSpaceMatrix`.
+
+#### 5.5.1 Light Types Supported
+
+| Light Type | Visible Effect in Fog | Shadow Support |
+|------------|----------------------|----------------|
+| **Directional** (sun/moon) | Uniform glow + god rays via CSM shadows | CSM shadow map sampling |
+| **Point** | Glowing sphere of illuminated fog | Optional shadow cubemap |
+| **Spot** | Visible cone/beam of light | Spot shadow atlas (existing binding 13) |
+
+#### 5.5.2 Clustered Light Assignment
+
+Before the scattering pass, a **light-to-froxel assignment** compute pass determines which lights affect which froxels. This avoids iterating all lights for every froxel.
+
+```wgsl
+// Light cluster structure (per froxel)
+struct FroxelLightList {
+    count: u32,
+    lightIndices: array<u32, MAX_LIGHTS_PER_FROXEL>, // e.g., 32
+}
+```
+
+The assignment pass:
+1. For each light, compute its AABB in froxel space
+2. For each froxel in that AABB, append the light index to that froxel's list
+3. Output: `storage buffer` of `FroxelLightList` per froxel
+
+This is the same clustered shading approach used by modern forward+ renderers, adapted to the froxel grid.
+
+#### 5.5.3 Main Scattering Compute Shader
+
+```wgsl
+@compute @workgroup_size(8, 8, 1)
+fn computeScattering(@builtin(global_invocation_id) gid: vec3u) {
+    if (any(gid.xy >= vec2u(GRID_WIDTH, GRID_HEIGHT)) || gid.z >= NUM_DEPTH_SLICES) { return; }
+
+    let worldPos = froxelToWorld(gid);
+    let viewDir = normalize(worldPos - u.cameraPosition);
+
+    // Read density from injection pass
+    let stored = textureLoad(densityGrid, gid, 0);
+    let extinction = stored.a;
+
+    // Skip empty froxels (no fog here)
+    if (extinction < 0.00001) {
+        textureStore(scatterGrid, gid, vec4f(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    var totalScattering = vec3f(0.0);
+
+    // ── Directional light (sun/moon) ──
+    {
+        // Shadow test via CSM
+        let shadowFactor = sampleCSMShadow(worldPos);
+        // Cloud shadow (if clouds enabled)
+        let cloudShadow = select(1.0, sampleCloudShadow(worldPos), u.cloudsEnabled > 0.5);
+
+        let visibility = shadowFactor * cloudShadow;
+        let cosTheta = dot(viewDir, u.sunDirection);
+
+        // Rayleigh + Mie phase functions
+        let phaseR = rayleighPhase(cosTheta);
+        let phaseM = henyeyGreenstein(cosTheta, u.mieG); // g ≈ 0.76
+
+        let sunScatter = u.sunColor * u.sunIntensity * visibility *
+            (u.betaR * phaseR + u.betaM * phaseM) * extinction;
+        totalScattering += sunScatter;
+    }
+
+    // ── Point & Spot lights (from clustered assignment) ──
+    let froxelIndex = gid.x + gid.y * GRID_WIDTH + gid.z * GRID_WIDTH * GRID_HEIGHT;
+    let lightList = lightClusters[froxelIndex];
+
+    for (var i = 0u; i < lightList.count; i++) {
+        let lightIdx = lightList.lightIndices[i];
+        let light = lights[lightIdx];
+
+        let toLight = light.position - worldPos;
+        let dist = length(toLight);
+        let lightDir = toLight / max(dist, 0.001);
+
+        // Distance attenuation (inverse square with range cutoff)
+        let attenuation = pointLightAttenuation(dist, light.range);
+        if (attenuation < 0.001) { continue; }
+
+        // Spot cone attenuation (if spot light)
+        var spotFactor = 1.0;
+        if (light.type == LIGHT_SPOT) {
+            let cosAngle = dot(-lightDir, light.direction);
+            spotFactor = smoothstep(light.outerConeAngle, light.innerConeAngle, cosAngle);
+            if (spotFactor < 0.001) { continue; }
+        }
+
+        // Shadow test (if this light has a shadow map)
+        var shadowFactor = 1.0;
+        if (light.shadowMapIndex >= 0) {
+            shadowFactor = sampleLocalShadow(worldPos, light);
+        }
+
+        // Phase function (isotropic for point lights, or HG for spot)
+        let cosTheta = dot(viewDir, lightDir);
+        let phase = select(
+            isotropicPhase(),                       // Point: uniform scatter
+            henyeyGreenstein(cosTheta, 0.5),        // Spot: mild forward scatter
+            light.type == LIGHT_SPOT
+        );
+
+        let lightScatter = light.color * light.intensity * attenuation *
+            spotFactor * shadowFactor * phase * extinction;
+        totalScattering += lightScatter;
+    }
+
+    // ── Ambient / sky light ──
+    // Small ambient term so fog doesn't go completely black in unlit areas
+    let ambientScatter = u.ambientColor * u.ambientIntensity * extinction * isotropicPhase();
+    totalScattering += ambientScatter;
+
+    textureStore(scatterGrid, gid, vec4f(totalScattering, extinction));
+}
+```
+
+#### 5.5.4 Point Light Attenuation
+
+```wgsl
+fn pointLightAttenuation(dist: f32, range: f32) -> f32 {
+    // Smooth inverse-square with range cutoff (UE4/UE5 style)
+    let d2 = dist * dist;
+    let r2 = range * range;
+    let falloff = saturate(1.0 - d2 * d2 / (r2 * r2));
+    return falloff * falloff / max(d2, 0.01);
+}
+```
+
+#### 5.5.5 Phase Functions
+
+```wgsl
+// Isotropic: light scatters equally in all directions
+fn isotropicPhase() -> f32 {
+    return 1.0 / (4.0 * PI);
+}
+
+// Rayleigh: small particles (air molecules) — more scatter at 90°
+fn rayleighPhase(cosTheta: f32) -> f32 {
+    return 3.0 / (16.0 * PI) * (1.0 + cosTheta * cosTheta);
+}
+
+// Henyey-Greenstein: large particles (fog droplets) — forward scatter
+fn henyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
+    let g2 = g * g;
+    let denom = 1.0 + g2 - 2.0 * g * cosTheta;
+    return (1.0 - g2) / (4.0 * PI * pow(denom, 1.5));
+}
+
+// Cornette-Shanks (improved HG for Mie): better energy conservation
+fn cornetteShanks(cosTheta: f32, g: f32) -> f32 {
+    let g2 = g * g;
+    let num = 3.0 * (1.0 - g2) * (1.0 + cosTheta * cosTheta);
+    let denom = 2.0 * (2.0 + g2) * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5);
+    return num / (4.0 * PI * denom);
+}
+```
+
+### 5.6 Pass 3: Temporal Reprojection
+
+To hide the low spatial resolution of the froxel grid and reduce flickering:
+
+```wgsl
+@compute @workgroup_size(8, 8, 1)
+fn temporalFilter(@builtin(global_invocation_id) gid: vec3u) {
+    let current = textureLoad(scatterGrid, gid, 0);
+
+    // Reproject: find where this froxel was in the previous frame
+    let worldPos = froxelToWorld(gid);
+    let prevClip = u.prevViewProj * vec4f(worldPos, 1.0);
+    let prevUV = prevClip.xy / prevClip.w * 0.5 + 0.5;
+    let prevSlice = depthToSlice(prevClip.z / prevClip.w);
+    let prevCoord = vec3f(prevUV * vec2f(GRID_WIDTH, GRID_HEIGHT), prevSlice);
+
+    // Validate: is the reprojected coordinate in bounds?
+    let inBounds = all(prevCoord >= vec3f(0.0)) && all(prevCoord < vec3f(GRID_WIDTH, GRID_HEIGHT, NUM_DEPTH_SLICES));
+
+    if (inBounds) {
+        let history = textureSampleLevel(historyGrid, linearSampler, 
+                                          prevCoord / vec3f(GRID_WIDTH, GRID_HEIGHT, NUM_DEPTH_SLICES), 0.0);
+        // Blend: 95% history + 5% current (aggressive temporal smoothing)
+        let blended = mix(current, history, 0.95);
+        textureStore(scatterGrid, gid, blended);
+    }
+    // If out of bounds, keep current (no history available)
+}
+```
+
+### 5.7 Pass 4: Front-to-Back Ray Integration
+
+Integrates the 3D scatter/extinction grid into a final **accumulated scattering + transmittance** texture that can be sampled per-pixel:
+
+```wgsl
+@compute @workgroup_size(8, 8, 1)
+fn integrateScattering(@builtin(global_invocation_id) gid: vec2u) {
+    if (any(gid >= vec2u(GRID_WIDTH, GRID_HEIGHT))) { return; }
+
+    var accumScatter = vec3f(0.0);
+    var accumTransmittance = 1.0;
+
+    for (var z = 0u; z < NUM_DEPTH_SLICES; z++) {
+        let data = textureLoad(scatterGrid, vec3u(gid, z), 0);
+        let scattering = data.rgb;
+        let extinction = data.a;
+
+        let thickness = sliceThickness(z);
+        let sliceTransmittance = exp(-extinction * thickness);
+
+        // Energy-conserving integration:
+        // in-scattered = scattering × (1 - transmittance) / extinction
+        let integScatter = scattering * (1.0 - sliceTransmittance) / max(extinction, 0.00001);
+
+        accumScatter += accumTransmittance * integScatter;
+        accumTransmittance *= sliceTransmittance;
+
+        // Store per-slice (so scene shaders can sample at any depth)
+        textureStore(integratedGrid, vec3u(gid, z), 
+                     vec4f(accumScatter, accumTransmittance));
+    }
+}
+```
+
+### 5.8 Application: Sampling the Fog Volume
+
+After integration, any pixel can look up its fog contribution by converting its world position to a froxel UV:
+
+```wgsl
+fn applyVolumetricFog(sceneColor: vec3f, worldPos: vec3f) -> vec3f {
+    // Convert world position to froxel UVW
+    let clipPos = u.viewProjMatrix * vec4f(worldPos, 1.0);
+    let ndc = clipPos.xyz / clipPos.w;
+    let uv = ndc.xy * 0.5 + 0.5;
+    let linearDepth = length(worldPos - u.cameraPosition);
+    let w = depthToSlice(linearDepth) / f32(NUM_DEPTH_SLICES);
+
+    let fogSample = textureSampleLevel(integratedGrid, trilinearSampler, vec3f(uv, w), 0.0);
+    let inScatter = fogSample.rgb;
+    let transmittance = fogSample.a;
+
+    // Apply: scene fades by transmittance, fog light adds on top
+    return sceneColor * transmittance + inScatter;
+}
+```
+
+This can be applied either:
+- **As a post-process** (like the current AtmosphericFogEffect — reads depth, reconstructs world pos, samples grid)
+- **Inline in scene shaders** (each object samples the grid at its fragment position — more accurate for transparent objects)
+
+### 5.9 Relationship to Existing Atmospheric Fog
+
+The froxel volumetric fog **replaces** the current `AtmosphericFogEffect` post-process when enabled. The transition strategy:
+
+| Feature | Current (Post-Process) | Volumetric (Froxel) |
+|---------|----------------------|---------------------|
+| Height fog | ✅ Analytical integration | ✅ Density injection pass |
+| Haze / aerial perspective | ✅ Distance-based extinction | ✅ Rayleigh scattering in froxels |
+| Directional light | ✅ Sun illumination only | ✅ Sun + CSM shadows = god rays |
+| Point lights | ❌ | ✅ Clustered light injection |
+| Spot lights | ❌ | ✅ Cone + shadow map |
+| Volumetric shadows | ❌ | ✅ Shadow map sampling per froxel |
+| God rays | ❌ (separate SS pass) | ✅ Automatic from CSM occlusion |
+| Heterogeneous fog | ❌ (uniform density) | ✅ 3D noise modulation |
+| Fog mode (exp/exp²) | ✅ | ✅ (via density function) |
+| Performance | ~0.1ms | ~1-3ms |
+
+The existing `AtmosphericFogEffect` remains as a **lightweight fallback** for scenarios where volumetric cost is too high, or as the default when volumetric fog is disabled.
+
+### 5.10 Local Fog Volumes (Emitters)
+
+Beyond global height fog, the system supports **local fog volume emitters** — placed as entities in the scene:
+
+#### Volume Types
+
+| Shape | Use Case | Parameters |
+|-------|----------|------------|
+| **Sphere** | Campfire smoke, explosions | center, radius, density, falloff |
+| **Box** | Room interiors, caves | transform, extents, density |
+| **Cylinder** | Chimney smoke columns | center, radius, height, density |
+
+#### ECS Integration
+
+```typescript
+// FogVolumeComponent
+interface FogVolumeComponent {
+    shape: 'sphere' | 'box' | 'cylinder';
+    density: number;       // Base density inside volume
+    falloff: number;       // How quickly density drops at edges (0 = hard, 1 = soft)
+    color?: [number, number, number]; // Optional tint
+    noiseScale?: number;   // Optional noise for non-uniform interior
+}
+```
+
+During the density injection pass, fog volume entities are queried and their contributions added to the froxel grid. A GPU buffer of active fog volumes is uploaded each frame and iterated in the compute shader.
+
+### 5.11 Visible Light Effects Summary
+
+With the complete froxel system, these visual effects emerge naturally:
+
+| Effect | How It Works |
+|--------|-------------|
+| **Spot light beams** | Spot light cone intersects fog froxels → scattering accumulated inside cone → visible beam |
+| **Point light glow** | Point light attenuates with distance² → nearby froxels get high in-scatter → soft glow sphere |
+| **God rays (sun)** | CSM shadows sampled per froxel → shadowed froxels get no sun scatter → visible shafts of light |
+| **Volumetric shadows** | Any shadow-casting geometry blocks light → froxels behind it stay dark → shadow visible in fog |
+| **Light shafts through windows** | Spot or directional shadow map has window shape → froxels in beam lit, others dark → shaft |
+| **Fog around fire/torch** | Local fog volume emitter + point light → dense fog + strong scatter = glowing haze |
+| **Flashlight beam** | Spot light with narrow cone + fog → classic horror game flashlight visible in misty air |
+
+---
+
+## 6. Integration with Existing Systems
+
+### 6.1 Pipeline Pass Ordering
 
 Updated pass order in `GPUForwardPipeline`:
 
@@ -539,36 +1047,55 @@ Updated pass order in `GPUForwardPipeline`:
 5.  CloudTemporalPass [NEW] (compute — temporal reprojection)
 6.  GroundPass              (existing)
 7.  OpaquePass              (existing — terrain, objects; now sample cloud shadow)
-8.  TransparentPass         (existing — water; now sample cloud shadow)
-9.  OverlayPass             (existing)
-10. SelectionPasses         (existing)
-11. DebugPass               (existing)
+8.  SSRPass                 (existing — screen-space reflections for metallic objects)
+9.  TransparentPass         (existing — water; now sample cloud shadow)
+10. OverlayPass             (existing)
+11. SelectionPasses         (existing)
+12. DebugPass               (existing)
 ───── Post-Processing ─────
-12. CloudCompositeEffect [NEW] (composite cloud texture into scene color)
-13. GodRayEffect [NEW]        (screen-space or froxel-based god rays)
-14. SSAOEffect                 (existing, optional)
-15. CompositeEffect            (existing — tonemapping + gamma + dither)
+13. CloudCompositeEffect [NEW] (composite cloud texture into scene color)
+14. GodRayEffect [NEW]        (screen-space or froxel-based god rays)
+15. AtmosphericFogEffect       (existing, optional — disabled when froxel fog active)
+16. SSAOEffect                 (existing, optional)
+17. CompositeEffect            (existing — tonemapping + gamma + dither)
 ```
 
-### 5.2 SceneEnvironment Updates
+### 6.2 SceneEnvironment Updates
 
-`SceneEnvironment` (Group 3 bind group shared by all scene shaders) gains:
+`SceneEnvironment` (Group 3 bind group shared by all scene shaders) currently occupies **bindings 0–16**:
 
-| Binding | Current | Addition |
-|---------|---------|----------|
-| 0 | Shadow sampler | — |
-| 1 | CSM shadow array | — |
-| 2 | CSM uniforms | — |
-| 3 | IBL diffuse cubemap | — |
-| 4 | IBL specular cubemap | — |
-| 5 | IBL BRDF LUT | — |
-| 6 | IBL sampler | — |
-| **7** | — | **Cloud shadow map (r16float)** |
-| **8** | — | **Cloud shadow uniforms (projection matrix, bounds)** |
+| Binding | Current Content |
+|---------|----------------|
+| 0 | Shadow depth texture |
+| 1 | Shadow comparison sampler |
+| 2 | IBL diffuse cubemap |
+| 3 | IBL specular cubemap |
+| 4 | BRDF LUT texture |
+| 5 | IBL cubemap sampler |
+| 6 | IBL LUT sampler |
+| 7 | CSM shadow map array (4 cascades) |
+| 8 | CSM uniforms buffer |
+| 9 | SSR texture |
+| 10 | Light counts uniform |
+| 11 | Point lights storage |
+| 12 | Spot lights storage |
+| 13 | Spot shadow atlas (depth 2d-array) |
+| 14 | Spot shadow comparison sampler |
+| 15 | Cookie atlas (2d-array) |
+| 16 | Cookie sampler |
 
-Shaders that need cloud shadows (`cdlod.wgsl`, `object.wgsl`, `water.wgsl`) add sampling of binding 7/8.
+New bindings for clouds:
 
-### 5.3 DynamicSkyIBL Updates
+| Binding | Addition |
+|---------|----------|
+| **17** | **Cloud shadow map (`r16float`)** |
+| **18** | **Cloud shadow uniforms (projection matrix, bounds)** |
+
+The `ENVIRONMENT_BINDINGS` constant in `shared/types.ts` must be extended with `CLOUD_SHADOW_MAP: 17` and `CLOUD_SHADOW_UNIFORMS: 18`. The `ENV_BINDING_MASK.ALL` bitmask must expand from `0x1FFFF` to `0x7FFFF` (19 bindings, 0–18). `PlaceholderTextures` needs a 1×1 `r16float` placeholder for the cloud shadow map and a 64-byte placeholder uniform buffer for cloud shadow uniforms.
+
+Shaders that need cloud shadows (`cdlod.wgsl`, `object-template.wgsl`, `water.wgsl`) add sampling of binding 17/18.
+
+### 6.3 DynamicSkyIBL Updates
 
 When clouds are enabled, the sky IBL cubemap capture should include cloud contribution. Options:
 
@@ -577,7 +1104,130 @@ When clouds are enabled, the sky IBL cubemap capture should include cloud contri
 
 Recommendation: Start with option 1. Cloud contribution to ambient lighting can be approximated by darkening the ambient intensity based on average cloud coverage.
 
-### 5.4 Weather Map ↔ Wind System
+### 6.4 Weather-Aware Lighting Adaptation
+
+Cloud coverage fundamentally changes how the scene is lit. Under clear skies, the sun provides strong directional light with hard CSM shadows and the sky IBL provides ambient. Under overcast, the sun is nearly fully occluded — the scene flips to almost entirely ambient/diffuse lighting with no visible shadows. The cloud system must feed back into the lighting pipeline to handle this correctly.
+
+#### 6.4.1 Average Cloud Coverage (Per-Frame Metric)
+
+Each frame, compute the **average cloud coverage** across the visible sky. This single value drives all lighting adaptation:
+
+```typescript
+// Sample weather map at 16 points within the camera frustum footprint
+// Average the R channel (coverage) → single float [0, 1]
+averageCoverage = sampleWeatherMapGrid(cameraPosition, frustumRadius, 4×4);
+```
+
+This is cheap (~16 texture reads on CPU or a small compute dispatch).
+
+#### 6.4.2 Direct Light Attenuation
+
+The sun's effective intensity is reduced proportionally to coverage. Different cloud types occlude different amounts:
+
+```typescript
+// coverageOcclusionStrength: how much coverage reduces direct light
+//   Stratus/overcast: 0.95 (thick uniform layer blocks almost all direct light)
+//   Cumulus: 0.6 (fluffy clouds let more light through gaps — per-pixel cloud shadow handles the rest)
+const occlusionStrength = lerp(0.6, 0.95, 1.0 - cloudType); // 0=stratus, 1=cumulus
+
+sunEffectiveIntensity = sunBaseIntensity * (1.0 - averageCoverage * occlusionStrength);
+```
+
+This is passed to all scene shaders via the existing sun intensity uniform. The per-pixel cloud shadow map (§4) still provides local variation — this global attenuation sets the overall mood.
+
+#### 6.4.3 CSM Shadow Fade Under Overcast
+
+Under heavy overcast, the sun is fully diffused by the cloud layer — directional shadows should fade to invisible. Without this, you get the uncanny look of hard shadows under a gray sky:
+
+```wgsl
+// In shadow-csm.wgsl (shared shadow sampling):
+let shadowVisibility = 1.0 - smoothstep(0.6, 0.9, u.averageCoverage);
+let finalShadow = mix(1.0, csmShadowFactor * cloudShadowFactor, shadowVisibility);
+```
+
+- Coverage < 60%: Full shadows (clear/partly cloudy)
+- Coverage 60–90%: Shadows fade out (transition to overcast)
+- Coverage > 90%: No visible shadows (fully overcast / rainy)
+
+The `averageCoverage` uniform is added to the CSM uniform buffer (binding 8) — a single extra float.
+
+#### 6.4.4 IBL Re-Capture Under Clouds
+
+The `DynamicSkyIBL` cubemap captures the Nishita sky scattering. Under clear skies this produces a bright blue dome. Under overcast, the sky should be a gray dome — the IBL must be re-captured with cloud contribution:
+
+**Strategy:**
+1. Track `lastIBLCoverage` — the coverage when IBL was last captured
+2. When `|averageCoverage - lastIBLCoverage| > 0.1`, queue a re-capture
+3. During re-capture, render sky pass **with cloud transmittance overlay**:
+   - For each cubemap face direction, ray-march through cloud layer (simplified, 8 steps max)
+   - Multiply sky color by cloud transmittance, add cloud scattering
+4. Re-capture is amortized: 1 face per frame, 6 frames total (same as existing `DynamicSkyIBL`)
+
+This ensures the IBL correctly shifts from blue → gray as overcast increases, and PBR ambient lighting responds appropriately.
+
+#### 6.4.5 Ambient Boost Under Overcast
+
+Under overcast, real-world ambient light is actually relatively bright (the cloud layer acts as a giant diffuser), while direct light drops. The net effect: ambient proportion increases.
+
+```typescript
+// Compensate for lost direct light by boosting ambient
+ambientMultiplier = 1.0 + averageCoverage * 0.3;
+ambientIntensity = baseAmbientIntensity * ambientMultiplier;
+```
+
+This prevents the scene from going too dark under overcast — it should feel flat and diffuse, not dim.
+
+#### 6.4.6 Weather State Summary
+
+| Weather State | Coverage | Direct Light | CSM Shadows | IBL (Ambient) | Net Scene Feel |
+|---|---|---|---|---|---|
+| **Clear** | 0.0–0.2 | 100% | Full, hard | Bright blue sky | Sunny, high contrast |
+| **Partly Cloudy** | 0.2–0.5 | 70–85% | Hard in clear, soft under cloud shadow | Blue sky, slightly dimmed | Patchy sun/shade |
+| **Cloudy** | 0.5–0.7 | 40–60% | Fading, soft | Gray-blue mix | Diffuse, low contrast |
+| **Overcast** | 0.7–0.95 | 5–20% | Nearly invisible | Gray dome | Flat, uniform lighting |
+| **Heavy Overcast / Rain** | 0.95–1.0 | ~2% | None | Dark gray | Dark, moody, no shadows |
+
+### 6.5 Weather Preset System
+
+Weather presets provide coordinated control over all atmospheric parameters. Each preset defines cloud, lighting, fog, and sky settings that work together for a consistent look.
+
+```typescript
+interface WeatherPreset {
+  name: string;
+  // Cloud parameters
+  cloudCoverage: number;          // 0–1
+  cloudType: number;              // 0=stratus, 0.5=stratocumulus, 1.0=cumulus
+  cloudDensity: number;           // extinction coefficient
+  cloudBaseAltitude: number;      // meters
+  cloudThickness: number;         // meters
+  cirrusOpacity: number;          // 0–1
+  precipitation: number;          // 0=none, 1=heavy
+  // Lighting adaptation
+  sunIntensityScale: number;      // multiplier on DirectionalLight intensity
+  ambientBoost: number;           // extra ambient under overcast
+  shadowVisibility: number;       // 0=no shadows, 1=full shadows
+  // Fog parameters
+  fogDensity: number;             // height fog density
+  fogHeight: number;              // fog base height
+  fogVisibility: number;          // visibility distance
+  // Wind
+  windSpeed: number;              // m/s
+  windDirection: number;          // azimuth degrees
+}
+
+const WEATHER_PRESETS: Record<string, WeatherPreset> = {
+  'Clear':          { cloudCoverage: 0.1,  cloudType: 1.0, sunIntensityScale: 1.0,  shadowVisibility: 1.0,  ambientBoost: 0.0,  cirrusOpacity: 0.1, ... },
+  'Partly Cloudy':  { cloudCoverage: 0.4,  cloudType: 0.8, sunIntensityScale: 0.85, shadowVisibility: 0.9,  ambientBoost: 0.1,  cirrusOpacity: 0.2, ... },
+  'Cloudy':         { cloudCoverage: 0.65, cloudType: 0.5, sunIntensityScale: 0.5,  shadowVisibility: 0.5,  ambientBoost: 0.15, cirrusOpacity: 0.0, ... },
+  'Overcast':       { cloudCoverage: 0.92, cloudType: 0.1, sunIntensityScale: 0.1,  shadowVisibility: 0.05, ambientBoost: 0.3,  cirrusOpacity: 0.0, ... },
+  'Rainy':          { cloudCoverage: 1.0,  cloudType: 0.0, sunIntensityScale: 0.05, shadowVisibility: 0.0,  ambientBoost: 0.2,  cirrusOpacity: 0.0, fogDensity: 0.01, precipitation: 0.8, ... },
+  'Stormy':         { cloudCoverage: 0.85, cloudType: 0.3, sunIntensityScale: 0.08, shadowVisibility: 0.0,  ambientBoost: 0.15, cirrusOpacity: 0.0, fogDensity: 0.005, precipitation: 1.0, windSpeed: 25, ... },
+};
+```
+
+Transitions between presets **lerp all parameters** over a configurable duration (default 5–10 seconds) for smooth weather changes. The UI provides a dropdown to select a preset plus individual parameter overrides.
+
+### 6.6 Weather Map ↔ Wind System
 
 The existing `wind.ts` module provides wind direction/speed. The weather map UV offset should be driven by this:
 
@@ -589,9 +1239,9 @@ weatherMapOffset.y += windDirection.z * windSpeed * deltaTime * 0.0001;
 
 ---
 
-## 6. Performance Budget & Optimization
+## 7. Performance Budget & Optimization
 
-### 6.1 Target Budget
+### 7.1 Target Budget
 
 | Component | Target (ms) | Resolution | Notes |
 |-----------|------------|------------|-------|
@@ -602,7 +1252,7 @@ weatherMapOffset.y += windDirection.z * windSpeed * deltaTime * 0.0001;
 | God rays (screen-space) | 0.1-0.2 | Half-res | 32-64 radial samples |
 | **Total** | **0.65-1.15** | | |
 
-### 6.2 Key Optimizations
+### 7.2 Key Optimizations
 
 1. **Temporal reprojection**: March only 50% of pixels per frame (checkerboard). Halves ray-march cost.
 
@@ -620,7 +1270,7 @@ weatherMapOffset.y += windDirection.z * windSpeed * deltaTime * 0.0001;
 
 8. **Half-resolution rendering**: Cloud texture is at 50% resolution. The bilinear upscale is masked by the soft nature of clouds.
 
-### 6.3 WebGPU-Specific Considerations
+### 7.3 WebGPU-Specific Considerations
 
 - **3D textures**: WebGPU supports `texture_3d<f32>` and `textureStore` on 3D textures in compute shaders. The 128³ shape noise fits in ~8MB VRAM (rgba8unorm).
 - **Compute dispatch limits**: WebGPU max workgroup size is 256 invocations. Using `@workgroup_size(8, 8, 1)` = 64 invocations is well within limits.
@@ -630,9 +1280,9 @@ weatherMapOffset.y += windDirection.z * windSpeed * deltaTime * 0.0001;
 
 ---
 
-## 7. UI Controls
+## 8. UI Controls
 
-### 7.1 Environment Panel — Cloud Section
+### 8.1 Environment Panel — Cloud Section
 
 Add a collapsible **"Clouds"** section to `EnvironmentPanel` / `LightingTab`:
 
@@ -648,7 +1298,7 @@ Add a collapsible **"Clouds"** section to `EnvironmentPanel` / `LightingTab`:
 | Wind Direction | Slider | 0–360° | 45 | Azimuth |
 | Cloud Shadows | Toggle | on/off | on | Enable cloud shadow map |
 
-### 7.2 Rendering Panel — Volumetric Section
+### 8.2 Rendering Panel — Volumetric Section
 
 Add a collapsible **"Volumetric"** section to `RenderingPanel`:
 
@@ -660,7 +1310,7 @@ Add a collapsible **"Volumetric"** section to `RenderingPanel`:
 | Temporal Reprojection | Toggle | on/off | on | Cloud temporal filtering |
 | Cloud Resolution | Dropdown | Quarter/Half/Full | Half | Ray march resolution |
 
-### 7.3 Debug Visualization
+### 8.3 Debug Visualization
 
 Register cloud textures with the existing `DebugTextureManager`:
 
@@ -673,7 +1323,7 @@ Register cloud textures with the existing `DebugTextureManager`:
 
 ---
 
-## 8. Implementation Phases
+## 9. Implementation Phases
 
 ### Phase 1: Foundation & 2D Cloud Fallback (3–4 days)
 
@@ -730,7 +1380,16 @@ Register cloud textures with the existing `DebugTextureManager`:
    - Clouds tinted by atmospheric scattering color at sunset/sunrise
    - Ambient sky color from existing IBL used for cloud ambient term
 
-**Deliverable**: Clouds with self-shadowing, silver linings, and shadows on terrain.
+6. **Cloud type branching** in density function (§2.2)
+   - Height gradient adapts to cloud type (stratus flat slab vs cumulus billowy)
+   - Detail erosion strength reduced for stratus/overcast
+
+7. **Direct light attenuation from average coverage** (§6.4.2)
+   - Compute average cloud coverage per frame (16-point weather map sample)
+   - Scale sun effective intensity by `(1 - coverage × occlusionStrength)`
+   - CSM shadow fade under overcast (§6.4.3): shadows lerp toward invisible when coverage > 60%
+
+**Deliverable**: Clouds with self-shadowing, silver linings, shadows on terrain, and weather-aware scene lighting.
 
 ### Phase 3: Temporal Reprojection & Performance (2–3 days)
 
@@ -780,35 +1439,123 @@ Register cloud textures with the existing `DebugTextureManager`:
 
 **Deliverable**: Visible god rays through cloud gaps and terrain features.
 
-### Phase 5: Polish & Advanced Features (2–3 days)
+### Phase 5: Weather, Lighting & Polish (3–4 days)
 
-**Goal**: Production quality and edge cases.
+**Goal**: Weather variety, correct lighting adaptation, and production polish.
 
-1. **Night sky interaction**
+1. **IBL re-capture under clouds** (§6.4.4)
+   - Trigger IBL cubemap re-capture when average coverage changes by >0.1
+   - Render sky with cloud transmittance overlay during capture
+   - Amortized: 1 face/frame, 6 frames total
+   - Result: blue sky → gray dome under overcast, PBR ambient responds correctly
+
+2. **Ambient boost under overcast** (§6.4.5)
+   - `ambientMultiplier = 1.0 + coverage × 0.3` — prevents overly dark overcast scenes
+
+3. **Cirrus layer** (§2.2.1)
+   - 2D scrolling texture at 8,000–12,000m altitude
+   - Alpha-blended fullscreen quad in sky pass, wind-driven
+   - Opacity controlled by weather preset
+
+4. **Weather preset system** (§6.5)
+   - `WeatherPreset` interface with coordinated cloud/lighting/fog/wind params
+   - 6 presets: Clear, Partly Cloudy, Cloudy, Overcast, Rainy, Stormy
+   - Smooth lerp transitions (5–10s) between presets
+   - UI dropdown in Environment panel + individual overrides
+
+5. **Night sky interaction**
    - Stars visible through cloud gaps (transmittance)
    - Moon illumination of cloud tops
    - Cloud darkening at night (consistent with existing `sunVisibility` system)
 
-2. **Precipitation effects**
-   - Dense cloud bases darken with precipitation channel
-   - Optional: rain particle effects below precipitating clouds
-
-3. **IBL interaction**
-   - Reduce ambient intensity based on cloud coverage
-   - Optional: re-capture IBL cubemap with clouds on weather change
-
-4. **Edge cases**
+6. **Edge cases**
    - Camera inside cloud layer (fog fallback)
    - Extremely low sun angles (grazing cloud illumination)
    - Clear sky (all systems early-out, zero cost)
 
-5. **Serialization** — save/load cloud settings in scene files
+7. **Serialization** — save/load cloud + weather settings in scene files
 
-**Deliverable**: Complete, polished volumetric cloud + god ray system.
+**Deliverable**: Complete weather system with overcast/rain support, correct lighting adaptation across all weather states, and production-quality clouds.
+
+### Phase 6: Froxel Volumetric Fog (8–10 days)
+
+**Goal**: Full froxel-based volumetric fog with point/spot light support, replacing `AtmosphericFogEffect` when enabled.
+
+> **Note:** This phase implements the system designed in §5. It leverages the existing `LightBufferManager` (bindings 10–12), spot shadow atlas (bindings 13–14), and `lights.wgsl` structs. No new light infrastructure is needed — only the froxel grid and compute passes are new.
+
+#### Phase 6a: Froxel Grid + Directional Sun Fog (3–4 days)
+
+1. **Froxel grid infrastructure** (`FroxelGrid.ts`)
+   - Create 160×90×64 `rgba16float` 3D textures (scatter, integrated, history)
+   - Exponential depth slicing utilities (`depthToSlice`, `sliceToDepth`, `sliceThickness`)
+   - Resize handling when viewport changes
+
+2. **Density injection compute** (`fog-density-inject.wgsl`)
+   - Global height fog (matching `AtmosphericFogEffect` parameters for seamless transition)
+   - 3D noise modulation for heterogeneous fog (reuse cloud detail noise texture if available)
+
+3. **Directional light scattering compute** (`froxel-scattering.wgsl`)
+   - Sun/moon only (no point/spot lights yet)
+   - CSM shadow sampling per froxel → automatic god rays
+   - Cloud shadow map sampling (if clouds enabled)
+
+4. **Front-to-back integration compute** (`froxel-integrate.wgsl`)
+   - Walk 64 depth slices, accumulate scattering + transmittance
+   - Output integrated 3D texture
+
+5. **Post-process application** (`VolumetricFogEffect.ts`)
+   - New `BaseEffect` subclass at priority 150 (replaces `AtmosphericFogEffect` when active)
+   - Reads depth, reconstructs world position, samples integrated froxel grid
+   - `GPUForwardPipeline` auto-disables `AtmosphericFogEffect` when froxel fog is active
+
+**Deliverable**: Height fog + directional god rays from CSM occlusion. Visual parity with `AtmosphericFogEffect` plus volumetric shadow shafts.
+
+#### Phase 6b: Point & Spot Light Injection (2–3 days)
+
+1. **Light-to-froxel culling compute** (`froxel-light-cull.wgsl`)
+   - Read existing `PointLightData[]` / `SpotLightData[]` from SceneEnvironment bindings 10–12
+   - Compute each light's AABB in froxel space, write to `FroxelLightList` storage buffer
+
+2. **Multi-light scattering** in `froxel-scattering.wgsl`
+   - Iterate `FroxelLightList` per froxel, accumulate point/spot in-scattered light
+   - Use existing `attenuateDistance()` / `attenuateSpotCone()` from `lights.wgsl`
+   - Sample spot shadow atlas (binding 13) via each light's `lightSpaceMatrix`
+
+3. **UI controls** — volumetric fog enable toggle, density sliders in Rendering Panel
+
+**Deliverable**: Point light glow spheres + spot light beams visible in fog. Spot shadow volumetric shafts.
+
+#### Phase 6c: Temporal Reprojection + Local Fog Volumes (2–3 days)
+
+1. **Temporal reprojection** (`froxel-temporal.wgsl`)
+   - Reproject previous frame froxels using inverse VP delta
+   - 95/5 history blend with validation (out-of-bounds rejection)
+   - Ping-pong 3D textures for history
+
+2. **`FogVolumeComponent`** (ECS component)
+   - Sphere/box/cylinder shapes with density, falloff, optional color tint
+   - GPU buffer of active fog volumes uploaded each frame
+   - Density injection pass samples fog volumes
+
+3. **Heterogeneous fog noise**
+   - Generate 64³ tileable 3D Perlin/Worley noise texture (or reuse cloud noise)
+   - Animate UV offset via Wind system
+
+**Deliverable**: Smooth temporally-stable fog, wispy non-uniform fog, local fog volume emitters.
+
+#### Phase 6d: Integration + Polish (1–2 days)
+
+1. **Cloud shadow integration** in froxel scattering (if cloud system enabled)
+2. **Debug textures** — register froxel scatter/integrated grids with `DebugTextureManager`
+3. **Performance profiling** — target 1–3ms total for froxel pipeline
+4. **Serialization** — save/load volumetric fog settings in scene files
+5. **ECS `CloudComponent`** and `VolumetricFogComponent`** on scene entity for settings persistence
+
+**Deliverable**: Complete froxel volumetric fog integrated with clouds, all light types, and scene serialization.
 
 ---
 
-## 9. File Structure
+## 10. File Structure
 
 ```
 src/core/gpu/
@@ -821,6 +1568,17 @@ src/core/gpu/
 │   ├── CloudShadowGenerator.ts       # 2D cloud shadow map
 │   └── types.ts                      # Cloud config interfaces
 │
+├── volumetric/                        # Froxel volumetric fog system (Phase 6)
+│   ├── index.ts                      # Public exports
+│   ├── FroxelGrid.ts                 # 3D texture management, depth slicing utilities
+│   ├── FogDensityInjector.ts         # Pass 1: density injection compute pipeline
+│   ├── FroxelLightCuller.ts          # Light-to-froxel assignment compute pipeline
+│   ├── FroxelScatteringPass.ts       # Pass 2: light injection compute (sun + point + spot)
+│   ├── FroxelTemporalFilter.ts       # Pass 3: temporal reprojection for froxel grid
+│   ├── FroxelIntegrator.ts           # Pass 4: front-to-back ray integration
+│   ├── VolumetricFogEffect.ts        # Post-process application (replaces AtmosphericFog)
+│   └── types.ts                      # Froxel config, fog volume interfaces
+│
 ├── shaders/
 │   ├── clouds/
 │   │   ├── cloud-noise-gen.wgsl      # 3D Worley-Perlin noise generation
@@ -831,16 +1589,27 @@ src/core/gpu/
 │   │   ├── cloud-shadow.wgsl         # Cloud shadow map generation
 │   │   └── cloud-common.wgsl         # Shared: density function, phase, remap
 │   │
+│   ├── volumetric/                    # Froxel fog shaders (Phase 6)
+│   │   ├── fog-density-inject.wgsl   # Density injection (height fog + noise + volumes)
+│   │   ├── froxel-light-cull.wgsl    # Light-to-froxel assignment
+│   │   ├── froxel-scattering.wgsl    # Per-froxel light injection (sun + point + spot)
+│   │   ├── froxel-temporal.wgsl      # Temporal reprojection for froxel grid
+│   │   ├── froxel-integrate.wgsl     # Front-to-back ray integration
+│   │   └── volumetric-fog-apply.wgsl # Post-process: sample froxel grid per pixel
+│   │
 │   └── common/
-│       └── cloud-shadow-sample.wgsl  # Shared include for scene shaders
+│       ├── cloud-shadow-sample.wgsl  # Shared include for scene shaders
+│       └── phase-functions.wgsl      # Shared: HG, Rayleigh, Cornette-Shanks, isotropic
 │
 ├── postprocess/
 │   ├── effects/
 │   │   ├── CloudCompositeEffect.ts   # Cloud → scene compositing
-│   │   └── GodRayEffect.ts           # Screen-space god rays
+│   │   ├── GodRayEffect.ts           # Screen-space god rays
+│   │   └── VolumetricFogEffect.ts    # Froxel fog application (Phase 6)
 │   └── shaders/
 │       ├── cloud-composite.wgsl      # Cloud composite fragment shader
-│       └── god-rays.wgsl             # God ray radial blur shader
+│       ├── god-rays.wgsl             # God ray radial blur shader
+│       └── volumetric-fog-apply.wgsl # (symlink/import from volumetric/)
 │
 ├── pipeline/
 │   └── passes/
@@ -850,12 +1619,21 @@ src/core/gpu/
 │
 └── renderers/
     └── shared/
-        └── SceneEnvironment.ts       # Updated: +cloud shadow bindings
+        └── SceneEnvironment.ts       # Updated: +cloud shadow bindings (17-18)
+
+src/core/ecs/
+├── components/
+│   ├── CloudComponent.ts             # Cloud settings on scene entity (coverage, type, etc.)
+│   ├── VolumetricFogComponent.ts     # Global froxel fog settings on scene entity
+│   └── FogVolumeComponent.ts         # Local fog volume emitter (sphere/box/cylinder)
+│
+└── systems/
+    └── VolumetricFogSystem.ts         # Queries fog volumes, updates FroxelGrid each frame
 ```
 
 ---
 
-## 10. References
+## 11. References
 
 ### Core Papers & Talks
 

@@ -80,6 +80,7 @@ function computeEnvironmentMask(composed: ComposedShader): EnvironmentBindingMas
     mask |= ENV_BINDING_MASK.SHADOW_SAMPLER;
     mask |= ENV_BINDING_MASK.CSM_SHADOW_ARRAY;
     mask |= ENV_BINDING_MASK.CSM_UNIFORMS;
+    mask |= ENV_BINDING_MASK.CLOUD_SHADOW;
   }
 
   if (features.includes('ibl')) {

@@ -19,7 +19,7 @@ import { DebugCameraController } from './DebugCameraController';
 import { CameraFrustumRendererGPU, type CSMDebugInfo } from '../../core/gpu/renderers/CameraFrustumRendererGPU';
 import { WebGPUShadowSettings } from './components/panels/RenderingPanel';
 import type { SSAOSettings, SSRSettings } from './components/panels/RenderingPanel';
-import type { CompositeEffectConfig } from '../../core/gpu/postprocess';
+import type { CompositeEffectConfig, AtmosphericFogConfig } from '../../core/gpu/postprocess';
 import { CameraObject } from '@/core/sceneObjects';
 import { World } from '../../core/ecs/World';
 import {
@@ -52,6 +52,7 @@ import { LightVisualizerGPU } from '../../core/gpu/renderers/LightVisualizerGPU'
 import { PlayerVisualizerGPU } from '../../core/gpu/renderers/PlayerVisualizerGPU';
 import { TerrainLayerBounds } from '@/core/terrain';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
+import { CloudConfig } from '@/core/gpu/clouds';
 
 // ==================== Type Definitions ====================
 
@@ -649,6 +650,31 @@ export class Viewport {
   setCompositeSettings(config: Partial<CompositeEffectConfig>): void {
     if (this.gpuPipeline) {
       this.gpuPipeline.setCompositeConfig(config);
+    }
+  }
+
+  /**
+   * Set atmospheric fog settings (for RenderingPanel integration)
+   * Enables/disables the effect and updates all fog parameters
+   */
+  setAtmosphericFogSettings(settings: Partial<AtmosphericFogConfig> & { enabled?: boolean }): void {
+    if (this.gpuPipeline) {
+      // Handle master enable/disable
+      if (settings.enabled !== undefined) {
+        this.gpuPipeline.setAtmosphericFogEnabled(settings.enabled);
+      }
+      // Pass all config to the effect
+      this.gpuPipeline.setAtmosphericFogConfig(settings);
+    }
+  }
+
+  /**
+   * Set volumetric cloud settings (for RenderingPanel integration)
+   * Enables/disables clouds and updates all cloud parameters
+   */
+  setCloudSettings(settings: Partial<CloudConfig>): void {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setCloudConfig(settings);
     }
   }
 
@@ -1316,7 +1342,8 @@ export class Viewport {
 
     // Update far plane to accommodate the scene
     // Far plane should be at least maxDist + sceneRadius (camera at max dist looking at scene edge)
-    const farPlane = Math.max(maxDist + sceneRadius, 100);
+    // Minimum 2000 to prevent far-plane clipping on large terrains
+    const farPlane = Math.max(maxDist + sceneRadius, 2000);
     camera.setClipPlanes(camera.near, farPlane);
 
     console.log(`[Viewport] Updated camera for scene bounds: radius=${sceneRadius}, maxDist=${maxDist.toFixed(1)}, far=${farPlane.toFixed(1)}`);
