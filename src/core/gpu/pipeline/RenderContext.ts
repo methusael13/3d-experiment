@@ -193,6 +193,7 @@ export class RenderContextImpl implements RenderContext {
   readonly viewProjectionMatrix: Float32Array;
   readonly inverseProjectionMatrix: Float32Array;
   readonly inverseViewMatrix: Float32Array;
+  readonly inverseViewProjectionMatrix: Float32Array;
   readonly cameraPosition: [number, number, number];
   readonly cameraForward: [number, number, number];
   
@@ -284,6 +285,9 @@ export class RenderContextImpl implements RenderContext {
     
     this.inverseViewMatrix = new Float32Array(16);
     mat4.invert(this.inverseViewMatrix as unknown as mat4, viewMat as mat4);
+
+    this.inverseViewProjectionMatrix = new Float32Array(16);
+    mat4.invert(this.inverseViewProjectionMatrix, this.viewProjectionMatrix);
     
     // Camera position
     const pos = this.camera.getPosition();

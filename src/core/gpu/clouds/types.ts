@@ -36,6 +36,9 @@ export interface CloudConfig {
 
   /** Enable cloud shadow map generation */
   cloudShadows: boolean;
+
+  /** Enable temporal reprojection (Phase 3) — amortizes ray march over 2 frames */
+  temporalReprojection: boolean;
 }
 
 /**
@@ -51,6 +54,7 @@ export const DEFAULT_CLOUD_CONFIG: CloudConfig = {
   windSpeed: 5,
   windDirection: 45,
   cloudShadows: true,
+  temporalReprojection: true,
 };
 
 // ========== Noise Texture Specs ==========
@@ -70,7 +74,7 @@ export const WEATHER_MAP_SIZE = 512;
  * Size of the cloud ray march uniform buffer in bytes.
  * Must match the CloudUniforms struct in cloud-raymarch.wgsl.
  * 
- * Layout (256 bytes total):
+ * Layout (192 bytes total, Phase 3 extended):
  *   mat4x4f inverseViewProj   [0..63]
  *   vec3f   cameraPosition    [64..75]
  *   f32     time              [76..79]
@@ -87,9 +91,30 @@ export const WEATHER_MAP_SIZE = 512;
  *   f32     far               [140..143]
  *   vec2u   resolution        [144..151]
  *   f32     earthRadius       [152..155]
- *   f32     _pad0             [156..159]
+ *   u32     frameIndex        [156..159]
+ *   vec2u   fullResolution    [160..167]
+ *   u32     checkerboard      [168..171]  1 = enabled, 0 = disabled
+ *   f32     _pad1             [172..175]
+ *   --- 176 bytes, 16-byte aligned ---
  */
-export const CLOUD_UNIFORM_SIZE = 160;
+export const CLOUD_UNIFORM_SIZE = 176;
+
+/**
+ * Size of the cloud temporal filter uniform buffer in bytes.
+ * Must match the TemporalUniforms struct in cloud-temporal.wgsl.
+ *
+ * Layout (32 bytes total):
+ *   vec2u   resolution     [0..7]
+ *   u32     frameIndex     [8..11]
+ *   f32     blendWeight    [12..15]  (0.9 = 90% history, 10% current)
+ *   vec2u   fullResolution [16..23]
+ *   u32     checkerboard   [24..27]
+ *   f32     _pad0          [28..31]
+ */
+export const CLOUD_TEMPORAL_UNIFORM_SIZE = 32;
+
+/** Blue noise texture resolution (128×128) */
+export const BLUE_NOISE_SIZE = 128;
 
 /** Cloud shadow map resolution */
 export const CLOUD_SHADOW_MAP_SIZE = 1024;

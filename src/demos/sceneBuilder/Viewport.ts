@@ -683,6 +683,7 @@ export class Viewport {
       getViewMatrix: () => camera.getViewMatrix() as Float32Array,
       getProjectionMatrix: () => camera.getProjectionMatrix() as Float32Array,
       getPosition: () => camera.getPosition() as number[],
+      getVpMatrix: () => camera.getViewProjectionMatrix() as number[],
       near: camera.near,
       far: camera.far,
     };
@@ -711,10 +712,27 @@ export class Viewport {
       const cam = camEntity?.getComponent<CameraComponent>('camera');
       const camTransform = camEntity?.getComponent<TransformComponent>('transform');
       if (cam && camTransform) {
+        // Sync clip planes, FOV, and aspect ratio from the orbit camera so the
+        // FPS projection matches what the rest of the pipeline expects.
+        // CameraComponent defaults to FOV=60°, aspect=16:9, near=0.1, far=1000
+        // which all differ from the actual orbit camera; this mismatch causes
+        // the inverseViewProj in the cloud ray marcher to reconstruct
+        // world-space ray directions incorrectly, producing radial cloud
+        // stretching during camera translation.
+        //
+        // near/far/fov are set BEFORE setAspectRatio because setAspectRatio
+        // recomputes the projection matrix using the current near/far/fov.
+        const orbitCam = this.cameraController!.getCamera();
+        cam.near = orbitCam.near;
+        cam.far = orbitCam.far;
+        cam.fov = orbitCam.fov * Math.PI / 180; // CameraObject stores degrees, CameraComponent stores radians
+        cam.setAspectRatio(this.logicalWidth, this.logicalHeight);
+
         viewCameraAdapter = {
           getViewMatrix: () => cam.viewMatrix as Float32Array,
           getProjectionMatrix: () => cam.projMatrix as Float32Array,
           getPosition: () => [camTransform.position[0], camTransform.position[1], camTransform.position[2]] as number[],
+          getVpMatrix: () => cam.vpMatrix as Float32Array,
           near: cam.near,
           far: cam.far,
         };
@@ -832,7 +850,7 @@ export class Viewport {
       });
     }
 
-    this.gpuPipeline.render(cameraAdapter as any, options, separateSceneCamera as any, this._world);
+    this.gpuPipeline.render(cameraAdapter, options, separateSceneCamera, this._world);
 
     // Flush deferred entity deletions after all GPU commands are submitted.
     // Entities marked for deletion during the frame are kept alive until here

@@ -6,7 +6,8 @@
  * with (scatteredLight.rgb, transmittance) that the CloudCompositeEffect
  * blends into the scene.
  *
- * Phase 1: Full resolution, no temporal reprojection.
+ * Phase 3: Half-resolution rendering, checkerboard pattern, blue noise
+ *          dithering, and frame counter for temporal reprojection.
  */
 
 import { mat4 } from 'gl-matrix';
@@ -16,6 +17,7 @@ import { WeatherMapGenerator } from './WeatherMapGenerator';
 import { CLOUD_UNIFORM_SIZE, EARTH_RADIUS, type CloudConfig, DEFAULT_CLOUD_CONFIG } from './types';
 
 import raymarchShader from '../shaders/clouds/cloud-raymarch.wgsl?raw';
+import { Logger } from '@/core/utils/logger';
 
 export class CloudRayMarcher {
   private ctx: GPUContext;
@@ -25,11 +27,15 @@ export class CloudRayMarcher {
   // Config
   private config: CloudConfig = { ...DEFAULT_CLOUD_CONFIG };
 
-  // Output texture
+  // Output texture (half-resolution)
   private _outputTexture: GPUTexture | null = null;
   private _outputView: GPUTextureView | null = null;
-  private width = 0;
-  private height = 0;
+  private halfWidth = 0;
+  private halfHeight = 0;
+
+  // Full viewport dimensions (for uniform upload)
+  private fullWidth = 0;
+  private fullHeight = 0;
 
   // Pipeline
   private pipeline: GPUComputePipeline | null = null;
@@ -41,6 +47,24 @@ export class CloudRayMarcher {
   // Wind-driven weather map offset
   private _weatherOffsetX = 0;
   private _weatherOffsetZ = 0;
+
+  // Frame counter (shared with temporal filter for checkerboard sync)
+  private _frameIndex = 0;
+
+  // When true, force-disable checkerboard in the shader regardless of config.
+  // Set this when the temporal filter is not running, because without temporal
+  // fill the same pixels are permanently skipped causing radial streaking
+  // during camera translation (FPS/player mode).
+  private _forceDisableCheckerboard = false;
+
+  // Blue noise texture view (set externally by pipeline from CloudTemporalFilter)
+  private _blueNoiseView: GPUTextureView | null = null;
+
+  // Fallback 1×1 blue noise texture (used when temporal filter not yet initialized)
+  private fallbackBlueNoise: GPUTexture | null = null;
+  private fallbackBlueNoiseView: GPUTextureView | null = null;
+
+  private _logger = new Logger('CloudRayMarcher', 2000);
 
   constructor(ctx: GPUContext) {
     this.ctx = ctx;
@@ -57,6 +81,11 @@ export class CloudRayMarcher {
   get currentWeatherOffsetX(): number { return this._weatherOffsetX; }
   get currentWeatherOffsetZ(): number { return this._weatherOffsetZ; }
 
+  /** Half-resolution output width */
+  get outputWidth(): number { return this.halfWidth; }
+  /** Half-resolution output height */
+  get outputHeight(): number { return this.halfHeight; }
+
   getConfig(): CloudConfig { return { ...this.config }; }
 
   setConfig(config: Partial<CloudConfig>): void {
@@ -67,14 +96,38 @@ export class CloudRayMarcher {
     }
   }
 
+  /** Set the blue noise texture view from CloudTemporalFilter */
+  setBlueNoiseView(view: GPUTextureView | null): void {
+    this._blueNoiseView = view;
+  }
+
+  /** Set the frame index (synced from CloudTemporalFilter) */
+  setFrameIndex(index: number): void {
+    this._frameIndex = index;
+  }
+
+  /**
+   * Force-disable checkerboard rendering regardless of config.temporalReprojection.
+   * Call with `true` when the temporal filter is not running — without temporal
+   * fill the same pixels are permanently skipped, causing radial streaking
+   * artifacts during camera translation (FPS/player mode).
+   */
+  setForceDisableCheckerboard(disable: boolean): void {
+    this._forceDisableCheckerboard = disable;
+  }
+
   // ========== Initialization ==========
 
   /**
-   * Initialize the ray marcher. Must be called before execute().
+   * Initialize the ray marcher with half-resolution output.
+   * @param fullWidth  Full viewport width
+   * @param fullHeight Full viewport height
    */
-  init(width: number, height: number): void {
-    this.width = width;
-    this.height = height;
+  init(fullWidth: number, fullHeight: number): void {
+    this.fullWidth = fullWidth;
+    this.fullHeight = fullHeight;
+    this.halfWidth = Math.ceil(fullWidth / 2);
+    this.halfHeight = Math.ceil(fullHeight / 2);
 
     const device = this.ctx.device;
 
@@ -84,10 +137,13 @@ export class CloudRayMarcher {
     // Generate initial weather map
     this.weatherGen.generate(this.config.coverage, this.config.cloudType);
 
-    // Create output texture
+    // Create output texture (half-res)
     this.createOutputTexture();
 
-    // Bind group layout
+    // Create fallback 1×1 blue noise texture
+    this.createFallbackBlueNoise();
+
+    // Bind group layout (Phase 3: added binding 6 for blue noise)
     this.bindGroupLayout = device.createBindGroupLayout({
       label: 'cloud-raymarch-bgl',
       entries: [
@@ -97,6 +153,7 @@ export class CloudRayMarcher {
         { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '3d' } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d' } },
       ],
     });
 
@@ -126,19 +183,41 @@ export class CloudRayMarcher {
 
     this._outputTexture = this.ctx.device.createTexture({
       label: 'cloud-raymarch-output',
-      size: { width: this.width, height: this.height },
+      size: { width: this.halfWidth, height: this.halfHeight },
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     });
     this._outputView = this._outputTexture.createView({ label: 'cloud-raymarch-output-view' });
   }
 
+  /** Create a 1×1 fallback blue noise texture for when temporal filter isn't ready */
+  private createFallbackBlueNoise(): void {
+    this.fallbackBlueNoise = this.ctx.device.createTexture({
+      label: 'cloud-fallback-blue-noise',
+      size: { width: 1, height: 1 },
+      format: 'r8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    // Write a single value (0.5)
+    this.ctx.device.queue.writeTexture(
+      { texture: this.fallbackBlueNoise },
+      new Uint8Array([128]),
+      { bytesPerRow: 1 },
+      { width: 1, height: 1 },
+    );
+    this.fallbackBlueNoiseView = this.fallbackBlueNoise.createView({ label: 'cloud-fallback-blue-noise-view' });
+  }
+
   // ========== Resize ==========
 
-  resize(width: number, height: number): void {
-    if (this.width === width && this.height === height) return;
-    this.width = width;
-    this.height = height;
+  resize(fullWidth: number, fullHeight: number): void {
+    const newHalfW = Math.ceil(fullWidth / 2);
+    const newHalfH = Math.ceil(fullHeight / 2);
+    if (this.halfWidth === newHalfW && this.halfHeight === newHalfH) return;
+    this.fullWidth = fullWidth;
+    this.fullHeight = fullHeight;
+    this.halfWidth = newHalfW;
+    this.halfHeight = newHalfH;
     this.createOutputTexture();
   }
 
@@ -150,8 +229,7 @@ export class CloudRayMarcher {
    */
   execute(
     encoder: GPUCommandEncoder,
-    viewMatrix: Float32Array,
-    projectionMatrix: Float32Array,
+    inverseViewProjectionMatrix: Float32Array,
     cameraPosition: [number, number, number],
     sunDirection: [number, number, number],
     sunColor: [number, number, number],
@@ -174,10 +252,13 @@ export class CloudRayMarcher {
 
     // Upload uniforms
     this.uploadUniforms(
-      viewMatrix, projectionMatrix, cameraPosition,
+      inverseViewProjectionMatrix, cameraPosition,
       sunDirection, sunColor, sunIntensity,
       time, near, far,
     );
+
+    // Use the real blue noise texture if available, otherwise fallback
+    const blueNoise = this._blueNoiseView ?? this.fallbackBlueNoiseView!;
 
     // Create bind group
     const bindGroup = this.ctx.device.createBindGroup({
@@ -190,16 +271,17 @@ export class CloudRayMarcher {
         { binding: 3, resource: this.noiseGen.detailNoiseView },
         { binding: 4, resource: this.weatherGen.textureView },
         { binding: 5, resource: this.noiseGen.sampler! },
+        { binding: 6, resource: blueNoise },
       ],
     });
 
-    // Dispatch compute
+    // Dispatch compute (half-resolution)
     const pass = encoder.beginComputePass({ label: 'cloud-raymarch-pass' });
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, bindGroup);
     // workgroup_size(8, 8, 1)
-    const wgX = Math.ceil(this.width / 8);
-    const wgY = Math.ceil(this.height / 8);
+    const wgX = Math.ceil(this.halfWidth / 8);
+    const wgY = Math.ceil(this.halfHeight / 8);
     pass.dispatchWorkgroups(wgX, wgY);
     pass.end();
   }
@@ -207,8 +289,7 @@ export class CloudRayMarcher {
   // ========== Uniform Upload ==========
 
   private uploadUniforms(
-    viewMatrix: Float32Array,
-    projectionMatrix: Float32Array,
+    inverseViewProjectionMatrix: Float32Array,
     cameraPosition: [number, number, number],
     sunDirection: [number, number, number],
     sunColor: [number, number, number],
@@ -218,13 +299,9 @@ export class CloudRayMarcher {
     far: number,
   ): void {
     const data = new Float32Array(CLOUD_UNIFORM_SIZE / 4);
+    const uintView = new Uint32Array(data.buffer);
 
-    // Compute inverse VP matrix
-    const vp = mat4.create();
-    mat4.multiply(vp, projectionMatrix as unknown as mat4, viewMatrix as unknown as mat4);
-    const invVP = mat4.create();
-    mat4.invert(invVP, vp);
-    data.set(new Float32Array(invVP as unknown as ArrayBuffer), 0);
+    data.set(new Float32Array(inverseViewProjectionMatrix), 0);
 
     // cameraPosition (offset 16)
     data[16] = cameraPosition[0];
@@ -256,13 +333,21 @@ export class CloudRayMarcher {
     data[34] = near;
     data[35] = far;
 
-    // resolution + earthRadius (offset 36)
-    // resolution is vec2u, need uint view
-    const uintView = new Uint32Array(data.buffer);
-    uintView[36] = this.width;
-    uintView[37] = this.height;
+    // resolution (half-res) + earthRadius + frameIndex (offset 36)
+    uintView[36] = this.halfWidth;
+    uintView[37] = this.halfHeight;
     data[38] = EARTH_RADIUS;
-    data[39] = 0; // _pad0
+    uintView[39] = this._frameIndex;
+
+    // fullResolution + checkerboard + pad (offset 40)
+    uintView[40] = this.fullWidth;
+    uintView[41] = this.fullHeight;
+    // Checkerboard is only useful when the temporal filter is running to fill
+    // in the skipped pixels.  Without it, the same 50% of pixels are permanently
+    // empty, causing radial streak artifacts during camera translation.
+    const checkerboardActive = this.config.temporalReprojection && !this._forceDisableCheckerboard;
+    uintView[42] = checkerboardActive ? 1 : 0;
+    data[43] = 0; // _pad1
 
     this.ctx.device.queue.writeBuffer(this.uniformBuffer!, 0, data);
   }
@@ -272,10 +357,13 @@ export class CloudRayMarcher {
   destroy(): void {
     this._outputTexture?.destroy();
     this.uniformBuffer?.destroy();
+    this.fallbackBlueNoise?.destroy();
     this.noiseGen.destroy();
     this.weatherGen.destroy();
     this._outputTexture = null;
     this._outputView = null;
     this.uniformBuffer = null;
+    this.fallbackBlueNoise = null;
+    this.fallbackBlueNoiseView = null;
   }
 }

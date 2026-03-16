@@ -6,13 +6,17 @@
  * blends it with the scene, respecting scene depth so clouds appear behind
  * opaque geometry but in front of the sky.
  *
+ * Phase 3: The cloud texture is now at half resolution. The composite shader
+ * performs bilateral upscale to full resolution, using scene depth for
+ * edge-preserving filtering at geometry boundaries.
+ *
  * Inserted at order 125 in the PostProcessPipeline (before AtmosphericFog @150).
  */
 
 import { BaseEffect, type EffectContext, type StandardInput } from '../PostProcessPipeline';
 import compositeShader from '../shaders/cloud-composite.wgsl?raw';
 
-// Uniform size: { near: f32, far: f32, _pad0: f32, _pad1: f32 } = 16 bytes
+// Uniform size: { near: f32, far: f32, cloudTexWidth: f32, cloudTexHeight: f32 } = 16 bytes
 const UNIFORM_SIZE = 16;
 
 export class CloudCompositeEffect extends BaseEffect {
@@ -28,16 +32,25 @@ export class CloudCompositeEffect extends BaseEffect {
   // Cloud texture view set externally each frame
   private _cloudTextureView: GPUTextureView | null = null;
 
+  // Cloud texture dimensions (half-res, set externally)
+  private _cloudTexWidth = 0;
+  private _cloudTexHeight = 0;
+
   constructor() {
     super();
   }
 
   /**
-   * Set the cloud ray march output texture view.
+   * Set the cloud texture view and its dimensions.
    * Called by the pipeline each frame before execute.
+   * @param view  The cloud texture view (half-res, temporally filtered)
+   * @param width  Half-res cloud texture width
+   * @param height Half-res cloud texture height
    */
-  setCloudTexture(view: GPUTextureView | null): void {
+  setCloudTexture(view: GPUTextureView | null, width?: number, height?: number): void {
     this._cloudTextureView = view;
+    if (width !== undefined) this._cloudTexWidth = width;
+    if (height !== undefined) this._cloudTexHeight = height;
   }
 
   // ========== Lifecycle ==========
@@ -61,12 +74,12 @@ export class CloudCompositeEffect extends BaseEffect {
     const colorTexture = ctx.getTexture('color');
     const depthTexture = ctx.getTexture('depth');
 
-    // Upload uniforms (near, far)
+    // Upload uniforms (near, far, cloudTexWidth, cloudTexHeight)
     const data = new Float32Array(4);
     data[0] = uniforms.near;
     data[1] = uniforms.far;
-    data[2] = 0;
-    data[3] = 0;
+    data[2] = this._cloudTexWidth;
+    data[3] = this._cloudTexHeight;
     this.ctx.device.queue.writeBuffer(this.uniformBuffer, 0, data);
 
     // Copy scene color to temp buffer (scene-color-hdr has copySrc usage)

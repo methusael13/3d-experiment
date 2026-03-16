@@ -37,7 +37,7 @@ import {
   type AtmosphericFogConfig,
   type EffectUniforms,
 } from '../postprocess';
-import { CloudRayMarcher, CloudShadowGenerator, type CloudConfig } from '../clouds';
+import { CloudRayMarcher, CloudShadowGenerator, CloudTemporalFilter, type CloudConfig } from '../clouds';
 import { RenderContextImpl, type RenderContextOptions } from './RenderContext';
 import type { World } from '../../ecs/World';
 import type { RenderPass } from './RenderPass';
@@ -67,6 +67,7 @@ export interface GPUCamera {
   getViewMatrix(): Float32Array | number[];
   getProjectionMatrix(): Float32Array | number[];
   getPosition(): Float32Array | number[];
+  getVpMatrix(): Float32Array | number[];
   /** Near clipping plane distance */
   near?: number;
   /** Far clipping plane distance */
@@ -181,6 +182,7 @@ export class GPUForwardPipeline {
   // Volumetric clouds
   private cloudRayMarcher: CloudRayMarcher | null = null;
   private cloudShadowGenerator: CloudShadowGenerator | null = null;
+  private cloudTemporalFilter: CloudTemporalFilter | null = null;
   private cloudEnabled = false;
   
   // Animation time
@@ -598,8 +600,15 @@ export class GPUForwardPipeline {
     // Resize SSR pass
     this.ssrPass?.resize(width, height);
     
-    // Resize cloud ray marcher
-    this.cloudRayMarcher?.resize(width, height);
+    // Resize cloud ray marcher + temporal filter (Phase 3)
+    if (this.cloudRayMarcher) {
+      this.cloudRayMarcher.resize(width, height);
+      if (this.cloudTemporalFilter) {
+        const halfW = this.cloudRayMarcher.outputWidth;
+        const halfH = this.cloudRayMarcher.outputHeight;
+        this.cloudTemporalFilter.resize(halfW, halfH, width, height);
+      }
+    }
     
     // Resize post-processing pipeline
     if (this.postProcessPipeline) {
@@ -798,15 +807,22 @@ export class GPUForwardPipeline {
       }
     }
     
-    // ========== CLOUD RAY MARCH (compute, between scene and post-processing) ==========
+    // ========== CLOUD RAY MARCH + TEMPORAL REPROJECTION (compute, between scene and post-processing) ==========
     if (this.cloudEnabled && this.cloudRayMarcher?.isReady) {
       const dirLight = renderCtx.getDirectionalLight();
+      const config = this.cloudRayMarcher.getConfig();
       // Scale sunIntensity by sunIntensityFactor (fades to ~0 at night for moonlight)
       const cloudSunIntensity = mergedOptions.sunIntensity * dirLight.sunIntensityFactor;
+      
+      // Sync frame index from temporal filter → ray marcher (for checkerboard pattern)
+      if (this.cloudTemporalFilter) {
+        this.cloudRayMarcher.setFrameIndex(this.cloudTemporalFilter.frameIndex);
+      }
+
+      // Dispatch cloud ray march (half-resolution, checkerboard)
       this.cloudRayMarcher.execute(
         encoder,
-        renderCtx.viewMatrix,
-        renderCtx.projectionMatrix,
+        renderCtx.inverseViewProjectionMatrix,
         renderCtx.cameraPosition,
         dirLight.direction,
         dirLight.effectiveColor,
@@ -817,10 +833,28 @@ export class GPUForwardPipeline {
         farPlane,
       );
       
-      // Feed cloud texture to the composite effect
+      // Dispatch temporal reprojection (Phase 3)
+      // Merges current checkerboard result with history for smooth, full cloud output
+      let cloudOutputView = this.cloudRayMarcher.outputView;
+      let cloudOutputWidth = this.cloudRayMarcher.outputWidth;
+      let cloudOutputHeight = this.cloudRayMarcher.outputHeight;
+      
+      // NOTE: Temporal filter is disabled until motion vectors are implemented (Phase 5).
+      // Without per-pixel motion vectors, the temporal blend uses same-pixel-coord
+      // history which causes radial stretching during camera translation.
+      // Half-res rendering alone provides 4× pixel reduction — the main perf win.
+      // The temporal filter infrastructure (CloudTemporalFilter, cloud-temporal.wgsl,
+      // ping-pong buffers, blue noise) is fully built and ready to enable once
+      // motion vectors are available.
+      //
+      // IMPORTANT: Checkerboard is also force-disabled (see below) because without
+      // temporal fill the same pixels are always skipped, causing radial streaking
+      // when the camera translates (FPS/player mode).
+      
+      // Feed cloud texture to the composite effect (with half-res dimensions for bilateral upscale)
       const cloudComposite = this.postProcessPipeline?.getEffect<CloudCompositeEffect>('cloudComposite');
       if (cloudComposite) {
-        cloudComposite.setCloudTexture(this.cloudRayMarcher.outputView);
+        cloudComposite.setCloudTexture(cloudOutputView, cloudOutputWidth, cloudOutputHeight);
       }
     } else {
       // No clouds — clear the cloud texture on the composite effect
@@ -1043,11 +1077,40 @@ export class GPUForwardPipeline {
       this.cloudShadowGenerator.init();
       this.cloudShadowGenerator.setShadowRadius(this.shadowRadius);
       
+      // Create temporal filter (Phase 3)
+      this.cloudTemporalFilter = new CloudTemporalFilter(this.ctx);
+      const halfW = this.cloudRayMarcher.outputWidth;
+      const halfH = this.cloudRayMarcher.outputHeight;
+      this.cloudTemporalFilter.init(halfW, halfH, this.width, this.height);
+      
+      // Wire blue noise texture from temporal filter to ray marcher
+      this.cloudRayMarcher.setBlueNoiseView(this.cloudTemporalFilter.blueNoiseView);
+      
+      // Force-disable checkerboard since the temporal filter is not being executed.
+      // Without temporal fill, the same 50% of pixels are permanently skipped,
+      // causing radial streak artifacts when the camera translates (FPS mode).
+      // This will be set to false once the temporal filter is enabled (Phase 5).
+      this.cloudRayMarcher.setForceDisableCheckerboard(true);
+      
       // Register cloud shadow debug texture
       this.debugTextureManager.register(
         'cloud-shadow',
         'depth',
         () => this.cloudShadowGenerator?.textureView ?? null
+      );
+      
+      // Register cloud temporal history debug texture (Phase 3)
+      this.debugTextureManager.register(
+        'cloud-history',
+        'float',
+        () => this.cloudTemporalFilter?.historyView ?? null
+      );
+      
+      // Register cloud temporal output as the main resolved result
+      this.debugTextureManager.register(
+        'cloud-temporal',
+        'float',
+        () => this.cloudTemporalFilter?.outputView ?? null
       );
     }
     
@@ -1206,6 +1269,7 @@ export class GPUForwardPipeline {
     this.debugTextureManager.destroy();
     this.cloudRayMarcher?.destroy();
     this.cloudShadowGenerator?.destroy();
+    this.cloudTemporalFilter?.destroy();
     
     // Destroy render passes
     for (const pass of this.passes) {

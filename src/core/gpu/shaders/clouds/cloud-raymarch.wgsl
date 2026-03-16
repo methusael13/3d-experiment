@@ -29,9 +29,12 @@ struct CloudUniforms {
   weatherOffset: vec2f,         // [128..135]  wind-driven UV offset
   near: f32,                    // [136..139]
   far: f32,                     // [140..143]
-  resolution: vec2u,            // [144..151]
+  resolution: vec2u,            // [144..151]  half-res output dimensions
   earthRadius: f32,             // [152..155]
-  _pad0: f32,                   // [156..159]
+  frameIndex: u32,              // [156..159]  frame counter for checkerboard + blue noise
+  fullResolution: vec2u,        // [160..167]  full viewport dimensions
+  checkerboard: u32,            // [168..171]  1 = checkerboard enabled
+  _pad1: f32,                   // [172..175]
 }
 
 @group(0) @binding(0) var<uniform> u: CloudUniforms;
@@ -40,6 +43,7 @@ struct CloudUniforms {
 @group(0) @binding(3) var detailNoise: texture_3d<f32>;
 @group(0) @binding(4) var weatherMap: texture_2d<f32>;
 @group(0) @binding(5) var noiseSampler: sampler;
+@group(0) @binding(6) var blueNoiseTexture: texture_2d<f32>;
 
 // ========== Constants ==========
 
@@ -144,12 +148,17 @@ fn sampleDensity(p: vec3f) -> f32 {
 
 // ========== Light March (self-shadowing) ==========
 
-fn lightMarch(pos: vec3f) -> f32 {
+fn lightMarch(pos: vec3f, dither: f32) -> f32 {
   var opticalDepth = 0.0;
   var samplePos = pos;
 
+  // Dither the light march start to break up regular banding
+  samplePos += u.sunDirection * LIGHT_STEP_SIZE * dither * 0.5;
+
+  // Use exponentially increasing step sizes to reduce banding
+  var stepSize = LIGHT_STEP_SIZE * 0.5;
   for (var i = 0; i < MAX_LIGHT_STEPS; i++) {
-    samplePos += u.sunDirection * LIGHT_STEP_SIZE;
+    samplePos += u.sunDirection * stepSize;
 
     // Check if we've left the cloud layer
     let alt = length(samplePos) - u.earthRadius;
@@ -157,7 +166,8 @@ fn lightMarch(pos: vec3f) -> f32 {
       break;
     }
 
-    opticalDepth += sampleDensity(samplePos) * LIGHT_STEP_SIZE;
+    opticalDepth += sampleDensity(samplePos) * stepSize;
+    stepSize *= 1.4; // Exponentially increasing steps
   }
 
   return exp(-opticalDepth * u.density);
@@ -166,10 +176,27 @@ fn lightMarch(pos: vec3f) -> f32 {
 // ========== Blue Noise Dither ==========
 
 fn blueNoiseDither(pixelCoord: vec2u) -> f32 {
-  // Interleaved gradient noise — frame-stable (no time input) to prevent jitter
-  // Time-varying dither is intended for temporal reprojection (Phase 3)
-  let p = vec2f(pixelCoord);
-  return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y));
+  // Sample blue noise texture with per-frame rotation to break up temporal patterns
+  let noiseSize = textureDimensions(blueNoiseTexture);
+  // Rotate sample coordinates each frame using golden ratio offset
+  let frameOffset = u.frameIndex * 97u; // prime multiplier for good distribution
+  let sampleCoord = vec2u(
+    (pixelCoord.x + frameOffset) % noiseSize.x,
+    (pixelCoord.y + frameOffset * 7u) % noiseSize.y
+  );
+  let noise = textureLoad(blueNoiseTexture, sampleCoord, 0).r;
+  return noise;
+}
+
+// ========== Checkerboard ==========
+
+/// Returns true if this pixel should be ray-marched this frame.
+/// When checkerboard is enabled, only half the pixels are marched per frame.
+fn shouldMarchThisFrame(coord: vec2u) -> bool {
+  if (u.checkerboard == 0u) {
+    return true; // Checkerboard disabled — march all pixels
+  }
+  return ((coord.x + coord.y + u.frameIndex) % 2u) == 0u;
 }
 
 // ========== Main ==========
@@ -178,6 +205,13 @@ fn blueNoiseDither(pixelCoord: vec2u) -> f32 {
 fn main(@builtin(global_invocation_id) globalId: vec3u) {
   let pixelCoord = globalId.xy;
   if (pixelCoord.x >= u.resolution.x || pixelCoord.y >= u.resolution.y) {
+    return;
+  }
+
+  // Checkerboard: skip non-marched pixels (they'll be reconstructed by temporal filter)
+  if (!shouldMarchThisFrame(pixelCoord)) {
+    // Write transparent black — the temporal filter will reconstruct from history + neighbors
+    textureStore(outputTexture, pixelCoord, vec4f(0.0, 0.0, 0.0, 1.0));
     return;
   }
 
@@ -246,18 +280,14 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
   // Cap march distance for performance
   tExit = min(tExit, tEntry + 30000.0);
 
-  // 3. Snap ray start to world-aligned grid to prevent jitter when camera translates
-  // Without this, sub-step camera movements cause sample positions to jump between
-  // world-space grid cells, making clouds appear to swim/jitter in FPS mode.
-  // Snap tEntry forward to the next multiple of STEP_SIZE_CLOUD
-  let firstSampleWorldPos = camPosEC + rayDir * tEntry;
-  let gridPhase = dot(firstSampleWorldPos, vec3f(1.0)) / STEP_SIZE_CLOUD;
-  let snapOffset = fract(gridPhase) * STEP_SIZE_CLOUD;
-  tEntry += snapOffset;
-
-  // Small per-pixel dither to reduce banding (but not enough to cause visible stipple)
+  // 3. Per-pixel blue noise dither to reduce banding
+  // Note: We intentionally do NOT snap tEntry to a world-aligned grid here.
+  // The grid snap (dot(worldPos, 1.0) / stepSize) causes radial stretching
+  // when the camera translates because the snap offset varies non-uniformly
+  // across ray directions. Instead, we rely on blue noise dithering alone,
+  // which produces smooth results without translation-dependent artifacts.
   let dither = blueNoiseDither(pixelCoord);
-  tEntry += dither * STEP_SIZE_CLOUD * 0.1;
+  tEntry += dither * STEP_SIZE_CLOUD * 0.5;
 
   // 4. Ray march through cloud layer
   var scatteredLight = vec3f(0.0);
@@ -315,8 +345,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
       let extinction = density * u.density;
       let transmittanceStep = exp(-extinction * stepSize);
 
-      // Light march for self-shadowing
-      let sunTransmittance = lightMarch(samplePos);
+      // Light march for self-shadowing (dithered to break banding)
+      let sunTransmittance = lightMarch(samplePos, dither);
 
       // ========== Frostbite multi-scattering approximation (3 octaves) ==========
       // Each octave reduces attenuation (light penetrates deeper) and scattering
