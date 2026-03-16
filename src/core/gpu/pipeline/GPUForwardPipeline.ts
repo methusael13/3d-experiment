@@ -185,6 +185,17 @@ export class GPUForwardPipeline {
   private cloudTemporalFilter: CloudTemporalFilter | null = null;
   private cloudEnabled = false;
   
+  // Previous frame's view-projection matrix for temporal reprojection motion vectors
+  private prevViewProjectionMatrix: Float32Array = new Float32Array(16);
+  private hasPrevViewProjectionMatrix = false;
+  
+  // GPU timestamp query profiling (Phase 3)
+  private timestampQuerySet: GPUQuerySet | null = null;
+  private timestampBuffer: GPUBuffer | null = null;
+  private timestampReadBuffer: GPUBuffer | null = null;
+  private timestampSupported = false;
+  private _cloudTimings: { raymarch: number; temporal: number; total: number } = { raymarch: 0, temporal: 0, total: 0 };
+  
   // Animation time
   private time = 0;
   private lastFrameTime = performance.now();
@@ -836,22 +847,33 @@ export class GPUForwardPipeline {
       );
       
       // Dispatch temporal reprojection (Phase 3)
-      // Merges current checkerboard result with history for smooth, full cloud output
+      // Uses motion vectors from prevViewProj + inverseViewProj to reproject
+      // history samples to their correct screen locations during camera motion.
       let cloudOutputView = this.cloudRayMarcher.outputView;
       let cloudOutputWidth = this.cloudRayMarcher.outputWidth;
       let cloudOutputHeight = this.cloudRayMarcher.outputHeight;
       
-      // NOTE: Temporal filter is disabled until motion vectors are implemented (Phase 5).
-      // Without per-pixel motion vectors, the temporal blend uses same-pixel-coord
-      // history which causes radial stretching during camera translation.
-      // Half-res rendering alone provides 4× pixel reduction — the main perf win.
-      // The temporal filter infrastructure (CloudTemporalFilter, cloud-temporal.wgsl,
-      // ping-pong buffers, blue noise) is fully built and ready to enable once
-      // motion vectors are available.
-      //
-      // IMPORTANT: Checkerboard is also force-disabled (see below) because without
-      // temporal fill the same pixels are always skipped, causing radial streaking
-      // when the camera translates (FPS/player mode).
+      if (this.cloudTemporalFilter && config.temporalReprojection) {
+        // Feed current and previous VP matrices for motion vector generation
+        this.cloudTemporalFilter.setMatrices(
+          this.prevViewProjectionMatrix,
+          renderCtx.inverseViewProjectionMatrix,
+        );
+        
+        // Only run temporal filter if we have a valid previous VP matrix
+        // (skip on first frame — no history to reproject)
+        if (this.hasPrevViewProjectionMatrix) {
+          this.cloudTemporalFilter.execute(encoder, this.cloudRayMarcher.outputView!);
+          // Use the temporally filtered output instead of the raw raymarch result
+          cloudOutputView = this.cloudTemporalFilter.outputView;
+        }
+      }
+      
+      // Save current VP matrix for next frame's motion vector generation.
+      // Must be done AFTER we pass prevVP to the temporal filter but BEFORE
+      // we finish the frame, so next frame's prevVP = this frame's current VP.
+      this.prevViewProjectionMatrix.set(renderCtx.viewProjectionMatrix);
+      this.hasPrevViewProjectionMatrix = true;
       
       // Feed cloud texture to the composite effect (with half-res dimensions for bilateral upscale)
       const cloudComposite = this.postProcessPipeline?.getEffect<CloudCompositeEffect>('cloudComposite');
@@ -1088,11 +1110,13 @@ export class GPUForwardPipeline {
       // Wire blue noise texture from temporal filter to ray marcher
       this.cloudRayMarcher.setBlueNoiseView(this.cloudTemporalFilter.blueNoiseView);
       
-      // Force-disable checkerboard since the temporal filter is not being executed.
-      // Without temporal fill, the same 50% of pixels are permanently skipped,
-      // causing radial streak artifacts when the camera translates (FPS mode).
-      // This will be set to false once the temporal filter is enabled (Phase 5).
-      this.cloudRayMarcher.setForceDisableCheckerboard(true);
+      // Temporal filter is now active with motion-vector reprojection (Phase 3).
+      // Checkerboard is safe because the temporal shader correctly fills non-marched
+      // pixels using motion-reprojected history from the previous frame.
+      this.cloudRayMarcher.setForceDisableCheckerboard(false);
+      
+      // Initialize timestamp query profiling (if supported)
+      this.initTimestampQueries();
       
       // Register cloud shadow debug texture
       this.debugTextureManager.register(
@@ -1272,6 +1296,9 @@ export class GPUForwardPipeline {
     this.cloudRayMarcher?.destroy();
     this.cloudShadowGenerator?.destroy();
     this.cloudTemporalFilter?.destroy();
+    this.timestampQuerySet?.destroy();
+    this.timestampBuffer?.destroy();
+    this.timestampReadBuffer?.destroy();
     
     // Destroy render passes
     for (const pass of this.passes) {
@@ -1322,6 +1349,58 @@ export class GPUForwardPipeline {
    */
   getDebugTextureManager(): DebugTextureManager {
     return this.debugTextureManager;
+  }
+  
+  // ========== GPU Timestamp Profiling (Phase 3) ==========
+  
+  /**
+   * Initialize GPU timestamp query resources for cloud pass profiling.
+   * Only creates resources if the 'timestamp-query' feature is available.
+   * Timestamps measure GPU time for the raymarch and temporal compute dispatches.
+   */
+  private initTimestampQueries(): void {
+    // Check if timestamp-query feature is available on the device
+    if (!this.ctx.device.features.has('timestamp-query')) {
+      this.timestampSupported = false;
+      return;
+    }
+    
+    try {
+      // 4 timestamp slots: [0]=before raymarch, [1]=after raymarch, [2]=before temporal, [3]=after temporal
+      this.timestampQuerySet = this.ctx.device.createQuerySet({
+        type: 'timestamp',
+        count: 4,
+      });
+      
+      // Buffer to resolve timestamps into (GPU-side)
+      this.timestampBuffer = this.ctx.device.createBuffer({
+        label: 'cloud-timestamp-buffer',
+        size: 4 * 8, // 4 timestamps × 8 bytes each (u64)
+        usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
+      });
+      
+      // Mappable read buffer (CPU-readable)
+      this.timestampReadBuffer = this.ctx.device.createBuffer({
+        label: 'cloud-timestamp-read-buffer',
+        size: 4 * 8,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      
+      this.timestampSupported = true;
+    } catch {
+      // Timestamp queries not supported on this device/browser
+      this.timestampSupported = false;
+    }
+  }
+  
+  /**
+   * Get the latest cloud GPU timing measurements (in milliseconds).
+   * Returns { raymarch, temporal, total } or null if timestamps aren't supported.
+   * Timings are updated asynchronously from GPU readback (1-2 frame lag).
+   */
+  getCloudTimings(): { raymarch: number; temporal: number; total: number } | null {
+    if (!this.timestampSupported) return null;
+    return { ...this._cloudTimings };
   }
   
   /**

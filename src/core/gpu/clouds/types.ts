@@ -103,15 +103,17 @@ export const CLOUD_UNIFORM_SIZE = 176;
  * Size of the cloud temporal filter uniform buffer in bytes.
  * Must match the TemporalUniforms struct in cloud-temporal.wgsl.
  *
- * Layout (32 bytes total):
- *   vec2u   resolution     [0..7]
- *   u32     frameIndex     [8..11]
- *   f32     blendWeight    [12..15]  (0.9 = 90% history, 10% current)
- *   vec2u   fullResolution [16..23]
- *   u32     checkerboard   [24..27]
- *   f32     _pad0          [28..31]
+ * Layout (160 bytes total):
+ *   vec2u      resolution      [0..7]
+ *   u32        frameIndex      [8..11]
+ *   f32        blendWeight     [12..15]
+ *   vec2u      fullResolution  [16..23]
+ *   u32        checkerboard    [24..27]
+ *   f32        _pad0           [28..31]
+ *   mat4x4f    prevViewProj    [32..95]     Previous frame's VP matrix for reprojection
+ *   mat4x4f    inverseViewProj [96..159]    Current frame's inverse VP matrix
  */
-export const CLOUD_TEMPORAL_UNIFORM_SIZE = 32;
+export const CLOUD_TEMPORAL_UNIFORM_SIZE = 160;
 
 /** Blue noise texture resolution (128×128) */
 export const BLUE_NOISE_SIZE = 128;

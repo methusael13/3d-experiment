@@ -56,6 +56,13 @@ export class CloudTemporalFilter {
   // Checkerboard enabled
   private checkerboardEnabled = true;
 
+  // Previous frame's view-projection matrix (for motion vector generation)
+  private _prevViewProj = new Float32Array(16);
+  // Current frame's inverse view-projection matrix
+  private _inverseViewProj = new Float32Array(16);
+  // Whether prevViewProj has been set at least once (first frame has no valid history)
+  private _hasPrevViewProj = false;
+
   constructor(ctx: GPUContext) {
     this.ctx = ctx;
   }
@@ -232,6 +239,21 @@ export class CloudTemporalFilter {
   // ========== Execute ==========
 
   /**
+   * Set the matrices needed for motion vector generation.
+   * Must be called before execute() each frame.
+   * @param prevViewProj     Previous frame's view-projection matrix
+   * @param inverseViewProj  Current frame's inverse view-projection matrix
+   */
+  setMatrices(prevViewProj: Float32Array, inverseViewProj: Float32Array): void {
+    this._prevViewProj.set(prevViewProj);
+    this._inverseViewProj.set(inverseViewProj);
+    this._hasPrevViewProj = true;
+  }
+
+  /** Returns true once setMatrices has been called at least once (first frame has no valid prev VP) */
+  get hasPrevViewProj(): boolean { return this._hasPrevViewProj; }
+
+  /**
    * Dispatch the temporal reprojection compute shader.
    * @param encoder     GPU command encoder
    * @param currentView The current frame's ray march output view (half-res)
@@ -302,6 +324,12 @@ export class CloudTemporalFilter {
     uint32[6] = this.checkerboardEnabled ? 1 : 0;
     // _pad0 [7]
     float32[7] = 0;
+
+    // prevViewProj (mat4x4f) [8..23] — 16 floats starting at byte offset 32
+    float32.set(this._prevViewProj, 8);
+
+    // inverseViewProj (mat4x4f) [24..39] — 16 floats starting at byte offset 96
+    float32.set(this._inverseViewProj, 24);
 
     this.ctx.device.queue.writeBuffer(this.uniformBuffer!, 0, data);
   }
