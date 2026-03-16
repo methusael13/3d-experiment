@@ -7,7 +7,13 @@
  * If no PlayerComponent is present on the entity, the camera could derive
  * orientation from TransformComponent rotation (future: orbit cam, cutscene cam).
  *
- * Priority: 6 (runs after PlayerSystem at priority 5, before other systems)
+ * Priority: 30 (runs after PlayerSystem(5), CharacterMovementSystem(20),
+ * and TerrainCollisionSystem(25) so the view matrix is computed from the
+ * final post-movement, post-collision position each frame.  Running before
+ * movement/collision caused the view matrix to embed a stale eye position
+ * while the adapter's getPosition() returned the updated one, leading to
+ * inconsistent inverseViewProj ↔ cameraPosition in the cloud ray marcher
+ * and radial cloud-stretching artifacts during camera translation.)
  */
 
 import { System } from '../System';
@@ -20,7 +26,7 @@ import { TransformComponent } from '../components/TransformComponent';
 export class CameraSystem extends System {
   readonly name = 'camera';
   readonly requiredComponents: readonly ComponentType[] = ['camera'];
-  priority = 6;
+  priority = 30;
 
   // ==================== Update ====================
 

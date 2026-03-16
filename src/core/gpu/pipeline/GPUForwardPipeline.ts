@@ -359,6 +359,8 @@ export class GPUForwardPipeline {
     if (config.shadowRadius !== undefined) {
       this.shadowRadius = config.shadowRadius;
       this.shadowRenderer.setShadowRadius(config.shadowRadius);
+      // Sync cloud shadow coverage area with CSM shadow radius
+      this.cloudShadowGenerator?.setShadowRadius(config.shadowRadius);
     }
     if (config.resolution !== undefined) {
       this.shadowRenderer.setResolution(config.resolution);

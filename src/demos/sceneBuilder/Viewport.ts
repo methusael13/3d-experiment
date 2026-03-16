@@ -239,7 +239,7 @@ export class Viewport {
     this.inputManager = new InputManager(this.canvas);
 
     // Initialize ECS World with all systems
-    // Execution order: PlayerSystem(5) → CameraSystem(6) → TransformSystem(7) → Bounds(10) → ...
+    // Execution order: PlayerSystem(5) → TransformSystem(7) → Bounds(10) → CharacterMovement(20) → TerrainCollision(25) → CameraSystem(30) → ...
     this._world = new World();
 
     // Player system — persistent, no-ops until enter() is called
@@ -257,13 +257,15 @@ export class Viewport {
     this._world.addSystem(new TerrainCollisionSystem());  // priority 25 — after movement, before camera/transform
 
     // Camera system — computes view/projection matrices from transform + player orientation
-    this._world.addSystem(new CameraSystem());            // priority 6 — reads player yaw/pitch
+    // Priority 30: runs AFTER CharacterMovementSystem(20) and TerrainCollisionSystem(25)
+    // so the view matrix uses the final post-collision position each frame.
+    this._world.addSystem(new CameraSystem());            // priority 30 — after movement + collision
 
-    // Transform system — propagates parent-child hierarchy AFTER player/camera write
+    // Transform system — propagates parent-child hierarchy AFTER player writes position
     // This ensures child entities (e.g. spot lights attached to player) get the current frame's rotation
     const transformSystem = new TransformSystem();
     transformSystem.world = this._world;
-    transformSystem.priority = 7;                          // priority 7 — AFTER PlayerSystem(5)+CameraSystem(6)
+    transformSystem.priority = 7;                          // priority 7 — AFTER PlayerSystem(5)
     this._world.addSystem(transformSystem);
 
     const boundsSystem = new BoundsSystem();
