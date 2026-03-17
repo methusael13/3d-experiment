@@ -1425,26 +1425,41 @@ Register cloud textures with the existing `DebugTextureManager`:
 
 **Deliverable**: Smooth, temporally stable clouds at <1ms GPU cost.
 
-### Phase 4: God Rays (2–3 days)
+### Phase 4: God Rays (3–4 days)
 
-**Goal**: Volumetric light shafts through cloud gaps.
+**Goal**: Volumetric light shafts through cloud gaps, with both screen-space and froxel-based approaches implemented and togglable.
 
 1. **Screen-space god rays** (`god-rays.wgsl`)
    - Post-process radial blur sampling depth + cloud transmittance
    - `GodRayEffect.ts` extending BaseEffect
    - Sun screen-space projection uniform
+   - This serves as the **lightweight fallback** when froxel scattering is disabled
 
-2. **Integration with clouds**
-   - God rays use cloud transmittance to determine occlusion
+2. **Froxel volumetric scattering** (`froxel-god-rays.wgsl`)
+   - Simplified froxel grid (directional light only — point/spot lights deferred to Phase 6)
+   - CSM shadow sampling per froxel → automatic god ray shafts from terrain/geometry occlusion
+   - Cloud shadow map sampling per froxel → god rays through cloud gaps
+   - Front-to-back integration along view rays
+   - `FroxelGodRayEffect.ts` extending BaseEffect, applied as post-process
+   - This is the **high-quality mode** — produces physically correct volumetric shafts
+
+3. **Integration with clouds**
+   - Both modes use cloud transmittance to determine occlusion
    - Fade out when sun below horizon (use existing `sunVisibility`)
 
-3. **UI controls** — intensity, sample count, enable toggle
+4. **UI controls**
+   - God Rays enable toggle (master on/off)
+   - God Ray Mode dropdown: `Screen-Space` (default) / `Volumetric (Froxel)`
+   - Intensity slider, sample count (screen-space only)
+   - When `Volumetric` is selected, the screen-space effect is auto-disabled and vice versa
+   - Froxel resolution dropdown (Low/Medium/High) for quality vs performance
 
-4. **(Optional) Froxel volumetric scattering**
-   - Only if screen-space approach is insufficient
-   - Full froxel grid with CSM + cloud shadow integration
+5. **Fallback behavior**
+   - Default: Screen-space mode (cheaper, ~0.1-0.3ms)
+   - Volumetric mode: Froxel grid (~0.5-1.5ms, directional light only in this phase)
+   - Pipeline auto-switches: `GodRayEffect` enabled XOR `FroxelGodRayEffect` enabled
 
-**Deliverable**: Visible god rays through cloud gaps and terrain features.
+**Deliverable**: Visible god rays through cloud gaps and terrain features, with UI toggle between screen-space (fast) and froxel volumetric (high quality) modes.
 
 ### Phase 5: Weather, Lighting & Polish (3–4 days)
 
