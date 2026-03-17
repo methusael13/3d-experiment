@@ -133,13 +133,20 @@ fn sampleDensity(p: vec3f) -> f32 {
   // Apply coverage: higher coverage = more area passes threshold
   density = saturate(remap(density, 1.0 - coverageVal, 1.0, 0.0, 1.0));
 
-  // 6. Erode edges with detail noise (only where density > 0)
-  if (density > 0.01) {
+  // 6. Erode edges with detail noise — smooth transition, no hard threshold.
+  // Scale erosion by the current density so that at cloud edges (density near 0)
+  // the erosion naturally tapers to zero, preventing the hard on/off discontinuity
+  // that causes shimmering when combined with blue noise dithering + checkerboard.
+  {
     let detailUVW = noisePos * 0.003;
     let detail = textureSampleLevel(detailNoise, noiseSampler, detailUVW, 0.0);
     let detailFBM = detail.r * 0.625 + detail.g * 0.25 + detail.b * 0.125;
     let detailModifier = mix(detailFBM, 1.0 - detailFBM, saturate(heightFrac * 5.0));
-    let erosionStrength = mix(0.1, 0.25, saturate(cloudTypeVal));
+    let baseErosionStrength = mix(0.1, 0.25, saturate(cloudTypeVal));
+    // Density-scaled erosion: fade erosion to 0 as density approaches 0.
+    // smoothstep provides a soft ramp instead of a hard threshold cliff.
+    let densityFade = smoothstep(0.0, 0.15, density);
+    let erosionStrength = baseErosionStrength * densityFade;
     density = remap(density, detailModifier * erosionStrength, 1.0, 0.0, 1.0);
   }
 

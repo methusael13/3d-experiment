@@ -92,11 +92,13 @@ fn bilateralUpscale(uv: vec2f, centerDepth: f32) -> vec4f {
       let bilinearWeight = mix(1.0 - frac.x, frac.x, f32(dx)) *
                            mix(1.0 - frac.y, frac.y, f32(dy));
 
-      // Depth weight: prefer samples with similar depth
-      // (This is a simplified bilateral — we use the center depth vs an assumed cloud depth)
-      // Since clouds are at sky depth, we don't need per-texel depth comparison;
-      // the key edge is geometry vs sky, which is handled by the depth test below.
-      let weight = max(bilinearWeight, 0.001);
+      // Transmittance-aware weight: prevent blending cloud texels (low transmittance)
+      // with empty sky texels (transmittance=1). The cloud mask (1 - transmittance)
+      // ensures that empty/sky samples get nearly zero weight when mixed with cloud
+      // samples, eliminating the stippled dots at cloud boundaries.
+      let cloudPresence = 1.0 - cloudSample.a; // 0 = sky, 1 = opaque cloud
+      let transmittanceWeight = max(cloudPresence, 0.05); // floor at 0.05 so sky isn't totally zeroed
+      let weight = max(bilinearWeight * transmittanceWeight, 0.001);
 
       totalColor += cloudSample * weight;
       totalWeight += weight;

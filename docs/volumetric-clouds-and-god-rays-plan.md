@@ -1270,6 +1270,13 @@ weatherMapOffset.y += windDirection.z * windSpeed * deltaTime * 0.0001;
 
 8. **Half-resolution rendering**: Cloud texture is at 50% resolution. The bilinear upscale is masked by the soft nature of clouds.
 
+9. **Coarse→fine two-pass ray marching**: Instead of a single-pass with adaptive step sizes, use a structured two-pass approach within each ray:
+   - **Coarse pass** (Phase 1): March through the cloud shell at large steps (300–500m) using only the weather map coverage check (no 3D noise sampling). This cheaply identifies which intervals along the ray contain cloud plumes and which are empty sky.
+   - **Fine pass** (Phase 2): For each interval where the coarse pass found non-zero coverage, march back through that interval at the fine step size (50–80m) with full 3D noise sampling, detail erosion, and lighting.
+   - **Benefit**: Rays that pass through long stretches of empty sky between cloud plumes skip them entirely at coarse resolution, saving expensive 3D texture samples. The coarse pass costs ~1 weather map sample per step (cheap 2D texture), while the fine pass concentrates all the expensive 3D noise + light march work only where clouds actually exist.
+   - **Implementation**: Store coarse intervals as `(tStart, tEnd)` pairs in a small local array (max 4–8 intervals per ray). The fine pass iterates through these intervals.
+   - **Expected savings**: 30–60% reduction in 3D noise samples for partly cloudy scenes where cloud coverage is patchy.
+
 ### 7.3 WebGPU-Specific Considerations
 
 - **3D textures**: WebGPU supports `texture_3d<f32>` and `textureStore` on 3D textures in compute shaders. The 128³ shape noise fits in ~8MB VRAM (rgba8unorm).

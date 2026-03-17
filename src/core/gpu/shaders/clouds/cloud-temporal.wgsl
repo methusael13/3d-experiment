@@ -50,10 +50,16 @@ fn computeMotionVector(pixelCoord: vec2u) -> vec2f {
   let uv = (vec2f(pixelCoord) + 0.5) / vec2f(u.resolution);
   let ndc = uv * 2.0 - 1.0;
 
-  // Reconstruct world position from current frame's inverse VP
-  // Use clip z=1 (far plane) since clouds are at sky distance.
-  // Flip Y for NDC (clip space Y goes up, screen Y goes down)
-  let clipPos = vec4f(ndc.x, -ndc.y, 1.0, 1.0);
+  // Reconstruct world position from current frame's inverse VP.
+  // Use a clip z that corresponds to the average cloud layer depth (~3km)
+  // rather than z=1.0 (far plane / infinity). Clouds have finite depth, so
+  // using z=1.0 produces slightly wrong motion vectors — a cloud at 3km moves
+  // across the screen at a different rate than the infinite sky.
+  // In reversed-Z: near=1, far=0. Map 3000m depth to clip Z approximately.
+  // clipZ ≈ near/depth for reversed-Z perspective = 0.1/3000 ≈ 0.0000333
+  // This is close enough to 0 that we use a small positive value.
+  let cloudClipZ = 0.0001;
+  let clipPos = vec4f(ndc.x, -ndc.y, cloudClipZ, 1.0);
   let worldPos4 = u.inverseViewProj * clipPos;
   let worldPos = worldPos4.xyz / worldPos4.w;
 
@@ -98,8 +104,9 @@ fn neighborhoodAABB(center: vec2u) -> array<vec4f, 2> {
     return array<vec4f, 2>(fallback, fallback);
   }
 
-  // Expand AABB slightly to allow minor temporal variations
-  let margin = (maxVal - minVal) * 0.15;
+  // Expand AABB slightly to allow minor temporal variations.
+  // Keep margin tight (0.05) to reduce shimmering from noisy checkerboard edges.
+  let margin = (maxVal - minVal) * 0.05;
   return array<vec4f, 2>(minVal - margin, maxVal + margin);
 }
 
