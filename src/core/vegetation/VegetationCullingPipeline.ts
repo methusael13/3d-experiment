@@ -24,7 +24,7 @@ const INSTANCE_STRIDE = 32;
 /** Billboard draw args (4 u32) + per-submesh mesh draw args (5 u32 each) */
 const BILLBOARD_DRAW_ARGS_U32 = 4;
 const MESH_DRAW_ARGS_U32 = 5; // per sub-mesh: indexCount, instanceCount, firstIndex, baseVertex, firstInstance
-const MAX_MESH_SUBMESHES = 16;
+export const MAX_MESH_SUBMESHES = 64;
 const DRAW_ARGS_SIZE = (BILLBOARD_DRAW_ARGS_U32 + MESH_DRAW_ARGS_U32 * MAX_MESH_SUBMESHES) * 4; // bytes
 const BILLBOARD_VERTICES = 12;
 const WORKGROUP_SIZE = 256;
@@ -160,7 +160,11 @@ export class VegetationCullingPipeline {
     const result = this.acquireBuffers(maxInstances);
     const dispatchArgs = this.acquireDispatchArgs();
     
-    const meshSubMeshCount = Math.max(1, meshIndexCounts.length);
+    const rawSubMeshCount = Math.max(1, meshIndexCounts.length);
+    if (rawSubMeshCount > MAX_MESH_SUBMESHES) {
+      console.warn(`[VegetationCullingPipeline] Mesh has ${rawSubMeshCount} sub-meshes, exceeding MAX_MESH_SUBMESHES (${MAX_MESH_SUBMESHES}). Clamping to ${MAX_MESH_SUBMESHES}.`);
+    }
+    const meshSubMeshCount = Math.min(rawSubMeshCount, MAX_MESH_SUBMESHES);
     this.writeParams(frustumPlanes, cameraPosition, maxDistance, maxInstances, renderMode, billboardDistance, meshSubMeshCount);
     
     // Pre-fill draw args: billboard + per-submesh mesh entries

@@ -21,7 +21,7 @@ const DEBUG_BILLBOARD_COLOR: vec3f = vec3f(0.0, 0.8, 1.0); // Cyan
 
 // Set to true to visualize CDLOD LOD level per tile
 // Each LOD level gets a distinct color: highest LOD (leaf) = green, lowest (root) = red
-const DEBUG_LOD_LEVEL_COLOR: bool = true;
+const DEBUG_LOD_LEVEL_COLOR: bool = false;
 
 // ==================== Shared Instance Struct ====================
 

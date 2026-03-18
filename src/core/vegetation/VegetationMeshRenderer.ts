@@ -24,6 +24,7 @@ import { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
 import { ENV_BINDING_MASK } from '../gpu/renderers/shared/types';
 import { SHADOW_SLOT_SIZE } from '../gpu/renderers/shared/constants';
 import type { ShadowRendererGPU } from '../gpu/renderers/ShadowRendererGPU';
+import { MAX_MESH_SUBMESHES } from './VegetationCullingPipeline';
 
 // Import shader sources
 import meshShader from '../gpu/shaders/vegetation/vegetation-mesh.wgsl?raw';
@@ -263,7 +264,8 @@ export class VegetationMeshRenderer {
     this._setEnvBindGroup(passEncoder);
     
     let drawCalls = 0;
-    for (let subMeshIdx = 0; subMeshIdx < mesh.subMeshes.length; subMeshIdx++) {
+    const subMeshLimit = Math.min(mesh.subMeshes.length, MAX_MESH_SUBMESHES);
+    for (let subMeshIdx = 0; subMeshIdx < subMeshLimit; subMeshIdx++) {
       const subMesh = mesh.subMeshes[subMeshIdx];
       if (this.currentSlot >= MAX_DRAW_SLOTS) {
         console.warn('[VegetationMeshRenderer] Max draw slots exceeded');
@@ -484,7 +486,8 @@ export class VegetationMeshRenderer {
     let drawCalls = 0;
     const vegParamsOffset = slotIndex * UNIFORM_ALIGNMENT;
     
-    for (let subMeshIdx = 0; subMeshIdx < mesh.subMeshes.length; subMeshIdx++) {
+    const shadowSubMeshLimit = Math.min(mesh.subMeshes.length, MAX_MESH_SUBMESHES);
+    for (let subMeshIdx = 0; subMeshIdx < shadowSubMeshLimit; subMeshIdx++) {
       const subMesh = mesh.subMeshes[subMeshIdx];
       const texture = subMesh.baseColorTexture ?? this.defaultTexture!;
       
