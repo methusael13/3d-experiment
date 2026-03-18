@@ -35,3 +35,8 @@ export { AtmosphericFogEffect } from './effects/AtmosphericFogEffect';
 export type { AtmosphericFogConfig } from './effects/AtmosphericFogEffect';
 
 export { CloudCompositeEffect } from './effects/CloudCompositeEffect';
+
+export { GodRayEffect } from './effects/GodRayEffect';
+export type { GodRayConfig } from './effects/GodRayEffect';
+
+export { FroxelGodRayEffect } from './effects/FroxelGodRayEffect';

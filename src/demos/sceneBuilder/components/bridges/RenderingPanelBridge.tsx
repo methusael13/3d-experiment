@@ -4,7 +4,7 @@
 
 import { useState, useCallback } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
-import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings, type SSRSettings, type AtmosphericFogSettings, type CloudSettings, type DebugViewMode } from '../panels';
+import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings, type SSRSettings, type AtmosphericFogSettings, type CloudSettings, type GodRaySettings, type DebugViewMode } from '../panels';
 import type { CompositeEffectConfig, AtmosphericFogConfig } from '@/core/gpu/postprocess';
 import type { SSRQualityLevel } from '@/core/gpu/pipeline/SSRConfig';
 
@@ -219,6 +219,28 @@ export function ConnectedRenderingPanel({
     });
   }, [store]);
   
+  // God ray state
+  const [godRaySettings, setGodRaySettings] = useState<GodRaySettings>({
+    enabled: false,
+    mode: 'screen-space',
+    intensity: 1.0,
+    samples: 64,
+    decay: 0.97,
+    weight: 1.0,
+    density: 1.0,
+  });
+  
+  const handleGodRaySettingsChange = useCallback((settings: Partial<GodRaySettings>) => {
+    setGodRaySettings((prev: GodRaySettings) => {
+      const updated = { ...prev, ...settings };
+      const viewport = store.viewport;
+      if (viewport) {
+        viewport.setGodRaySettings(updated);
+      }
+      return updated;
+    });
+  }, [store]);
+  
   return (
     <RenderingPanel
       shadowSettings={shadowSettings}
@@ -233,6 +255,8 @@ export function ConnectedRenderingPanel({
       onAtmosphericFogSettingsChange={handleAtmosphericFogSettingsChange}
       cloudSettings={cloudSettings}
       onCloudSettingsChange={handleCloudSettingsChange}
+      godRaySettings={godRaySettings}
+      onGodRaySettingsChange={handleGodRaySettingsChange}
       debugViewMode={debugViewMode}
       onDebugViewModeChange={handleDebugViewModeChange}
       compositeSettings={compositeSettings}

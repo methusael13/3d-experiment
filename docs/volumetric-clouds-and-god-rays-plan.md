@@ -1505,6 +1505,12 @@ Register cloud textures with the existing `DebugTextureManager`:
 
 > **Note:** This phase implements the system designed in §5. It leverages the existing `LightBufferManager` (bindings 10–12), spot shadow atlas (bindings 13–14), and `lights.wgsl` structs. No new light infrastructure is needed — only the froxel grid and compute passes are new.
 
+> **Implementation Note (from Phase 4 froxel god rays):** The Phase 4 froxel volumetric scattering system (`FroxelGodRayEffect`) uses physically-based Rayleigh+Mie scattering coefficients which produce correct results at Earth-atmosphere scale (hundreds of km) but are nearly invisible at game scale (meters to few km far plane). Boosting the coefficients to make scattering visible causes excessive extinction that darkens the sky to black (transmittance → 0 across the 64 depth slices spanning 0.1m–2000m). Phase 6 should address this by:
+> 1. **Decoupling scattering from extinction** — use a separate, lower extinction coefficient so the medium scatters light without absorbing it excessively (common in game fog systems)
+> 2. **Using fog density injection** (§5.4) instead of atmospheric height-based density — the density injection pass provides direct artistic control over fog density per-froxel, independent of physical atmospheric models
+> 3. **CSM uniform buffer readback** — the Phase 4 froxel system passes `null` for CSM uniform data because the CSM uniforms live on the GPU and aren't easily readable from CPU. Phase 6 should either maintain a CPU-side copy of CSM uniforms or use a buffer with `MAP_READ` usage
+> 4. **Scene-adaptive scattering scale** — scale beta coefficients based on the scene's far plane distance so the effect is visible regardless of scene size
+
 #### Phase 6a: Froxel Grid + Directional Sun Fog (3–4 days)
 
 1. **Froxel grid infrastructure** (`FroxelGrid.ts`)

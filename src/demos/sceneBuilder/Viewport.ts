@@ -53,6 +53,7 @@ import { PlayerVisualizerGPU } from '../../core/gpu/renderers/PlayerVisualizerGP
 import { TerrainLayerBounds } from '@/core/terrain';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
 import { CloudConfig } from '@/core/gpu/clouds';
+import type { GodRayConfig } from '@/core/gpu/postprocess';
 
 // ==================== Type Definitions ====================
 
@@ -667,6 +668,16 @@ export class Viewport {
       }
       // Pass all config to the effect
       this.gpuPipeline.setAtmosphericFogConfig(settings);
+    }
+  }
+
+  /**
+   * Set god ray settings (for RenderingPanel integration)
+   * Enables/disables god rays and updates all god ray parameters
+   */
+  setGodRaySettings(settings: Partial<GodRayConfig>): void {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setGodRayConfig(settings);
     }
   }
 

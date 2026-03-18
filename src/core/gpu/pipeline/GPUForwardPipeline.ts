@@ -32,9 +32,12 @@ import {
   CompositeEffect,
   AtmosphericFogEffect,
   CloudCompositeEffect,
+  GodRayEffect,
+  FroxelGodRayEffect,
   type SSAOEffectConfig,
   type CompositeEffectConfig,
   type AtmosphericFogConfig,
+  type GodRayConfig,
   type EffectUniforms,
 } from '../postprocess';
 import { CloudRayMarcher, CloudShadowGenerator, CloudTemporalFilter, type CloudConfig } from '../clouds';
@@ -545,6 +548,18 @@ export class GPUForwardPipeline {
     cloudCompositeEffect.enabled = false;
     this.postProcessPipeline.addEffect(cloudCompositeEffect, 125);
     
+    // Add God Ray effect (order 130 — after cloud composite @125, before fog @150, starts DISABLED)
+    // Screen-space mode (default, cheap)
+    const godRayEffect = new GodRayEffect();
+    godRayEffect.enabled = false;
+    this.postProcessPipeline.addEffect(godRayEffect, 130);
+    
+    // Add Froxel God Ray effect (order 131 — same slot, only one active at a time, starts DISABLED)
+    // Volumetric mode (high quality, expensive)
+    const froxelGodRayEffect = new FroxelGodRayEffect();
+    froxelGodRayEffect.enabled = false;
+    this.postProcessPipeline.addEffect(froxelGodRayEffect, 131);
+    
     // Register cloud debug textures
     this.debugTextureManager.register(
       'cloud-result',
@@ -914,19 +929,82 @@ export class GPUForwardPipeline {
         inverseViewMatrix: new Float32Array(inverseViewMatrix),
       };
       
+      // Compute normalized sun direction (shared by fog + god rays)
+      const lightDir = mergedOptions.lightDirection;
+      const len = Math.sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
+      const sunDir: [number, number, number] = len > 0
+        ? [lightDir[0] / len, lightDir[1] / len, lightDir[2] / len]
+        : [0, 1, 0];
+      
       // Feed sun data to atmospheric fog effect (before execute)
       const fogEffect = this.postProcessPipeline.getEffect<AtmosphericFogEffect>('atmosphericFog');
       if (fogEffect) {
-        const lightDir = mergedOptions.lightDirection;
-        const len = Math.sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
-        const sunDir: [number, number, number] = len > 0
-          ? [lightDir[0] / len, lightDir[1] / len, lightDir[2] / len]
-          : [0, 1, 0];
         fogEffect.setSunData(
           sunDir,
           mergedOptions.lightColor as [number, number, number],
           mergedOptions.sunIntensity,
         );
+      }
+      
+      // Get sun visibility from ECS directional light (fades out when sun is below horizon)
+      const dirLightData = renderCtx.getDirectionalLight();
+      
+      // Feed sun data + cloud texture to screen-space god ray effect (before execute)
+      const godRayEffect = this.postProcessPipeline.getEffect<GodRayEffect>('godRays');
+      if (godRayEffect) {
+        godRayEffect.setSunData(
+          sunDir,
+          mergedOptions.lightColor as [number, number, number],
+          mergedOptions.sunIntensity,
+          dirLightData.sunIntensityFactor,
+        );
+        
+        // Feed cloud texture for cloud occlusion in god rays
+        if (this.cloudEnabled && this.cloudRayMarcher?.isReady) {
+          const cloudView = this.cloudTemporalFilter?.outputView ?? this.cloudRayMarcher.outputView;
+          godRayEffect.setCloudTexture(
+            cloudView,
+            this.cloudRayMarcher.outputWidth,
+            this.cloudRayMarcher.outputHeight,
+          );
+        } else {
+          godRayEffect.setCloudTexture(null);
+        }
+      }
+      
+      // Feed sun data to froxel god ray effect (volumetric mode)
+      const froxelGodRayEffect = this.postProcessPipeline.getEffect<FroxelGodRayEffect>('froxelGodRays');
+      if (froxelGodRayEffect) {
+        froxelGodRayEffect.setSunData(
+          sunDir,
+          mergedOptions.lightColor as [number, number, number],
+          mergedOptions.sunIntensity,
+          dirLightData.sunIntensityFactor,
+        );
+        
+        // Feed CSM shadow resources for froxel shadow sampling
+        if (this.shadowRenderer.isCSMEnabled()) {
+          const csmArrayView = this.shadowRenderer.getShadowMapArrayView();
+          const csmUniformBuffer = this.shadowRenderer.getCSMUniformBuffer();
+          if (csmArrayView && csmUniformBuffer) {
+            // Read CSM uniforms from the GPU buffer — we need a CPU copy
+            // For now, pass null (CSM will be disabled in froxel shader)
+            froxelGodRayEffect.setCSMResources(csmArrayView, null);
+          }
+        } else {
+          froxelGodRayEffect.setCSMResources(null, null);
+        }
+        
+        // Feed cloud shadow resources
+        if (this.cloudEnabled && this.cloudShadowGenerator?.textureView) {
+          const sr = this.shadowRadius;
+          froxelGodRayEffect.setCloudShadowResources(
+            this.cloudShadowGenerator.textureView,
+            -sr, -sr, sr, sr,
+          );
+        } else {
+          froxelGodRayEffect.setCloudShadowResources(null, 0, 0, 1, 1);
+        }
       }
       
       // Execute post-processing pipeline (tonemapping, SSAO, fog, etc.)
@@ -1176,6 +1254,75 @@ export class GPUForwardPipeline {
    */
   getCloudConfig(): CloudConfig | null {
     return this.cloudRayMarcher?.getConfig() ?? null;
+  }
+  
+  // ========== God Ray Methods ==========
+  
+  /**
+   * Enable/disable god ray post-processing effect
+   */
+  setGodRaysEnabled(enabled: boolean): void {
+    this.postProcessPipeline?.setEnabled('godRays', enabled);
+  }
+  
+  /**
+   * Check if god rays are enabled
+   */
+  isGodRaysEnabled(): boolean {
+    return this.postProcessPipeline?.isEnabled('godRays') ?? false;
+  }
+  
+  /**
+   * Configure god ray effect parameters.
+   * Handles mode switching: when mode changes, the correct effect is enabled
+   * and the other is disabled (XOR — only one active at a time).
+   */
+  setGodRayConfig(config: Partial<GodRayConfig> & { mode?: 'screen-space' | 'volumetric' }): void {
+    const pp = this.postProcessPipeline;
+    if (!pp) return;
+    
+    // Handle mode switching
+    if (config.mode !== undefined) {
+      const enabled = config.enabled ?? (this.isGodRaysEnabled() || pp.isEnabled('froxelGodRays'));
+      if (config.mode === 'screen-space') {
+        pp.setEnabled('godRays', enabled);
+        pp.setEnabled('froxelGodRays', false);
+      } else {
+        pp.setEnabled('godRays', false);
+        pp.setEnabled('froxelGodRays', enabled);
+      }
+    } else if (config.enabled !== undefined) {
+      // When only enabled changes (no mode), toggle the currently active one
+      const isVolMode = pp.isEnabled('froxelGodRays');
+      if (isVolMode) {
+        pp.setEnabled('froxelGodRays', config.enabled);
+      } else {
+        pp.setEnabled('godRays', config.enabled);
+      }
+    }
+    
+    // Forward shared params (intensity etc.) to screen-space effect
+    const godRayEffect = pp.getEffect<GodRayEffect>('godRays');
+    if (godRayEffect) {
+      godRayEffect.setConfig(config);
+    }
+    
+    // Forward intensity to froxel effect
+    const froxelEffect = pp.getEffect<FroxelGodRayEffect>('froxelGodRays');
+    if (froxelEffect && config.intensity !== undefined) {
+      froxelEffect.setIntensity(config.intensity);
+    }
+  }
+  
+  /**
+   * Get god ray configuration
+   */
+  getGodRayConfig(): GodRayConfig | null {
+    if (this.postProcessPipeline) {
+      const godRayEffect = this.postProcessPipeline.getEffect<GodRayEffect>('godRays');
+      return godRayEffect?.getConfig() ?? null;
+    }
+    return null;
   }
   
   // ========== SSR Methods ==========

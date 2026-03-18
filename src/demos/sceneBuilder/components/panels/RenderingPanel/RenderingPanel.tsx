@@ -60,6 +60,21 @@ export interface CloudSettings {
   windDirection: number;
 }
 
+/**
+ * God ray settings for UI
+ */
+export type GodRayMode = 'screen-space' | 'volumetric';
+
+export interface GodRaySettings {
+  enabled: boolean;
+  mode: GodRayMode;
+  intensity: number;
+  samples: number;
+  decay: number;
+  weight: number;
+  density: number;
+}
+
 export interface RenderingPanelProps {
   // Shadow settings
   shadowSettings: WebGPUShadowSettings;
@@ -80,6 +95,10 @@ export interface RenderingPanelProps {
   // Cloud settings
   cloudSettings: CloudSettings;
   onCloudSettingsChange: (settings: Partial<CloudSettings>) => void;
+
+  // God ray settings
+  godRaySettings: GodRaySettings;
+  onGodRaySettingsChange: (settings: Partial<GodRaySettings>) => void;
 
   // Debug view
   debugViewMode: DebugViewMode;
@@ -152,6 +171,8 @@ export function RenderingPanel({
   onAtmosphericFogSettingsChange,
   cloudSettings,
   onCloudSettingsChange,
+  godRaySettings,
+  onGodRaySettingsChange,
   debugViewMode,
   onDebugViewModeChange,
   compositeSettings,
@@ -622,6 +643,85 @@ export function RenderingPanel({
             format={(v) => v.toFixed(2)}
             onChange={(v) => onAtmosphericFogSettingsChange({ fogSunScattering: v })}
             disabled={!atmosphericFogSettings.enabled || !atmosphericFogSettings.heightFogEnabled}
+          />
+        </div>
+      </Section>
+
+      {/* God Rays */}
+      <Section title="God Rays" defaultCollapsed={true}>
+        <Checkbox
+          label="Enable God Rays"
+          checked={godRaySettings.enabled}
+          onChange={(enabled) => onGodRaySettingsChange({ enabled })}
+        />
+
+        <div class={`${styles.shadowControls} ${!godRaySettings.enabled ? styles.disabled : ''}`}>
+          <div class={styles.controlGroup}>
+            <label class={styles.controlLabel}>Mode</label>
+            <Select
+              value={godRaySettings.mode}
+              options={[
+                { value: 'screen-space', label: 'Screen-Space (Fast)' },
+                { value: 'volumetric', label: 'Volumetric / Froxel (HQ)' },
+              ]}
+              onChange={(v) => onGodRaySettingsChange({ mode: v as 'screen-space' | 'volumetric' })}
+              disabled={!godRaySettings.enabled}
+            />
+          </div>
+
+          <Slider
+            label="Intensity"
+            value={godRaySettings.intensity}
+            min={0}
+            max={2}
+            step={0.05}
+            format={(v) => v.toFixed(2)}
+            onChange={(v) => onGodRaySettingsChange({ intensity: v })}
+            disabled={!godRaySettings.enabled}
+          />
+
+          <Slider
+            label="Density"
+            value={godRaySettings.density}
+            min={0.5}
+            max={2.0}
+            step={0.05}
+            format={(v) => v.toFixed(2)}
+            onChange={(v) => onGodRaySettingsChange({ density: v })}
+            disabled={!godRaySettings.enabled}
+          />
+
+          <Slider
+            label="Weight"
+            value={godRaySettings.weight}
+            min={0.1}
+            max={1.5}
+            step={0.05}
+            format={(v) => v.toFixed(2)}
+            onChange={(v) => onGodRaySettingsChange({ weight: v })}
+            disabled={!godRaySettings.enabled}
+          />
+
+          <Slider
+            label="Decay"
+            value={godRaySettings.decay}
+            min={0.9}
+            max={0.99}
+            step={0.005}
+            format={(v) => v.toFixed(3)}
+            onChange={(v) => onGodRaySettingsChange({ decay: v })}
+            disabled={!godRaySettings.enabled}
+          />
+
+          <Slider
+            label="Samples"
+            value={godRaySettings.samples}
+            min={16}
+            max={128}
+            step={16}
+            format={(v) => String(Math.round(v))}
+            onChange={(v) => onGodRaySettingsChange({ samples: Math.round(v) })}
+            disabled={!godRaySettings.enabled}
           />
         </div>
       </Section>
