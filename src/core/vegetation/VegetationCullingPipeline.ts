@@ -38,6 +38,10 @@ export interface CullResult {
   meshBuffer: UnifiedGPUBuffer;
   drawArgsBuffer: UnifiedGPUBuffer;
   maxInstances: number;
+  /** Shadow-specific compacted mesh instance buffer (culled with shadowCastDistance). Null if no separate shadow cull. */
+  shadowMeshBuffer: UnifiedGPUBuffer | null;
+  /** Shadow-specific indirect draw args buffer. Null if no separate shadow cull. */
+  shadowDrawArgsBuffer: UnifiedGPUBuffer | null;
 }
 
 // ==================== VegetationCullingPipeline ====================
@@ -60,6 +64,11 @@ export class VegetationCullingPipeline {
   private bufferPool: Map<number, CullResult[]> = new Map();
   private dispatchArgsPool: GPUBuffer[] = [];
   private activeAllocations: { tier: number; result: CullResult; dispatchArgs: GPUBuffer }[] = [];
+  
+  // Shadow cull pools — separate mesh + drawArgs buffers for shadow pass
+  private shadowMeshBufferPool: Map<number, UnifiedGPUBuffer[]> = new Map();
+  private shadowDrawArgsPool: GPUBuffer[] = [];
+  private activeShadowAllocations: { tier: number; meshBuffer: UnifiedGPUBuffer; drawArgs: UnifiedGPUBuffer; dispatchArgs: GPUBuffer }[] = [];
   
   private initialized = false;
   
@@ -135,6 +144,15 @@ export class VegetationCullingPipeline {
       this.dispatchArgsPool.push(alloc.dispatchArgs);
     }
     this.activeAllocations = [];
+    
+    // Return shadow buffers to pools
+    for (const alloc of this.activeShadowAllocations) {
+      const pool = this.shadowMeshBufferPool.get(alloc.tier);
+      if (pool) pool.push(alloc.meshBuffer);
+      this.shadowDrawArgsPool.push(alloc.drawArgs.buffer);
+      this.dispatchArgsPool.push(alloc.dispatchArgs);
+    }
+    this.activeShadowAllocations = [];
   }
   
   /**
@@ -245,6 +263,127 @@ export class VegetationCullingPipeline {
     return result;
   }
   
+  /**
+   * Run a second GPU cull pass for shadow casting, using shadowCastDistance as the
+   * distance threshold. Produces separate shadow mesh + draw args buffers that are
+   * attached to the existing CullResult.
+   * 
+   * The shadow cull only produces mesh output (no billboard output — billboards don't
+   * cast shadows). It reuses the same input buffer and frustum planes but with a
+   * different maxDistanceSq.
+   * 
+   * This must be called on the same command encoder as cull(), after the color cull,
+   * so that both dispatches are submitted together.
+   * 
+   * IMPORTANT: The cull shader writes to binding 2 (billboard) and binding 3 (mesh).
+   * For the shadow pass we only care about mesh output. We bind a throwaway billboard
+   * buffer (the existing result.billboardBuffer is safe since the color cull already
+   * finished writing to it in a previous pass, and the shadow cull's billboard output
+   * is discarded). We use renderMode=1 (mesh-only) so the shader routes everything
+   * to the mesh output and never increments billboard draw args.
+   */
+  cullForShadow(
+    encoder: GPUCommandEncoder,
+    result: CullResult,
+    inputBuffer: UnifiedGPUBuffer,
+    maxInstances: number,
+    frustumPlanes: Float32Array,
+    cameraPosition: [number, number, number],
+    shadowCastDistance: number,
+    meshIndexCounts: number[] = [],
+    spawnCounterBuffer?: GPUBuffer,
+  ): void {
+    if (!this.initialized) this.initialize();
+    
+    const tier = Math.max(256, nextPowerOf2(maxInstances));
+    const meshSubMeshCount = Math.min(Math.max(1, meshIndexCounts.length), MAX_MESH_SUBMESHES);
+    
+    // Acquire shadow-specific buffers
+    const shadowMeshBuffer = this.acquireShadowMeshBuffer(tier);
+    const shadowDrawArgsRaw = this.acquireShadowDrawArgs();
+    const shadowDrawArgs = { buffer: shadowDrawArgsRaw, destroy: () => shadowDrawArgsRaw.destroy() } as UnifiedGPUBuffer;
+    const shadowDispatchArgs = this.acquireDispatchArgs();
+    
+    // Write params with shadowCastDistance, renderMode=1 (mesh-only — no billboard for shadows)
+    this.writeParams(frustumPlanes, cameraPosition, shadowCastDistance, maxInstances, 1, 0, meshSubMeshCount);
+    
+    // Pre-fill shadow draw args (mesh-only, no billboard section needed but layout must match)
+    const totalU32 = BILLBOARD_DRAW_ARGS_U32 + MESH_DRAW_ARGS_U32 * meshSubMeshCount;
+    const drawArgsData = new Uint32Array(totalU32);
+    drawArgsData[0] = 0; // billboard vertexCount = 0 (unused for shadows)
+    for (let s = 0; s < meshSubMeshCount; s++) {
+      const base = BILLBOARD_DRAW_ARGS_U32 + s * MESH_DRAW_ARGS_U32;
+      drawArgsData[base + 0] = meshIndexCounts[s] ?? 0;
+    }
+    this.ctx.queue.writeBuffer(shadowDrawArgsRaw, 0, drawArgsData);
+    
+    if (spawnCounterBuffer) {
+      // Pass 1: Prepare dispatch args from spawn counter
+      const prepareBG = this.ctx.device.createBindGroup({
+        label: 'veg-shadow-prepare-dispatch-bg',
+        layout: this.prepareBindGroupLayout!,
+        entries: [
+          { binding: 0, resource: { buffer: spawnCounterBuffer } },
+          { binding: 1, resource: { buffer: shadowDispatchArgs } },
+        ],
+      });
+      
+      const preparePass = encoder.beginComputePass({ label: 'veg-shadow-prepare-dispatch' });
+      preparePass.setPipeline(this.preparePipeline!);
+      preparePass.setBindGroup(0, prepareBG);
+      preparePass.dispatchWorkgroups(1);
+      preparePass.end();
+      
+      // Pass 2: Shadow cull with indirect dispatch
+      // Binding 2 (billboard output) uses the existing billboard buffer — renderMode=1
+      // routes all surviving instances to mesh output, so billboard is never written.
+      const cullBG = this.ctx.device.createBindGroup({
+        label: 'veg-shadow-cull-bind-group',
+        layout: this.cullBindGroupLayout!,
+        entries: [
+          { binding: 0, resource: { buffer: this.paramsBuffer!.buffer } },
+          { binding: 1, resource: { buffer: inputBuffer.buffer } },
+          { binding: 2, resource: { buffer: result.billboardBuffer.buffer } }, // throwaway for shadow
+          { binding: 3, resource: { buffer: shadowMeshBuffer.buffer } },
+          { binding: 4, resource: { buffer: shadowDrawArgsRaw } },
+          { binding: 5, resource: { buffer: spawnCounterBuffer } },
+        ],
+      });
+      
+      const cullPass = encoder.beginComputePass({ label: 'veg-shadow-cull-pass' });
+      cullPass.setPipeline(this.cullPipeline!);
+      cullPass.setBindGroup(0, cullBG);
+      cullPass.dispatchWorkgroupsIndirect(shadowDispatchArgs, 0);
+      cullPass.end();
+    } else {
+      const cullBG = this.ctx.device.createBindGroup({
+        label: 'veg-shadow-cull-bind-group-fallback',
+        layout: this.cullBindGroupLayout!,
+        entries: [
+          { binding: 0, resource: { buffer: this.paramsBuffer!.buffer } },
+          { binding: 1, resource: { buffer: inputBuffer.buffer } },
+          { binding: 2, resource: { buffer: result.billboardBuffer.buffer } },
+          { binding: 3, resource: { buffer: shadowMeshBuffer.buffer } },
+          { binding: 4, resource: { buffer: shadowDrawArgsRaw } },
+          { binding: 5, resource: { buffer: inputBuffer.buffer } },
+        ],
+      });
+      
+      const workgroupCount = Math.ceil(maxInstances / WORKGROUP_SIZE);
+      const cullPass = encoder.beginComputePass({ label: 'veg-shadow-cull-pass-fallback' });
+      cullPass.setPipeline(this.cullPipeline!);
+      cullPass.setBindGroup(0, cullBG);
+      cullPass.dispatchWorkgroups(workgroupCount);
+      cullPass.end();
+    }
+    
+    // Attach shadow buffers to the CullResult
+    result.shadowMeshBuffer = shadowMeshBuffer;
+    result.shadowDrawArgsBuffer = shadowDrawArgs;
+    
+    this.activeShadowAllocations.push({ tier, meshBuffer: shadowMeshBuffer, drawArgs: shadowDrawArgs, dispatchArgs: shadowDispatchArgs });
+  }
+  
   // ==================== Internal ====================
   
   private writeParams(
@@ -279,6 +418,25 @@ export class VegetationCullingPipeline {
     });
   }
   
+  private acquireShadowMeshBuffer(tier: number): UnifiedGPUBuffer {
+    const pool = this.shadowMeshBufferPool.get(tier);
+    if (pool && pool.length > 0) return pool.pop()!;
+    
+    const instanceBufferSize = tier * INSTANCE_STRIDE;
+    return UnifiedGPUBuffer.createStorage(this.ctx, {
+      label: `veg-shadow-mesh-${tier}`, size: instanceBufferSize,
+    });
+  }
+  
+  private acquireShadowDrawArgs(): GPUBuffer {
+    if (this.shadowDrawArgsPool.length > 0) return this.shadowDrawArgsPool.pop()!;
+    return this.ctx.device.createBuffer({
+      label: 'veg-shadow-drawargs',
+      size: DRAW_ARGS_SIZE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+    });
+  }
+  
   private acquireBuffers(maxInstances: number): CullResult {
     const tier = Math.max(256, nextPowerOf2(maxInstances));
     const pool = this.bufferPool.get(tier);
@@ -301,6 +459,8 @@ export class VegetationCullingPipeline {
       billboardBuffer, meshBuffer,
       drawArgsBuffer: { buffer: drawArgsBuffer, destroy: () => drawArgsBuffer.destroy() } as UnifiedGPUBuffer,
       maxInstances: tier,
+      shadowMeshBuffer: null,
+      shadowDrawArgsBuffer: null,
     };
     
     if (!this.bufferPool.has(tier)) this.bufferPool.set(tier, []);
@@ -321,6 +481,20 @@ export class VegetationCullingPipeline {
       alloc.dispatchArgs.destroy();
     }
     this.activeAllocations = [];
+    
+    // Clean up shadow buffer pools
+    for (const pool of this.shadowMeshBufferPool.values()) {
+      for (const buf of pool) buf.destroy();
+    }
+    this.shadowMeshBufferPool.clear();
+    
+    for (const buf of this.shadowDrawArgsPool) buf.destroy();
+    this.shadowDrawArgsPool = [];
+    
+    for (const alloc of this.activeShadowAllocations) {
+      alloc.meshBuffer.destroy(); alloc.drawArgs.destroy(); alloc.dispatchArgs.destroy();
+    }
+    this.activeShadowAllocations = [];
     
     for (const buf of this.dispatchArgsPool) buf.destroy();
     this.dispatchArgsPool = [];

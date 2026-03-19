@@ -307,6 +307,16 @@ export class ShadowPass extends BaseRenderPass {
       );
     }
 
+    // Render vegetation-instancing entities via composed depth-only pipeline.
+    // Uses shadow-specific draw args (culled with shadowCastDistance) when available,
+    // falling back to color draw args (culled with maxDistance) otherwise.
+    if (meshRenderSystem) {
+      drawCalls += this.ensureVariantRenderer().renderDepthOnly(
+        passEncoder, ctx.ctx, meshRenderSystem,
+        lightSpaceMatrix, lightSpaceMatrix, lightPosArray,
+      );
+    }
+
     passEncoder.end();
     return drawCalls;
   }
@@ -388,6 +398,16 @@ export class ShadowPass extends BaseRenderPass {
       if (skinnedMeshIds && meshRenderSystem) {
         drawCalls += this.ensureVariantRenderer().renderSkinnedDepthOnly(
           passEncoder, ctx.ctx, meshRenderSystem, cascadeLightMatrix,
+        );
+      }
+
+      // Render vegetation-instancing entities via composed depth-only pipeline.
+      // Uses shadow-specific draw args (culled with shadowCastDistance) when available,
+      // falling back to color draw args (culled with maxDistance) otherwise.
+      if (meshRenderSystem) {
+        drawCalls += this.ensureVariantRenderer().renderDepthOnly(
+          passEncoder, ctx.ctx, meshRenderSystem,
+          cascadeLightMatrix, cascadeLightMatrix, lightPosArray,
         );
       }
 

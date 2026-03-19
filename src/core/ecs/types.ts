@@ -30,7 +30,8 @@ export type ComponentType =
   | 'frustum-cull'
   | 'character-physics'
   | 'skeleton'
-  | 'animation'; // Extensible for future/external components
+  | 'animation'
+  | 'vegetation-instance'; // Extensible for future/external components
 
 /**
  * Context provided to systems each frame.

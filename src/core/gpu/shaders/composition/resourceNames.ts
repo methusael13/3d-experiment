@@ -72,6 +72,18 @@ export const RES = {
 
   // ==================== Skinning (textures group — storage buffer) ====================
   BONE_MATRICES: 'boneMatrices',
+
+  // ==================== Vegetation Instancing (per-object uniforms + textures group storage) ====================
+  VEG_INSTANCES: 'vegInstances',
+  VEG_WIND_STRENGTH: 'vegWindStrength',
+  VEG_WIND_FREQUENCY: 'vegWindFrequency',
+  VEG_WIND_DIR_X: 'vegWindDirX',
+  VEG_WIND_DIR_Z: 'vegWindDirZ',
+  VEG_GUST_STRENGTH: 'vegGustStrength',
+  VEG_GUST_FREQUENCY: 'vegGustFrequency',
+  VEG_TIME: 'vegTime',
+  VEG_MAX_DISTANCE: 'vegMaxDistance',
+  VEG_WIND_MULTIPLIER: 'vegWindMultiplier',
 } as const;
 
 export type ResourceName = (typeof RES)[keyof typeof RES];

@@ -123,7 +123,8 @@ export class GPUTerrainSceneObject extends SceneObject implements ShadowCaster {
         lightSpaceMatrix: m.lightSpaceMatrix as Float32Array,
         lightPosition: [m.lightPosition[0], m.lightPosition[1], m.lightPosition[2]] as [number, number, number],
       }));
-      vegManager.prepareShadowPasses(vegMatrices);
+      // NOTE: Vegetation mesh shadow casting now handled by variant depth pipeline (ECS)
+      // vegManager.prepareShadowPasses(vegMatrices);
     }
   }
   
@@ -151,7 +152,8 @@ export class GPUTerrainSceneObject extends SceneObject implements ShadowCaster {
     // Also render vegetation shadow depth (mesh/hybrid plants with castShadows=true)
     const vegManager = this._terrainManager.getVegetationManager();
     if (vegManager) {
-      vegManager.renderDepthOnly(passEncoder, slotIndex);
+      // NOTE: Vegetation mesh shadow casting now handled by variant depth pipeline (ECS)
+      // vegManager.renderDepthOnly(passEncoder, slotIndex);
     }
   }
   

@@ -27,6 +27,8 @@ import type { SceneEnvironment } from '../renderers/shared/SceneEnvironment';
 import { MeshComponent } from '../../ecs/components/MeshComponent';
 import { PrimitiveGeometryComponent } from '../../ecs/components/PrimitiveGeometryComponent';
 import { ShadowComponent } from '../../ecs/components/ShadowComponent';
+import { TransformComponent } from '../../ecs/components/TransformComponent';
+import { VegetationInstanceComponent } from '../../ecs/components/VegetationInstanceComponent';
 import type { Entity } from '../../ecs/Entity';
 
 export class VariantRenderer {
@@ -84,12 +86,20 @@ export class VariantRenderer {
       let envBindGroupNone: GPUBindGroup | null = null;
       let currentPipeline: GPURenderPipeline | null = null;
 
+      // Check if this variant group contains vegetation-instancing entities.
+      // Vegetation entities bypass CPU frustum culling because:
+      // 1. Their transform is identity (0,0,0) — not their real world position
+      // 2. The VegetationCullingPipeline already does GPU frustum + distance culling
+      // 3. The drawIndexedIndirect instance count will be 0 for fully-culled groups
+      const isVegetationGroup = featureIds.includes('vegetation-instancing');
+
       for (const entity of group.entities) {
         if (excludeEntitySet?.has(entity.id)) {
           continue;
         }
         // Frustum culling: skip entities not in the visible set
-        if (visibleEntitySet && !visibleEntitySet.has(entity.id)) {
+        // (vegetation entities bypass this — GPU culling handles them)
+        if (visibleEntitySet && !isVegetationGroup && !visibleEntitySet.has(entity.id)) {
           continue;
         }
 
@@ -152,7 +162,13 @@ export class VariantRenderer {
           }
 
           pass.setVertexBuffer(0, drawParams.vertexBuffer);
-          if (drawParams.indexBuffer) {
+
+          // Vegetation instancing: use drawIndexedIndirect with GPU-driven instance count
+          const vegComp = entity.getComponent<VegetationInstanceComponent>('vegetation-instance');
+          if (vegComp?.active && vegComp.drawArgsBuffer && drawParams.indexBuffer) {
+            pass.setIndexBuffer(drawParams.indexBuffer, drawParams.indexFormat);
+            pass.drawIndexedIndirect(vegComp.drawArgsBuffer, vegComp.drawArgsOffset);
+          } else if (drawParams.indexBuffer) {
             pass.setIndexBuffer(drawParams.indexBuffer, drawParams.indexFormat);
             pass.drawIndexed(drawParams.indexCount, 1, 0, 0, 0);
           } else {
@@ -205,9 +221,32 @@ export class VariantRenderer {
       passEncoder.setBindGroup(3, emptyBG);
 
       for (const entity of group.entities) {
-        // Respect ECS ShadowComponent caster flag
+        // Respect ECS ShadowComponent caster flag + maxShadowDistance
         const shadow = entity.getComponent<ShadowComponent>('shadow');
         if (shadow && !shadow.castsShadow) continue;
+
+        // Distance-based shadow culling: skip entities beyond maxShadowDistance.
+        // For regular entities (non-vegetation), use TransformComponent world position.
+        // For vegetation entities, the transform is identity (0,0,0) — actual instance
+        // positions live in the GPU instance buffer. Per-instance distance culling is
+        // handled by the VegetationCullingPipeline GPU compute shader. When a separate
+        // shadow cull pass is available (vegComp.shadowDrawArgsBuffer != null), the
+        // shadow pass uses the shadow-specific buffers culled with shadowCastDistance.
+        // Otherwise it falls back to the color buffers (culled with maxDistance).
+        const vegCompForDist = entity.getComponent<VegetationInstanceComponent>('vegetation-instance');
+        if (!vegCompForDist && shadow && shadow.maxShadowDistance < Infinity) {
+          // Non-vegetation entity: use actual world position for distance check
+          const transform = entity.getComponent<TransformComponent>('transform');
+          if (transform) {
+            const pos = transform.position;
+            const dx = pos[0] - cameraPosition[0];
+            const dy = pos[1] - cameraPosition[1];
+            const dz = pos[2] - cameraPosition[2];
+            const distSq = dx * dx + dy * dy + dz * dz;
+            const maxDist = shadow.maxShadowDistance;
+            if (distSq > maxDist * maxDist) continue;
+          }
+        }
 
         const meshIds = this.collectMeshIds(entity);
         for (const meshId of meshIds) {
@@ -230,7 +269,17 @@ export class VariantRenderer {
 
           passEncoder.setVertexBuffer(0, drawParams.vertexBuffer);
 
-          if (drawParams.indexBuffer) {
+          // Vegetation instancing: use drawIndexedIndirect for shadow depth.
+          // Prefer shadow-specific buffers (culled with shadowCastDistance) when available;
+          // otherwise fall back to the color draw args (culled with maxDistance).
+          const vegComp = entity.getComponent<VegetationInstanceComponent>('vegetation-instance');
+          if (vegComp?.active && vegComp.drawArgsBuffer && drawParams.indexBuffer) {
+            // Use shadow-specific draw args if a separate shadow cull pass produced them
+            const shadowArgs = vegComp.shadowDrawArgsBuffer ?? vegComp.drawArgsBuffer;
+            const shadowOffset = vegComp.shadowDrawArgsBuffer ? vegComp.shadowDrawArgsOffset : vegComp.drawArgsOffset;
+            passEncoder.setIndexBuffer(drawParams.indexBuffer, drawParams.indexFormat);
+            passEncoder.drawIndexedIndirect(shadowArgs, shadowOffset);
+          } else if (drawParams.indexBuffer) {
             passEncoder.setIndexBuffer(drawParams.indexBuffer, drawParams.indexFormat);
             passEncoder.drawIndexed(drawParams.indexCount, 1, 0, 0, 0);
           } else {

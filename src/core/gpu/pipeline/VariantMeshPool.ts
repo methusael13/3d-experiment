@@ -691,6 +691,111 @@ export class VariantMeshPool {
     return { layout: this._emptyBindGroupLayout, bindGroup: this._emptyBindGroup! };
   }
 
+  // ===================== Raw Buffer Registration =====================
+
+  /**
+   * Register a mesh from pre-existing GPU vertex/index buffers.
+   * Used by VegetationMeshVariantRenderer where vertex/index buffers
+   * are already created by VegetationManager's mesh loading pipeline.
+   *
+   * Unlike addMesh(), this does NOT create new GPU buffers — it wraps
+   * existing raw GPUBuffers with identity model matrix and default PBR material.
+   *
+   * @param vertexBuffer Pre-created interleaved vertex buffer (pos+normal+uv, 32B/vertex)
+   * @param indexBuffer Pre-created index buffer
+   * @param indexCount Number of indices
+   * @param vertexCount Number of vertices
+   * @param indexFormat 'uint16' or 'uint32'
+   * @param material Optional PBR material overrides
+   * @returns Mesh ID for later reference
+   */
+  addMeshFromRawBuffers(
+    vertexBuffer: GPUBuffer,
+    indexBuffer: GPUBuffer,
+    indexCount: number,
+    vertexCount: number,
+    indexFormat: GPUIndexFormat = 'uint16',
+    material?: Partial<GPUMaterial>,
+  ): number {
+    const id = this.nextMeshId++;
+
+    // Wrap raw GPUBuffers in UnifiedGPUBuffer-compatible objects
+    // We create thin wrappers that expose .buffer for the draw path
+    const vertexUB = { buffer: vertexBuffer, destroy: () => {} } as unknown as UnifiedGPUBuffer;
+    const indexUB = { buffer: indexBuffer, destroy: () => {} } as unknown as UnifiedGPUBuffer;
+
+    // Create model matrix buffer (64 bytes) — identity for vegetation instances
+    const modelBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
+      label: `variant-pool-model-veg-${id}`,
+      size: 64,
+    });
+    const modelMatrix = new Float32Array(16);
+    mat4.identity(modelMatrix as unknown as mat4);
+    modelBuffer.write(this.ctx, modelMatrix);
+
+    // Create material buffer (160 bytes)
+    const materialBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
+      label: `variant-pool-material-veg-${id}`,
+      size: 160,
+    });
+
+    const mergedMaterial: GPUMaterial = {
+      ...DEFAULT_MATERIAL,
+      ...material,
+    };
+    this.writeMaterialToBuffer(materialBuffer, mergedMaterial);
+
+    // Create model bind group (Group 1)
+    const modelBindGroup = new BindGroupBuilder(`variant-pool-model-bg-veg-${id}`)
+      .buffer(0, modelBuffer)
+      .buffer(1, materialBuffer)
+      .build(this.ctx, this.modelBindGroupLayout);
+
+    // Build texture resources from material
+    const textureResources = new Map<string, GPUBindingResource>();
+    if (mergedMaterial.textures) {
+      this.populatePBRTextureResources(textureResources, mergedMaterial.textures);
+    }
+
+    const entry: VariantMeshEntry = {
+      id,
+      vertexBuffer: vertexUB,
+      indexBuffer: indexUB,
+      indexCount,
+      vertexCount,
+      indexFormat,
+      modelMatrix,
+      modelBuffer,
+      materialBuffer,
+      modelBindGroup,
+      material: mergedMaterial,
+      textureResources,
+      doubleSided: mergedMaterial.doubleSided ?? false,
+      skinBuffer: null,
+      skinned: false,
+    };
+
+    this.meshes.set(id, entry);
+    return id;
+  }
+
+  /**
+   * Remove a mesh registered via addMeshFromRawBuffers.
+   * Only destroys the model/material uniform buffers — raw vertex/index buffers
+   * are NOT destroyed (they're owned by the vegetation mesh loading pipeline).
+   */
+  removeMeshKeepBuffers(id: number): void {
+    const entry = this.meshes.get(id);
+    if (!entry) return;
+
+    // Only destroy uniform buffers we created, not the raw vertex/index buffers
+    entry.modelBuffer.destroy();
+    entry.materialBuffer.destroy();
+    // Don't destroy vertexBuffer/indexBuffer — they're raw GPUBuffer wrappers
+
+    this.meshes.delete(id);
+  }
+
   // ===================== Mesh iteration =====================
 
   /**

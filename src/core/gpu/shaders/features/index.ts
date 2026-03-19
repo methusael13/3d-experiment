@@ -8,6 +8,7 @@ import { ssrFeature } from './ssrFeature';
 import { reflectionProbeFeature } from './reflectionProbeFeature';
 import { multiLightFeature } from './multiLightFeature';
 import { skinningFeature } from './skinningFeature';
+import { vegetationInstancingFeature } from './vegetationInstancingFeature';
 
 export { shadowFeature } from './shadowFeature';
 export { iblFeature } from './iblFeature';
@@ -18,6 +19,7 @@ export { ssrFeature } from './ssrFeature';
 export { reflectionProbeFeature } from './reflectionProbeFeature';
 export { multiLightFeature } from './multiLightFeature';
 export { skinningFeature } from './skinningFeature';
+export { vegetationInstancingFeature } from './vegetationInstancingFeature';
 
 /**
  * Feature registry — maps feature ID to its ShaderFeature definition.
@@ -33,6 +35,7 @@ export const featureRegistry = new Map<string, ShaderFeature>([
   [reflectionProbeFeature.id, reflectionProbeFeature],
   [multiLightFeature.id, multiLightFeature],
   [skinningFeature.id, skinningFeature],
+  [vegetationInstancingFeature.id, vegetationInstancingFeature],
 ]);
 
 /**

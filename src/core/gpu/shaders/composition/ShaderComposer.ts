@@ -286,9 +286,13 @@ export class ShaderComposer {
           `@group(2) @binding(${res.bindingIndex}) var ${name}: ${res.samplerType};`,
         );
       } else if (res.kind === 'storage') {
-        // Read-only storage buffers in textures group (e.g., bone matrices for skinning)
+        // Read-only storage buffers in textures group
+        // Use the correct WGSL array element type based on the resource name:
+        // - boneMatrices: array<mat4x4f> (skeletal animation)
+        // - vegInstances: array<VegPlantInstance> (vegetation instancing — struct defined in feature functions)
+        const storageElementType = name === 'vegInstances' ? 'VegPlantInstance' : 'mat4x4f';
         lines.push(
-          `@group(2) @binding(${res.bindingIndex}) var<storage, read> ${name}: array<mat4x4f>;`,
+          `@group(2) @binding(${res.bindingIndex}) var<storage, read> ${name}: array<${storageElementType}>;`,
         );
       }
     }

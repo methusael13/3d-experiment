@@ -46,6 +46,7 @@ import type { World } from '../../ecs/World';
 import type { RenderPass } from './RenderPass';
 import { MeshRenderSystem } from '../../ecs/systems/MeshRenderSystem';
 import { SSRSystem } from '../../ecs/systems/SSRSystem';
+import { TerrainComponent } from '../../ecs/components/TerrainComponent';
 import { 
   SkyPass, 
   ShadowPass, 
@@ -797,6 +798,31 @@ export class GPUForwardPipeline {
       this.lastSSRSystemHasConsumers = ssrSystem?.hasConsumers ?? false;
     } else {
       this.lastSSRSystemHasConsumers = false;
+    }
+    
+    // ========== PRE-SHADOW VEGETATION PREPARE ==========
+    // Vegetation GPU culling + ECS entity sync must happen BEFORE the shadow pass
+    // so that VegetationInstanceComponent entities have their GPU buffer references
+    // bound (vegInstances, drawArgsBuffer) when VariantRenderer.renderDepthOnly()
+    // issues drawIndexedIndirect for vegetation shadow depth.
+    //
+    // Without this, the shadow pass executes with stale/unbound vegetation buffers
+    // because the culling compute + syncFrame()/setTextureResource() previously
+    // only happened inside TerrainManager.render() during the opaque pass (priority 300),
+    // which runs AFTER the shadow pass (priority 100).
+    if (world) {
+      const terrainEntity = world.queryFirst('terrain');
+      if (terrainEntity) {
+        const tc = terrainEntity.getComponent<TerrainComponent>('terrain');
+        if (tc?.manager?.isReady) {
+          // One-time: wire ECS World to vegetation mesh variant renderer
+          tc.manager.setWorld(world);
+          tc.manager.prepareVegetationForFrame(
+            renderCtx.sceneCameraViewProjectionMatrix,
+            renderCtx.sceneCameraPosition,
+          );
+        }
+      }
     }
     
     // ========== SCENE PASSES (render to HDR buffer) ==========

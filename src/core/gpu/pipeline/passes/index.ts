@@ -154,6 +154,10 @@ export class OpaquePass extends BaseRenderPass {
         const tc = terrainEntity.getComponent<TerrainComponent>('terrain');
         terrainManager = tc?.manager ?? null;
         terrainEntityId = terrainEntity.id;
+        // One-time: wire ECS World to vegetation mesh variant renderer
+        if (terrainManager && ctx.world) {
+          terrainManager.setWorld(ctx.world);
+        }
       }
     }
 

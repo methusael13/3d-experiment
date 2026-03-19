@@ -10,7 +10,7 @@
  */
 
 import { UnifiedGPUBuffer, UnifiedGPUTexture } from '../gpu';
-import type { VegetationMesh } from './VegetationMeshRenderer';
+import type { VegetationMesh } from './types';
 import type { SpawnResult } from './VegetationSpawner';
 import type { VegetationTileData, PlantTileData } from './VegetationRenderer';
 
@@ -30,6 +30,7 @@ interface PlantCacheEntry {
   billboardDistance: number;
   windInfluence: number;
   castShadows: boolean;
+  shadowCastDistance: number;
 }
 
 /**
@@ -226,6 +227,7 @@ export class VegetationTileCache {
       billboardDistance: 50,
       windInfluence: 1.0,
       castShadows: false,
+      shadowCastDistance: 50,
     });
     
     entry.lastUsedFrame = this.currentFrame;
@@ -298,12 +300,13 @@ export class VegetationTileCache {
   /**
    * Set per-plant wind influence and shadow casting parameters.
    */
-  setPlantWindAndShadow(tileId: string, plantId: string, windInfluence: number, castShadows: boolean): void {
+  setPlantWindAndShadow(tileId: string, plantId: string, windInfluence: number, castShadows: boolean, shadowCastDistance: number = 50): void {
     const entry = this.tiles.get(tileId);
     const plant = entry?.plants.get(plantId);
     if (plant) {
       plant.windInfluence = windInfluence;
       plant.castShadows = castShadows;
+      plant.shadowCastDistance = shadowCastDistance;
     }
   }
   
@@ -335,6 +338,7 @@ export class VegetationTileCache {
           billboardDistance: plantEntry.billboardDistance,
           windInfluence: plantEntry.windInfluence,
           castShadows: plantEntry.castShadows,
+          shadowCastDistance: plantEntry.shadowCastDistance ?? 50,
         });
       }
       

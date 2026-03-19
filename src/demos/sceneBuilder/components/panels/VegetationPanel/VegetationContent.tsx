@@ -393,16 +393,34 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas, onSelectModel }: 
           
           {/* Cast Shadows (mesh/hybrid only) */}
           {(plant.renderMode === 'mesh' || plant.renderMode === 'hybrid') && (
-            <div class={styles.configRow}>
-              <label>
-                <input 
-                  type="checkbox"
-                  checked={plant.castShadows ?? false}
-                  onChange={(e) => onUpdate({ castShadows: (e.target as HTMLInputElement).checked })}
-                />
-                Cast Shadows
-              </label>
-            </div>
+            <>
+              <div class={styles.configRow}>
+                <label>
+                  <input 
+                    type="checkbox"
+                    checked={plant.castShadows ?? false}
+                    onChange={(e) => onUpdate({ castShadows: (e.target as HTMLInputElement).checked })}
+                  />
+                  Cast Shadows
+                </label>
+              </div>
+              
+              {/* Shadow Cast Distance slider (only when castShadows is enabled) */}
+              {plant.castShadows && (
+                <div class={styles.propertyRow}>
+                  <label>Shadow Distance (m)</label>
+                  <input 
+                    type="range"
+                    min="5"
+                    max="200"
+                    step="5"
+                    value={plant.shadowCastDistance ?? 50}
+                    onInput={(e) => onUpdate({ shadowCastDistance: parseFloat((e.target as HTMLInputElement).value) })}
+                  />
+                  <span class={styles.propertyValue}>{plant.shadowCastDistance ?? 50}m</span>
+                </div>
+              )}
+            </>
           )}
           
           {/* Color (fallback) */}

@@ -38,6 +38,7 @@ import { CDLODRendererGPU, CDLODGPUConfig, CDLODRenderParams, TerrainMaterial } 
 import { QuadtreeConfig } from './TerrainQuadtree';
 import { BiomeType, TextureType } from './TerrainBiomeTextureResources';
 import { ShadowRendererGPU } from '../gpu/renderers';
+import { World } from '../ecs/World';
 
 /**
  * Terrain generation configuration
@@ -627,6 +628,48 @@ export class TerrainManager {
   }
   
   /**
+   * Pre-shadow vegetation preparation.
+   * 
+   * Runs CDLOD quadtree sync → GPU culling compute → ECS entity sync
+   * for vegetation mesh instances. This must happen BEFORE the shadow pass
+   * so that VegetationInstanceComponent entities have their GPU buffer
+   * references (vegInstances, drawArgsBuffer) bound for
+   * VariantRenderer.renderDepthOnly() to issue drawIndexedIndirect.
+   * 
+   * Called by GPUForwardPipeline.render() before any render passes execute.
+   * The render() method below still calls the same functions, but the
+   * vegetation manager's prepareFrame() + syncMeshEntities() are guarded
+   * against double-execution within the same frame.
+   * 
+   * @param sceneVpMatrix - Scene camera view-projection matrix (for frustum culling)
+   * @param cameraPosition - Scene camera world position
+   */
+  prepareVegetationForFrame(
+    sceneVpMatrix: Float32Array,
+    cameraPosition: [number, number, number],
+  ): void {
+    if (!this.vegetationManager?.isEnabled()) return;
+    if (!this.renderer) return;
+
+    // Sync vegetation tiles with CDLOD quadtree selection
+    const lastSelection = this.renderer.getLastSelection();
+    if (lastSelection && lastSelection.nodes.length > 0) {
+      this.vegetationManager.syncWithCDLODSelection(lastSelection.nodes);
+    }
+
+    // Run GPU culling compute passes (submits a command buffer)
+    const needsRender = this.vegetationManager.prepareFrame(
+      sceneVpMatrix,
+      cameraPosition,
+    );
+
+    // Sync culled buffer refs into ECS entities so the shadow pass can find them
+    if (needsRender) {
+      this.vegetationManager.syncMeshEntities();
+    }
+  }
+
+  /**
    * Render the terrain
    */
   render(
@@ -1137,12 +1180,21 @@ export class TerrainManager {
   }
   
   /**
+   * Set the ECS World reference for vegetation variant mesh rendering.
+   * Forwarded to VegetationManager → VegetationRenderer → VegetationMeshVariantRenderer.
+   * Must be called once when the World is available (e.g., from Viewport or pipeline init).
+   */
+  setWorld(world: World): void {
+    this.vegetationManager?.setWorld(world);
+  }
+
+  /**
    * Set the ShadowRendererGPU reference for shared depth-pass resources.
    * Passed through to the CDLODRendererGPU and VegetationManager.
    */
   setShadowRenderer(sr: ShadowRendererGPU): void {
     this.renderer?.setShadowRenderer(sr);
-    this.vegetationManager?.setShadowRenderer(sr);
+    // NOTE: Vegetation mesh shadow casting now handled by variant depth pipeline (ECS)
   }
   
   /**

@@ -13,6 +13,7 @@ import { WindSystem } from './WindSystem';
 import { SSRComponent } from '../components';
 import { ReflectionProbeComponent } from '../components/ReflectionProbeComponent';
 import { SkeletonComponent } from '../components/SkeletonComponent';
+import { VegetationInstanceComponent } from '../components/VegetationInstanceComponent';
 import { GPUContext } from '@/core/gpu';
 
 /**
@@ -117,6 +118,11 @@ export class MeshRenderSystem extends System {
       // Skip invisible entities
       const visibility = entity.getComponent<VisibilityComponent>('visibility');
       if (visibility && !visibility.visible) continue;
+
+      // Skip inactive vegetation entities — they have no instances to draw this frame.
+      // Without this check, the submesh geometry would render once at origin as a ghost.
+      const vegInst = entity.getComponent<VegetationInstanceComponent>('vegetation-instance');
+      if (vegInst && !vegInst.active) continue;
 
       // Determine feature set from entity's components + environment state
       const featureIds = this.determineFeatures(entity);
@@ -285,10 +291,22 @@ export class MeshRenderSystem extends System {
       }
     }
 
-    // Wind feature (if entity has WindComponent)
-    const wind = entity.getComponent<WindComponent>('wind');
-    if (wind && wind.enabled) {
-      features.push('wind');
+    // Vegetation instancing feature (mutually exclusive with standard wind)
+    const vegInstance = entity.getComponent<VegetationInstanceComponent>('vegetation-instance');
+    if (vegInstance?.active) {
+      features.push('vegetation-instancing');
+      // Vegetation meshes with textures need the 'textured' feature for base color sampling.
+      // Normal entities get this from MaterialComponent, but vegetation entities don't have one —
+      // the texture flag is set directly in the VariantMeshPool material buffer.
+      // Always add 'textured' for vegetation since most meshes have textures.
+      features.push('textured');
+      // Skip standard wind — vegetation uses GPU-computed wind, not CPU spring simulation
+    } else {
+      // Wind feature (if entity has WindComponent — only for non-vegetation entities)
+      const wind = entity.getComponent<WindComponent>('wind');
+      if (wind && wind.enabled) {
+        features.push('wind');
+      }
     }
 
     // Wetness feature (if entity has WetnessComponent with active wetness)

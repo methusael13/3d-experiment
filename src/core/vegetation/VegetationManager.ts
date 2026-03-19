@@ -21,7 +21,7 @@ import { VegetationSpawner, type SpawnRequest } from './VegetationSpawner';
 import { loadCompositeAtlasTexture, clearCompositeCache } from './AtlasTextureCompositor';
 import { VegetationRenderer, type VegetationTileData } from './VegetationRenderer';
 import { VegetationTileCache } from './VegetationTileCache';
-import type { VegetationMesh, VegetationSubMesh } from './VegetationMeshRenderer';
+import type { VegetationMesh, VegetationSubMesh } from './types';
 import type { PlantRegistry } from './PlantRegistry';
 import type { TerrainNode } from '../terrain/TerrainQuadtree';
 import type {
@@ -35,7 +35,6 @@ import { createDefaultVegetationConfig, createDefaultWindParams } from './types'
 import { DirectionalLight } from '../sceneObjects/lights/DirectionalLight';
 import type { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
 import { Vec3 } from '../types';
-import { ShadowRendererGPU } from '../gpu/renderers';
 
 // ==================== VegetationManager ====================
 
@@ -330,6 +329,7 @@ export class VegetationManager {
         tile.tileId, plant.id,
         plant.windInfluence ?? 1.0,
         plant.castShadows ?? false,
+        plant.shadowCastDistance ?? 50,
       );
 
       // Mesh/texture loading is async but non-blocking — fire and forget
@@ -530,6 +530,22 @@ export class VegetationManager {
   private async _ensurePlantMesh(tileId: string, plant: PlantType): Promise<boolean> {
     if (plant.modelRef && (plant.renderMode === 'mesh' || plant.renderMode === 'hybrid')) {
       if (this.tileCache.getPlantMesh(tileId, plant.id)) return true;
+      
+      // Check meshCache synchronously first — avoids a 1-frame gap where mesh is null
+      // after a tile cache clear (e.g., when changing another plant's LOD setting).
+      // Without this, the async await defers setPlantMesh by one microtask, causing
+      // the tree's submeshes to not render for that frame (leaves disappear).
+      const variantSuffix = plant.modelRef.selectedVariant !== undefined && plant.modelRef.selectedVariant >= 0
+        ? `#v${plant.modelRef.selectedVariant}`
+        : '#combined';
+      const cacheKey = plant.modelRef.modelPath + variantSuffix;
+      const cachedMesh = this.meshCache.get(cacheKey);
+      if (cachedMesh) {
+        this.tileCache.setPlantMesh(tileId, plant.id, cachedMesh);
+        return true;
+      }
+      
+      // Not in cache — load async (fire and forget, will appear next frame)
       const mesh = await this.loadVegetationMesh(plant.modelRef);
       if (mesh) {
         this.tileCache.setPlantMesh(tileId, plant.id, mesh);
@@ -558,6 +574,24 @@ export class VegetationManager {
       }
     }
     return false;
+  }
+
+  // ==================== ECS Integration ====================
+
+  /**
+   * Set the ECS World reference for variant mesh rendering.
+   * Forwarded to VegetationRenderer → VegetationMeshVariantRenderer.
+   * Must be called before the first render frame.
+   */
+  setWorld(world: import('../ecs/World').World): void {
+    this.renderer.setWorld(world);
+  }
+
+  /**
+   * Get the VegetationRenderer (for direct access if needed).
+   */
+  getRenderer(): VegetationRenderer {
+    return this.renderer;
   }
 
   // ==================== Rendering ====================
@@ -613,44 +647,29 @@ export class VegetationManager {
     this.renderer.setSceneEnvironment(env);
   }
   
-  /**
-   * Set the ShadowRendererGPU reference for shared depth-pass resources.
-   * Passed through to the vegetation renderer for shadow casting.
-   */
-  setShadowRenderer(sr: ShadowRendererGPU): void {
-    this.renderer.setShadowRenderer(sr);
-  }
+  // NOTE: Vegetation mesh shadow casting is now handled by the variant depth pipeline.
+  // The VariantRenderer.renderDepthOnly() path handles vegetation-instancing entities
+  // automatically. No explicit setShadowRenderer / prepareShadowPasses / renderDepthOnly
+  // methods are needed on VegetationManager.
   
   /**
-   * Pre-write shadow uniforms for all cascade passes (ShadowCaster pattern).
-   * Called ONCE before any renderDepthOnly calls in a frame.
-   * Uses the camera position from the last prepareFrame() call for distance culling.
+   * Sync mesh vegetation ECS entities after prepareFrame() has been called.
+   * 
+   * This MUST be called BEFORE the shadow pass so vegetation-instancing entities
+   * have their GPU buffer references bound. The shadow pass's
+   * VariantRenderer.renderDepthOnly() reads these entities for drawIndexedIndirect.
+   * 
+   * Safe to call multiple times per frame — the renderer guards against double-sync.
    */
-  prepareShadowPasses(
-    matrices: { lightSpaceMatrix: Float32Array | ArrayLike<number>; lightPosition: [number, number, number] }[]
-  ): void {
+  syncMeshEntities(): void {
     if (!this.enabled || !this.config.enabled || !this.initialized) return;
-    this.renderer.prepareShadowPasses(matrices, this._lastCameraPosition, this.config.shadowCastDistance);
+    this.renderer.syncMeshEntities(
+      this.wind,
+      this._getTime(),
+    );
   }
   
   private _lastCameraPosition: [number, number, number] = [0, 0, 0];
-  
-  /**
-   * Render vegetation depth-only for shadow casting (ShadowCaster pattern).
-   * Only renders mesh/hybrid plants with castShadows=true.
-   * Must be called within an active shadow render pass, after prepareFrame().
-   * 
-   * @param passEncoder Active shadow render pass encoder
-   * @param slotIndex Cascade slot index
-   * @returns Number of draw calls issued
-   */
-  renderDepthOnly(
-    passEncoder: GPURenderPassEncoder,
-    slotIndex: number,
-  ): number {
-    if (!this.enabled || !this.config.enabled || !this.initialized) return 0;
-    return this.renderer.renderDepthOnly(passEncoder, slotIndex);
-  }
   
   /**
    * Render vegetation. Call within a render pass after prepareFrame.
@@ -670,7 +689,7 @@ export class VegetationManager {
       this._visibleTilesCache,
       this.wind,
       this._getTime(),
-      this.config.shadowCastDistance,
+      undefined, // use default maxDistance (200), not shadowCastDistance
       light ?? this.light ?? undefined,
     );
 

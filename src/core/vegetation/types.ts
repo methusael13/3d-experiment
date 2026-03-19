@@ -5,6 +5,32 @@
  * biome parameters, plant types, and configuration.
  */
 
+import type { UnifiedGPUTexture } from '../gpu';
+
+// ==================== Vegetation Mesh Types ====================
+
+/**
+ * A vegetation mesh loaded from a GLTF model, containing one or more sub-meshes.
+ * Previously in VegetationMeshRenderer.ts — moved here for shared access.
+ */
+export interface VegetationMesh {
+  id: string;
+  name: string;
+  subMeshes: VegetationSubMesh[];
+}
+
+/**
+ * A single sub-mesh within a vegetation mesh.
+ */
+export interface VegetationSubMesh {
+  vertexBuffer: GPUBuffer;
+  indexBuffer: GPUBuffer;
+  indexCount: number;
+  indexFormat: GPUIndexFormat;
+  baseColorTexture: UnifiedGPUTexture | null;
+  windMultiplier: number;
+}
+
 // ==================== Render Mode ====================
 
 /**
@@ -147,6 +173,8 @@ export interface PlantType {
   windInfluence: number;
   /** Whether this plant type casts shadows (only effective for mesh/hybrid render modes). Default: false */
   castShadows: boolean;
+  /** Maximum distance from camera for shadow casting (meters). Plants beyond this won't cast shadows. Default: 50 */
+  shadowCastDistance: number;
   /**
    * Maximum CDLOD quadtree level at which this plant spawns.
    * Uses quadtree convention: 0 = root (coarsest, farthest), N = leaf (finest, closest).
@@ -182,6 +210,7 @@ export function createDefaultPlantType(id: string, name: string): PlantType {
     lodBias: 1.0,
     windInfluence: 1.0,
     castShadows: false,
+    shadowCastDistance: 50,
     maxVegetationLOD: 8,
   };
 }
@@ -346,6 +375,7 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     lodBias: 1.0,
     windInfluence: 1.0,
     castShadows: false,
+    shadowCastDistance: 50,
     maxVegetationLOD: 8,
   },
   {
@@ -369,6 +399,7 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     lodBias: 0.8,
     windInfluence: 1.0,
     castShadows: false,
+    shadowCastDistance: 50,
     maxVegetationLOD: 8,
   },
   {
@@ -392,6 +423,7 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     lodBias: 1.2,
     windInfluence: 0.8,
     castShadows: false,
+    shadowCastDistance: 50,
     maxVegetationLOD: 8,
   },
   {
@@ -415,6 +447,7 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     lodBias: 1.2,
     windInfluence: 0.8,
     castShadows: false,
+    shadowCastDistance: 50,
     maxVegetationLOD: 8,
   },
   {
@@ -438,6 +471,7 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     lodBias: 1.5,
     windInfluence: 0.5,
     castShadows: false,
+    shadowCastDistance: 50,
     maxVegetationLOD: 8,
   },
 ];
@@ -467,6 +501,7 @@ export const FOREST_PLANT_PRESETS: PlantType[] = [
     lodBias: 1.0,
     windInfluence: 0.7,
     castShadows: false,
+    shadowCastDistance: 50,
     maxVegetationLOD: 8,
   },
   {
@@ -490,6 +525,7 @@ export const FOREST_PLANT_PRESETS: PlantType[] = [
     lodBias: 0.9,
     windInfluence: 1.0,
     castShadows: false,
+    shadowCastDistance: 50,
     maxVegetationLOD: 8,
   },
 ];

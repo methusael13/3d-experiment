@@ -55,8 +55,9 @@ export type { SpawnRequest, SpawnResult } from './VegetationSpawner';
 export { VegetationRenderer } from './VegetationRenderer';
 export type { VegetationTileData, PlantTileData } from './VegetationRenderer';
 export { VegetationBillboardRenderer } from './VegetationBillboardRenderer';
-export { VegetationMeshRenderer } from './VegetationMeshRenderer';
-export type { VegetationMesh, VegetationSubMesh } from './VegetationMeshRenderer';
+// VegetationMeshRenderer removed — mesh rendering now handled by variant pipeline
+export type { VegetationMesh, VegetationSubMesh } from './types';
+export { VegetationMeshVariantRenderer } from './VegetationMeshVariantRenderer';
 
 // Tile Cache
 export { VegetationTileCache, DEFAULT_LOD_DENSITIES } from './VegetationTileCache';

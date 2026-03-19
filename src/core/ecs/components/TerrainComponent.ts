@@ -74,7 +74,8 @@ export class TerrainComponent extends Component {
         lightSpaceMatrix: m.lightSpaceMatrix as Float32Array,
         lightPosition: m.lightPosition,
       }));
-      vegManager.prepareShadowPasses(vegMatrices);
+      // NOTE: Vegetation mesh shadow casting now handled by variant depth pipeline (ECS)
+      // vegManager.prepareShadowPasses(vegMatrices);
     }
   }
 
@@ -105,8 +106,8 @@ export class TerrainComponent extends Component {
 
     const vegManager = this.manager.getVegetationManager();
     if (vegManager) {
-      vegManager.renderDepthOnly(passEncoder, slotIndex);
-      drawCalls++;
+      // NOTE: Vegetation mesh shadow casting now handled by variant depth pipeline (ECS)
+      // vegManager.renderDepthOnly(passEncoder, slotIndex);
     }
 
     return drawCalls;
