@@ -1486,19 +1486,34 @@ export class CDLODRendererGPU {
    * Group 0 = shared shadow matrix from ShadowRendererGPU (dynamic offset)
    * Group 1 = terrain params + heightmap (dynamic offset)
    */
+  /**
+   * Render terrain to shadow map using split bind groups.
+   * 
+   * @param passEncoder  Active render pass encoder
+   * @param slotIndex    Shadow matrix slot index (cascade or spot light)
+   * @param lightSpaceMatrix  Light-space VP matrix for this cascade/light
+   * @param lightPosition     Light position for LOD distance calculations
+   * @param heightmapTexture  Optional heightmap override
+   * @param cameraPosition    Current-frame camera position for quadtree LOD selection.
+   *                          When provided, eliminates the 1-frame lag from using
+   *                          lastCameraPosition. Falls back to lastCameraPosition if omitted.
+   */
   renderShadowPass(
     passEncoder: GPURenderPassEncoder,
     slotIndex: number,
     lightSpaceMatrix: mat4,
     lightPosition: vec3,
     heightmapTexture?: UnifiedGPUTexture,
+    cameraPosition?: vec3,
   ): void {
     if (!this.shadowPipeline || !this.terrainShadowParamsBuffer || !this.shadowRendererRef ||
         !this.gridVertexBuffer || !this.gridIndexBuffer || !this.shadowInstanceBuffer) {
       return;
     }
 
-    const shadowSelection = this.quadtree.select(this.lastCameraPosition, lightSpaceMatrix);
+    // Use current-frame camera position if provided, otherwise fall back to last-frame position
+    const camPos = cameraPosition ?? this.lastCameraPosition;
+    const shadowSelection = this.quadtree.select(camPos, lightSpaceMatrix);
     if (shadowSelection.nodes.length === 0) {
       return;
     }

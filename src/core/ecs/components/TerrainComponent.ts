@@ -81,6 +81,8 @@ export class TerrainComponent extends Component {
 
   /**
    * Render terrain + vegetation depth into a shadow map pass.
+   * @param cameraPosition  Current-frame camera position for LOD selection.
+   *                        Eliminates 1-frame lag in quadtree node selection.
    * @returns number of draw calls emitted
    */
   renderDepthOnly(
@@ -88,6 +90,7 @@ export class TerrainComponent extends Component {
     slotIndex: number,
     lightSpaceMatrix: mat4 | Float32Array,
     lightPosition: [number, number, number],
+    cameraPosition?: [number, number, number],
   ): number {
     if (!this.isShadowReady) return 0;
 
@@ -100,6 +103,7 @@ export class TerrainComponent extends Component {
         lightSpaceMatrix,
         lightPosition,
         this.manager.getHeightmapTexture() ?? undefined,
+        cameraPosition,
       );
       drawCalls++;
     }

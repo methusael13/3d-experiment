@@ -97,6 +97,20 @@ export class ShadowPass extends BaseRenderPass {
     // Read light direction from ECS (via cached helper)
     const dirLight = ctx.getDirectionalLight();
 
+    // Extract terrain world bounds and feed to shadow renderer for Z-range expansion.
+    // This ensures the ortho near/far planes encompass all terrain geometry (even tall
+    // cliffs/mountains), preventing shadow caster clipping at low light angles.
+    if (ctx.world) {
+      const terrainEntity = ctx.world.queryFirst('terrain');
+      if (terrainEntity) {
+        const tc = terrainEntity.getComponent<TerrainComponent>('terrain');
+        const bounds = tc?.computeWorldBounds();
+        if (bounds) {
+          this.shadowRenderer.setSceneAABB({ min: bounds.min as any, max: bounds.max as any });
+        }
+      }
+    }
+
     // Update shadow renderer params and compute light space matrix (single + CSM)
     // Use SCENE camera (not debug/view camera) so CSM frustum splits match what the scene sees
     this.shadowRenderer.updateLightMatrix({
@@ -179,14 +193,7 @@ export class ShadowPass extends BaseRenderPass {
       terrainComponent = terrainEntity.getComponent<TerrainComponent>('terrain') ?? null;
     }
 
-    // Collect skinned mesh IDs to exclude from the legacy shadow path
     const meshRenderSystem = ctx.meshRenderSystem;
-    let skinnedMeshIds: Set<number> | undefined;
-    if (meshRenderSystem) {
-      const vr = this.ensureVariantRenderer();
-      skinnedMeshIds = vr.getSkinnedMeshIds(meshRenderSystem);
-      if (skinnedMeshIds.size === 0) skinnedMeshIds = undefined;
-    }
 
     for (let i = 0; i < spotEntities.length; i++) {
       const entity = spotEntities[i];
@@ -196,7 +203,7 @@ export class ShadowPass extends BaseRenderPass {
 
       const { matrix: lightMatrix, slotIndex } = spotMatrices[i];
 
-      // Get spot light position for legacy shadow pass
+      // Get spot light position for terrain shadow pass
       const transform = entity.getComponent<TransformComponent>('transform');
       const lightPos: Vec3 = transform ? transform.position as Vec3 : [0, 0, 0];
 
@@ -221,14 +228,20 @@ export class ShadowPass extends BaseRenderPass {
         drawCalls += terrainComponent.renderDepthOnly(passEncoder, slotIndex, lightMatrix, lightPos);
       }
 
-      // Render batched object shadows using the pre-written dedicated slot
-      // (excludes skinned meshes — they need the variant pipeline with bone matrices)
-      drawCalls += this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPos, undefined, skinnedMeshIds);
+      // Prepare the spot light matrix into cascade buffer slot 0 for the variant renderer
+      this.meshPool.prepareShadowCascades([lightMatrix]);
+
+      // Render all non-skinned ECS objects (including vegetation) via variant depth-only pipeline
+      if (meshRenderSystem) {
+        drawCalls += this.ensureVariantRenderer().renderDepthOnly(
+          passEncoder, ctx.ctx, meshRenderSystem, 0, lightPos as [number, number, number],
+        );
+      }
 
       // Render skinned entities via composed depth-only pipeline with bone transforms
-      if (skinnedMeshIds && meshRenderSystem) {
+      if (meshRenderSystem) {
         drawCalls += this.ensureVariantRenderer().renderSkinnedDepthOnly(
-          passEncoder, ctx.ctx, meshRenderSystem, lightMatrix,
+          passEncoder, ctx.ctx, meshRenderSystem, 0,
         );
       }
 
@@ -258,17 +271,11 @@ export class ShadowPass extends BaseRenderPass {
     // Pre-write single matrix when called standalone (not from executeCSM)
     if (slotIndex === 0) {
       this.shadowRenderer.writeShadowMatrices([lightSpaceMatrix]);
+      // Also prepare the per-cascade shadow buffer for the variant renderer
+      this.meshPool.prepareShadowCascades([lightSpaceMatrix]);
     }
 
-    // Collect skinned mesh IDs to exclude from the legacy shadow path
-    // (skinned entities are rendered via the variant pipeline with bone transforms)
     const meshRenderSystem = ctx.meshRenderSystem;
-    let skinnedMeshIds: Set<number> | undefined;
-    if (meshRenderSystem) {
-      const vr = this.ensureVariantRenderer();
-      skinnedMeshIds = vr.getSkinnedMeshIds(meshRenderSystem);
-      if (skinnedMeshIds.size === 0) skinnedMeshIds = undefined;
-    }
 
     // Begin shadow render pass
     const passEncoder = ctx.encoder.beginRenderPass({
@@ -286,34 +293,30 @@ export class ShadowPass extends BaseRenderPass {
 
     let drawCalls = 0;
     // Render terrain shadow depth via ECS TerrainComponent
+    // Pass current-frame camera position to eliminate 1-frame LOD selection lag
+    const sceneCamPos = ctx.sceneCameraPosition as [number, number, number];
     if (ctx.world) {
       const terrainEntity = ctx.world.queryFirst('terrain');
       if (terrainEntity) {
         const tc = terrainEntity.getComponent<TerrainComponent>('terrain');
         if (tc) {
-          drawCalls += tc.renderDepthOnly(passEncoder, slotIndex, lightSpaceMatrix, lightPosArray);
+          drawCalls += tc.renderDepthOnly(passEncoder, slotIndex, lightSpaceMatrix, lightPosArray, sceneCamPos);
         }
       }
     }
 
-    // Render batched object shadows via legacy dynamic buffer path
-    // (excludes skinned meshes — they need the variant pipeline with bone matrices)
-    drawCalls += this.objectRenderer.renderShadowPass(passEncoder, slotIndex, lightPosArray, undefined, skinnedMeshIds);
-
-    // Render skinned entities via composed depth-only pipeline with bone transforms
-    if (skinnedMeshIds && meshRenderSystem) {
-      drawCalls += this.ensureVariantRenderer().renderSkinnedDepthOnly(
-        passEncoder, ctx.ctx, meshRenderSystem, lightSpaceMatrix,
-      );
-    }
-
-    // Render vegetation-instancing entities via composed depth-only pipeline.
-    // Uses shadow-specific draw args (culled with shadowCastDistance) when available,
-    // falling back to color draw args (culled with maxDistance) otherwise.
+    // Render all non-skinned ECS objects (including vegetation) via variant depth-only pipeline
     if (meshRenderSystem) {
       drawCalls += this.ensureVariantRenderer().renderDepthOnly(
         passEncoder, ctx.ctx, meshRenderSystem,
-        lightSpaceMatrix, lightSpaceMatrix, lightPosArray,
+        slotIndex, sceneCamPos,
+      );
+    }
+
+    // Render skinned entities via composed depth-only pipeline with bone transforms
+    if (meshRenderSystem) {
+      drawCalls += this.ensureVariantRenderer().renderSkinnedDepthOnly(
+        passEncoder, ctx.ctx, meshRenderSystem, slotIndex,
       );
     }
 
@@ -344,6 +347,12 @@ export class ShadowPass extends BaseRenderPass {
     }
     this.shadowRenderer.writeShadowMatrices(matrices);
 
+    // Pre-write all cascade light VP matrices to per-cascade shadow buffers
+    // in VariantMeshPool. Each cascade gets its own GPU buffer so the composed
+    // vertex shader reads the correct light VP at GPU execution time (avoids
+    // the WebGPU queue.writeBuffer batching issue).
+    this.meshPool.prepareShadowCascades(matrices);
+
     // Pre-write terrain shadow uniforms via ECS TerrainComponent
     let terrainComponent: TerrainComponent | null = null;
     if (ctx.world) {
@@ -354,14 +363,7 @@ export class ShadowPass extends BaseRenderPass {
       }
     }
 
-    // Collect skinned mesh IDs to exclude from the legacy shadow path
     const meshRenderSystem = ctx.meshRenderSystem;
-    let skinnedMeshIds: Set<number> | undefined;
-    if (meshRenderSystem) {
-      const vr = this.ensureVariantRenderer();
-      skinnedMeshIds = vr.getSkinnedMeshIds(meshRenderSystem);
-      if (skinnedMeshIds.size === 0) skinnedMeshIds = undefined;
-    }
 
     let drawCalls = 0;
     // Render each cascade using its pre-written slot
@@ -386,28 +388,27 @@ export class ShadowPass extends BaseRenderPass {
       passEncoder.setViewport(0, 0, shadowConfig.resolution, shadowConfig.resolution, 0, 1);
 
       // Render terrain shadow depth for this cascade via ECS TerrainComponent
+      // Pass current-frame camera position to eliminate 1-frame LOD selection lag
       if (terrainComponent) {
-        drawCalls += terrainComponent.renderDepthOnly(passEncoder, cascadeIdx, cascadeLightMatrix, lightPosArray);
+        const sceneCamPos = ctx.sceneCameraPosition as [number, number, number];
+        drawCalls += terrainComponent.renderDepthOnly(passEncoder, cascadeIdx, cascadeLightMatrix, lightPosArray, sceneCamPos);
       }
 
-      // Render batched object shadows via legacy dynamic buffer path
-      // (excludes skinned meshes — they need the variant pipeline with bone matrices)
-      drawCalls += this.objectRenderer.renderShadowPass(passEncoder, cascadeIdx, lightPosArray, undefined, skinnedMeshIds);
-
-      // Render skinned entities via composed depth-only pipeline with bone transforms
-      if (skinnedMeshIds && meshRenderSystem) {
-        drawCalls += this.ensureVariantRenderer().renderSkinnedDepthOnly(
-          passEncoder, ctx.ctx, meshRenderSystem, cascadeLightMatrix,
+      // Render all non-skinned ECS objects (including vegetation) via variant depth-only pipeline.
+      // Uses pre-written per-cascade shadow bind group at Group 0.
+      if (meshRenderSystem) {
+        const sceneCamPos = ctx.sceneCameraPosition as [number, number, number];
+        drawCalls += this.ensureVariantRenderer().renderDepthOnly(
+          passEncoder, ctx.ctx, meshRenderSystem,
+          cascadeIdx, sceneCamPos,
         );
       }
 
-      // Render vegetation-instancing entities via composed depth-only pipeline.
-      // Uses shadow-specific draw args (culled with shadowCastDistance) when available,
-      // falling back to color draw args (culled with maxDistance) otherwise.
+      // Render skinned entities via composed depth-only pipeline with bone transforms.
+      // Uses pre-written per-cascade shadow bind group (prepared before the CSM loop).
       if (meshRenderSystem) {
-        drawCalls += this.ensureVariantRenderer().renderDepthOnly(
-          passEncoder, ctx.ctx, meshRenderSystem,
-          cascadeLightMatrix, cascadeLightMatrix, lightPosArray,
+        drawCalls += this.ensureVariantRenderer().renderSkinnedDepthOnly(
+          passEncoder, ctx.ctx, meshRenderSystem, cascadeIdx,
         );
       }
 

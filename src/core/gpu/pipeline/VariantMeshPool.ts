@@ -27,6 +27,7 @@ import { PlaceholderTextures } from '../renderers/shared/PlaceholderTextures';
 import { RES } from '../shaders/composition/resourceNames';
 import type { ComposedShader, ShaderResource } from '../shaders/composition/types';
 import type { GPUMaterial, GPUMaterialTextures, GPUMeshData, ObjectRenderParams } from '../renderers/ObjectRendererGPU';
+import { MAX_CASCADES } from '../renderers/shared/CSMUtils';
 
 // ============ Types ============
 
@@ -894,6 +895,88 @@ export class VariantMeshPool {
     buffer.write(this.ctx, data);
   }
 
+  // ===================== Shadow Cascade Buffers =====================
+  //
+  // Per-cascade GPU uniform buffers for shadow depth rendering.
+  // Each cascade gets its own 192-byte buffer pre-written with the light VP matrix
+  // BEFORE any render passes are recorded. This avoids the WebGPU queue.writeBuffer
+  // batching issue where a later writeBuffer overwrites an earlier one (since all
+  // writes resolve before any render pass executes).
+  //
+  // The buffers use the same layout as the main global uniform buffer (Group 0),
+  // so depth-only pipelines can bind them at Group 0 without layout changes.
+
+  /** Per-cascade shadow global uniform buffers (lazily allocated) */
+  private _shadowCascadeBuffers: UnifiedGPUBuffer[] | null = null;
+  /** Per-cascade shadow global bind groups (lazily allocated) */
+  private _shadowCascadeBindGroups: GPUBindGroup[] | null = null;
+
+  /**
+   * Ensure per-cascade shadow buffers and bind groups exist.
+   * Lazily creates MAX_CASCADES buffers + bind groups on first use.
+   */
+  private ensureShadowCascadeResources(): void {
+    if (this._shadowCascadeBuffers) return;
+
+    this._shadowCascadeBuffers = [];
+    this._shadowCascadeBindGroups = [];
+
+    for (let i = 0; i < MAX_CASCADES; i++) {
+      const buffer = UnifiedGPUBuffer.createUniform(this.ctx, {
+        label: `variant-pool-shadow-cascade-${i}`,
+        size: 192,
+      });
+
+      const bindGroup = new BindGroupBuilder(`variant-pool-shadow-cascade-bg-${i}`)
+        .buffer(0, buffer)
+        .build(this.ctx, this.globalBindGroupLayout);
+
+      this._shadowCascadeBuffers.push(buffer);
+      this._shadowCascadeBindGroups.push(bindGroup);
+    }
+  }
+
+  /**
+   * Pre-write all cascade light VP matrices to their respective per-cascade buffers.
+   * Must be called ONCE before recording CSM shadow render passes.
+   *
+   * Each buffer gets the full 192-byte global uniform layout with the light VP
+   * matrix as the viewProjection (indices 0-15), camera position zeroed out.
+   * This ensures the composed vertex shader reads the light VP from the same
+   * uniform location it normally reads the camera VP.
+   *
+   * @param matrices Array of light-space matrices (one per cascade)
+   */
+  prepareShadowCascades(matrices: (mat4 | Float32Array)[]): void {
+    this.ensureShadowCascadeResources();
+
+    for (let i = 0; i < matrices.length && i < MAX_CASCADES; i++) {
+      const data = new Float32Array(48); // 192 bytes / 4
+
+      // ViewProjection matrix = light space matrix
+      data.set(matrices[i] as Float32Array, 0);
+
+      // Camera position = [0,0,0] (not relevant for shadow depth)
+      // indices 16-19 already zero
+
+      // Remaining fields (light dir, light color, light space matrix, shadow params)
+      // can be left as zero — depth-only shaders only read viewProjection (indices 0-15)
+
+      this._shadowCascadeBuffers![i].write(this.ctx, data);
+    }
+  }
+
+  /**
+   * Get the pre-written shadow global bind group for a specific cascade.
+   * Bind this at Group 0 instead of the main globalBindGroup for shadow rendering.
+   *
+   * @param cascadeIdx Cascade index (0 to cascadeCount-1)
+   */
+  getShadowGlobalBindGroup(cascadeIdx: number): GPUBindGroup {
+    this.ensureShadowCascadeResources();
+    return this._shadowCascadeBindGroups![cascadeIdx];
+  }
+
   // ===================== Cleanup =====================
 
   /**
@@ -909,5 +992,14 @@ export class VariantMeshPool {
     this.meshes.clear();
 
     this.globalUniformBuffer.destroy();
+
+    // Destroy shadow cascade resources
+    if (this._shadowCascadeBuffers) {
+      for (const buf of this._shadowCascadeBuffers) {
+        buf.destroy();
+      }
+      this._shadowCascadeBuffers = null;
+      this._shadowCascadeBindGroups = null;
+    }
   }
 }

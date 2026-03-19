@@ -185,68 +185,53 @@ export class VariantRenderer {
   // ===================== Depth-Only Rendering =====================
 
   /**
-   * Render all variant groups with depth-only pipelines (no fragment stage).
-   * Used by ShadowPass for shadow map rendering.
+   * Render vegetation-instancing variant groups with depth-only pipelines (no fragment stage).
+   * Used by ShadowPass for shadow map rendering of vegetation instances.
    *
-   * Temporarily writes the light VP matrix to the global uniform buffer,
-   * then restores the original camera VP after rendering.
+   * Uses a pre-written per-cascade shadow bind group at Group 0 instead of
+   * overwriting the shared global uniform buffer. This avoids the WebGPU
+   * queue.writeBuffer batching issue where later writes would clobber earlier
+   * ones (all writeBuffer calls resolve before any render pass executes).
+   *
+   * Only processes variant groups containing the 'vegetation-instancing' feature.
+   * Non-vegetation, non-skinned meshes are handled by ObjectRendererGPU.renderShadowPass().
+   *
+   * @param cascadeIdx Cascade index (used to select the pre-written shadow bind group)
    */
   renderDepthOnly(
     passEncoder: GPURenderPassEncoder,
     ctx: GPUContext,
     meshRenderSystem: MeshRenderSystem,
-    lightSpaceMatrix: mat4 | Float32Array,
-    viewProjectionMatrix: mat4 | Float32Array,
+    cascadeIdx: number,
     cameraPosition: [number, number, number],
   ): number {
     const variantManager = this.ensureVariantManager(ctx);
     const variantGroups = meshRenderSystem.getVariantGroups();
 
-    // Write light VP matrix so composed vs_main transforms into light clip space
-    this.meshPool.writeGlobalUniforms({
-      viewProjectionMatrix: lightSpaceMatrix,
-      cameraPosition: [0, 0, 0],
-    });
+    // Use the pre-written per-cascade shadow bind group at Group 0.
+    // This was populated by meshPool.prepareShadowCascades() before the CSM loop.
+    const shadowBindGroup = this.meshPool.getShadowGlobalBindGroup(cascadeIdx);
 
     const emptyBG = this.meshPool.getEmptyBindGroup().bindGroup;
     let drawCalls = 0;
 
     for (const group of variantGroups) {
+      // Skip skinned groups — they're handled by renderSkinnedDepthOnly() which
+      // needs the separate skin vertex buffer binding at slot 1.
+      if (group.featureIds.includes('skinning')) continue;
+
       // Strip fragment-only features for depth-only rendering (no Group 3 env bindings)
       const featureIds = this.buildDepthOnlyFeatures(group.featureIds);
       const depthEntry = variantManager.getOrCreateDepthOnly(featureIds, 'depth32float', 'less');
 
       passEncoder.setPipeline(depthEntry.pipeline);
-      passEncoder.setBindGroup(0, this.meshPool.getGlobalBindGroup());
+      passEncoder.setBindGroup(0, shadowBindGroup);
       passEncoder.setBindGroup(3, emptyBG);
 
       for (const entity of group.entities) {
-        // Respect ECS ShadowComponent caster flag + maxShadowDistance
+        // Respect ECS ShadowComponent caster flag
         const shadow = entity.getComponent<ShadowComponent>('shadow');
         if (shadow && !shadow.castsShadow) continue;
-
-        // Distance-based shadow culling: skip entities beyond maxShadowDistance.
-        // For regular entities (non-vegetation), use TransformComponent world position.
-        // For vegetation entities, the transform is identity (0,0,0) — actual instance
-        // positions live in the GPU instance buffer. Per-instance distance culling is
-        // handled by the VegetationCullingPipeline GPU compute shader. When a separate
-        // shadow cull pass is available (vegComp.shadowDrawArgsBuffer != null), the
-        // shadow pass uses the shadow-specific buffers culled with shadowCastDistance.
-        // Otherwise it falls back to the color buffers (culled with maxDistance).
-        const vegCompForDist = entity.getComponent<VegetationInstanceComponent>('vegetation-instance');
-        if (!vegCompForDist && shadow && shadow.maxShadowDistance < Infinity) {
-          // Non-vegetation entity: use actual world position for distance check
-          const transform = entity.getComponent<TransformComponent>('transform');
-          if (transform) {
-            const pos = transform.position;
-            const dx = pos[0] - cameraPosition[0];
-            const dy = pos[1] - cameraPosition[1];
-            const dz = pos[2] - cameraPosition[2];
-            const distSq = dx * dx + dy * dy + dz * dz;
-            const maxDist = shadow.maxShadowDistance;
-            if (distSq > maxDist * maxDist) continue;
-          }
-        }
 
         const meshIds = this.collectMeshIds(entity);
         for (const meshId of meshIds) {
@@ -289,12 +274,6 @@ export class VariantRenderer {
         }
       }
     }
-
-    // Restore original camera VP matrix
-    this.meshPool.writeGlobalUniforms({
-      viewProjectionMatrix,
-      cameraPosition,
-    });
 
     return drawCalls;
   }
@@ -431,13 +410,16 @@ export class VariantRenderer {
    * - Group 2 bind group includes the boneMatrices storage buffer (not just placeholders)
    * - Uses the skinning-aware depth-only pipeline (2 vertex buffer descriptors)
    *
-   * Writes the light VP matrix to the global uniform buffer for the duration.
+   * Uses a pre-written per-cascade shadow bind group at Group 0 instead of
+   * overwriting the shared global uniform buffer (same fix as renderDepthOnly).
+   *
+   * @param cascadeIdx Cascade index (used to select the pre-written shadow bind group)
    */
   renderSkinnedDepthOnly(
     passEncoder: GPURenderPassEncoder,
     ctx: GPUContext,
     meshRenderSystem: MeshRenderSystem,
-    lightSpaceMatrix: mat4 | Float32Array,
+    cascadeIdx: number,
   ): number {
     const variantManager = this.ensureVariantManager(ctx);
     const variantGroups = meshRenderSystem.getVariantGroups();
@@ -446,11 +428,8 @@ export class VariantRenderer {
     const skinnedGroups = variantGroups.filter(g => g.featureIds.includes('skinning'));
     if (skinnedGroups.length === 0) return 0;
 
-    // Write light VP matrix so composed vs_main transforms into light clip space
-    this.meshPool.writeGlobalUniforms({
-      viewProjectionMatrix: lightSpaceMatrix,
-      cameraPosition: [0, 0, 0],
-    });
+    // Use the pre-written per-cascade shadow bind group at Group 0.
+    const shadowBindGroup = this.meshPool.getShadowGlobalBindGroup(cascadeIdx);
 
     const emptyBG = this.meshPool.getEmptyBindGroup().bindGroup;
     let drawCalls = 0;
@@ -461,7 +440,7 @@ export class VariantRenderer {
       const depthEntry = variantManager.getOrCreateDepthOnly(featureIds, 'depth32float', 'less');
 
       passEncoder.setPipeline(depthEntry.pipeline);
-      passEncoder.setBindGroup(0, this.meshPool.getGlobalBindGroup());
+      passEncoder.setBindGroup(0, shadowBindGroup);
       passEncoder.setBindGroup(3, emptyBG);
 
       for (const entity of group.entities) {

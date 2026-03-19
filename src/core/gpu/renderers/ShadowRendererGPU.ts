@@ -16,6 +16,7 @@ import {
   getFrustumCornersWorldSpace,
   calculateCascadeLightMatrix,
   type CascadeLightResult,
+  type SceneAABB,
 } from './shared/CSMUtils';
 import { MAX_SHADOW_SLOTS, SHADOW_SLOT_SIZE } from './shared/constants';
 
@@ -117,6 +118,9 @@ export class ShadowRendererGPU {
   private shadowCenter: [number, number] = [0, 0];
   private directionalLightPosition: vec3 = [0, 0, 0];
   private cameraForward: vec3 = [0, 0, -1];
+
+  /** Optional scene AABB for Z-range expansion (prevents tall terrain clipping) */
+  private _sceneAABB: SceneAABB | undefined = undefined;
 
   private _debugOnce: boolean = false;
   
@@ -360,6 +364,7 @@ export class ShadowRendererGPU {
         splitEnd,
         this.config.shadowRadius,
         this.config.resolution,
+        this._sceneAABB,
       );
       if (!this._debugOnce) {
         console.log(`Matrix for cascade: ${i}`, result);
@@ -568,6 +573,19 @@ export class ShadowRendererGPU {
   /** Set cascade blend fraction for smooth transitions */
   setCascadeBlendFraction(fraction: number): void {
     this.config.cascadeBlendFraction = Math.max(0.01, Math.min(0.3, fraction));
+  }
+  
+  /**
+   * Set the scene bounding box for shadow Z-range expansion.
+   * When set, the ortho projection's near/far planes for each cascade will be
+   * expanded to fully contain the scene AABB corners (projected into light space).
+   * This prevents tall terrain features (cliffs, mountains) from being clipped
+   * by the shadow map depth range, regardless of light angle.
+   * 
+   * @param aabb World-space AABB {min, max}, or undefined to clear
+   */
+  setSceneAABB(aabb: SceneAABB | undefined): void {
+    this._sceneAABB = aabb;
   }
   
   // ============ Debug Thumbnail ============

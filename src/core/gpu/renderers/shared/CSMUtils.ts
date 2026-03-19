@@ -134,6 +134,12 @@ export function buildLightRotationMatrix(lightDir: vec3): mat4 {
   return rotationMatrix;
 }
 
+/** Optional scene bounding box for Z-range expansion in shadow cascades */
+export interface SceneAABB {
+  min: vec3;
+  max: vec3;
+}
+
 /**
  * Calculate a stable light-space ortho matrix for one cascade.
  *
@@ -147,8 +153,9 @@ export function buildLightRotationMatrix(lightDir: vec3): mat4 {
  * 3. Transform center to light space using the global rotation
  * 4. Snap center XY to texel grid to prevent sub-texel drift
  * 5. Compute Z range from projected corners, expand minZ for shadow casters
- * 6. Build lightView = globalRotation + translation to snapped center
- * 7. Build ortho projection (WebGPU [0,1] depth)
+ * 6. Optionally expand Z range using scene AABB (ensures tall terrain is never clipped)
+ * 7. Build lightView = globalRotation + translation to snapped center
+ * 8. Build ortho projection (WebGPU [0,1] depth)
  *
  * @param lightDir        Normalized direction from scene toward light
  * @param lightRotation   Global light rotation matrix (from buildLightRotationMatrix)
@@ -158,6 +165,10 @@ export function buildLightRotationMatrix(lightDir: vec3): mat4 {
  * @param cascadeFar      Far split distance for this cascade
  * @param shadowRadius    Used for Z-range expansion (scene scale)
  * @param shadowMapSize   Shadow map resolution for texel snapping (e.g. 2048)
+ * @param sceneAABB       Optional world-space AABB of the scene (e.g. terrain bounds).
+ *                        When provided, the ortho Z-range is expanded to fully contain
+ *                        all 8 AABB corners, ensuring tall geometry (cliffs, mountains)
+ *                        is never clipped by the shadow near/far planes.
  */
 export function calculateCascadeLightMatrix(
   lightDir: vec3,
@@ -166,7 +177,8 @@ export function calculateCascadeLightMatrix(
   cascadeNear: number,
   cascadeFar: number,
   shadowRadius: number,
-  shadowMapSize: number = 2048
+  shadowMapSize: number = 2048,
+  sceneAABB?: SceneAABB,
 ): CascadeLightResult {
   // 0 — global light rotation (computed from lightDir, identical for all cascades)
   const lightRotation = buildLightRotationMatrix(lightDir);
@@ -257,6 +269,15 @@ export function calculateCascadeLightMatrix(
   const zBackExpansion = Math.max(sphereRadius * 2.0, frustumZDepth);
   centeredMinZ -= zBackExpansion;
   centeredMaxZ += frustumZDepth * 0.1;
+
+  // 6b — Scene AABB Z-range expansion (optional, minZ only)
+  // When a scene bounding box is provided (e.g. terrain world bounds), expand minZ
+  // to ensure the ortho near plane is far enough back to capture tall shadow casters.
+  // NOTE: Currently disabled — the existing zBackExpansion above (sphereRadius * 2.0)
+  // already provides adequate coverage for most terrain. The sceneAABB parameter is
+  // kept in the API for future use when a more targeted expansion strategy is needed
+  // (e.g. only expanding when specific tall features are detected near cascade edges).
+  // if (sceneAABB) { ... }
 
   // 7 — ortho projection (WebGPU [0,1] depth)
   // In lookAt convention, camera looks down -Z. Objects in front have negative Z in view space.

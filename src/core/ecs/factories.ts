@@ -91,7 +91,7 @@ export function createModelEntity(
   }
 
   const shadow = entity.addComponent(new ShadowComponent());
-  shadow.castsShadow = options.castsShadow ?? false;
+  shadow.castsShadow = options.castsShadow ?? true;
 
   entity.addComponent(new VisibilityComponent());
   entity.addComponent(new GroupComponent());
