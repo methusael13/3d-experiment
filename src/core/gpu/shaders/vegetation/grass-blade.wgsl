@@ -557,7 +557,7 @@ fn fragmentMain(
   
   // Multi-light contribution (point + spot lights with spot shadows)
   var multiLight = vec3f(0.0);
-  if (uniforms.lodLevel == 6.0) {
+  if (viewDepth < uniforms.maxFadeDistance) {
     // Compute only for the closest lod level
     multiLight = computeGrassMultiLight(input.worldPos, normal);
   }

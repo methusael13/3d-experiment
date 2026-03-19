@@ -195,6 +195,12 @@ export class ShadowPass extends BaseRenderPass {
 
     const meshRenderSystem = ctx.meshRenderSystem;
 
+    // Pre-write ALL spot light matrices to per-cascade shadow buffers BEFORE the loop.
+    // This avoids the WebGPU writeBuffer batching issue — if we wrote inside the loop,
+    // only the last spot light's matrix would survive (all writes resolve before any
+    // render pass executes). Each spot light gets its own cascade buffer slot (0, 1, 2...).
+    this.meshPool.prepareShadowCascades(spotOnlyMatrices);
+
     for (let i = 0; i < spotEntities.length; i++) {
       const entity = spotEntities[i];
       const light = entity.getComponent<LightComponent>('light')!;
@@ -228,20 +234,18 @@ export class ShadowPass extends BaseRenderPass {
         drawCalls += terrainComponent.renderDepthOnly(passEncoder, slotIndex, lightMatrix, lightPos);
       }
 
-      // Prepare the spot light matrix into cascade buffer slot 0 for the variant renderer
-      this.meshPool.prepareShadowCascades([lightMatrix]);
-
-      // Render all non-skinned ECS objects (including vegetation) via variant depth-only pipeline
+      // Render all non-skinned ECS objects (including vegetation) via variant depth-only pipeline.
+      // Uses cascade buffer slot [i] which was pre-written with this spot light's matrix.
       if (meshRenderSystem) {
         drawCalls += this.ensureVariantRenderer().renderDepthOnly(
-          passEncoder, ctx.ctx, meshRenderSystem, 0, lightPos as [number, number, number],
+          passEncoder, ctx.ctx, meshRenderSystem, i, lightPos as [number, number, number],
         );
       }
 
       // Render skinned entities via composed depth-only pipeline with bone transforms
       if (meshRenderSystem) {
         drawCalls += this.ensureVariantRenderer().renderSkinnedDepthOnly(
-          passEncoder, ctx.ctx, meshRenderSystem, 0,
+          passEncoder, ctx.ctx, meshRenderSystem, i,
         );
       }
 
