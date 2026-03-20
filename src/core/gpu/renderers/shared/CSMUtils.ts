@@ -149,13 +149,16 @@ export interface SceneAABB {
  *
  * Algorithm:
  * 1. Get world-space corners of camera sub-frustum [cascadeNear, cascadeFar]
- * 2. Compute bounding sphere (center + radius) — rotation-invariant
- * 3. Transform center to light space using the global rotation
- * 4. Snap center XY to texel grid to prevent sub-texel drift
- * 5. Compute Z range from projected corners, expand minZ for shadow casters
- * 6. Optionally expand Z range using scene AABB (ensures tall terrain is never clipped)
- * 7. Build lightView = globalRotation + translation to snapped center
- * 8. Build ortho projection (WebGPU [0,1] depth)
+ * 2. Compute bounding sphere (center + radius) — used for texel snap granularity
+ * 3. Build per-cascade lightView centered on frustum center
+ * 4. Compute tight AABB of frustum corners in light-view space for XY bounds
+ * 5. Snap tight AABB bounds to sphere-derived texel grid (prevents shimmer)
+ * 6. Compute Z range from projected corners, expand minZ for shadow casters
+ * 7. Build ortho projection (WebGPU [0,1] depth)
+ *
+ * The tight AABB approach ensures each cascade's ortho volume only covers its own
+ * frustum slice region, preventing higher cascades from completely overlapping lower
+ * ones. The sphere-derived texel snap step still prevents sub-texel shadow shimmer.
  *
  * @param lightDir        Normalized direction from scene toward light
  * @param lightRotation   Global light rotation matrix (from buildLightRotationMatrix)
@@ -187,7 +190,8 @@ export function calculateCascadeLightMatrix(
   const corners = getFrustumCornersWorldSpace(cameraView, cameraProj, cascadeNear, cascadeFar);
 
   // 2 — bounding sphere: center = average of corners, radius = max distance from center
-  // Using a sphere instead of tight AABB ensures the ortho box size is rotation-invariant
+  // The sphere radius is used ONLY for texel snap granularity (prevents shadow shimmer
+  // on camera rotation). The actual ortho XY bounds come from a tight AABB (step 5).
   const center: vec3 = vec3.fromValues(0, 0, 0);
   for (const c of corners) {
     center[0] += c[0]; center[1] += c[1]; center[2] += c[2];
@@ -206,78 +210,74 @@ export function calculateCascadeLightMatrix(
   // Round up to prevent jitter from floating point
   sphereRadius = Math.ceil(sphereRadius * 16) / 16;
 
-  // 3 — Transform center to light space using global rotation
-  const centerLightSpace: vec4 = vec4.create();
-  vec4.transformMat4(centerLightSpace, [center[0], center[1], center[2], 1.0] as vec4, lightRotation);
-
-  // 4 — Texel snapping: snap XY to texel grid so shadow map doesn't shift sub-texel
-  const worldUnitsPerTexelX = (2.0 * sphereRadius) / shadowMapSize;
-  const worldUnitsPerTexelY = (2.0 * sphereRadius) / shadowMapSize;
-
-  const snappedX = Math.floor(centerLightSpace[0] / worldUnitsPerTexelX) * worldUnitsPerTexelX;
-  const snappedY = Math.floor(centerLightSpace[1] / worldUnitsPerTexelY) * worldUnitsPerTexelY;
-
-  // 5 — Z range: project all corners to light space to find actual Z extent
-  let minZ = Infinity, maxZ = -Infinity;
-  for (const c of corners) {
-    const trf: vec4 = vec4.create();
-    vec4.transformMat4(trf, c, lightRotation);
-    minZ = Math.min(minZ, trf[2]);
-    maxZ = Math.max(maxZ, trf[2]);
-  }
-
-  // Expand minZ (toward light) to capture shadow casters behind the frustum slice.
-  // Don't expand maxZ much — receivers are within the frustum.
-  minZ -= shadowRadius;
-  maxZ += shadowRadius * 0.1; // small forward expansion to avoid clipping
-
-  // 6 — Build per-cascade lightView = globalRotation + translation to snapped center
-  // The lightView matrix is the global rotation with the snapped light-space center as origin
+  // 3 — Build per-cascade lightView = globalRotation + translation to frustum center
   const lightView = mat4.clone(lightRotation);
-  // Adjust the translation column (12,13,14) to position the light at the snapped center
-  // We need to offset the existing translation by the snapped center position
-  // Since lightRotation has no translation (eye at origin), we just set it:
   lightView[12] = -(lightRotation[0] * center[0] + lightRotation[4] * center[1] + lightRotation[8] * center[2]);
   lightView[13] = -(lightRotation[1] * center[0] + lightRotation[5] * center[1] + lightRotation[9] * center[2]);
   lightView[14] = -(lightRotation[2] * center[0] + lightRotation[6] * center[1] + lightRotation[10] * center[2]);
 
-  // Recompute bounds relative to this centered lightView
-  // Since we translated to the cascade center, X/Y bounds are symmetric from sphere radius
-  // Apply texel snap offset
-  const snapOffsetX = snappedX - centerLightSpace[0];
-  const snapOffsetY = snappedY - centerLightSpace[1];
-
-  const minX = -sphereRadius + snapOffsetX;
-  const maxX = sphereRadius + snapOffsetX;
-  const minY = -sphereRadius + snapOffsetY;
-  const maxY = sphereRadius + snapOffsetY;
-
-  // Recompute Z bounds relative to the centered view
-  // Transform corners with the centered lightView
+  // 4 — Compute tight AABB of frustum corners in light-view space
+  // This gives XY bounds that tightly wrap only this cascade's frustum slice,
+  // preventing higher cascades from completely overlapping lower ones.
+  let tightMinX = Infinity, tightMaxX = -Infinity;
+  let tightMinY = Infinity, tightMaxY = -Infinity;
   let centeredMinZ = Infinity, centeredMaxZ = -Infinity;
   for (const c of corners) {
     const trf: vec4 = vec4.create();
     vec4.transformMat4(trf, c, lightView);
+    tightMinX = Math.min(tightMinX, trf[0]);
+    tightMaxX = Math.max(tightMaxX, trf[0]);
+    tightMinY = Math.min(tightMinY, trf[1]);
+    tightMaxY = Math.max(tightMaxY, trf[1]);
     centeredMinZ = Math.min(centeredMinZ, trf[2]);
     centeredMaxZ = Math.max(centeredMaxZ, trf[2]);
   }
-  // Expand Z proportionally to frustum depth (not by absolute shadowRadius).
-  // The back expansion (toward light) captures shadow casters behind the frustum slice.
-  // Using sphere diameter (2× radius) ensures tall objects outside the frustum can still cast.
-  // A small forward expansion prevents near-plane clipping on receivers.
-  const frustumZDepth = centeredMaxZ - centeredMinZ;
-  const zBackExpansion = Math.max(sphereRadius * 2.0, frustumZDepth);
-  centeredMinZ -= zBackExpansion;
-  centeredMaxZ += frustumZDepth * 0.1;
 
-  // 6b — Scene AABB Z-range expansion (optional, minZ only)
-  // When a scene bounding box is provided (e.g. terrain world bounds), expand minZ
-  // to ensure the ortho near plane is far enough back to capture tall shadow casters.
-  // NOTE: Currently disabled — the existing zBackExpansion above (sphereRadius * 2.0)
-  // already provides adequate coverage for most terrain. The sceneAABB parameter is
-  // kept in the API for future use when a more targeted expansion strategy is needed
-  // (e.g. only expanding when specific tall features are detected near cascade edges).
-  // if (sceneAABB) { ... }
+  // 5 — Snap tight AABB bounds to sphere-derived texel grid (prevents shimmer)
+  // The texel size is computed from the bounding sphere (rotation-invariant), ensuring
+  // the snap granularity never changes with camera rotation. The tight bounds give us
+  // proper cascade separation while the sphere-based snap prevents sub-texel drift.
+  const worldUnitsPerTexel = (2.0 * sphereRadius) / shadowMapSize;
+
+  const minX = Math.floor(tightMinX / worldUnitsPerTexel) * worldUnitsPerTexel;
+  const maxX = Math.ceil(tightMaxX / worldUnitsPerTexel) * worldUnitsPerTexel;
+  const minY = Math.floor(tightMinY / worldUnitsPerTexel) * worldUnitsPerTexel;
+  const maxY = Math.ceil(tightMaxY / worldUnitsPerTexel) * worldUnitsPerTexel;
+
+  // 6 — Z-range expansion for shadow casters
+  // In light-view space (lookAt convention), the light looks down -Z:
+  //   - More negative Z = farther from light (deeper into scene)
+  //   - More positive Z = closer to light (toward light source)
+  // Shadow casters between the frustum and the light source have higher Z values.
+  // We expand maxZ (toward light) by shadowRadius to capture them.
+  // A small expansion of minZ (away from light) prevents far-plane clipping on receivers.
+  const frustumZDepth = centeredMaxZ - centeredMinZ;
+  centeredMaxZ += shadowRadius;
+  centeredMinZ -= frustumZDepth * 0.1;
+
+  // 6b — Scene AABB Z-range expansion (optional)
+  // When provided, expand Z range to include the scene AABB projected into light space,
+  // ensuring tall geometry (cliffs, mountains) is never clipped by shadow near/far planes.
+  if (sceneAABB) {
+    const aabbCorners: vec3[] = [];
+    for (let x = 0; x < 2; x++) {
+      for (let y = 0; y < 2; y++) {
+        for (let z = 0; z < 2; z++) {
+          aabbCorners.push(vec3.fromValues(
+            x === 0 ? sceneAABB.min[0] : sceneAABB.max[0],
+            y === 0 ? sceneAABB.min[1] : sceneAABB.max[1],
+            z === 0 ? sceneAABB.min[2] : sceneAABB.max[2],
+          ));
+        }
+      }
+    }
+    for (const ac of aabbCorners) {
+      const trf: vec4 = vec4.create();
+      vec4.transformMat4(trf, [ac[0], ac[1], ac[2], 1.0] as vec4, lightView);
+      centeredMinZ = Math.min(centeredMinZ, trf[2]);
+      centeredMaxZ = Math.max(centeredMaxZ, trf[2]);
+    }
+  }
 
   // 7 — ortho projection (WebGPU [0,1] depth)
   // In lookAt convention, camera looks down -Z. Objects in front have negative Z in view space.

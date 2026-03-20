@@ -7,6 +7,12 @@
  * 
  * This ensures the cull shader only processes actual spawned instances,
  * not the full buffer capacity (which could be 65K per tile).
+ * 
+ * IMPORTANT: Each cull dispatch gets its own params uniform buffer from a pool.
+ * A single shared buffer would be overwritten by queue.writeBuffer batching —
+ * WebGPU resolves all writeBuffer calls before any compute pass executes,
+ * so only the last write would survive, causing all dispatches to use the
+ * wrong parameters (e.g., tree meshes culled with grass billboard params).
  */
 
 import {
@@ -30,6 +36,26 @@ const BILLBOARD_VERTICES = 12;
 const WORKGROUP_SIZE = 256;
 /** Indirect dispatch args: 3 × u32 = 12 bytes */
 const DISPATCH_ARGS_SIZE = 12;
+
+/**
+ * "Accept-all" frustum planes — 6 planes where every point passes the test.
+ * Used by cullForShadow() to disable frustum culling while keeping distance culling.
+ * 
+ * The cull shader test is: dot(plane.xyz, pos) + plane.w + radius < 0 → CULL.
+ * With normal=(0,0,0) and w=1e10, the result is always 1e10 + radius > 0 → PASS.
+ * 
+ * Shadow casters must NOT be frustum-culled against the camera because objects
+ * behind the camera can still cast shadows into the visible scene. Only distance
+ * culling (via shadowCastDistance) should apply.
+ */
+const ACCEPT_ALL_FRUSTUM_PLANES = new Float32Array([
+  0, 0, 0, 1e10,  // plane 0
+  0, 0, 0, 1e10,  // plane 1
+  0, 0, 0, 1e10,  // plane 2
+  0, 0, 0, 1e10,  // plane 3
+  0, 0, 0, 1e10,  // plane 4
+  0, 0, 0, 1e10,  // plane 5
+]);
 
 // ==================== Types ====================
 
@@ -57,8 +83,11 @@ export class VegetationCullingPipeline {
   private preparePipeline: GPUComputePipeline | null = null;
   private prepareBindGroupLayout: GPUBindGroupLayout | null = null;
   
-  // Shared
-  private paramsBuffer: UnifiedGPUBuffer | null = null;
+  // Per-dispatch params buffers (pooled to avoid shared-buffer overwrite).
+  // Each cull() / cullForShadow() call acquires its own buffer so that
+  // queue.writeBuffer targets a unique GPU buffer per dispatch.
+  private paramsBufferPool: UnifiedGPUBuffer[] = [];
+  private activeParamsBuffers: UnifiedGPUBuffer[] = [];
   
   // Pools
   private bufferPool: Map<number, CullResult[]> = new Map();
@@ -129,11 +158,6 @@ export class VegetationCullingPipeline {
       compute: { module: cullModule, entryPoint: 'main' },
     });
     
-    this.paramsBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
-      label: 'vegetation-cull-params',
-      size: CULL_PARAMS_SIZE,
-    });
-    
     this.initialized = true;
   }
   
@@ -153,6 +177,12 @@ export class VegetationCullingPipeline {
       this.dispatchArgsPool.push(alloc.dispatchArgs);
     }
     this.activeShadowAllocations = [];
+    
+    // Return per-dispatch params buffers to pool
+    for (const buf of this.activeParamsBuffers) {
+      this.paramsBufferPool.push(buf);
+    }
+    this.activeParamsBuffers = [];
   }
   
   /**
@@ -177,13 +207,14 @@ export class VegetationCullingPipeline {
     
     const result = this.acquireBuffers(maxInstances);
     const dispatchArgs = this.acquireDispatchArgs();
+    const paramsBuffer = this.acquireParamsBuffer();
     
     const rawSubMeshCount = Math.max(1, meshIndexCounts.length);
     if (rawSubMeshCount > MAX_MESH_SUBMESHES) {
       console.warn(`[VegetationCullingPipeline] Mesh has ${rawSubMeshCount} sub-meshes, exceeding MAX_MESH_SUBMESHES (${MAX_MESH_SUBMESHES}). Clamping to ${MAX_MESH_SUBMESHES}.`);
     }
     const meshSubMeshCount = Math.min(rawSubMeshCount, MAX_MESH_SUBMESHES);
-    this.writeParams(frustumPlanes, cameraPosition, maxDistance, maxInstances, renderMode, billboardDistance, meshSubMeshCount);
+    this.writeParams(paramsBuffer, frustumPlanes, cameraPosition, maxDistance, maxInstances, renderMode, billboardDistance, meshSubMeshCount);
     
     // Pre-fill draw args: billboard + per-submesh mesh entries
     const totalU32 = BILLBOARD_DRAW_ARGS_U32 + MESH_DRAW_ARGS_U32 * meshSubMeshCount;
@@ -222,7 +253,7 @@ export class VegetationCullingPipeline {
         label: 'vegetation-cull-bind-group',
         layout: this.cullBindGroupLayout!,
         entries: [
-          { binding: 0, resource: { buffer: this.paramsBuffer!.buffer } },
+          { binding: 0, resource: { buffer: paramsBuffer.buffer } },
           { binding: 1, resource: { buffer: inputBuffer.buffer } },
           { binding: 2, resource: { buffer: result.billboardBuffer.buffer } },
           { binding: 3, resource: { buffer: result.meshBuffer.buffer } },
@@ -242,7 +273,7 @@ export class VegetationCullingPipeline {
         label: 'vegetation-cull-bind-group-fallback',
         layout: this.cullBindGroupLayout!,
         entries: [
-          { binding: 0, resource: { buffer: this.paramsBuffer!.buffer } },
+          { binding: 0, resource: { buffer: paramsBuffer.buffer } },
           { binding: 1, resource: { buffer: inputBuffer.buffer } },
           { binding: 2, resource: { buffer: result.billboardBuffer.buffer } },
           { binding: 3, resource: { buffer: result.meshBuffer.buffer } },
@@ -303,9 +334,15 @@ export class VegetationCullingPipeline {
     const shadowDrawArgsRaw = this.acquireShadowDrawArgs();
     const shadowDrawArgs = { buffer: shadowDrawArgsRaw, destroy: () => shadowDrawArgsRaw.destroy() } as UnifiedGPUBuffer;
     const shadowDispatchArgs = this.acquireDispatchArgs();
+    const paramsBuffer = this.acquireParamsBuffer();
     
-    // Write params with shadowCastDistance, renderMode=1 (mesh-only — no billboard for shadows)
-    this.writeParams(frustumPlanes, cameraPosition, shadowCastDistance, maxInstances, 1, 0, meshSubMeshCount);
+    // Write params with shadowCastDistance, renderMode=1 (mesh-only — no billboard for shadows).
+    // Use ACCEPT_ALL_FRUSTUM_PLANES instead of the camera's frustum planes because
+    // shadow casters behind the camera can still cast shadows into the visible scene.
+    // Only distance culling (shadowCastDistance from camera) should apply.
+    // Without this, trees leave/enter the camera frustum as the camera rotates,
+    // causing shadow flicker in the shadow map.
+    this.writeParams(paramsBuffer, ACCEPT_ALL_FRUSTUM_PLANES, cameraPosition, shadowCastDistance, maxInstances, 1, 0, meshSubMeshCount);
     
     // Pre-fill shadow draw args (mesh-only, no billboard section needed but layout must match)
     const totalU32 = BILLBOARD_DRAW_ARGS_U32 + MESH_DRAW_ARGS_U32 * meshSubMeshCount;
@@ -341,7 +378,7 @@ export class VegetationCullingPipeline {
         label: 'veg-shadow-cull-bind-group',
         layout: this.cullBindGroupLayout!,
         entries: [
-          { binding: 0, resource: { buffer: this.paramsBuffer!.buffer } },
+          { binding: 0, resource: { buffer: paramsBuffer.buffer } },
           { binding: 1, resource: { buffer: inputBuffer.buffer } },
           { binding: 2, resource: { buffer: result.billboardBuffer.buffer } }, // throwaway for shadow
           { binding: 3, resource: { buffer: shadowMeshBuffer.buffer } },
@@ -360,7 +397,7 @@ export class VegetationCullingPipeline {
         label: 'veg-shadow-cull-bind-group-fallback',
         layout: this.cullBindGroupLayout!,
         entries: [
-          { binding: 0, resource: { buffer: this.paramsBuffer!.buffer } },
+          { binding: 0, resource: { buffer: paramsBuffer.buffer } },
           { binding: 1, resource: { buffer: inputBuffer.buffer } },
           { binding: 2, resource: { buffer: result.billboardBuffer.buffer } },
           { binding: 3, resource: { buffer: shadowMeshBuffer.buffer } },
@@ -386,7 +423,25 @@ export class VegetationCullingPipeline {
   
   // ==================== Internal ====================
   
+  /**
+   * Acquire a per-dispatch params uniform buffer from the pool.
+   * Each cull dispatch needs its own buffer to avoid writeBuffer overwrite.
+   */
+  private acquireParamsBuffer(): UnifiedGPUBuffer {
+    if (this.paramsBufferPool.length > 0) return this.paramsBufferPool.pop()!;
+    const buf = UnifiedGPUBuffer.createUniform(this.ctx, {
+      label: `vegetation-cull-params-${this.activeParamsBuffers.length}`,
+      size: CULL_PARAMS_SIZE,
+    });
+    return buf;
+  }
+  
+  /**
+   * Write cull parameters to a specific params buffer.
+   * Each dispatch gets its own buffer so writes don't conflict.
+   */
   private writeParams(
+    paramsBuffer: UnifiedGPUBuffer,
     frustumPlanes: Float32Array,
     cameraPosition: [number, number, number],
     maxDistance: number,
@@ -406,7 +461,9 @@ export class VegetationCullingPipeline {
     u32View[29] = renderMode;
     data[30] = billboardDistance * billboardDistance;
     u32View[31] = meshSubMeshCount;
-    this.paramsBuffer!.write(this.ctx, data);
+    paramsBuffer.write(this.ctx, data);
+    // Track as active so it gets returned to pool in resetFrame()
+    this.activeParamsBuffers.push(paramsBuffer);
   }
   
   private acquireDispatchArgs(): GPUBuffer {
@@ -468,8 +525,13 @@ export class VegetationCullingPipeline {
   }
   
   destroy(): void {
-    this.paramsBuffer?.destroy();
-    this.paramsBuffer = null;
+    // Destroy pooled params buffers
+    for (const buf of this.paramsBufferPool) buf.destroy();
+    this.paramsBufferPool = [];
+    
+    // Destroy active params buffers
+    for (const buf of this.activeParamsBuffers) buf.destroy();
+    this.activeParamsBuffers = [];
     
     for (const pool of this.bufferPool.values()) {
       for (const r of pool) { r.billboardBuffer.destroy(); r.meshBuffer.destroy(); r.drawArgsBuffer.destroy(); }

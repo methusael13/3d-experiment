@@ -237,6 +237,69 @@ export class TerrainQuadtree {
   }
   
   /**
+   * Select all nodes within a radius around a center point (no frustum culling).
+   * 
+   * Used for shadow map rendering where we need stable tile selection
+   * independent of the light's view frustum. Using the camera position as center
+   * and shadowRadius as radius ensures all cascades share the same tile set,
+   * eliminating tile popping between cascades that causes shadow flicker.
+   * 
+   * LOD selection still uses the camera position for distance-based subdivision,
+   * so closer tiles get higher detail just like the normal render pass.
+   */
+  selectByRadius(cameraPos: vec3, radius: number): SelectionResult {
+    this.selectedNodes = [];
+    this.nodesConsidered = 0;
+    this.nodesCulled = 0;
+
+    if (this.root) {
+      this.selectNodeByRadius(this.root, cameraPos, radius);
+    }
+
+    return {
+      nodes: this.selectedNodes,
+      nodesConsidered: this.nodesConsidered,
+      nodesCulled: this.nodesCulled,
+    };
+  }
+
+  /**
+   * Recursively select nodes within a radius (no frustum culling)
+   */
+  private selectNodeByRadius(node: TerrainNode, cameraPos: vec3, radius: number): void {
+    this.nodesConsidered++;
+
+    // Distance from camera to closest point on node's XZ bounding box
+    const clampedX = Math.max(node.bounds.min[0], Math.min(cameraPos[0], node.bounds.max[0]));
+    const clampedZ = Math.max(node.bounds.min[2], Math.min(cameraPos[2], node.bounds.max[2]));
+    const dx = cameraPos[0] - clampedX;
+    const dz = cameraPos[2] - clampedZ;
+    const distToNode = Math.sqrt(dx * dx + dz * dz);
+
+    // Cull nodes entirely outside the shadow radius
+    if (distToNode > radius + node.size * 0.5) {
+      this.nodesCulled++;
+      return;
+    }
+
+    // LOD selection: same distance-based split as normal rendering
+    const distX = cameraPos[0] - node.center[0];
+    const distZ = cameraPos[2] - node.center[2];
+    const distanceXZ = Math.sqrt(distX * distX + distZ * distZ);
+    const lodThreshold = node.size * this.config.lodDistanceMultiplier;
+    const shouldSplit = distanceXZ < lodThreshold && node.hasChildren();
+
+    if (shouldSplit) {
+      for (const child of node.children!) {
+        this.selectNodeByRadius(child, cameraPos, radius);
+      }
+    } else {
+      node.morphFactor = this.calculateMorphFactor(node, distanceXZ);
+      this.selectedNodes.push(node);
+    }
+  }
+
+  /**
    * Select visible nodes for rendering based on camera position and frustum
    */
   select(cameraPos: vec3, viewProjectionMatrix: mat4): SelectionResult {

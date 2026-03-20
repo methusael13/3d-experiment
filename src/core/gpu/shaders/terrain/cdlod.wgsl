@@ -1049,11 +1049,18 @@ fn projectToCascade(worldPos: vec4f, cascade: i32, normal: vec3f, lightDir: vec3
   let projCoords = lightSpacePos.xyz / lightSpacePos.w;
   let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
   
-  // Slope-dependent bias
+  // Slope-dependent bias scaled to shadow map texel size.
+  // Using a fixed NDC bias (e.g. 0.001) causes visible gaps at peaks because
+  // the ortho Z range can span hundreds of world units, amplifying the bias.
+  // Instead, we use a bias proportional to shadow map texel coverage:
+  // ~1-2 texels of depth offset, which is constant in world-space regardless of Z range.
+  let cascadeSize = textureDimensions(csmShadowArray);
+  let texelDepth = 1.0 / f32(cascadeSize.x); // one texel in NDC depth space
   let NdotL = max(dot(normal, lightDir), 0.001);
   let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
-  let cascadeBias = 0.001 * (1.0 + f32(cascade) * 0.5);
-  let shadowBias = cascadeBias + clamp(slopeFactor, 0.0, 5.0) * cascadeBias * 2.0;
+  let baseBias = texelDepth * 0.5; // half a texel base bias
+  let slopeBias = texelDepth * 2.0; // up to 2 texels on slopes
+  let shadowBias = baseBias + clamp(slopeFactor, 0.0, 5.0) * slopeBias;
   let biasedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
   
   // Bounds check: fragment must be within [0,1] in UV and depth

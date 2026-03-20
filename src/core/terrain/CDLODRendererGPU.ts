@@ -1489,6 +1489,10 @@ export class CDLODRendererGPU {
   /**
    * Render terrain to shadow map using split bind groups.
    * 
+   * Uses radius-based tile selection (not frustum-based) to ensure all CSM cascades
+   * share the same tile set. This eliminates tile popping between cascades that
+   * causes shadow flicker — each cascade sees identical geometry with identical LOD.
+   * 
    * @param passEncoder  Active render pass encoder
    * @param slotIndex    Shadow matrix slot index (cascade or spot light)
    * @param lightSpaceMatrix  Light-space VP matrix for this cascade/light
@@ -1497,6 +1501,9 @@ export class CDLODRendererGPU {
    * @param cameraPosition    Current-frame camera position for quadtree LOD selection.
    *                          When provided, eliminates the 1-frame lag from using
    *                          lastCameraPosition. Falls back to lastCameraPosition if omitted.
+   * @param shadowRadius      Radius around camera for tile selection (default: 200).
+   *                          Tiles within this radius are selected regardless of
+   *                          the light's view frustum.
    */
   renderShadowPass(
     passEncoder: GPURenderPassEncoder,
@@ -1505,6 +1512,7 @@ export class CDLODRendererGPU {
     lightPosition: vec3,
     heightmapTexture?: UnifiedGPUTexture,
     cameraPosition?: vec3,
+    shadowRadius?: number,
   ): void {
     if (!this.shadowPipeline || !this.terrainShadowParamsBuffer || !this.shadowRendererRef ||
         !this.gridVertexBuffer || !this.gridIndexBuffer || !this.shadowInstanceBuffer) {
@@ -1513,7 +1521,10 @@ export class CDLODRendererGPU {
 
     // Use current-frame camera position if provided, otherwise fall back to last-frame position
     const camPos = cameraPosition ?? this.lastCameraPosition;
-    const shadowSelection = this.quadtree.select(camPos, lightSpaceMatrix);
+    // Use radius-based selection to ensure all cascades share the same tile set,
+    // eliminating tile popping between cascades that causes shadow flicker.
+    const radius = shadowRadius ?? 200;
+    const shadowSelection = this.quadtree.selectByRadius(camPos, radius);
     if (shadowSelection.nodes.length === 0) {
       return;
     }
