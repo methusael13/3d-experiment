@@ -123,15 +123,17 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
 
   let uvw = vec3f(globalId) / f32(size);
 
-  // Perlin-Worley (R channel): blend of Perlin and Worley for organic shapes
-  let perlin = perlinFBM(uvw * 8.0, 4) * 0.5 + 0.5; // [0, 1]
-  let worley1 = 1.0 - worleyNoise(uvw * 8.0);        // Invert: 1 = cell center, 0 = edge
-  let perlinWorley = saturate(perlin * 0.6 + worley1 * 0.4);
+  // Perlin-Worley (R channel): blend of Perlin and Worley for organic shapes.
+  // Higher Perlin ratio (0.8) creates smoother, amorphous clouds without the
+  // hard circular cell boundaries that pure Worley produces.
+  let perlin = perlinFBM(uvw * 4.0, 4) * 0.5 + 0.5; // [0, 1]
+  let worley1 = 1.0 - worleyNoise(uvw * 3.0);        // Lower freq Worley, inverted
+  let perlinWorley = saturate(perlin * 0.8 + worley1 * 0.2);
 
-  // Worley at 3 octaves (G, B, A channels)
-  let w1 = 1.0 - worleyFBM(uvw, 8.0);
-  let w2 = 1.0 - worleyFBM(uvw, 16.0);
-  let w3 = 1.0 - worleyFBM(uvw, 32.0);
+  // Worley at 3 octaves (G, B, A channels) — reduced frequencies for larger cloud structures
+  let w1 = 1.0 - worleyFBM(uvw, 4.0);
+  let w2 = 1.0 - worleyFBM(uvw, 8.0);
+  let w3 = 1.0 - worleyFBM(uvw, 16.0);
 
   textureStore(outputTexture, globalId, vec4f(perlinWorley, w1, w2, w3));
 }

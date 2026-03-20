@@ -44,11 +44,17 @@ fn remap(value: f32, oldMin: f32, oldMax: f32, newMin: f32, newMax: f32) -> f32 
 
 fn heightGradient(heightFrac: f32, cloudType: f32) -> f32 {
   if (cloudType < 0.25) {
-    return smoothstep(0.0, 0.05, heightFrac) * smoothstep(1.0, 0.95, heightFrac);
+    // Stratus/overcast: thin flat slab
+    return smoothstep(0.0, 0.05, heightFrac) * smoothstep(1.0, 0.90, heightFrac);
   } else if (cloudType < 0.6) {
-    return smoothstep(0.0, 0.08, heightFrac) * smoothstep(1.0, 0.7, heightFrac);
+    // Stratocumulus: slightly lumpy layer, denser in the middle
+    let base = smoothstep(0.0, 0.10, heightFrac) * smoothstep(1.0, 0.55, heightFrac);
+    return base * (0.6 + 0.4 * smoothstep(0.15, 0.40, heightFrac));
   } else {
-    return smoothstep(0.0, 0.1, heightFrac) * smoothstep(1.0, 0.6, heightFrac);
+    // Cumulus: sharp bottom, dense middle, rounded puffy top
+    let base = smoothstep(0.0, 0.15, heightFrac) * smoothstep(1.0, 0.35, heightFrac);
+    let bulge = 0.5 + 0.5 * smoothstep(0.15, 0.45, heightFrac);
+    return base * bulge;
   }
 }
 
@@ -60,21 +66,25 @@ fn sampleCloudDensity(worldXZ: vec2f, altitude: f32) -> f32 {
   let hGrad = heightGradient(heightFrac, u.cloudType);
   if (hGrad < 0.001) { return 0.0; }
 
-  // Weather map
-  let weatherUV = fract(worldXZ * 0.00002 + u.weatherOffset);
+  // Weather map — no fract(), let the repeat sampler handle wrapping seamlessly
+  let weatherUV = worldXZ * 0.00002 + u.weatherOffset + vec2f(500.0, 500.0);
   let weather = textureSampleLevel(weatherMap, noiseSampler, weatherUV, 0.0);
   let coverageVal = weather.r * u.coverage * 2.5;
 
   if (coverageVal < 0.05) { return 0.0; }
 
   // Base shape noise (simplified — use lower frequency for shadow map)
-  let noisePos = vec3f(worldXZ.x, (altitude - u.cloudBase), worldXZ.y);
-  let uvw = noisePos * 0.0004;
+  // Offset to push 3D texture repeat boundaries far from world origin (matches cloud-raymarch.wgsl)
+  let noisePos = vec3f(worldXZ.x + 50000.0, (altitude - u.cloudBase), worldXZ.y + 50000.0);
+  let uvw = noisePos * 0.00025;
   let shape = textureSampleLevel(shapeNoise, noiseSampler, uvw, 0.0);
-  let shapeFBM = shape.r * 0.625 + shape.g * 0.25 + shape.b * 0.125;
+  // FBM weights must match cloud-raymarch.wgsl
+  let shapeFBM = shape.r * 0.75 + shape.g * 0.15 + shape.b * 0.10;
 
+  // Soft coverage using smoothstep (matches cloud-raymarch.wgsl)
   var density = shapeFBM * hGrad;
-  density = saturate(remap(density, 1.0 - coverageVal, 1.0, 0.0, 1.0));
+  let coverageThreshold = 1.0 - coverageVal;
+  density = smoothstep(coverageThreshold - 0.35, coverageThreshold + 0.15, density);
 
   return max(0.0, density);
 }

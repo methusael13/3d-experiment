@@ -374,8 +374,9 @@ export class GPUForwardPipeline {
     if (config.shadowRadius !== undefined) {
       this.shadowRadius = config.shadowRadius;
       this.shadowRenderer.setShadowRadius(config.shadowRadius);
-      // Sync cloud shadow coverage area with CSM shadow radius
-      this.cloudShadowGenerator?.setShadowRadius(config.shadowRadius);
+      // Note: Cloud shadow radius is NOT synced with CSM shadow radius.
+      // Cloud shadows need much larger coverage (2000m+) than object shadows (200m)
+      // because clouds at 1500-4000m altitude cast shadows over a wide area.
     }
     if (config.resolution !== undefined) {
       this.shadowRenderer.setResolution(config.resolution);
@@ -1201,9 +1202,10 @@ export class GPUForwardPipeline {
       this.cloudRayMarcher.init(this.width, this.height);
       
       // Create cloud shadow generator (Phase 2)
+      // Uses its own default radius (2000m) — NOT synced with CSM shadow radius (200m)
+      // because cloud shadows need much larger coverage than object shadows.
       this.cloudShadowGenerator = new CloudShadowGenerator(this.ctx);
       this.cloudShadowGenerator.init();
-      this.cloudShadowGenerator.setShadowRadius(this.shadowRadius);
       
       // Create temporal filter (Phase 3)
       this.cloudTemporalFilter = new CloudTemporalFilter(this.ctx);
@@ -1225,7 +1227,7 @@ export class GPUForwardPipeline {
       // Register cloud shadow debug texture
       this.debugTextureManager.register(
         'cloud-shadow',
-        'depth',
+        'float',
         () => this.cloudShadowGenerator?.textureView ?? null
       );
       

@@ -201,12 +201,24 @@ export function ConnectedRenderingPanel({
     enabled: false,
     coverage: 0.4,
     cloudType: 0.75,
-    density: 0.04,
+    density: 0.2,
     cloudBase: 1500,
     cloudThickness: 2500,
     windSpeed: 5,
     windDirection: 45,
+    seed: 42,
   });
+  
+  // Cloud shadow debug
+  const [showCloudShadowDebug, setShowCloudShadowDebug] = useState(false);
+  
+  const handleCloudShadowDebugToggle = useCallback((enabled: boolean) => {
+    setShowCloudShadowDebug(enabled);
+    const debugManager = store.viewport?.getDebugTextureManager?.();
+    if (debugManager) {
+      debugManager.setEnabled('cloud-shadow', enabled);
+    }
+  }, [store]);
   
   const handleCloudSettingsChange = useCallback((settings: Partial<CloudSettings>) => {
     setCloudSettings((prev: CloudSettings) => {
@@ -280,6 +292,8 @@ export function ConnectedRenderingPanel({
       onAtmosphericFogSettingsChange={handleAtmosphericFogSettingsChange}
       cloudSettings={cloudSettings}
       onCloudSettingsChange={handleCloudSettingsChange}
+      showCloudShadowDebug={showCloudShadowDebug}
+      onCloudShadowDebugToggle={handleCloudShadowDebugToggle}
       godRaySettings={godRaySettings}
       onGodRaySettingsChange={handleGodRaySettingsChange}
       debugViewMode={debugViewMode}

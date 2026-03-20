@@ -37,8 +37,11 @@ const NORMALIZE_PARAMS_SIZE = 16;
 /** Default splat radius in texels (0 = single point, 1 = 3x3 kernel) */
 const DEFAULT_SPLAT_RADIUS = 1;
 
-/** Default max count for normalization (tuned empirically — dense grass ~20-30 instances/texel) */
-const DEFAULT_MAX_COUNT = 24.0;
+/** Default max count for normalization.
+ * With 512x512 map on 400m terrain, each texel is ~0.78m².
+ * Dense grass at 25/m² = ~15 instances/texel. With LOD thinning + multiple
+ * plant types, 8 is a good reference for "fully covered". */
+const DEFAULT_MAX_COUNT = 8.0;
 
 // ==================== VegetationDensityMapGenerator ====================
 
@@ -64,6 +67,7 @@ export class VegetationDensityMapGenerator {
   // State
   private initialized = false;
   private dirty = false;
+  private needsClear = false;
   /** Pending stamp dispatches to batch before normalizing */
   private pendingStamps: Array<{ instanceBuffer: GPUBuffer; counterBuffer: GPUBuffer; maxInstances: number }> = [];
   
@@ -123,7 +127,7 @@ export class VegetationDensityMapGenerator {
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r8unorm' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba8unorm' } },
       ],
     });
     
@@ -171,7 +175,7 @@ export class VegetationDensityMapGenerator {
       label: 'vegetation-density-map',
       width: this.resolution,
       height: this.resolution,
-      format: 'r8unorm',
+      format: 'rgba8unorm',
       sampled: true,
       storage: true
     });
@@ -242,12 +246,17 @@ export class VegetationDensityMapGenerator {
     const device = this.ctx.device;
     const queue = this.ctx.queue;
     
-    // Phase 1: Clear accumulation buffer
-    const clearEncoder = device.createCommandEncoder({ label: 'density-clear' });
-    clearEncoder.clearBuffer(this.accumBuffer!);
-    queue.submit([clearEncoder.finish()]);
+    // Phase 1: Only clear accumulation buffer if explicitly requested
+    // (plant config change, terrain reconnection). New tile spawns are
+    // additive — their instances stamp on top of existing density data.
+    if (this.needsClear) {
+      const clearEncoder = device.createCommandEncoder({ label: 'density-clear' });
+      clearEncoder.clearBuffer(this.accumBuffer!);
+      queue.submit([clearEncoder.finish()]);
+      this.needsClear = false;
+    }
     
-    // Phase 2: Stamp all pending spawn results
+    // Phase 2: Stamp all spawn results (from all visible tiles)
     const stampEncoder = device.createCommandEncoder({ label: 'density-stamp' });
     
     for (const stamp of this.pendingStamps) {
@@ -265,12 +274,23 @@ export class VegetationDensityMapGenerator {
   }
   
   /**
+   * Mark the accumulation buffer for clearing on the next flush.
+   * Call this when the tile cache is cleared (plant config change,
+   * terrain reconnection) so stale density data is wiped before
+   * new tiles are stamped.
+   */
+  markForClear(): void {
+    this.needsClear = true;
+  }
+
+  /**
    * Full rebuild: clear + stamp all active spawn results + normalize.
    * Use this when spawn data changes (new tiles, plant config change, etc.)
    */
   rebuild(spawnResults: SpawnResult[]): void {
     if (!this.initialized) return;
     
+    this.needsClear = true;
     this.pendingStamps = [];
     for (const result of spawnResults) {
       this.queueSpawnResult(result);

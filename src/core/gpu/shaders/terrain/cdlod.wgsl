@@ -1479,7 +1479,7 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     // low-angle sun → deeper shadow under vegetation canopy
     let sunElevation = max(dot(lightDir, vec3f(0.0, 1.0, 0.0)), 0.0);
     // darkening ranges from 0.4 (heavy canopy, low sun) to 1.0 (no darkening)
-    let darkeningAmount = mix(0.4, 0.7, sunElevation);
+    let darkeningAmount = mix(0.1, 0.7, sunElevation);
     let vegShadow = mix(1.0, darkeningAmount, vegDensity * vegDensity);
     finalColor *= vegShadow;
   }

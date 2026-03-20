@@ -36,8 +36,13 @@ export class CloudShadowGenerator {
   // Shadow map sampler (linear filtering for soft shadows)
   private _sampler: GPUSampler | null = null;
 
-  // Config
-  private shadowRadius = 500; // world units half-extent
+  // Config — radius must be large enough that the entire terrain fits in the shadow
+  // map from ANY camera position on the terrain. For a 1km terrain centered at origin:
+  // worst case = camera at corner (500, 500), farthest terrain at (-500, -500)
+  // = 1000m offset in each axis. So shadowRadius = terrainSize (not half).
+  // 1024² texels ÷ 2000m = ~2m per texel (good resolution, full coverage).
+  // Use setShadowRadius() to adjust: terrainSize for full coverage, terrainSize/2 for centered.
+  private shadowRadius = 1000; // world units half-extent (covers 1km terrain from any corner)
 
   // Average coverage (computed each frame for lighting adaptation)
   private _averageCoverage = 0;

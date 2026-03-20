@@ -64,38 +64,14 @@ fn stampInstances(@builtin(global_invocation_id) gid: vec3u) {
   let scale = inst.positionAndScale.w;
   
   let center = worldToTexel(worldPos.xz);
-  let radius = i32(params.splatRadius);
   let res = i32(params.texelResolution);
   
-  // Splat a small kernel around the instance position
-  // Weight falls off with distance for a smooth density field
-  for (var dy = -radius; dy <= radius; dy++) {
-    for (var dx = -radius; dx <= radius; dx++) {
-      let tx = center.x + dx;
-      let ty = center.y + dy;
-      
-      // Bounds check
-      if (tx < 0 || tx >= res || ty < 0 || ty >= res) {
-        continue;
-      }
-      
-      // Distance-based weight (1 at center, 0 at edge)
-      let dist = length(vec2f(f32(dx), f32(dy)));
-      if (dist > f32(radius) + 0.5) {
-        continue;
-      }
-      
-      // Weight: higher for larger plants, falloff with distance
-      let distWeight = select(
-        1.0 - dist / (f32(radius) + 1.0),
-        1.0,
-        radius == 0
-      );
-      let weight = u32(max(distWeight * scale * 4.0, 1.0));
-      
-      let tIdx = texelIndex(vec2i(tx, ty));
-      atomicAdd(&accumBuffer[tIdx], weight);
-    }
+  // Single-texel stamp: exactly one increment per instance at its spawn location.
+  // This ensures the density map precisely reflects actual spawn positions —
+  // clustering gaps and biome-rejected areas remain dark-free.
+  if (center.x >= 0 && center.x < res && center.y >= 0 && center.y < res) {
+    let tIdx = texelIndex(center);
+    atomicAdd(&accumBuffer[tIdx], 1u);
   }
 }
 
@@ -110,7 +86,7 @@ struct NormalizeParams {
 
 @group(0) @binding(0) var<uniform> normParams: NormalizeParams;
 @group(0) @binding(1) var<storage, read> accumBufferRead: array<u32>;
-@group(0) @binding(2) var densityOut: texture_storage_2d<r8unorm, write>;
+@group(0) @binding(2) var densityOut: texture_storage_2d<rgba8unorm, write>;
 
 @compute @workgroup_size(8, 8)
 fn normalizeToTexture(@builtin(global_invocation_id) gid: vec3u) {

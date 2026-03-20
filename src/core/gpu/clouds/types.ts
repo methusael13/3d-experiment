@@ -39,6 +39,9 @@ export interface CloudConfig {
 
   /** Enable temporal reprojection (Phase 3) — amortizes ray march over 2 frames */
   temporalReprojection: boolean;
+
+  /** Seed for noise generation (affects weather map and cloud shape patterns) */
+  seed: number;
 }
 
 /**
@@ -48,13 +51,14 @@ export const DEFAULT_CLOUD_CONFIG: CloudConfig = {
   enabled: false,
   coverage: 0.4,
   cloudType: 0.75,
-  density: 0.04,
+  density: 0.2,
   cloudBase: 1500,
   cloudThickness: 2500,
   windSpeed: 5,
   windDirection: 45,
   cloudShadows: true,
   temporalReprojection: true,
+  seed: 42,
 };
 
 // ========== Noise Texture Specs ==========

@@ -34,13 +34,16 @@ fn heightGradient(heightFrac: f32, cloudType: f32) -> f32 {
   // cloudType: 0.0 = stratus/overcast, 0.5 = stratocumulus, 1.0 = cumulus
   if (cloudType < 0.25) {
     // Stratus/overcast: thin flat slab
-    return smoothstep(0.0, 0.05, heightFrac) * smoothstep(1.0, 0.95, heightFrac);
+    return smoothstep(0.0, 0.05, heightFrac) * smoothstep(1.0, 0.90, heightFrac);
   } else if (cloudType < 0.6) {
-    // Stratocumulus: slightly lumpy layer
-    return smoothstep(0.0, 0.08, heightFrac) * smoothstep(1.0, 0.7, heightFrac);
+    // Stratocumulus: slightly lumpy layer, denser in the middle
+    let base = smoothstep(0.0, 0.10, heightFrac) * smoothstep(1.0, 0.55, heightFrac);
+    return base * (0.6 + 0.4 * smoothstep(0.15, 0.40, heightFrac));
   } else {
-    // Cumulus: round bottom, puffy top
-    return smoothstep(0.0, 0.1, heightFrac) * smoothstep(1.0, 0.6, heightFrac);
+    // Cumulus: sharp bottom, dense middle, rounded puffy top
+    let base = smoothstep(0.0, 0.15, heightFrac) * smoothstep(1.0, 0.35, heightFrac);
+    let bulge = 0.5 + 0.5 * smoothstep(0.15, 0.45, heightFrac);
+    return base * bulge;
   }
 }
 

@@ -133,6 +133,21 @@ export class CloudNoiseGenerator {
     this.generated = true;
   }
 
+  /**
+   * Regenerate noise textures with a new seed.
+   * Destroys existing textures and recreates them.
+   */
+  regenerate(seed: number): void {
+    this.generated = false;
+    this._shapeNoiseTexture?.destroy();
+    this._detailNoiseTexture?.destroy();
+    this._shapeNoiseTexture = null;
+    this._shapeNoiseView = null;
+    this._detailNoiseTexture = null;
+    this._detailNoiseView = null;
+    this.generate(seed);
+  }
+
   private generateShapeNoise(seed: number): void {
     const device = this.ctx.device;
     const size = SHAPE_NOISE_SIZE;

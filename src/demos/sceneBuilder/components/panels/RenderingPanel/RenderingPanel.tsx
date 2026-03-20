@@ -58,6 +58,7 @@ export interface CloudSettings {
   cloudThickness: number;
   windSpeed: number;
   windDirection: number;
+  seed: number;
 }
 
 /**
@@ -106,6 +107,8 @@ export interface RenderingPanelProps {
   // Cloud settings
   cloudSettings: CloudSettings;
   onCloudSettingsChange: (settings: Partial<CloudSettings>) => void;
+  showCloudShadowDebug: boolean;
+  onCloudShadowDebugToggle: (enabled: boolean) => void;
 
   // God ray settings
   godRaySettings: GodRaySettings;
@@ -192,6 +195,8 @@ export function RenderingPanel({
   onAtmosphericFogSettingsChange,
   cloudSettings,
   onCloudSettingsChange,
+  showCloudShadowDebug,
+  onCloudShadowDebugToggle,
   godRaySettings,
   onGodRaySettingsChange,
   debugViewMode,
@@ -797,9 +802,9 @@ export function RenderingPanel({
             label="Density"
             value={cloudSettings.density}
             min={0.01}
-            max={0.1}
-            step={0.005}
-            format={(v) => v.toFixed(3)}
+            max={0.5}
+            step={0.01}
+            format={(v) => v.toFixed(2)}
             onChange={(v) => onCloudSettingsChange({ density: v })}
             disabled={!cloudSettings.enabled}
           />
@@ -845,6 +850,24 @@ export function RenderingPanel({
             step={5}
             format={(v) => `${Math.round(v)}°`}
             onChange={(v) => onCloudSettingsChange({ windDirection: v })}
+            disabled={!cloudSettings.enabled}
+          />
+
+          <Slider
+            label="Seed"
+            value={cloudSettings.seed}
+            min={0}
+            max={1000}
+            step={1}
+            format={(v) => String(Math.round(v))}
+            onChange={(v) => onCloudSettingsChange({ seed: Math.round(v) })}
+            disabled={!cloudSettings.enabled}
+          />
+
+          <Checkbox
+            label="Show Cloud Shadow Map"
+            checked={showCloudShadowDebug}
+            onChange={onCloudShadowDebugToggle}
             disabled={!cloudSettings.enabled}
           />
         </div>

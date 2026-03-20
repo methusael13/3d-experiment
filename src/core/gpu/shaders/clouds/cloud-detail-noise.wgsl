@@ -63,10 +63,10 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
 
   let uvw = vec3f(globalId) / f32(size);
 
-  // Three Worley frequencies for detail erosion
-  let w1 = 1.0 - worleyNoise(uvw * 4.0);
-  let w2 = 1.0 - worleyNoise(uvw * 8.0);
-  let w3 = 1.0 - worleyNoise(uvw * 16.0);
+  // Three Worley frequencies for detail erosion — reduced for broader detail features
+  let w1 = 1.0 - worleyNoise(uvw * 2.0);
+  let w2 = 1.0 - worleyNoise(uvw * 4.0);
+  let w3 = 1.0 - worleyNoise(uvw * 8.0);
 
   // FBM combination
   let combined = w1 * 0.625 + w2 * 0.25 + w3 * 0.125;

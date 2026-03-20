@@ -49,10 +49,10 @@ struct CloudUniforms {
 
 const PI = 3.14159265358979;
 const MAX_MARCH_STEPS = 64;
-const MAX_LIGHT_STEPS = 6;
+const MAX_LIGHT_STEPS = 8;
 const STEP_SIZE_EMPTY = 200.0;    // Step size in empty space (meters)
 const STEP_SIZE_CLOUD = 80.0;     // Step size inside cloud (meters)
-const LIGHT_STEP_SIZE = 400.0;    // Step size for light march
+const LIGHT_STEP_SIZE = 180.0;    // Step size for light march (finer for better self-shadowing)
 const TRANSMITTANCE_THRESHOLD = 0.01;
 
 // ========== Utility ==========
@@ -73,11 +73,17 @@ fn henyeyGreenstein(cosTheta: f32, g: f32) -> f32 {
 
 fn heightGradient(heightFrac: f32, cloudType: f32) -> f32 {
   if (cloudType < 0.25) {
-    return smoothstep(0.0, 0.05, heightFrac) * smoothstep(1.0, 0.95, heightFrac);
+    // Stratus/overcast: thin flat slab
+    return smoothstep(0.0, 0.05, heightFrac) * smoothstep(1.0, 0.90, heightFrac);
   } else if (cloudType < 0.6) {
-    return smoothstep(0.0, 0.08, heightFrac) * smoothstep(1.0, 0.7, heightFrac);
+    // Stratocumulus: slightly lumpy layer, denser in the middle
+    let base = smoothstep(0.0, 0.10, heightFrac) * smoothstep(1.0, 0.55, heightFrac);
+    return base * (0.6 + 0.4 * smoothstep(0.15, 0.40, heightFrac));
   } else {
-    return smoothstep(0.0, 0.1, heightFrac) * smoothstep(1.0, 0.6, heightFrac);
+    // Cumulus: sharp bottom, dense middle, rounded puffy top
+    let base = smoothstep(0.0, 0.15, heightFrac) * smoothstep(1.0, 0.35, heightFrac);
+    let bulge = 0.5 + 0.5 * smoothstep(0.15, 0.45, heightFrac);
+    return base * bulge;
   }
 }
 
@@ -108,10 +114,14 @@ fn sampleDensity(p: vec3f) -> f32 {
   let hGrad = heightGradient(heightFrac, u.cloudType);
   if (hGrad < 0.001) { return 0.0; }
 
-  // 3. Weather map sample — use world XZ relative to camera for sensible tiling
-  //    (Earth-centered XZ is huge; we want tiling relative to the scene)
-  let worldXZ = p.xz; // Earth-centered, but the fract() makes it tile
-  let weatherUV = fract(worldXZ * 0.00002 + u.weatherOffset);
+  // 3. Weather map sample — use world XZ for tiling via the sampler's repeat mode.
+  //    Do NOT use fract() here — it creates derivative discontinuities at wrap
+  //    boundaries that cause visible hard-edge seams. The repeat sampler handles
+  //    wrapping seamlessly without discontinuity.
+  // Add a large constant offset (500.0) to push UVs far from the 0.0 tile boundary,
+  // preventing visible seams at world X=0 / Z=0 axes where coordinates cross zero.
+  let worldXZ = p.xz;
+  let weatherUV = worldXZ * 0.00002 + u.weatherOffset + vec2f(500.0, 500.0);
   let weather = textureSampleLevel(weatherMap, noiseSampler, weatherUV, 0.0);
   let coverageVal = weather.r * u.coverage * 2.5; // Amplify by global coverage
   let cloudTypeVal = weather.g;
@@ -122,32 +132,47 @@ fn sampleDensity(p: vec3f) -> f32 {
   }
 
   // 4. Base shape from 3D noise — scale relative to cloud layer, not absolute position
-  let noisePos = vec3f(p.x, (altitude - u.cloudBase), p.z);
-  let uvw = noisePos * 0.0004;
+  //    Lower frequency = larger, more continuous cloud formations.
+  //    Add large offset to push 3D texture repeat boundaries far from world origin,
+  //    preventing seam artifacts at X=0/Z=0 (the 3D noise is not tileable).
+  let noisePos = vec3f(p.x + 50000.0, (altitude - u.cloudBase), p.z + 50000.0);
+  let uvw = noisePos * 0.00025;
   let shape = textureSampleLevel(shapeNoise, noiseSampler, uvw, 0.0);
-  // FBM combination of the shape channels
-  let shapeFBM = shape.r * 0.625 + shape.g * 0.25 + shape.b * 0.125;
+  // FBM combination: R channel is Perlin-dominated (smooth), G/B/A are pure Worley (sharp).
+  // Increase R weight and decrease Worley channels to reduce hard cell boundaries.
+  let shapeFBM = shape.r * 0.75 + shape.g * 0.15 + shape.b * 0.10;
 
-  // 5. Combine shape with height gradient and coverage
+  // 5. Soft coverage — smoothstep transition instead of hard remap cutoff.
+  //    The wide band (-0.2 to +0.1) creates a gradual fade at cloud boundaries
+  //    instead of the sharp on/off that causes hard edges.
   var density = shapeFBM * hGrad;
-  // Apply coverage: higher coverage = more area passes threshold
-  density = saturate(remap(density, 1.0 - coverageVal, 1.0, 0.0, 1.0));
+  let coverageThreshold = 1.0 - coverageVal;
+  density = smoothstep(coverageThreshold - 0.35, coverageThreshold + 0.15, density);
 
-  // 6. Erode edges with detail noise — smooth transition, no hard threshold.
-  // Scale erosion by the current density so that at cloud edges (density near 0)
-  // the erosion naturally tapers to zero, preventing the hard on/off discontinuity
-  // that causes shimmering when combined with blue noise dithering + checkerboard.
+  // 6. Multiplicative erosion — prevents hard cutoffs at cloud edges.
+  //    Instead of subtracting detail noise (which clips density to 0 abruptly),
+  //    we multiply by a smoothed detail value. At cloud edges (low density),
+  //    the mix() lerps toward the erosion pattern, thinning the cloud naturally.
+  //    At cloud centers (high density), the mix() preserves full density.
   {
-    let detailUVW = noisePos * 0.003;
-    let detail = textureSampleLevel(detailNoise, noiseSampler, detailUVW, 0.0);
-    let detailFBM = detail.r * 0.625 + detail.g * 0.25 + detail.b * 0.125;
-    let detailModifier = mix(detailFBM, 1.0 - detailFBM, saturate(heightFrac * 5.0));
-    let baseErosionStrength = mix(0.1, 0.25, saturate(cloudTypeVal));
-    // Density-scaled erosion: fade erosion to 0 as density approaches 0.
-    // smoothstep provides a soft ramp instead of a hard threshold cliff.
-    let densityFade = smoothstep(0.0, 0.15, density);
-    let erosionStrength = baseErosionStrength * densityFade;
-    density = remap(density, detailModifier * erosionStrength, 1.0, 0.0, 1.0);
+    // Coarse detail — broad wisps and tendrils
+    let detailUVW1 = noisePos * 0.0015;
+    let detail1 = textureSampleLevel(detailNoise, noiseSampler, detailUVW1, 0.0);
+    let detailFBM1 = detail1.r * 0.625 + detail1.g * 0.25 + detail1.b * 0.125;
+
+    // Fine detail — small-scale turbulence at edges
+    let detailUVW2 = noisePos * 0.004;
+    let detail2 = textureSampleLevel(detailNoise, noiseSampler, detailUVW2, 0.0);
+    let detailFBM2 = detail2.r * 0.5 + detail2.g * 0.3 + detail2.b * 0.2;
+
+    // Blend coarse + fine detail
+    let detailBlend = mix(detailFBM1, detailFBM2, 0.35);
+    let erosion = smoothstep(0.0, 0.8, detailBlend);
+
+    // Multiplicative: density erodes itself more at the edges (where density is low)
+    // At dense cores (density ≈ 1): mix → 1.0, no erosion
+    // At thin edges (density ≈ 0): mix → erosion pattern, creating wispy breakup
+    density *= mix(erosion, 1.0, density);
   }
 
   return max(0.0, density);
@@ -160,10 +185,11 @@ fn lightMarch(pos: vec3f, dither: f32) -> f32 {
   var samplePos = pos;
 
   // Dither the light march start to break up regular banding
-  samplePos += u.sunDirection * LIGHT_STEP_SIZE * dither * 0.5;
+  samplePos += u.sunDirection * LIGHT_STEP_SIZE * dither * 0.3;
 
-  // Use exponentially increasing step sizes to reduce banding
-  var stepSize = LIGHT_STEP_SIZE * 0.5;
+  // Use exponentially increasing step sizes — start fine for near-field
+  // self-shadowing detail, grow slowly to cover the full cloud depth
+  var stepSize = LIGHT_STEP_SIZE * 0.4;
   for (var i = 0; i < MAX_LIGHT_STEPS; i++) {
     samplePos += u.sunDirection * stepSize;
 
@@ -174,10 +200,11 @@ fn lightMarch(pos: vec3f, dither: f32) -> f32 {
     }
 
     opticalDepth += sampleDensity(samplePos) * stepSize;
-    stepSize *= 1.4; // Exponentially increasing steps
+    stepSize *= 1.25; // Slower exponential growth for better sampling distribution
   }
 
-  return exp(-opticalDepth * u.density);
+  // Higher absorption multiplier for light march to deepen self-shadows
+  return exp(-opticalDepth * u.density * 1.5);
 }
 
 // ========== Blue Noise Dither ==========
@@ -342,7 +369,7 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
     let samplePos = camPosEC + rayDir * t;
     let density = sampleDensity(samplePos);
 
-    if (density > 0.001) {
+    if (density > 0.0001) {
       zeroDensityCount = 0u;
 
       // Switch to fine step size
@@ -378,9 +405,19 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
         phaseFactor *= 0.5;
       }
 
-      // Ambient/sky term — height-dependent to brighten cloud tops
+      // ========== Powder / "sugar" effect (HZD-style) ==========
+      // Thin cloud edges facing the sun appear darker due to forward-scattering
+      // energy being spread over less material. This adds visible volume at boundaries.
+      let opticalThickness = density * u.density * stepSize;
+      let powder = 1.0 - exp(-opticalThickness * 2.0);
+      let powderEffect = mix(powder, 1.0, 0.5 * saturate(cosTheta * 0.5 + 0.5));
+      totalScattering *= powderEffect;
+
+      // Ambient/sky term — strongly height-dependent for dark undersides
       let heightFrac = saturate((length(samplePos) - u.earthRadius - u.cloudBase) / u.cloudThickness);
-      let ambient = skyAmbient * 0.18 * (0.4 + 0.6 * heightFrac);
+      // Cloud bottoms get very little ambient; tops get more sky light
+      let ambientHeight = smoothstep(0.0, 0.6, heightFrac);
+      let ambient = skyAmbient * 0.08 * (0.15 + 0.85 * ambientHeight);
 
       let scatterStep = (totalScattering + ambient) * density * stepSize;
       scatteredLight += transmittance * scatterStep;

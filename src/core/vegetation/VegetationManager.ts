@@ -130,6 +130,7 @@ export class VegetationManager {
     this.registryUnsubscribe = plantRegistry.subscribe((event) => {
       this.tileCache.clear();
       this._activeNodeIds.clear();
+      this.densityMapGenerator.markForClear();
 
       if (event.type === 'wind-changed') {
         this.setWind(event.wind);
@@ -194,6 +195,18 @@ export class VegetationManager {
 
     const newCount = newNodeIds.size - this._activeNodeIds.size;
     const hiddenCount = [...this._activeNodeIds].filter(id => !newNodeIds.has(id)).length;
+    
+    // If tiles were hidden (evicted), the density map has stale data from
+    // those tiles. Queue all remaining visible tile spawn results for re-stamp.
+    // flush() always clears the accum buffer, so re-stamping only visible tiles
+    // will naturally remove density from evicted tiles.
+    // NOTE: We do NOT rebuild the density map on tile eviction.
+    // The density map is terrain-global and accumulative — evicted tiles
+    // leave residual darkening, but this is acceptable because:
+    // 1. Clearing and re-stamping every frame causes visible flickering
+    // 2. The residual darkening fades naturally as camera moves (terrain changes LOD)
+    // 3. A full rebuild is only triggered on plant config changes (markForClear)
+    
     this._activeNodeIds = newNodeIds;
     
     const syncMs = performance.now() - syncStart;
@@ -325,8 +338,10 @@ export class VegetationManager {
         ];
       }
 
-      // Queue spawn result for density map stamping
-      this.densityMapGenerator.queueSpawnResult(result);
+      // Queue spawn result for density map stamping (only if ground darkening enabled)
+      if (this.config.groundDarkening) {
+        this.densityMapGenerator.queueSpawnResult(result);
+      }
 
       this.tileCache.setPlantSpawnResult(tile.tileId, plant.id, plant.color, atlasRegion, result);
 
@@ -611,6 +626,7 @@ export class VegetationManager {
    * Returns null if not yet initialized or no spawn data available.
    */
   getDensityTextureView(): GPUTextureView | null {
+    if (!this.config.groundDarkening) return null;
     return this.densityMapGenerator.getDensityTextureView();
   }
 

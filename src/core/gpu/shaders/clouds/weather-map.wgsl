@@ -34,8 +34,30 @@ fn hash1(p: vec2f) -> f32 {
   return fract(sin(dot(p + params.seed, vec2f(127.1, 311.7))) * 43758.5453123);
 }
 
-// ========== Value Noise ==========
+// ========== Tileable Value Noise ==========
+// Wraps integer lattice coordinates to a given period so noise tiles seamlessly.
+// This eliminates visible grid seams when the weather map UV repeats.
 
+fn valueNoiseTileable(p: vec2f, period: f32) -> f32 {
+  let pi = floor(p);
+  let pf = fract(p);
+  let w = pf * pf * (3.0 - 2.0 * pf); // Hermite
+
+  // Wrap integer corners to period so edge values match opposite edge
+  let p00 = vec2f(((pi.x) % period + period) % period, ((pi.y) % period + period) % period);
+  let p10 = vec2f(((pi.x + 1.0) % period + period) % period, ((pi.y) % period + period) % period);
+  let p01 = vec2f(((pi.x) % period + period) % period, ((pi.y + 1.0) % period + period) % period);
+  let p11 = vec2f(((pi.x + 1.0) % period + period) % period, ((pi.y + 1.0) % period + period) % period);
+
+  let a = hash1(p00);
+  let b = hash1(p10);
+  let c = hash1(p01);
+  let d = hash1(p11);
+
+  return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+
+// Non-tileable version for use in octaves where tiling doesn't matter
 fn valueNoise(p: vec2f) -> f32 {
   let pi = floor(p);
   let pf = fract(p);
@@ -49,8 +71,29 @@ fn valueNoise(p: vec2f) -> f32 {
   return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
 }
 
-// ========== FBM ==========
+// ========== Tileable FBM ==========
+// Each octave uses a period that doubles with frequency, ensuring all octaves
+// tile at the same spatial boundary.
 
+fn fbmTileable(p: vec2f, baseFreq: f32, octaves: i32) -> f32 {
+  var sum = 0.0;
+  var freq = 1.0;
+  var amp = 0.5;
+  var total = 0.0;
+  var period = baseFreq; // Base tiling period matches the initial frequency scale
+
+  for (var i = 0; i < octaves; i++) {
+    sum += valueNoiseTileable(p * freq, period) * amp;
+    total += amp;
+    freq *= 2.0;    // Integer multiplier so period stays aligned
+    period *= 2.0;  // Period doubles with frequency
+    amp *= 0.5;
+  }
+
+  return sum / total;
+}
+
+// Non-tileable FBM for fields where seams don't matter (cloud type, precipitation)
 fn fbm(p: vec2f, octaves: i32) -> f32 {
   var sum = 0.0;
   var freq = 1.0;
@@ -61,9 +104,8 @@ fn fbm(p: vec2f, octaves: i32) -> f32 {
   for (var i = 0; i < octaves; i++) {
     sum += valueNoise(pos * freq) * amp;
     total += amp;
-    freq *= 2.1;  // Slightly non-integer for less grid artifacts
+    freq *= 2.1;
     amp *= 0.5;
-    // Rotate octave slightly to break patterns
     let s = sin(0.65);
     let c = cos(0.65);
     pos = vec2f(pos.x * c - pos.y * s, pos.x * s + pos.y * c);
@@ -83,9 +125,9 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
 
   let uv = vec2f(globalId.xy) / f32(size);
 
-  // Coverage: multi-octave FBM, scaled by global coverage control
-  let noise1 = fbm(uv * 4.0, 6);
-  let noise2 = fbm(uv * 2.0 + vec2f(5.2, 1.3), 4);
+  // Coverage: multi-octave tileable FBM for seamless weather map tiling
+  let noise1 = fbmTileable(uv * 4.0, 4.0, 6);
+  let noise2 = fbmTileable(uv * 2.0 + vec2f(5.2, 1.3), 2.0, 4);
 
   // Blend noise sources for natural cloud patterns
   let baseCoverage = noise1 * 0.7 + noise2 * 0.3;
@@ -96,7 +138,9 @@ fn main(@builtin(global_invocation_id) globalId: vec3u) {
   // Bias the noise upward and use the coverage param to control the cutoff
   let biased = baseCoverage * 1.2; // Boost noise range
   let coverageThreshold = (1.0 - params.coverage) * 0.8; // Scale threshold
-  let coverage = saturate((biased - coverageThreshold) / max(0.5, 0.01));
+  // Use a wider transition (0.75) for softer, more graduated cloud edges
+  // instead of sharp cookie-cutter boundaries
+  let coverage = saturate((biased - coverageThreshold) / 0.75);
 
   // Cloud type: separate noise field, blended with global type control
   let typeNoise = fbm(uv * 3.0 + vec2f(17.8, 42.1), 3);

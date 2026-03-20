@@ -89,10 +89,18 @@ export class CloudRayMarcher {
   getConfig(): CloudConfig { return { ...this.config }; }
 
   setConfig(config: Partial<CloudConfig>): void {
+    const seedChanged = config.seed !== undefined && config.seed !== this.config.seed;
     Object.assign(this.config, config);
-    // Regenerate weather map when coverage/type changes
-    if (config.coverage !== undefined || config.cloudType !== undefined) {
-      this.weatherGen.generate(this.config.coverage, this.config.cloudType);
+    // Regenerate weather map when coverage/type/seed changes
+    if (config.coverage !== undefined || config.cloudType !== undefined || seedChanged) {
+      if (seedChanged) {
+        // Force regenerate weather map with new seed
+        this.weatherGen.forceGenerate(this.config.coverage, this.config.cloudType, this.config.seed);
+        // Regenerate 3D noise textures with new seed
+        this.noiseGen.regenerate(this.config.seed);
+      } else {
+        this.weatherGen.generate(this.config.coverage, this.config.cloudType, this.config.seed);
+      }
     }
   }
 

@@ -261,6 +261,8 @@ export interface VegetationConfig {
   spawnSeed: number;
   /** Maximum distance from camera for vegetation shadow casting (meters). Default: 200 */
   shadowCastDistance: number;
+  /** Enable analytical ground darkening under vegetation (density map stamping). Default: false */
+  groundDarkening: boolean;
 }
 
 /**
@@ -274,6 +276,7 @@ export function createDefaultVegetationConfig(): VegetationConfig {
     debugMode: false,
     spawnSeed: 42,
     shadowCastDistance: 200,
+    groundDarkening: false,
   };
 }
 
