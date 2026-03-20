@@ -29,6 +29,13 @@
   margin-bottom: 8px;
 }
 
+.resolutionInfo {
+  font-size: 11px;
+  color: var(--sb-text-muted, #888);
+  padding: 2px 0 4px 0;
+  font-variant-numeric: tabular-nums;
+}
+
 .controlLabel {
   display: block;
   font-size: var(--sb-font-xs);

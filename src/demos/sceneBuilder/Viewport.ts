@@ -148,6 +148,11 @@ export class Viewport {
   private readonly renderHeight: number;
   private readonly dpr: number;
 
+  // Resolution scale (1.0 = native DPR, lower = reduced render resolution)
+  private _resolutionScale: number = 1.0;
+  private _lastLogicalWidth: number = 0;
+  private _lastLogicalHeight: number = 0;
+
   // Transform gizmo
   private transformGizmo: TransformGizmoManager | null = null;
 
@@ -1429,35 +1434,83 @@ export class Viewport {
    * Updates canvas size, WebGL viewport, and all renderers
    */
   resize(width: number, height: number): void {
-    // Update internal dimensions
-    const dpr = this.dpr;
-    const renderWidth = Math.floor(width * dpr);
-    const renderHeight = Math.floor(height * dpr);
+    // Store logical dimensions for resolution scale changes
+    this._lastLogicalWidth = width;
+    this._lastLogicalHeight = height;
 
-    // Update canvas
+    // Compute effective DPR from resolution scale
+    const effectiveDpr = this.dpr * this._resolutionScale;
+    const renderWidth = Math.floor(width * effectiveDpr);
+    const renderHeight = Math.floor(height * effectiveDpr);
+
+    // Update canvas backing store to render resolution
     this.canvas.width = renderWidth;
     this.canvas.height = renderHeight;
+    // CSS size stays at logical pixels (the browser scales the canvas to fit)
     this.canvas.style.width = width + 'px';
     this.canvas.style.height = height + 'px';
 
     // Update camera projection by rebuilding it with new aspect ratio
+    // (aspect ratio is the same regardless of resolution scale)
     if (this.cameraController) {
       const camera = this.cameraController.getCamera();
-      // Update projection matrix with new dimensions
       camera.setAspectRatio(width, height);
     }
 
-    // Update gizmo canvas size
+    // Update gizmo canvas size (always logical pixels for input)
     if (this.transformGizmo) {
       this.transformGizmo.setCanvasSize(width, height);
     }
 
-    // Update WebGPU pipeline
+    // Update WebGPU pipeline render targets
     if (this.gpuPipeline) {
       this.gpuPipeline.resize(renderWidth, renderHeight);
     }
 
-    console.log(`[Viewport] Resized to ${width}x${height} (render: ${renderWidth}x${renderHeight})`);
+    console.log(`[Viewport] Resized to ${width}x${height} (render: ${renderWidth}x${renderHeight}, scale: ${this._resolutionScale.toFixed(2)}, effectiveDPR: ${effectiveDpr.toFixed(2)})`);
+  }
+
+  /**
+   * Set the resolution scale factor.
+   * 1.0 = native DPR (full Retina on Mac), lower values reduce render resolution.
+   * The canvas CSS size (and thus input coordinates) remain unchanged.
+   * @param scale - Scale factor from 0 to 1 (e.g., 0.5 = half native DPR)
+   */
+  setResolutionScale(scale: number): void {
+    const clamped = Math.max(0.25, Math.min(1.0, scale));
+    if (clamped === this._resolutionScale) return;
+
+    this._resolutionScale = clamped;
+
+    // Re-trigger resize with last known logical dimensions
+    if (this._lastLogicalWidth > 0 && this._lastLogicalHeight > 0) {
+      this.resize(this._lastLogicalWidth, this._lastLogicalHeight);
+    }
+  }
+
+  /**
+   * Get the current resolution scale factor.
+   */
+  getResolutionScale(): number {
+    return this._resolutionScale;
+  }
+
+  /**
+   * Get the native device pixel ratio.
+   */
+  getDevicePixelRatio(): number {
+    return this.dpr;
+  }
+
+  /**
+   * Get the current render resolution [width, height].
+   */
+  getRenderResolution(): [number, number] {
+    const effectiveDpr = this.dpr * this._resolutionScale;
+    return [
+      Math.floor(this._lastLogicalWidth * effectiveDpr),
+      Math.floor(this._lastLogicalHeight * effectiveDpr),
+    ];
   }
 }
 

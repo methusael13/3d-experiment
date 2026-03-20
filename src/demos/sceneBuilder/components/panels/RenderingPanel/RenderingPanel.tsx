@@ -75,7 +75,18 @@ export interface GodRaySettings {
   density: number;
 }
 
+/**
+ * Resolution scale preset value type
+ */
+export type ResolutionScalePreset = '1.0' | '0.75' | '0.5' | '0.25';
+
 export interface RenderingPanelProps {
+  // Resolution scale
+  resolutionScale: ResolutionScalePreset;
+  onResolutionScaleChange: (scale: ResolutionScalePreset) => void;
+  /** Display string showing effective render resolution, e.g. "2400 × 1600" */
+  renderResolutionLabel?: string;
+
   // Shadow settings
   shadowSettings: WebGPUShadowSettings;
   onShadowSettingsChange: (settings: Partial<WebGPUShadowSettings>) => void;
@@ -158,7 +169,17 @@ const fogModeOptions = [
   { value: 'exp2', label: 'Exp² (Sharp Wall)' },
 ];
 
+const resolutionScaleOptions = [
+  { value: '1.0', label: 'Native (Full DPR)' },
+  { value: '0.75', label: 'High (75%)' },
+  { value: '0.5', label: 'Medium (50%)' },
+  { value: '0.25', label: 'Low (25%)' },
+];
+
 export function RenderingPanel({
+  resolutionScale,
+  onResolutionScaleChange,
+  renderResolutionLabel,
   shadowSettings,
   showShadowThumbnail,
   onShadowDebugToggle,
@@ -327,6 +348,21 @@ export function RenderingPanel({
 
   return (
     <Panel title="Rendering">
+      {/* Resolution Scale */}
+      <Section title="Resolution" defaultCollapsed={false}>
+        <div class={styles.controlGroup}>
+          <label class={styles.controlLabel}>Render Scale</label>
+          <Select
+            value={resolutionScale}
+            options={resolutionScaleOptions}
+            onChange={(v) => onResolutionScaleChange(v as ResolutionScalePreset)}
+          />
+        </div>
+        {renderResolutionLabel && (
+          <div class={styles.resolutionInfo}>{renderResolutionLabel}</div>
+        )}
+      </Section>
+
       {/* Shadows Section */}
       <Section title="Shadows (WebGPU)" defaultCollapsed={false}>
         <Checkbox

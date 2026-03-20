@@ -2,9 +2,9 @@
  * RenderingPanelBridge - Connects RenderingPanel Preact component to the store
  */
 
-import { useState, useCallback } from 'preact/hooks';
+import { useState, useCallback, useMemo } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
-import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings, type SSRSettings, type AtmosphericFogSettings, type CloudSettings, type GodRaySettings, type DebugViewMode } from '../panels';
+import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings, type SSRSettings, type AtmosphericFogSettings, type CloudSettings, type GodRaySettings, type DebugViewMode, type ResolutionScalePreset } from '../panels';
 import type { CompositeEffectConfig, AtmosphericFogConfig } from '@/core/gpu/postprocess';
 import type { SSRQualityLevel } from '@/core/gpu/pipeline/SSRConfig';
 
@@ -241,8 +241,33 @@ export function ConnectedRenderingPanel({
     });
   }, [store]);
   
+  // Resolution scale state
+  const [resolutionScale, setResolutionScale] = useState<ResolutionScalePreset>('1.0');
+  
+  const handleResolutionScaleChange = useCallback((scale: ResolutionScalePreset) => {
+    setResolutionScale(scale);
+    const viewport = store.viewport;
+    if (viewport) {
+      viewport.setResolutionScale(parseFloat(scale));
+    }
+  }, [store]);
+  
+  // Compute effective render resolution label
+  const renderResolutionLabel = useMemo(() => {
+    const viewport = store.viewport;
+    if (!viewport) return undefined;
+    const dpr = viewport.getDevicePixelRatio();
+    const [w, h] = viewport.getRenderResolution();
+    const scaleNum = parseFloat(resolutionScale);
+    const effectiveDpr = (dpr * scaleNum).toFixed(2);
+    return `${w} × ${h} px (DPR ${effectiveDpr})`;
+  }, [store, resolutionScale]);
+  
   return (
     <RenderingPanel
+      resolutionScale={resolutionScale}
+      onResolutionScaleChange={handleResolutionScaleChange}
+      renderResolutionLabel={renderResolutionLabel}
       shadowSettings={shadowSettings}
       showShadowThumbnail={showShadowThumbnail}
       onShadowDebugToggle={handleShadowDebugToggle}
