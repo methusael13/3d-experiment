@@ -18,6 +18,7 @@ import { loadGLB } from '../../loaders/GLBLoader';
 import type { GLBModel, GLBMesh } from '../../loaders/types';
 
 import { VegetationSpawner, type SpawnRequest } from './VegetationSpawner';
+import { VegetationDensityMapGenerator } from './VegetationDensityMapGenerator';
 import { loadCompositeAtlasTexture, clearCompositeCache } from './AtlasTextureCompositor';
 import { VegetationRenderer, type VegetationTileData } from './VegetationRenderer';
 import { VegetationTileCache } from './VegetationTileCache';
@@ -45,6 +46,7 @@ export class VegetationManager {
   private spawner: VegetationSpawner;
   private renderer: VegetationRenderer;
   private tileCache: VegetationTileCache;
+  private densityMapGenerator: VegetationDensityMapGenerator;
 
   // External references (owned by TerrainManager)
   private plantRegistry: PlantRegistry | null = null;
@@ -84,6 +86,7 @@ export class VegetationManager {
     this.spawner = new VegetationSpawner(ctx);
     this.renderer = new VegetationRenderer(ctx);
     this.tileCache = new VegetationTileCache();
+    this.densityMapGenerator = new VegetationDensityMapGenerator(ctx);
     this.config = createDefaultVegetationConfig();
     this.wind = createDefaultWindParams();
   }
@@ -93,6 +96,7 @@ export class VegetationManager {
   initialize(): void {
     if (this.initialized) return;
     this.renderer.initialize(this.ctx.depthFormat, this.ctx.hdrFormat);
+    this.densityMapGenerator.initialize();
     this.initialized = true;
     console.log('[VegetationManager] Initialized');
   }
@@ -115,6 +119,9 @@ export class VegetationManager {
     this.heightScale = heightScale;
     this.maxLodLevels = maxLodLevels;
     this.enabled = true;
+
+    // Configure density map generator with terrain size
+    this.densityMapGenerator.setTerrainSize(terrainSize);
 
     // Unsubscribe from previous registry
     this.registryUnsubscribe?.();
@@ -247,6 +254,8 @@ export class VegetationManager {
     const spawnMs = performance.now() - spawnStart;
     if (pendingTiles.length > 0) {
       console.log(`[VegSpawn] Spawned ${pendingTiles.length} tiles in ${spawnMs.toFixed(1)}ms (synchronous, no mapAsync)`);
+      // Flush queued density stamps to update the density texture
+      this.densityMapGenerator.flush();
     }
   }
 
@@ -315,6 +324,9 @@ export class VegetationManager {
           region.width / atlasW, region.height / atlasH,
         ];
       }
+
+      // Queue spawn result for density map stamping
+      this.densityMapGenerator.queueSpawnResult(result);
 
       this.tileCache.setPlantSpawnResult(tile.tileId, plant.id, plant.color, atlasRegion, result);
 
@@ -594,6 +606,14 @@ export class VegetationManager {
     return this.renderer;
   }
 
+  /**
+   * Get the vegetation density map texture view for terrain ground darkening.
+   * Returns null if not yet initialized or no spawn data available.
+   */
+  getDensityTextureView(): GPUTextureView | null {
+    return this.densityMapGenerator.getDensityTextureView();
+  }
+
   // ==================== Rendering ====================
 
   /**
@@ -789,6 +809,7 @@ export class VegetationManager {
     this.spawner.destroy();
     this.renderer.destroy();
     this.tileCache.destroy();
+    this.densityMapGenerator.destroy();
 
     for (const tex of this.textureCache.values()) tex.destroy();
     this.textureCache.clear();

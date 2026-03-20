@@ -46,6 +46,7 @@ export { VegetationManager } from './VegetationManager';
 
 // Generators
 export { BiomeMaskGenerator } from './BiomeMaskGenerator';
+export { VegetationDensityMapGenerator } from './VegetationDensityMapGenerator';
 
 // Spawner
 export { VegetationSpawner } from './VegetationSpawner';

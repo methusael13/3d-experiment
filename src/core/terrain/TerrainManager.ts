@@ -690,6 +690,7 @@ export class TerrainManager {
       heightmapTexture: this.heightmap || undefined,
       normalMapTexture: this.normalMap || undefined,
       biomeMaskTexture: this.biomeMask || undefined,
+      vegetationDensityView: this.vegetationManager?.getDensityTextureView() ?? null,
       island: {
         enabled: islandConfig.enabled,
         seaFloorDepth: islandConfig.seaFloorDepth,

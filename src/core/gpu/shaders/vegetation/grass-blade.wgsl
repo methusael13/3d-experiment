@@ -514,11 +514,32 @@ fn fragmentMain(
   @builtin(front_facing) isFrontFace: bool,
 ) -> FragmentOutput {
   var fragOutput: FragmentOutput;
-  // ---- Self-shadow (concentrated at base) ----
-  let selfShadow = mix(0.2, 1.0, pow(input.bladeT, 2.0));
-  
+  // ---- Analytical inter-blade shadow (light-direction-aware) ----
+  // Models the collective occlusion between densely packed grass blades.
+  // When the sun is low (grazing), shadows extend higher up the blade;
+  // when overhead, only the very base is occluded by the canopy above.
+  let lightDir_ib = normalize(uniforms.sunDirection);
+  let lightElevation = max(dot(lightDir_ib, vec3f(0.0, 1.0, 0.0)), 0.0);
+  let lightGrazeFactor = 1.0 - lightElevation;
+
+  // Shadow depth: how far up the blade does inter-blade occlusion reach
+  // Low sun → shadow extends to ~85% of blade height; overhead → only ~25%
+  let shadowDepth = mix(0.25, 0.85, lightGrazeFactor);
+
+  // Smooth occlusion ramp from base (dark) to shadowDepth (fully lit)
+  let analyticalShadow = smoothstep(0.0, shadowDepth, input.bladeT);
+
+  // Directional bias: blades facing away from the sun receive more
+  // occlusion because neighboring blades in front block the light.
+  // Reconstruct blade facing from instance data (passed via vertex color variation seed)
+  let bladeFacingLight = max(dot(normalize(input.normal.xz), -lightDir_ib.xz), 0.0);
+  let facingPenalty = mix(1.0, 0.65, (1.0 - bladeFacingLight) * lightGrazeFactor);
+
+  // Combine: minimum ambient at base, full light above shadowDepth
+  let interBladeShadow = mix(0.12, 1.0, analyticalShadow) * facingPenalty;
+
   // ---- Base color in linear space ----
-  let baseColor = input.color * selfShadow;
+  let baseColor = input.color * interBladeShadow;
   
   // ---- Perlin noise color variation ----
   let noiseVal = perlinNoise2D(0.25 * input.worldPos.xz);

@@ -242,6 +242,10 @@ export class Viewport {
     this.renderWidth = Math.floor(this.logicalWidth * this.dpr);
     this.renderHeight = Math.floor(this.logicalHeight * this.dpr);
 
+    // Seed last-known logical size so setResolutionScale works before the first ResizeObserver fires
+    this._lastLogicalWidth = this.logicalWidth;
+    this._lastLogicalHeight = this.logicalHeight;
+
     // Create InputManager for event routing
     this.inputManager = new InputManager(this.canvas);
 

@@ -137,6 +137,8 @@ export interface CDLODRenderParams {
   island?: IslandRenderParams;
   /** Scene environment for IBL (optional - provides ambient lighting from sky) */
   sceneEnvironment?: SceneEnvironment | null;
+  /** Vegetation density map texture view (r8unorm, from VegetationDensityMapGenerator) */
+  vegetationDensityView?: GPUTextureView | null;
 }
 
 /**
@@ -636,6 +638,7 @@ export class CDLODRendererGPU {
       .comparisonSampler(6, 'fragment')            // Shadow comparison sampler
       .texture(7, 'all', 'unfilterable-float')     // Island mask (r32float, sampled in vertex + fragment for beach)
       .texture(8, 'fragment', 'float')             // Biome mask (rgba8, R=grass, G=rock, B=forest weights)
+      .texture(9, 'fragment', 'float')             // Vegetation density map (r8unorm, from VegetationDensityMapGenerator)
       .build(this.ctx);
     
     // Get terrain-specific minimal environment layout from SceneEnvironment
@@ -740,7 +743,8 @@ export class CDLODRendererGPU {
     normalMapTexture?: UnifiedGPUTexture,
     shadowMapTexture?: UnifiedGPUTexture | null,
     islandMaskTexture?: UnifiedGPUTexture | null,
-    biomeMaskView?: GPUTextureView | null
+    biomeMaskView?: GPUTextureView | null,
+    vegetationDensityView?: GPUTextureView | null,
   ): void {
     if (!this.bindGroupLayout || !this.uniformBuffer || !this.materialBuffer || 
         !this.linearSampler || !this.shadowSampler || !this.placeholders) {
@@ -752,6 +756,8 @@ export class CDLODRendererGPU {
     const shadowMap = shadowMapTexture || this.defaultShadowMap!;
     const islandMask = islandMaskTexture || this.defaultIslandMask!;
     const biomeMask = biomeMaskView || this.placeholders.biomeMaskView;
+    // Vegetation density: use provided view or fall back to 1x1 black (no darkening)
+    const vegDensity = vegetationDensityView || this.placeholders.blackView;
     
     this.bindGroup = new BindGroupBuilder('cdlod-bind-group')
       .buffer(0, this.uniformBuffer)
@@ -763,6 +769,7 @@ export class CDLODRendererGPU {
       .sampler(6, this.shadowSampler)
       .texture(7, islandMask)
       .texture(8, biomeMask)
+      .texture(9, vegDensity)
       .build(this.ctx, this.bindGroupLayout);
   }
   
@@ -808,13 +815,14 @@ export class CDLODRendererGPU {
     this.updateUniformBuffer(params);
     this.updateMaterialBuffer(params);
     
-    // Update bind group with shadow map and island mask
+    // Update bind group with shadow map, island mask, and vegetation density
     this.updateBindGroup(
       params.heightmapTexture, 
       params.normalMapTexture,
       params.shadow?.shadowMap,
       params.island?.maskTexture,
-      params.biomeMaskTexture?.view
+      params.biomeMaskTexture?.view,
+      params.vegetationDensityView,
     );
     
     if (!this.bindGroup) {

@@ -77,6 +77,7 @@ struct Material {
 @group(0) @binding(6) var shadowSampler: sampler_comparison;
 @group(0) @binding(7) var islandMask: texture_2d<f32>;
 @group(0) @binding(8) var biomeMask: texture_2d<f32>;  // Biome weights: R=grass, G=rock, B=forest
+@group(0) @binding(9) var vegetationDensityMap: texture_2d<f32>;  // Vegetation density: R = 0-1 (from VegetationDensityMapGenerator)
 
 // ============================================================================
 // Biome Texture Bindings (Group 1) - Texture Arrays
@@ -1467,6 +1468,21 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
   let multiLight = computeTerrainMultiLight(input.worldPosition, normal) * albedo;
 
   var finalColor = aoAmbientColor + albedo * diffuse + multiLight;
+  
+  // ===== Vegetation Density Ground Darkening =====
+  // Sample the vegetation density map to analytically darken terrain under vegetation.
+  // This creates a smooth transition between grass blades and the ground surface,
+  // simulating the occlusion from the grass canopy above.
+  let vegDensity = textureSample(vegetationDensityMap, texSampler, input.texCoord).r;
+  if (vegDensity > 0.001) {
+    // Light-direction-aware darkening: overhead sun → less ground shadow,
+    // low-angle sun → deeper shadow under vegetation canopy
+    let sunElevation = max(dot(lightDir, vec3f(0.0, 1.0, 0.0)), 0.0);
+    // darkening ranges from 0.4 (heavy canopy, low sun) to 1.0 (no darkening)
+    let darkeningAmount = mix(0.4, 0.7, sunElevation);
+    let vegShadow = mix(1.0, darkeningAmount, vegDensity * vegDensity);
+    finalColor *= vegShadow;
+  }
   
   // ===== Bounds Overlay (terrain-conforming layer bounds visualization) =====
   // Rendered as a semi-transparent cyan tint on the terrain surface
