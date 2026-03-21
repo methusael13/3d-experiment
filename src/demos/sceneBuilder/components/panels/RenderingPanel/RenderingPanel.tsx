@@ -5,6 +5,7 @@ import type { SSAOEffectConfig, CompositeEffectConfig, AtmosphericFogConfig } fr
 import type { SSRQualityLevel } from '@/core/gpu/pipeline/SSRConfig';
 import type { DebugViewMode } from '@/core/gpu/pipeline/passes/DebugViewPass';
 import type { CloudConfig } from '@/core/gpu/clouds/types';
+import { WEATHER_PRESET_NAMES } from '@/core/gpu/clouds/WeatherPresets';
 
 // Import CSS variables
 import '../../styles/variables.css';
@@ -110,6 +111,10 @@ export interface RenderingPanelProps {
   showCloudShadowDebug: boolean;
   onCloudShadowDebugToggle: (enabled: boolean) => void;
 
+  // Weather preset (Phase 5)
+  weatherPreset: string | null;
+  onWeatherPresetChange: (preset: string) => void;
+
   // God ray settings
   godRaySettings: GodRaySettings;
   onGodRaySettingsChange: (settings: Partial<GodRaySettings>) => void;
@@ -197,6 +202,8 @@ export function RenderingPanel({
   onCloudSettingsChange,
   showCloudShadowDebug,
   onCloudShadowDebugToggle,
+  weatherPreset,
+  onWeatherPresetChange,
   godRaySettings,
   onGodRaySettingsChange,
   debugViewMode,
@@ -776,6 +783,22 @@ export function RenderingPanel({
         />
 
         <div class={`${styles.shadowControls} ${!cloudSettings.enabled ? styles.disabled : ''}`}>
+          {/* Weather Preset Dropdown (Phase 5) */}
+          <div class={styles.controlGroup}>
+            <label class={styles.controlLabel}>Weather Preset</label>
+            <Select
+              value={weatherPreset ?? 'Custom'}
+              options={[
+                ...WEATHER_PRESET_NAMES.map(name => ({ value: name, label: name })),
+                { value: 'Custom', label: '— Custom —' },
+              ]}
+              onChange={(v) => {
+                if (v !== 'Custom') onWeatherPresetChange(v);
+              }}
+              disabled={!cloudSettings.enabled}
+            />
+          </div>
+
           <Slider
             label="Coverage"
             value={cloudSettings.coverage}

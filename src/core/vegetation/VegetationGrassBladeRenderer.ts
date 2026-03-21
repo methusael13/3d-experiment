@@ -46,8 +46,9 @@ export type GrassLightParams = VegetationLightParams;
 
 // ==================== VegetationGrassBladeRenderer ====================
 
-/** Bitmask for grass environment bindings: CSM shadow + multi-light + spot shadow */
-const GRASS_CSM_MASK = ENV_BINDING_MASK.CSM_SHADOW | ENV_BINDING_MASK.MULTI_LIGHT | ENV_BINDING_MASK.SPOT_SHADOW;
+/** Bitmask for grass environment bindings: CSM shadow + multi-light + spot shadow + cloud shadow */
+const GRASS_CSM_MASK = ENV_BINDING_MASK.CSM_SHADOW | ENV_BINDING_MASK.MULTI_LIGHT | ENV_BINDING_MASK.SPOT_SHADOW
+  | ENV_BINDING_MASK.CLOUD_SHADOW | ENV_BINDING_MASK.IBL_CUBE_SAMPLER;
 
 export class VegetationGrassBladeRenderer {
   private ctx: GPUContext;

@@ -84,6 +84,24 @@ struct CSMUniforms {
 @group(1) @binding(13) var env_spotShadowAtlas: texture_depth_2d_array;
 @group(1) @binding(14) var env_spotShadowSampler: sampler_comparison;
 
+// Cloud shadow map (bindings 5, 17-18) — filtering sampler reused from IBL cube sampler slot
+@group(1) @binding(5) var env_cubeSampler: sampler;
+@group(1) @binding(17) var env_cloudShadowMap: texture_2d<f32>;
+@group(1) @binding(18) var<uniform> env_cloudShadowUniforms: CloudShadowSceneUniforms;
+
+struct CloudShadowSceneUniforms {
+  shadowCenter: vec2f,
+  shadowRadius: f32,
+  averageCoverage: f32,
+}
+
+fn sampleCloudShadowGrass(worldPos: vec3f) -> f32 {
+  let offset = vec2f(worldPos.x, worldPos.z) - env_cloudShadowUniforms.shadowCenter;
+  let uv = offset / (env_cloudShadowUniforms.shadowRadius * 2.0) + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { return 1.0; }
+  return textureSampleLevel(env_cloudShadowMap, env_cubeSampler, uv, 0.0).r;
+}
+
 // ==================== Multi-Light Data Structures ====================
 
 struct GrassPointLightData {
@@ -570,8 +588,12 @@ fn fragmentMain(
   let hemisphereBlend = normal.y * 0.5 + 0.5;
   let ambientColor = mix(uniforms.groundColor, uniforms.skyColor, hemisphereBlend);
   
+  // Cloud shadow (multiply CSM shadow with cloud transmittance)
+  let cloudShadow = sampleCloudShadowGrass(input.worldPos);
+  let combinedShadow = shadowFactor * cloudShadow;
+
   // Direct sun/moon light with shadow
-  let diffuseColor = uniforms.sunColor * NdotL * shadowFactor;
+  let diffuseColor = uniforms.sunColor * NdotL * combinedShadow;
   
   // Combine ambient + shadowed direct
   let lighting = ambientColor + diffuseColor;
@@ -585,7 +607,7 @@ fn fragmentMain(
   
   // Subsurface scattering (also attenuated by shadow)
   let viewDir = normalize(uniforms.cameraPosition - input.worldPos);
-  let sss = max(dot(-viewDir, lightDir), 0.0) * 0.2 * input.bladeT * uniforms.sunIntensityFactor * shadowFactor;
+  let sss = max(dot(-viewDir, lightDir), 0.0) * 0.2 * input.bladeT * uniforms.sunIntensityFactor * combinedShadow;
   
   let finalColor = modulatedColor * (lighting + sss) + modulatedColor * multiLight;
   

@@ -209,6 +209,9 @@ export function ConnectedRenderingPanel({
     seed: 42,
   });
   
+  // Weather preset state (Phase 5) — before cloud handlers so they can reference it
+  const [weatherPreset, setWeatherPreset] = useState<string | null>('Partly Cloudy');
+
   // Cloud shadow debug
   const [showCloudShadowDebug, setShowCloudShadowDebug] = useState(false);
   
@@ -229,6 +232,24 @@ export function ConnectedRenderingPanel({
       }
       return updated;
     });
+    // When user manually changes cloud sliders, switch to Custom mode:
+    // clear the active weather preset so the WeatherStateManager stops
+    // overriding cloud params, and reset weatherDimming to 1.0 (neutral).
+    if (weatherPreset !== null) {
+      setWeatherPreset(null);
+      const viewport = store.viewport;
+      if (viewport) {
+        viewport.clearWeatherPreset();
+      }
+    }
+  }, [store, weatherPreset]);
+  
+  const handleWeatherPresetChange = useCallback((preset: string) => {
+    setWeatherPreset(preset);
+    const viewport = store.viewport;
+    if (viewport) {
+      viewport.setWeatherPreset(preset);
+    }
   }, [store]);
   
   // God ray state
@@ -294,6 +315,8 @@ export function ConnectedRenderingPanel({
       onCloudSettingsChange={handleCloudSettingsChange}
       showCloudShadowDebug={showCloudShadowDebug}
       onCloudShadowDebugToggle={handleCloudShadowDebugToggle}
+      weatherPreset={weatherPreset}
+      onWeatherPresetChange={handleWeatherPresetChange}
       godRaySettings={godRaySettings}
       onGodRaySettingsChange={handleGodRaySettingsChange}
       debugViewMode={debugViewMode}

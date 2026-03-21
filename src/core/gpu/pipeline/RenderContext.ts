@@ -49,6 +49,7 @@ export interface RenderContext {
   readonly viewProjectionMatrix: Float32Array;
   readonly inverseProjectionMatrix: Float32Array;
   readonly inverseViewMatrix: Float32Array;
+  readonly inverseViewProjectionMatrix: Float32Array;
   readonly cameraPosition: [number, number, number];
   readonly cameraForward: [number, number, number];
   

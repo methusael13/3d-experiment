@@ -29,6 +29,14 @@ export class LightComponent extends Component {
   elevation?: number;
   ambientIntensity?: number;
 
+  /**
+   * Weather dimming factor (input, set by CloudManager).
+   * Range 0–1: 1.0 = no dimming (clear sky), 0.01 = heavy rain/storm.
+   * Applied by LightingSystem to effectiveColor and ambient, stacking
+   * with the existing day/night sunIntensityFactor.
+   */
+  weatherDimming: number = 1.0;
+
   // Point/Spot-specific
   range?: number;
 
@@ -82,6 +90,7 @@ export class LightComponent extends Component {
       innerConeAngle: this.innerConeAngle,
       outerConeAngle: this.outerConeAngle,
       shadowMapResolution: this.shadowMapResolution,
+      weatherDimming: this.weatherDimming,
     };
   }
 
@@ -105,6 +114,8 @@ export class LightComponent extends Component {
       this.outerConeAngle = data.outerConeAngle as number;
     if (data.shadowMapResolution !== undefined)
       this.shadowMapResolution = data.shadowMapResolution as number;
+    if (data.weatherDimming !== undefined)
+      this.weatherDimming = data.weatherDimming as number;
   }
 
   clone(): LightComponent {

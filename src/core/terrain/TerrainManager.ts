@@ -39,6 +39,7 @@ import { QuadtreeConfig } from './TerrainQuadtree';
 import { BiomeType, TextureType } from './TerrainBiomeTextureResources';
 import { ShadowRendererGPU } from '../gpu/renderers';
 import { World } from '../ecs/World';
+import { LightComponent } from '../ecs/components';
 
 /**
  * Terrain generation configuration
@@ -177,6 +178,9 @@ export class TerrainManager {
   private islandMask: UnifiedGPUTexture | null = null;
   private flowMap: UnifiedGPUTexture | null = null;
   private biomeMask: UnifiedGPUTexture | null = null;
+  
+  // ECS World reference (for reading LightComponent)
+  private _world: World | null = null;
   
   // State
   private isInitialized = false;
@@ -718,14 +722,17 @@ export class TerrainManager {
         camPosArr
       );
       if (needsRender) {
-        // Update vegetation lighting from scene light params
-        const ld = params.lightDirection || [0.5, 1, 0.5];
-        const lc = params.lightColor || [1, 1, 1];
-        this.vegetationManager.updateLightFromScene(
-          [ld[0], ld[1], ld[2]],
-          [lc[0], lc[1], lc[2]],
-          params.ambientIntensity ?? 1.0,
-        );
+        // Update vegetation lighting from ECS LightComponent (includes weatherDimming).
+        // Falls back to legacy updateLightFromScene if no World/LightComponent available.
+        if (this._world) {
+          const sunEntity = this._world.queryFirst('light');
+          if (sunEntity) {
+            const lightComp = sunEntity.getComponent<LightComponent>('light');
+            if (lightComp && lightComp.lightType === 'directional' && lightComp.enabled) {
+              this.vegetationManager.updateLightFromLightComponent(lightComp);
+            }
+          }
+        }
         this.vegetationManager.setSceneEnvironment(params.sceneEnvironment ?? null);
         drawCalls += this.vegetationManager.render(passEncoder, vpMatrix, camPosArr);
       }
@@ -1186,6 +1193,7 @@ export class TerrainManager {
    * Must be called once when the World is available (e.g., from Viewport or pipeline init).
    */
   setWorld(world: World): void {
+    this._world = world;
     this.vegetationManager?.setWorld(world);
   }
 

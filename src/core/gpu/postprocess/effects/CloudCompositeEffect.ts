@@ -16,8 +16,8 @@
 import { BaseEffect, type EffectContext, type StandardInput } from '../PostProcessPipeline';
 import compositeShader from '../shaders/cloud-composite.wgsl?raw';
 
-// Uniform size: { near: f32, far: f32, cloudTexWidth: f32, cloudTexHeight: f32 } = 16 bytes
-const UNIFORM_SIZE = 16;
+// Uniform size: mat4x4f (64) + { near, far, cloudTexWidth, cloudTexHeight, cirrusOpacity, cirrusWindX, cirrusWindY, pad } (32) = 96 bytes
+const UNIFORM_SIZE = 96;
 
 export class CloudCompositeEffect extends BaseEffect {
   readonly name = 'cloudComposite';
@@ -36,6 +36,14 @@ export class CloudCompositeEffect extends BaseEffect {
   private _cloudTexWidth = 0;
   private _cloudTexHeight = 0;
 
+  // Cirrus params (Phase 5)
+  private _cirrusOpacity = 0;
+  private _cirrusWindOffsetX = 0;
+  private _cirrusWindOffsetY = 0;
+
+  // Inverse view-projection matrix for world-space cirrus projection
+  private _inverseViewProj: Float32Array = new Float32Array(16);
+
   constructor() {
     super();
   }
@@ -51,6 +59,26 @@ export class CloudCompositeEffect extends BaseEffect {
     this._cloudTextureView = view;
     if (width !== undefined) this._cloudTexWidth = width;
     if (height !== undefined) this._cloudTexHeight = height;
+  }
+
+  /**
+   * Set cirrus layer parameters (Phase 5).
+   * @param opacity 0 = no cirrus, 1 = dense cirrus
+   * @param windOffsetX Wind-driven UV offset X (accumulated over time)
+   * @param windOffsetY Wind-driven UV offset Y
+   */
+  setCirrusParams(opacity: number, windOffsetX: number, windOffsetY: number): void {
+    this._cirrusOpacity = opacity;
+    this._cirrusWindOffsetX = windOffsetX;
+    this._cirrusWindOffsetY = windOffsetY;
+  }
+
+  /**
+   * Set the inverse view-projection matrix for world-space cirrus projection.
+   * Called each frame by the pipeline before execute.
+   */
+  setInverseViewProj(matrix: Float32Array): void {
+    this._inverseViewProj.set(matrix);
   }
 
   // ========== Lifecycle ==========
@@ -74,13 +102,26 @@ export class CloudCompositeEffect extends BaseEffect {
     const colorTexture = ctx.getTexture('color');
     const depthTexture = ctx.getTexture('depth');
 
-    // Upload uniforms (near, far, cloudTexWidth, cloudTexHeight)
-    const data = new Float32Array(4);
-    data[0] = uniforms.near;
-    data[1] = uniforms.far;
-    data[2] = this._cloudTexWidth;
-    data[3] = this._cloudTexHeight;
-    this.ctx.device.queue.writeBuffer(this.uniformBuffer, 0, data);
+    // Upload uniforms: mat4x4f inverseViewProj (64 bytes) + scalars (32 bytes) = 96 bytes
+    // Write mat4 at offset 0
+    this.ctx.device.queue.writeBuffer(
+      this.uniformBuffer,
+      0,
+      this._inverseViewProj.buffer,
+      this._inverseViewProj.byteOffset,
+      this._inverseViewProj.byteLength
+    );
+    // Write scalars at offset 64
+    const scalars = new Float32Array(8);
+    scalars[0] = uniforms.near;
+    scalars[1] = uniforms.far;
+    scalars[2] = this._cloudTexWidth;
+    scalars[3] = this._cloudTexHeight;
+    scalars[4] = this._cirrusOpacity;
+    scalars[5] = this._cirrusWindOffsetX;
+    scalars[6] = this._cirrusWindOffsetY;
+    scalars[7] = 0; // _pad
+    this.ctx.device.queue.writeBuffer(this.uniformBuffer, 64, scalars);
 
     // Copy scene color to temp buffer (scene-color-hdr has copySrc usage)
     const tempBuffer = ctx.acquireBuffer('rgba16float', 'cloud-composite-input');

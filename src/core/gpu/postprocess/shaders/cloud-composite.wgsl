@@ -12,10 +12,15 @@
  */
 
 struct CompositeUniforms {
-  near: f32,
-  far: f32,
-  cloudTexWidth: f32,   // Half-res cloud texture width
-  cloudTexHeight: f32,  // Half-res cloud texture height
+  inverseViewProj: mat4x4f,  // [0..63]  For reconstructing world-space view direction (cirrus)
+  near: f32,                  // [64]
+  far: f32,                   // [68]
+  cloudTexWidth: f32,         // [72]
+  cloudTexHeight: f32,        // [76]
+  cirrusOpacity: f32,         // [80]
+  cirrusWindOffsetX: f32,     // [84]
+  cirrusWindOffsetY: f32,     // [88]
+  _pad: f32,                  // [92]
 }
 
 @group(0) @binding(0) var sceneColor: texture_2d<f32>;
@@ -108,6 +113,44 @@ fn bilateralUpscale(uv: vec2f, centerDepth: f32) -> vec4f {
   return totalColor / max(totalWeight, 0.0001);
 }
 
+// ========== Procedural Cirrus Noise (Phase 5) ==========
+// Inline hash-based noise for thin, streaky cirrus clouds at high altitude.
+// No separate texture needed — ~0.05ms cost (single texture-free FBM per sky pixel).
+
+fn hash2(p: vec2f) -> f32 {
+  var p3 = fract(vec3f(p.x, p.y, p.x) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+fn valueNoise(p: vec2f) -> f32 {
+  let i = floor(p);
+  let f = fract(p);
+  // Smooth interpolation (Hermite)
+  let u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(hash2(i + vec2f(0.0, 0.0)), hash2(i + vec2f(1.0, 0.0)), u.x),
+    mix(hash2(i + vec2f(0.0, 1.0)), hash2(i + vec2f(1.0, 1.0)), u.x),
+    u.y
+  );
+}
+
+/// Cirrus FBM: 4 octaves of value noise producing thin, stretched wisps.
+/// UV is stretched 3× in X to create the characteristic elongated cirrus streaks.
+fn cirrusFBM(uv: vec2f) -> f32 {
+  let stretchedUV = vec2f(uv.x * 3.0, uv.y); // Elongate horizontally
+  var value = 0.0;
+  var amplitude = 0.5;
+  var frequency = 1.0;
+  for (var i = 0; i < 4; i++) {
+    value += amplitude * valueNoise(stretchedUV * frequency);
+    frequency *= 2.2;
+    amplitude *= 0.45;
+  }
+  // Remap to produce thin wisps: sharpen the contrast
+  return smoothstep(0.35, 0.65, value);
+}
+
 // ========== Fragment ==========
 
 @fragment
@@ -128,13 +171,51 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let cloudTransmittance = cloud.a;
 
   // Clouds should only appear behind geometry (sky pixels), not in front of objects.
-  // Sky pixels have depth=0 in reversed-Z, which linearizes to far plane distance.
-  // Any geometry closer than ~95% of the far plane should occlude clouds.
-  let isSky = step(uniforms.far * 0.95, linearDepth);  // 1.0 if linearDepth >= far*0.95 (sky)
+  let isSky = step(uniforms.far * 0.95, linearDepth);
 
-  // For sky pixels: composite clouds. For geometry: keep scene color.
-  // Blend: scene * transmittance + cloudColor (where clouds are visible)
-  let compositedColor = scene.rgb * mix(1.0, cloudTransmittance, isSky) + cloudColor * isSky;
+  // ── Cirrus layer (Phase 5) ──────────────────────────────────────────
+  // Rendered BEFORE volumetric clouds so volumetric clouds correctly occlude cirrus.
+  // Thin, high-altitude (8,000–12,000m) ice cloud wisps.
+  // Uses world-space view direction XZ so cirrus is anchored to the sky dome,
+  // not stuck to the screen.
+  var cirrusContribution = vec3f(0.0);
+  var cirrusAlpha = 0.0;
+  if (uniforms.cirrusOpacity > 0.001 && isSky > 0.5) {
+    // Reconstruct world-space view direction from screen UV via inverseViewProj
+    let ndc = vec2f(uv.x * 2.0 - 1.0, -(uv.y * 2.0 - 1.0)); // flip Y for clip space
+    let clipFar = vec4f(ndc.x, ndc.y, 1.0, 1.0);
+    let worldFar = uniforms.inverseViewProj * clipFar;
+    let worldDir = normalize(worldFar.xyz / worldFar.w);
 
-  return vec4f(compositedColor, scene.a);
+    // Project view direction onto the cirrus dome at ~10,000m altitude
+    // Use direction XZ / Y to get a spherical projection that stays stable
+    // when the camera rotates. Divide by abs(Y)+epsilon to flatten near horizon.
+    let denom = max(abs(worldDir.y), 0.05);
+    let cirrusBaseUV = worldDir.xz / denom;
+
+    let windOffset = vec2f(uniforms.cirrusWindOffsetX, uniforms.cirrusWindOffsetY);
+    // Scale: multiply to control pattern size (larger = finer detail)
+    let cirrusUV = cirrusBaseUV * 0.5 + windOffset;
+    let noise = cirrusFBM(cirrusUV);
+    cirrusAlpha = noise * uniforms.cirrusOpacity;
+
+    // Fade out near horizon to avoid stretching artifacts
+    let horizonFade = smoothstep(0.02, 0.15, worldDir.y);
+    cirrusAlpha *= horizonFade;
+
+    // Cirrus is bright white (ice crystals), slightly tinted by sky
+    cirrusContribution = vec3f(0.9, 0.92, 0.95) * cirrusAlpha * 0.5;
+  }
+
+  // ── Composite order: scene → cirrus → volumetric clouds ────────────
+  // Cirrus goes behind volumetric clouds (higher altitude)
+  var result = scene.rgb;
+
+  // 1. Add cirrus to sky pixels (behind everything)
+  result = result + cirrusContribution * isSky;
+
+  // 2. Composite volumetric clouds on top (they occlude cirrus behind them)
+  result = result * mix(1.0, cloudTransmittance, isSky) + cloudColor * isSky;
+
+  return vec4f(result, scene.a);
 }

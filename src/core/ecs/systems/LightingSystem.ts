@@ -314,11 +314,16 @@ export class LightingSystem extends System {
   /**
    * Compute all derived values for a directional (sun/moon) light.
    * Logic is ported 1:1 from DirectionalLight class methods.
+   *
+   * Weather dimming (light.weatherDimming) is applied AFTER the day/night
+   * sunIntensityFactor computation so both effects stack correctly.
+   * At night, weatherDimming still applies (clouds dim moonlight too).
    */
   private updateDirectionalLight(light: LightComponent): void {
     const azimuth = light.azimuth ?? 45;
     const elevation = light.elevation ?? 45;
     const ambientIntensity = light.ambientIntensity ?? 1.0;
+    const weatherDim = Math.max(0, Math.min(1, light.weatherDimming));
 
     // ── Direction ────────────────────────────────────────────────────────
     light.direction = this.computeDirection(azimuth, elevation);
@@ -326,11 +331,16 @@ export class LightingSystem extends System {
     // ── Sun intensity factor ─────────────────────────────────────────────
     light.sunIntensityFactor = this.computeSunIntensityFactor(elevation);
 
-    // ── Effective color ──────────────────────────────────────────────────
-    light.effectiveColor = this.computeSunColor(elevation, light.sunIntensityFactor);
+    // ── Effective color (day/night tint × sunIntensityFactor × weatherDimming) ──
+    const baseColor = this.computeSunColor(elevation, light.sunIntensityFactor);
+    light.effectiveColor = [
+      baseColor[0] * weatherDim,
+      baseColor[1] * weatherDim,
+      baseColor[2] * weatherDim,
+    ];
 
-    // ── Ambient ──────────────────────────────────────────────────────────
-    light.ambient = this.computeAmbient(elevation, ambientIntensity);
+    // ── Ambient (elevation-based × ambientIntensity × weatherDimming) ────
+    light.ambient = this.computeAmbient(elevation, ambientIntensity) * weatherDim;
 
     // ── Sky / ground hemisphere colors ───────────────────────────────────
     light.skyColor = this.computeSkyColor(elevation);

@@ -163,6 +163,18 @@ export interface SerializedScene {
   version?: number;
   /** Asset dependencies - list of asset library IDs used in this scene */
   assetDependencies?: string[];
+  /** Weather/cloud settings (Phase 5) */
+  weather?: {
+    activePreset: string | null;
+    cloudCoverage: number;
+    cloudType: number;
+    cloudDensity: number;
+    cloudBaseAltitude: number;
+    cloudThickness: number;
+    windSpeed: number;
+    windDirection: number;
+    transitionDuration: number;
+  };
 }
 
 /**
@@ -809,6 +821,14 @@ export class SceneSerializer {
       return null;
     }
     return sceneData.objectTerrainBlendSettings;
+  }
+
+  /**
+   * Parse weather state from scene data (Phase 5)
+   */
+  static parseWeatherState(sceneData: Partial<SerializedScene>): SerializedScene['weather'] | null {
+    if (!sceneData.weather) return null;
+    return sceneData.weather;
   }
 
   /**

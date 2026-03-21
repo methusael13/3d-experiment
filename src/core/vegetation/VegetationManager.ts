@@ -767,32 +767,27 @@ export class VegetationManager {
   }
 
   /**
-   * Compute and store vegetation light params from scene light inputs.
-   * Delegates to DirectionalLight for all color/intensity computations,
-   * using its fromRendererParams() factory to reconstruct the light state
-   * from the renderer's direction + color output.
+   * Update vegetation light params directly from an ECS LightComponent.
+   * Reads the already-computed fields (direction, effectiveColor, ambient,
+   * skyColor, groundColor, sunIntensityFactor) which include weatherDimming
+   * applied by LightingSystem. This is the preferred path — ensures
+   * vegetation lighting matches terrain and objects exactly.
    */
-  updateLightFromScene(
-    lightDirection: [number, number, number],
-    lightColor: [number, number, number],
-    ambientIntensity: number = 1.0,
-  ): void {
-    // Reconstruct a DirectionalLight from renderer params to reuse its
-    // authoritative elevation-based color/intensity computations
-    const dl = DirectionalLight.fromRendererParams(lightDirection, lightColor, ambientIntensity);
-    const dir = dl.getDirection();
-    const skyColor = dl.getSkyColor();
-    const groundColor = dl.getGroundColor();
-    
-    // Scale sky/ground by ambient intensity
-    const ai = ambientIntensity;
-    
+  updateLightFromLightComponent(lc: {
+    direction: [number, number, number];
+    effectiveColor: [number, number, number];
+    ambient: number;
+    skyColor: [number, number, number];
+    groundColor: [number, number, number];
+    sunIntensityFactor: number;
+  }): void {
+    const ai = lc.ambient;
     this.light = {
-      sunDirection: [dir[0], dir[1], dir[2]],
-      sunColor: dl.getSunColor(),
-      skyColor: [skyColor[0] * ai, skyColor[1] * ai, skyColor[2] * ai],
-      groundColor: [groundColor[0] * ai, groundColor[1] * ai, groundColor[2] * ai],
-      sunIntensityFactor: dl.getSunIntensityFactor(),
+      sunDirection: [lc.direction[0], lc.direction[1], lc.direction[2]],
+      sunColor: [lc.effectiveColor[0], lc.effectiveColor[1], lc.effectiveColor[2]],
+      skyColor: [lc.skyColor[0] * ai, lc.skyColor[1] * ai, lc.skyColor[2] * ai],
+      groundColor: [lc.groundColor[0] * ai, lc.groundColor[1] * ai, lc.groundColor[2] * ai],
+      sunIntensityFactor: lc.sunIntensityFactor,
     };
   }
 

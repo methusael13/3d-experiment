@@ -696,6 +696,21 @@ export class Viewport {
    * Set volumetric cloud settings (for RenderingPanel integration)
    * Enables/disables clouds and updates all cloud parameters
    */
+  /**
+   * Set a weather preset with smooth transition (Phase 5).
+   */
+  setWeatherPreset(name: string, duration?: number): void {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.setWeatherPreset(name, duration);
+    }
+  }
+
+  clearWeatherPreset(): void {
+    if (this.gpuPipeline) {
+      this.gpuPipeline.clearWeatherPreset();
+    }
+  }
+
   setCloudSettings(settings: Partial<CloudConfig>): void {
     if (this.gpuPipeline) {
       this.gpuPipeline.setCloudConfig(settings);
@@ -863,6 +878,10 @@ export class Viewport {
         };
       }
 
+      const mergedOptions = this.gpuPipeline.getMergedRenderOptions(options);
+      // Run pipeline pre-world update
+      this.gpuPipeline.preWorldUpdate(dt, mergedOptions, this._world);
+
       // Run all ECS systems
       this.time += dt;
       this._world.update(dt, {
@@ -872,9 +891,9 @@ export class Viewport {
         deltaTime: dt,
         sceneEnvironment: this.gpuPipeline!.getSceneEnvironment(),
       });
-    }
 
-    this.gpuPipeline.render(cameraAdapter, options, separateSceneCamera, this._world);
+      this.gpuPipeline.render(cameraAdapter, mergedOptions, separateSceneCamera, this._world);
+    }
 
     // Flush deferred entity deletions after all GPU commands are submitted.
     // Entities marked for deletion during the frame are kept alive until here
