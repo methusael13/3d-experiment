@@ -118,7 +118,7 @@ export function LightSubPanel({ entity, onChanged, debugTextureManager, shadowRe
           label="Intensity"
           value={lc.intensity}
           min={0}
-          max={100}
+          max={5000}
           step={0.5}
           format={(v) => v.toFixed(1)}
           onChange={(value) => {
