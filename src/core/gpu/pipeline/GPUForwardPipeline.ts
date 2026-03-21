@@ -48,6 +48,7 @@ import { SelectionOutlineRendererGPU } from '../renderers/SelectionOutlineRender
 import { RenderTargetManager } from './RenderTargetManager';
 import { CloudManager } from './CloudManager';
 import { PostProcessManager } from './PostProcessManager';
+import { Vec3 } from '@/core/types';
 
 // ========== Public Types ==========
 
@@ -193,6 +194,13 @@ export class GPUForwardPipeline {
     // Cloud debug textures (providers may be null until clouds are enabled)
     this.debugTextureManager.register('cloud-result', 'float', () => this.cloudManager.rayMarcher?.outputView ?? null);
     this.debugTextureManager.register('weather-map', 'float', () => this.cloudManager.rayMarcher?.weatherMapGenerator.textureView ?? null);
+
+    // Vegetation shadow map debug texture (available when grass blade shadows are active)
+    this.debugTextureManager.register('vegetation-shadow', 'depth', () => {
+      // The vegetation shadow map view is set on sceneEnvironment each frame;
+      // read it back from the last-rendered terrain's VegetationShadowMap.
+      return this.sceneEnvironment.getVegetationShadowView?.() ?? null;
+    });
   }
 
   // ==================== Pass Initialization ====================
@@ -297,6 +305,9 @@ export class GPUForwardPipeline {
     // ── Pre-shadow vegetation prepare ──
     this.prepareVegetation(world, renderCtx);
 
+    // ── Grass blade shadow pass (after vegetation cull, before scene shadow pass) ──
+    this.renderGrassShadows(world, encoder, renderCtx);
+
     // ── Scene passes (render to HDR buffer) ──
     for (const pass of this.passes) {
       if (pass.enabled && pass.category === 'scene') {
@@ -381,6 +392,47 @@ export class GPUForwardPipeline {
     if (tc?.manager?.isReady) {
       tc.manager.setWorld(world);
       tc.manager.prepareVegetationForFrame(renderCtx.sceneCameraViewProjectionMatrix, renderCtx.sceneCameraPosition);
+    }
+  }
+
+  /**
+   * Render grass blade shadows into the dedicated vegetation shadow map.
+   * Called after prepareVegetation() (which runs GPU culling), before scene passes.
+   * The shadow map is then available for sampling by grass-blade.wgsl and terrain shaders.
+   */
+  private renderGrassShadows(
+    world: World | undefined,
+    encoder: GPUCommandEncoder,
+    renderCtx: RenderContextImpl,
+  ): void {
+    if (!world || !renderCtx.options.shadowEnabled) return;
+    const terrainEntity = world.queryFirst('terrain');
+    if (!terrainEntity) return;
+    const tc = terrainEntity.getComponent<TerrainComponent>('terrain');
+    if (!tc?.manager?.isReady) return;
+
+    // Get light direction from the ECS directional light component (via RenderContext).
+    // LightComponent.direction points TOWARDS the light (sun direction).
+    // VegetationShadowMap.updateLightMatrix also expects direction towards the light.
+    const dirLight = renderCtx.getDirectionalLight();
+    const d = dirLight.direction;
+    const lightDir: Vec3 = [d[0], d[1], d[2]];
+
+    // Render grass shadow depth pass into the vegetation shadow map
+    // Uses the scene camera position from the render context
+    tc.manager.renderGrassShadowPass(
+      encoder,
+      lightDir,
+      renderCtx.sceneCameraPosition,
+    );
+
+    // Wire the vegetation shadow map into SceneEnvironment for terrain sampling
+    const vegShadowMap = tc.manager.getVegetationShadowMap();
+    if (vegShadowMap) {
+      this.sceneEnvironment.setVegetationShadow(
+        vegShadowMap.getShadowMapView(),
+        vegShadowMap.getUniformBuffer(),
+      );
     }
   }
 
