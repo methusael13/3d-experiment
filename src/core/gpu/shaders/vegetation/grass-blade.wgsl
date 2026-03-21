@@ -75,6 +75,21 @@ struct CSMUniforms {
 @group(1) @binding(7) var shadowMapArray: texture_depth_2d_array;
 @group(1) @binding(8) var<uniform> csm: CSMUniforms;
 
+// Group 2: Vegetation shadow map (dedicated grass blade shadow)
+struct VegShadowUniforms {
+  lightSpaceMatrix: mat4x4f,
+  shadowCenter: vec2f,
+  shadowRadius: f32,
+  enabled: f32,
+  texelSize: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
+}
+@group(2) @binding(0) var vegShadowMap: texture_depth_2d;
+@group(2) @binding(1) var vegShadowSampler: sampler_comparison;
+@group(2) @binding(2) var<uniform> vegShadow: VegShadowUniforms;
+
 // Multi-light buffers (bindings 10-12)
 @group(1) @binding(10) var<uniform> env_lightCounts: GrassLightCounts;
 @group(1) @binding(11) var<storage, read> env_pointLights: array<GrassPointLightData>;
@@ -93,6 +108,41 @@ struct CloudShadowSceneUniforms {
   shadowCenter: vec2f,
   shadowRadius: f32,
   averageCoverage: f32,
+}
+
+// ==================== Vegetation Shadow Sampling ====================
+
+/**
+ * Sample the vegetation shadow map (grass blade shadows).
+ * Projects worldPos into the vegetation shadow map's light space and
+ * performs 3×3 PCF. Returns 1.0 (fully lit) if shadow map is disabled
+ * or the fragment is outside the shadow map bounds.
+ */
+fn sampleVegetationShadow(worldPos: vec3f) -> f32 {
+  if (vegShadow.enabled < 0.5) { return 1.0; }
+  
+  let lsp = vegShadow.lightSpaceMatrix * vec4f(worldPos, 1.0);
+  var sc = lsp.xyz / lsp.w;
+  sc.x = sc.x * 0.5 + 0.5;
+  sc.y = sc.y * -0.5 + 0.5;
+  
+  // Out-of-bounds check
+  if (sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0 || sc.z < 0.0 || sc.z > 1.0) {
+    return 1.0;
+  }
+  
+  let bias = 0.003;
+  let ts = vegShadow.texelSize;
+  
+  // 3×3 PCF for soft vegetation shadows
+  var shadow = 0.0;
+  for (var y = -1; y <= 1; y++) {
+    for (var x = -1; x <= 1; x++) {
+      let offset = vec2f(f32(x) * ts, f32(y) * ts);
+      shadow += textureSampleCompareLevel(vegShadowMap, vegShadowSampler, sc.xy + offset, sc.z - bias);
+    }
+  }
+  return shadow / 9.0;
 }
 
 fn sampleCloudShadowGrass(worldPos: vec3f) -> f32 {
@@ -588,9 +638,12 @@ fn fragmentMain(
   let hemisphereBlend = normal.y * 0.5 + 0.5;
   let ambientColor = mix(uniforms.groundColor, uniforms.skyColor, hemisphereBlend);
   
-  // Cloud shadow (multiply CSM shadow with cloud transmittance)
+  // ---- Vegetation shadow map sampling (grass-on-grass shadows) ----
+  let vegShadowFactor = sampleVegetationShadow(input.worldPos);
+
+  // Cloud shadow (multiply CSM shadow with cloud transmittance + vegetation shadow)
   let cloudShadow = sampleCloudShadowGrass(input.worldPos);
-  let combinedShadow = shadowFactor * cloudShadow;
+  let combinedShadow = shadowFactor * cloudShadow * vegShadowFactor;
 
   // Direct sun/moon light with shadow
   let diffuseColor = uniforms.sunColor * NdotL * combinedShadow;

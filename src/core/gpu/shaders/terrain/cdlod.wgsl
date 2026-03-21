@@ -140,6 +140,56 @@ struct BiomeTextureParams {
 @group(3) @binding(17) var env_cloudShadowMap: texture_2d<f32>;
 @group(3) @binding(18) var<uniform> env_cloudShadowUniforms: CloudShadowSceneUniforms;
 
+// ============================================================================
+// Group 2: Vegetation shadow map (grass blade shadows on terrain)
+// ============================================================================
+struct VegShadowUniforms {
+  lightSpaceMatrix: mat4x4f,
+  shadowCenter: vec2f,
+  shadowRadius: f32,
+  enabled: f32,
+  texelSize: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
+}
+@group(2) @binding(0) var vegShadowMap: texture_depth_2d;
+@group(2) @binding(1) var vegShadowSampler: sampler_comparison;
+@group(2) @binding(2) var<uniform> vegShadow: VegShadowUniforms;
+
+/**
+ * Sample the vegetation shadow map (grass blade shadows on terrain).
+ * Projects worldPos into the vegetation shadow map's light space and
+ * performs 3×3 PCF. Returns 1.0 (fully lit) if shadow map is disabled
+ * or the fragment is outside the shadow map bounds.
+ */
+fn sampleVegetationShadow(worldPos: vec3f) -> f32 {
+  if (vegShadow.enabled < 0.5) { return 1.0; }
+  
+  let lsp = vegShadow.lightSpaceMatrix * vec4f(worldPos, 1.0);
+  var sc = lsp.xyz / lsp.w;
+  sc.x = sc.x * 0.5 + 0.5;
+  sc.y = sc.y * -0.5 + 0.5;
+  
+  // Out-of-bounds check
+  if (sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0 || sc.z < 0.0 || sc.z > 1.0) {
+    return 1.0;
+  }
+  
+  let bias = 0.003;
+  let ts = vegShadow.texelSize;
+  
+  // 3×3 PCF for soft vegetation shadows
+  var shadow = 0.0;
+  for (var y = -1; y <= 1; y++) {
+    for (var x = -1; x <= 1; x++) {
+      let offset = vec2f(f32(x) * ts, f32(y) * ts);
+      shadow += textureSampleCompareLevel(vegShadowMap, vegShadowSampler, sc.xy + offset, sc.z - bias);
+    }
+  }
+  return shadow / 9.0;
+}
+
 struct CloudShadowSceneUniforms {
   shadowCenter: vec2f,
   shadowRadius: f32,
@@ -1196,6 +1246,9 @@ fn calculateShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDi
   // Apply cloud shadow (multiply CSM shadow with cloud transmittance)
   let cloudShadow = sampleCloudShadowTerrain(worldPos);
   shadowValue = shadowValue * cloudShadow;
+  
+  // Apply vegetation shadow (grass blade shadows on terrain ground)
+  shadowValue = shadowValue * sampleVegetationShadow(worldPos);
   
   // Apply overcast shadow fade (CSM shadows fade under heavy cloud cover)
   let overcastFade = getOvercastShadowFade();

@@ -689,6 +689,40 @@ export class VegetationManager {
   // methods are needed on VegetationManager.
   
   /**
+   * Render grass blade shadow depth pass into the dedicated vegetation shadow map.
+   * 
+   * Must be called AFTER prepareFrame() and BEFORE the main render pass.
+   * The shadow map is then sampled by grass-blade.wgsl and cdlod.wgsl.
+   * 
+   * @param encoder - Command encoder to record into
+   * @param lightDirection - Normalized sun direction
+   * @param cameraPosition - Scene camera position
+   * @returns Number of shadow draw calls
+   */
+  renderGrassShadowPass(
+    encoder: GPUCommandEncoder,
+    lightDirection: [number, number, number],
+    cameraPosition: [number, number, number],
+  ): number {
+    if (!this.enabled || !this.config.enabled || !this.initialized) return 0;
+    return this.renderer.renderGrassShadowPass(
+      encoder,
+      lightDirection,
+      cameraPosition,
+      this.wind,
+      this._getTime(),
+    );
+  }
+  
+  /**
+   * Get the vegetation shadow map for external sampling.
+   * Returns null if no grass shadow casters exist.
+   */
+  getVegetationShadowMap(): import('./VegetationShadowMap').VegetationShadowMap | null {
+    return this.renderer.getVegetationShadowMap();
+  }
+
+  /**
    * Sync mesh vegetation ECS entities after prepareFrame() has been called.
    * 
    * This MUST be called BEFORE the shadow pass so vegetation-instancing entities

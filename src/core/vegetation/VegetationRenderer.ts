@@ -17,6 +17,7 @@ import { VegetationBillboardRenderer } from './VegetationBillboardRenderer';
 import { VegetationGrassBladeRenderer } from './VegetationGrassBladeRenderer';
 import { VegetationCullingPipeline, type CullResult } from './VegetationCullingPipeline';
 import { VegetationMeshVariantRenderer } from './VegetationMeshVariantRenderer';
+import { VegetationShadowMap } from './VegetationShadowMap';
 import type { VegetationMesh, WindParams, VegetationLightParams } from './types';
 import type { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
 import { extractFrustumPlanes } from '../utils/mathUtils';
@@ -402,11 +403,129 @@ export class VegetationRenderer {
   
   private _sceneEnvironment: SceneEnvironment | null = null;
   
-  // ==================== Shadow Casting ====================
-  // NOTE: Vegetation mesh shadow casting is now handled by the variant depth pipeline.
+  // ==================== Grass Blade Shadow Casting ====================
+  
+  // Dedicated shadow map for grass blade vegetation
+  private vegetationShadowMap: VegetationShadowMap | null = null;
+  
+  /**
+   * Get or lazily create the vegetation shadow map.
+   */
+  private ensureVegetationShadowMap(): VegetationShadowMap {
+    if (!this.vegetationShadowMap) {
+      this.vegetationShadowMap = new VegetationShadowMap(this.ctx);
+      this.vegetationShadowMap.initialize();
+    }
+    return this.vegetationShadowMap;
+  }
+  
+  /**
+   * Render grass blade shadow depth pass into the dedicated vegetation shadow map.
+   * 
+   * This renders all grass-blade plants that have castShadows=true into a
+   * 1024×1024 depth texture using the grass blade depth-only shader.
+   * 
+   * Must be called AFTER prepareFrame() (which produces culled billboard buffers)
+   * and BEFORE the main render pass (so the shadow map is ready for sampling).
+   * 
+   * @param encoder - Command encoder to record the shadow render pass into
+   * @param lightDirection - Normalized sun direction (pointing towards light)
+   * @param cameraPosition - Camera world position (shadow map center)
+   * @param wind - Current wind parameters
+   * @param time - Animation time
+   * @returns Number of shadow draw calls issued
+   */
+  renderGrassShadowPass(
+    encoder: GPUCommandEncoder,
+    lightDirection: [number, number, number],
+    cameraPosition: [number, number, number],
+    wind: WindParams,
+    time: number,
+  ): number {
+    if (!this.initialized || !this.hasPreparedFrame) return 0;
+    
+    // Check if any grass-blade plants have castShadows=true
+    let hasGrassShadowCasters = false;
+    let maxShadowDistance = 0;
+    for (const { plant } of this.preparedPlants) {
+      if (plant.renderMode === 3 && plant.castShadows) {
+        hasGrassShadowCasters = true;
+        maxShadowDistance = Math.max(maxShadowDistance, plant.shadowCastDistance);
+      }
+    }
+    
+    if (!hasGrassShadowCasters) return 0;
+    
+    // Initialize shadow map if needed
+    const shadowMap = this.ensureVegetationShadowMap();
+    
+    // Update light-space matrix with the max shadow distance as radius
+    shadowMap.updateLightMatrix(lightDirection, cameraPosition, maxShadowDistance);
+    
+    const shadowView = shadowMap.getShadowTextureView();
+    if (!shadowView) return 0;
+    
+    const resolution = shadowMap.getResolution();
+    
+    // Begin shadow depth render pass
+    const passEncoder = encoder.beginRenderPass({
+      label: 'vegetation-grass-shadow-pass',
+      colorAttachments: [],
+      depthStencilAttachment: {
+        view: shadowView,
+        depthClearValue: 1.0,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+      },
+    });
+    
+    passEncoder.setViewport(0, 0, resolution, resolution, 0, 1);
+    
+    // Reset shadow frame slot counter
+    this.grassBladeRenderer.resetShadowFrame();
+    
+    const lightSpaceMatrix = shadowMap.getLightSpaceMatrix() as Float32Array;
+    let drawCalls = 0;
+    
+    for (const { plant, cullResult } of this.preparedPlants) {
+      if (plant.renderMode !== 3 || !plant.castShadows) continue;
+      
+      // Scale wind by per-plant windInfluence
+      const plantWind: WindParams = plant.windInfluence < 0.999
+        ? { ...wind, strength: wind.strength * plant.windInfluence, gustStrength: wind.gustStrength * plant.windInfluence }
+        : wind;
+      
+      // Render grass blades into shadow map using the billboard buffer
+      // (grass blades are routed to billboard output by the cull shader)
+      drawCalls += this.grassBladeRenderer.renderShadowPassIndirect(
+        passEncoder,
+        lightSpaceMatrix,
+        cameraPosition,
+        cullResult.billboardBuffer.buffer,
+        cullResult.drawArgsBuffer.buffer,
+        plantWind,
+        time,
+        plant.shadowCastDistance,
+        shadowMap.getDepthFormat(),
+      );
+    }
+    
+    passEncoder.end();
+    return drawCalls;
+  }
+  
+  /**
+   * Get the vegetation shadow map (for external sampling by terrain/grass shaders).
+   * Returns null if no grass shadow casters exist or shadow map hasn't been created.
+   */
+  getVegetationShadowMap(): VegetationShadowMap | null {
+    return this.vegetationShadowMap;
+  }
+  
+  // ==================== Mesh Shadow Casting ====================
+  // NOTE: Vegetation mesh shadow casting is handled by the variant depth pipeline.
   // The VariantRenderer.renderDepthOnly() path handles vegetation-instancing entities
   // automatically when they have the 'vegetation-instancing' feature.
-  // No explicit shadow methods are needed here.
   
   /**
    * Get the billboard sub-renderer (for direct use).
@@ -430,6 +549,8 @@ export class VegetationRenderer {
     this.grassBladeRenderer.destroy();
     this.cullingPipeline.destroy();
     this.meshVariantRenderer.destroy();
+    this.vegetationShadowMap?.destroy();
+    this.vegetationShadowMap = null;
     this.preparedPlants = [];
     this.initialized = false;
   }

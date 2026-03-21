@@ -69,6 +69,10 @@ export class SceneEnvironment {
   private currentCloudShadowView: GPUTextureView | null = null;
   private currentCloudShadowUniformBuffer: GPUBuffer | null = null;
 
+  // Vegetation shadow resources (separate from env bind group — accessed directly by grass/terrain shaders)
+  private currentVegetationShadowView: GPUTextureView | null = null;
+  private currentVegetationShadowUniformBuffer: GPUBuffer | null = null;
+
   // Track if bind group needs rebuild
   private needsRebuild: boolean = false;
 
@@ -232,6 +236,35 @@ export class SceneEnvironment {
       this.needsRebuild = true;
       this.invalidateMaskedBindGroups();
     }
+  }
+
+  /**
+   * Set vegetation shadow resources (not part of the main env bind group —
+   * stored here for convenient access by grass-blade and terrain shaders
+   * which build their own bind groups for the vegetation shadow map).
+   * 
+   * @param view Vegetation shadow map depth texture view (null to clear)
+   * @param uniformBuffer Vegetation shadow uniform buffer (null to clear)
+   */
+  setVegetationShadow(view: GPUTextureView | null, uniformBuffer: UnifiedGPUBuffer | null): void {
+    this.currentVegetationShadowView = view;
+    this.currentVegetationShadowUniformBuffer = uniformBuffer?.buffer ?? null;
+  }
+
+  /**
+   * Get the vegetation shadow map view for direct binding in grass/terrain shaders.
+   * Returns null if no vegetation shadow map is active.
+   */
+  getVegetationShadowView(): GPUTextureView | null {
+    return this.currentVegetationShadowView;
+  }
+
+  /**
+   * Get the vegetation shadow uniform buffer for direct binding in grass/terrain shaders.
+   * Returns null if no vegetation shadow map is active.
+   */
+  getVegetationShadowUniformBuffer(): GPUBuffer | null {
+    return this.currentVegetationShadowUniformBuffer;
   }
 
   /**

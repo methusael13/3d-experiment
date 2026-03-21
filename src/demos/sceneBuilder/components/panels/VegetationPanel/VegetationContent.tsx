@@ -391,8 +391,8 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas, onSelectModel }: 
             <span class={styles.propertyValue}>{((plant.windInfluence ?? 1.0) * 100).toFixed(0)}%</span>
           </div>
           
-          {/* Cast Shadows (mesh/hybrid only) */}
-          {(plant.renderMode === 'mesh' || plant.renderMode === 'hybrid') && (
+          {/* Cast Shadows (mesh/hybrid/grass-blade) */}
+          {(plant.renderMode === 'mesh' || plant.renderMode === 'hybrid' || plant.renderMode === 'grass-blade') && (
             <>
               <div class={styles.configRow}>
                 <label>

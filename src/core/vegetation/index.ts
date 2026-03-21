@@ -52,6 +52,9 @@ export { VegetationDensityMapGenerator } from './VegetationDensityMapGenerator';
 export { VegetationSpawner } from './VegetationSpawner';
 export type { SpawnRequest, SpawnResult } from './VegetationSpawner';
 
+// Shadow Map
+export { VegetationShadowMap } from './VegetationShadowMap';
+
 // Renderers
 export { VegetationRenderer } from './VegetationRenderer';
 export type { VegetationTileData, PlantTileData } from './VegetationRenderer';

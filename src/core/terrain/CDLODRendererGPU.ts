@@ -290,6 +290,13 @@ export class CDLODRendererGPU {
   // Shared SceneEnvironment for IBL (passed from pipeline)
   private sceneEnvironment: SceneEnvironment | null = null;
   
+  // Vegetation shadow bind group (Group 2) - same layout as grass blade renderer
+  private vegShadowBindGroupLayout: GPUBindGroupLayout | null = null;
+  private vegShadowPlaceholderTexture: GPUTexture | null = null;
+  private vegShadowPlaceholderView: GPUTextureView | null = null;
+  private vegShadowComparisonSampler: GPUSampler | null = null;
+  private vegShadowPlaceholderUniform: GPUBuffer | null = null;
+  
   constructor(
     ctx: GPUContext,
     quadtreeConfig?: Partial<QuadtreeConfig>,
@@ -332,6 +339,34 @@ export class CDLODRendererGPU {
     
     // Create biome texture resources (Group 1)
     this.biomeResources = new TerrainBiomeTextureResources(this.ctx);
+    
+    // Create vegetation shadow bind group resources (Group 2)
+    this.vegShadowBindGroupLayout = this.ctx.device.createBindGroupLayout({
+      label: 'cdlod-veg-shadow-layout-g2',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'depth' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'comparison' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+    this.vegShadowPlaceholderTexture = this.ctx.device.createTexture({
+      label: 'cdlod-veg-shadow-placeholder',
+      size: { width: 1, height: 1 },
+      format: 'depth32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.vegShadowPlaceholderView = this.vegShadowPlaceholderTexture.createView();
+    this.vegShadowComparisonSampler = this.ctx.device.createSampler({
+      label: 'cdlod-veg-shadow-comparison-sampler',
+      compare: 'less',
+      magFilter: 'linear',
+      minFilter: 'linear',
+    });
+    this.vegShadowPlaceholderUniform = this.ctx.device.createBuffer({
+      label: 'cdlod-veg-shadow-placeholder-uniform',
+      size: 96,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
     
     this.createPipeline();
     this.createShadowPipeline();
@@ -666,7 +701,7 @@ export class CDLODRendererGPU {
       bindGroupLayouts: [
         this.bindGroupLayout, 
         this.biomeResources!.bindGroupLayout!, 
-        undefined as any, 
+        this.vegShadowBindGroupLayout!,
         terrainEnvLayout
       ],
     });
@@ -734,6 +769,30 @@ export class CDLODRendererGPU {
   
   /** Environment binding mask for terrain - diffuse IBL + CSM shadow maps + multi-light + cloud shadow */
   private static readonly TERRAIN_ENV_MASK = ENV_BINDING_MASK.DIFFUSE_IBL | ENV_BINDING_MASK.CSM_SHADOW | ENV_BINDING_MASK.MULTI_LIGHT | ENV_BINDING_MASK.SPOT_SHADOW | ENV_BINDING_MASK.CLOUD_SHADOW;
+
+  /**
+   * Set vegetation shadow bind group (group 2) on the pass encoder.
+   * Uses the vegetation shadow map from SceneEnvironment if available,
+   * otherwise binds placeholders (with enabled=0 so shader skips sampling).
+   */
+  private _setVegShadowBindGroup(passEncoder: GPURenderPassEncoder, sceneEnv?: SceneEnvironment | null): void {
+    if (!this.vegShadowBindGroupLayout || !this.vegShadowComparisonSampler) return;
+
+    const vegView = sceneEnv?.getVegetationShadowView() ?? null;
+    const vegUniform = sceneEnv?.getVegetationShadowUniformBuffer() ?? null;
+
+    const bindGroup = this.ctx.device.createBindGroup({
+      label: 'cdlod-veg-shadow-bg',
+      layout: this.vegShadowBindGroupLayout,
+      entries: [
+        { binding: 0, resource: vegView ?? this.vegShadowPlaceholderView! },
+        { binding: 1, resource: this.vegShadowComparisonSampler },
+        { binding: 2, resource: { buffer: vegUniform ?? this.vegShadowPlaceholderUniform! } },
+      ],
+    });
+
+    passEncoder.setBindGroup(2, bindGroup);
+  }
   
   /**
    * Update the bind group with current textures using BindGroupBuilder
@@ -845,6 +904,9 @@ export class CDLODRendererGPU {
         passEncoder.setBindGroup(1, this.biomeResources.bindGroup);
       }
       
+      // Set bind group 2 for vegetation shadow map
+      this._setVegShadowBindGroup(passEncoder, params.sceneEnvironment);
+      
       // Set bind group 3 for IBL using masked bind group (diffuse IBL only)
       if (params.sceneEnvironment) {
         passEncoder.setBindGroup(3, params.sceneEnvironment.getBindGroupForMask(CDLODRendererGPU.TERRAIN_ENV_MASK));
@@ -865,6 +927,9 @@ export class CDLODRendererGPU {
       if (this.biomeResources?.bindGroup) {
         passEncoder.setBindGroup(1, this.biomeResources.bindGroup);
       }
+      
+      // Set bind group 2 for vegetation shadow map
+      this._setVegShadowBindGroup(passEncoder, params.sceneEnvironment);
       
       // Set bind group 3 for IBL using masked bind group (diffuse IBL only)
       if (params.sceneEnvironment) {

@@ -27,7 +27,7 @@ import {
   IslandLayerGenerator,
   FlattenLayerGenerator,
 } from './layers';
-import { BiomeMaskGenerator, BiomeParams, createDefaultBiomeParams, PlantRegistry, VegetationManager } from '../vegetation';
+import { BiomeMaskGenerator, BiomeParams, createDefaultBiomeParams, PlantRegistry, VegetationManager, VegetationShadowMap } from '../vegetation';
 import {
   TerrainLayer,
   TerrainLayerType,
@@ -671,6 +671,35 @@ export class TerrainManager {
     if (needsRender) {
       this.vegetationManager.syncMeshEntities();
     }
+  }
+
+  /**
+   * Render grass blade shadow depth pass into the vegetation shadow map.
+   * 
+   * Must be called AFTER prepareVegetationForFrame() and BEFORE the main
+   * render pass. The shadow map is then available via getVegetationShadowMap()
+   * for sampling by grass-blade.wgsl and cdlod.wgsl.
+   * 
+   * @param encoder - Command encoder to record into
+   * @param lightDirection - Normalized sun direction
+   * @param cameraPosition - Scene camera world position
+   * @returns Number of shadow draw calls
+   */
+  renderGrassShadowPass(
+    encoder: GPUCommandEncoder,
+    lightDirection: [number, number, number],
+    cameraPosition: [number, number, number],
+  ): number {
+    if (!this.vegetationManager?.isEnabled()) return 0;
+    return this.vegetationManager.renderGrassShadowPass(encoder, lightDirection, cameraPosition);
+  }
+
+  /**
+   * Get the vegetation shadow map for external sampling.
+   * Returns null if no grass shadow casters exist.
+   */
+  getVegetationShadowMap(): VegetationShadowMap | null {
+    return this.vegetationManager?.getVegetationShadowMap() ?? null;
   }
 
   /**
