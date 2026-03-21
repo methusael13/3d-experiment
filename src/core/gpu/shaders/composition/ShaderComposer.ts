@@ -95,6 +95,10 @@ export class ShaderComposer {
     wgsl = wgsl.replace('/*{{FRAGMENT_AMBIENT}}*/', fragmentAmbient);
     wgsl = wgsl.replace('/*{{FRAGMENT_POST}}*/', fragmentPost);
 
+    // Shadow alpha test injection (for fs_shadow_main depth-only fragment)
+    const shadowAlphaTest = this.buildFragmentShadowAlphaTest(orderedFeatures);
+    wgsl = wgsl.replace('/*{{FRAGMENT_SHADOW_ALPHA_TEST}}*/', shadowAlphaTest);
+
     // 5. Build the binding layout map with assigned indices
     const bindingLayout = new Map<string, ShaderResource & { bindingIndex: number }>();
     for (const [name, res] of textureBindings) {
@@ -472,5 +476,14 @@ struct CSMUniforms {
       }
     }
     return blocks.join('\n');
+  }
+
+  /**
+   * Build the shadow alpha test injection for fs_shadow_main.
+   * Only the 'textured' feature contributes — samples base color alpha and discards.
+   */
+  private buildFragmentShadowAlphaTest(features: ShaderFeature[]): string {
+    const textured = features.find((f) => f.id === 'textured');
+    return textured?.fragmentShadowAlphaTestInject ?? '';
   }
 }

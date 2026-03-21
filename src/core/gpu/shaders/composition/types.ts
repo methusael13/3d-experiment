@@ -99,6 +99,14 @@ export interface ShaderFeature {
   /** WGSL code injected after final color computation (post-effects like snow) */
   fragmentPostInject?: string;
 
+  /**
+   * WGSL code injected into fs_shadow_main for alpha testing during shadow depth rendering.
+   * Only the 'textured' feature typically provides this — samples the base color texture
+   * alpha and discards transparent pixels so shadows respect alpha-tested materials
+   * (grass, foliage, etc.).
+   */
+  fragmentShadowAlphaTestInject?: string;
+
   /** Additional VertexOutput fields needed for passing data to fragment */
   varyings?: string;
 

@@ -120,6 +120,15 @@ fn triplanarSample(tex: texture_2d<f32>, samp: sampler, worldPos: vec3f, worldNo
 }
 `,
 
+  // Injected at /*{{FRAGMENT_SHADOW_ALPHA_TEST}}*/ in fs_shadow_main
+  // Minimal alpha test for shadow depth — only samples base color texture alpha
+  fragmentShadowAlphaTestInject: `
+    let shadowAlpha = textureSample(baseColorTexture, baseColorSampler, input.uv).a;
+    if (shadowAlpha < material.alphaCutoff) {
+      discard;
+    }
+`,
+
   // Injected at /*{{FRAGMENT_TEXTURE_SAMPLING}}*/ in the template
   fragmentInject: `
   // Triplanar mode flag

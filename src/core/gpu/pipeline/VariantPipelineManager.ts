@@ -411,7 +411,12 @@ export class VariantPipelineManager {
       });
     }
 
-    const pipeline = device.createRenderPipeline({
+    // For textured variants, use fs_shadow_main fragment stage to perform alpha testing
+    // (discard transparent pixels in shadow maps for grass/foliage). Non-textured variants
+    // use no fragment stage for maximum shadow rendering performance.
+    const isTextured = composed.features.includes('textured');
+
+    const pipelineDescriptor: GPURenderPipelineDescriptor = {
       label: `variant-depth-pipeline-${composed.featureKey}`,
       layout: pipelineLayout,
       vertex: {
@@ -419,7 +424,6 @@ export class VariantPipelineManager {
         entryPoint: 'vs_main',
         buffers: vertexBuffers,
       },
-      // No fragment stage — depth-only rendering
       primitive: {
         topology: 'triangle-list',
         cullMode: 'none', // Shadow maps render both sides
@@ -429,7 +433,18 @@ export class VariantPipelineManager {
         depthWriteEnabled: true,
         depthCompare,
       },
-    });
+    };
+
+    // Add fragment stage with alpha test for textured variants
+    if (isTextured) {
+      pipelineDescriptor.fragment = {
+        module: shaderModule,
+        entryPoint: 'fs_shadow_main',
+        targets: [], // No color output — depth only with discard
+      };
+    }
+
+    const pipeline = device.createRenderPipeline(pipelineDescriptor);
 
     return { pipeline, composed, shaderModule };
   }

@@ -340,3 +340,17 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
   output.normals = vec4f(N * 0.5 + 0.5, metallic);
   return output;
 }
+
+// ============ Shadow / Depth-Only Fragment Shader ============
+// Used by shadow map passes to perform alpha testing (discard) on textured
+// meshes (grass, foliage, etc.) without writing any color output.
+// Only samples the base color texture for alpha — skips all PBR lighting.
+
+@fragment
+fn fs_shadow_main(input: VertexOutput) {
+  let hasBaseColorTex = material.textureFlags.x > 0.5;
+
+  if (hasBaseColorTex && material.useAlphaCutoff > 0.5) {
+    /*{{FRAGMENT_SHADOW_ALPHA_TEST}}*/
+  }
+}

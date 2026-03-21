@@ -113,7 +113,7 @@ export class VegetationShadowMap {
     // coverage centered on the terrain surface where grass actually grows,
     // regardless of camera elevation.
     const lightDistance = radius * 2;
-    const center: vec3 = [cameraPos[0], 0, cameraPos[2]];
+    const center: vec3 = [cameraPos[0], cameraPos[1], cameraPos[2]];
     const lightPos: vec3 = [
       center[0] + lightDir[0] * lightDistance,
       center[1] + lightDir[1] * lightDistance,
