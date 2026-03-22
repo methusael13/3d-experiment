@@ -28,7 +28,6 @@ export type {
   WaterParams,
   DetailParams,
   BiomeType,
-  BiomeTextureConfig,
 } from './TerrainPanel';
 
 export { LayersSection } from './TerrainPanel/LayersSection';

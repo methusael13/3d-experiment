@@ -400,3 +400,25 @@
   text-overflow: ellipsis;
   max-width: 80px;
 }
+
+/* Material selector dropdown */
+.materialSelect {
+  flex: 1;
+  padding: 4px 6px;
+  background: var(--sb-bg-input, #333);
+  border: 1px solid var(--sb-border, #555);
+  border-radius: var(--sb-radius-sm, 3px);
+  color: var(--sb-text-primary, #f0f0f0);
+  font-size: 11px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.materialSelect:hover {
+  border-color: #666;
+}
+
+.materialSelect:focus {
+  outline: none;
+  border-color: var(--sb-accent, #4a90d9);
+}

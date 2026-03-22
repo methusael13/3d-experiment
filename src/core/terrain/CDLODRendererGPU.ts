@@ -66,6 +66,14 @@ export interface CDLODGPUConfig {
   detailFadeEnd: number;
   /** How much slope affects detail amount (0-1) */
   detailSlopeInfluence: number;
+  
+  // POM (Parallax Occlusion Mapping) parameters
+  /** Displacement height in world units (default 0.02m) */
+  displacementScale: number;
+  /** Minimum ray-march steps for POM (default 4) */
+  pomMinSteps: number;
+  /** Maximum ray-march steps for POM (default 32) */
+  pomMaxSteps: number;
 }
 
 /**
@@ -159,6 +167,10 @@ export function createDefaultCDLODGPUConfig(): CDLODGPUConfig {
     detailFadeStart: 100,        // Start fading at 50m from camera
     detailFadeEnd: 150,         // Fully faded at 150m
     detailSlopeInfluence: 0.5,  // 50% slope influence (rocky slopes get more detail)
+    // POM defaults
+    displacementScale: 0.02,    // 0.02m (2cm) displacement height
+    pomMinSteps: 4,             // Minimum ray-march steps
+    pomMaxSteps: 32,            // Maximum ray-march steps (at grazing angles)
   };
 }
 
@@ -767,8 +779,8 @@ export class CDLODRendererGPU {
     });
   }
   
-  /** Environment binding mask for terrain - diffuse IBL + CSM shadow maps + multi-light + cloud shadow */
-  private static readonly TERRAIN_ENV_MASK = ENV_BINDING_MASK.DIFFUSE_IBL | ENV_BINDING_MASK.CSM_SHADOW | ENV_BINDING_MASK.MULTI_LIGHT | ENV_BINDING_MASK.SPOT_SHADOW | ENV_BINDING_MASK.CLOUD_SHADOW;
+  /** Environment binding mask for terrain - full IBL (diffuse + specular + BRDF LUT) + CSM shadow maps + multi-light + cloud shadow */
+  private static readonly TERRAIN_ENV_MASK = ENV_BINDING_MASK.FULL_IBL | ENV_BINDING_MASK.CSM_SHADOW | ENV_BINDING_MASK.MULTI_LIGHT | ENV_BINDING_MASK.SPOT_SHADOW | ENV_BINDING_MASK.CLOUD_SHADOW;
 
   /**
    * Set vegetation shadow bind group (group 2) on the pass encoder.
@@ -1005,14 +1017,14 @@ export class CDLODRendererGPU {
         this.config.detailFadeStart,        // 44 - detailFadeStart
         this.config.detailFadeEnd,          // 45 - detailFadeEnd
         this.config.detailSlopeInfluence,   // 46 - detailSlopeInfluence
-        0.0                                 // 47 - _pad1
+        this.config.displacementScale       // 47 - displacementScale (POM height in world units)
       )
-      // Island mode parameters (48-51)
+      // Island mode parameters + POM config (48-51)
       .vec4(
         island?.enabled ? 1.0 : 0.0,        // 48 - islandEnabled
         island?.seaFloorDepth ?? -0.3,      // 49 - seaFloorDepth
-        0.0,                                // 50 - _pad2
-        0.0                                 // 51 - _pad3
+        this.config.pomMinSteps,            // 50 - pomMinSteps
+        this.config.pomMaxSteps             // 51 - pomMaxSteps
       )
       // Bounds overlay parameters (52-59)
       .vec4(

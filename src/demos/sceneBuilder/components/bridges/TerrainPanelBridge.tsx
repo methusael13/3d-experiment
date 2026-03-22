@@ -6,16 +6,14 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'preact/hooks';
 import { useComputed } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
-import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, type MaterialParams as TerrainMaterialParams, type DetailParams, type BiomeType, type BiomeTextureConfig } from '../panels';
+import { TerrainPanel, TERRAIN_PRESETS, type NoiseParams, type ErosionParams, type MaterialParams as TerrainMaterialParams, type DetailParams, type BiomeType } from '../panels';
 import type { LayersSectionProps } from '../panels';
 import type { TerrainLayer, TerrainLayerType, TerrainLayerBounds } from '../../../../core/terrain/types';
-import type { Asset } from '../hooks/useAssetLibrary';
 import { BiomeMaskPanelBridge } from './BiomeMaskPanelBridge';
 import { VegetationPanelBridge } from './VegetationPanelBridge';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
 import { debounce } from '../../../../core/utils/debounce';
-import { TerrainManager, TextureType } from '@/core/terrain';
-import { AssetFile } from 'server/types';
+import { TerrainManager } from '@/core/terrain';
 import { BoundsComponent } from '@/core/ecs';
 
 // ==================== Default Parameter Sets ====================
@@ -589,52 +587,23 @@ export function ConnectedTerrainPanel({
     setVegetationEditorVisible(false);
   }, []);
   
-  // Handle biome texture selection from MaterialSection
-  const handleBiomeTextureSelect = useCallback(async (
+  /**
+   * Handle biome material selection from MaterialSection.
+   * Delegates to TerrainManager.setBiomeMaterial() which reads the MaterialDefinition
+   * from the registry and maps all texture slots to terrain texture arrays.
+   */
+  const handleBiomeMaterialSelect = useCallback(async (
     biome: BiomeType,
-    asset: Asset | null,
+    materialId: string | null,
     tilingScale: number
   ) => {
     const terrainInfo = selectedTerrainInfo.value;
     if (terrainInfo?.type !== 'webgpu' || !terrainInfo.manager) {
-      console.warn('[TerrainPanelBridge] Cannot set biome texture - no terrain manager');
+      console.warn('[TerrainPanelBridge] Cannot set biome material - no terrain manager');
       return;
     }
-
-    const findAndSetTextureType = async (assetFiles: AssetFile[], type: TextureType) => {
-      const texMap = assetFiles.find(f => f.fileSubType === type);
-      if (texMap?.path) {
-        const texUrl = texMap.path;
-        console.log(`[TerrainPanelBridge] Loading ${biome} ${type} from ${texUrl}`);
-        await manager.setBiomeTexture(biome, type, texUrl, tilingScale);
-      }
-    }
     
-    const manager = terrainInfo.manager;
-    
-    if (asset) {
-      // Find the basecolor/albedo texture URL from asset
-      // Quixel assets have maps array with type: 'basecolor', 'normal', etc.
-      const assetFiles = asset.files;
-      
-      // Get base path from asset
-      const basePath = asset.path.substring(0, asset.path.lastIndexOf('/'));
-      
-      // Find basecolor/albedo map
-      await findAndSetTextureType(assetFiles, 'albedo');
-      // Find normal map
-      await findAndSetTextureType(assetFiles, 'normal');
-      // Find ao map
-      await findAndSetTextureType(assetFiles, 'ao');
-      
-      // Update tiling
-      manager.setBiomeTiling(biome, tilingScale);
-    } else {
-      // Clear the texture
-      manager.clearBiomeTexture(biome, 'albedo');
-      manager.clearBiomeTexture(biome, 'normal');
-      manager.clearBiomeTexture(biome, 'ao');
-    }
+    await terrainInfo.manager.setBiomeMaterial(biome, materialId, tilingScale);
   }, [selectedTerrainInfo]);
 
   // Only render if terrain is selected
@@ -667,7 +636,7 @@ export function ConnectedTerrainPanel({
       onOpenPlantRegistry={handleOpenVegetationEditor}
       isTerrainReady={isTerrainReady}
       hasFlowMap={hasFlowMap}
-      onBiomeTextureSelect={handleBiomeTextureSelect}
+      onBiomeMaterialSelect={handleBiomeMaterialSelect}
       layersProps={{
         layers,
         selectedLayerId,

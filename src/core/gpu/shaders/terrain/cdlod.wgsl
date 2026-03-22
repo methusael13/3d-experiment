@@ -1,9 +1,11 @@
 // CDLOD Terrain Rendering Shader
 // Continuous Distance-Dependent Level of Detail terrain shader with morphing
 // Designed to work with CDLODRendererGPU
+// Features: Distance-based shading LOD, Parallax Occlusion Mapping (POM)
 
 // Constants
 const PI: f32 = 3.14159265359;
+const DEFAULT_TERRAIN_ROUGHNESS: f32 = 1.0;
 
 // ============================================================================
 // Uniform Structures
@@ -27,12 +29,12 @@ struct Uniforms {
   detailFadeStart: f32,           // 44 - distance where detail starts fading
   detailFadeEnd: f32,             // 45 - distance where detail is fully faded
   detailSlopeInfluence: f32,      // 46 - how much slope affects detail (0-1)
-  _pad1: f32,                     // 47
-  // Island mode parameters
+  displacementScale: f32,         // 47 - POM displacement height in world units
+  // Island mode parameters + POM config
   islandEnabled: f32,             // 48 - 0 = disabled, 1 = enabled
   seaFloorDepth: f32,             // 49 - ocean floor depth (negative, e.g., -0.3)
-  _pad2: f32,                     // 50
-  _pad3: f32,                     // 51
+  pomMinSteps: f32,               // 50 - minimum POM ray-march steps
+  pomMaxSteps: f32,               // 51 - maximum POM ray-march steps
   // Bounds overlay parameters (for layer bounds visualization)
   boundsOverlayCenterX: f32,      // 52
   boundsOverlayCenterZ: f32,      // 53
@@ -90,13 +92,15 @@ const BIOME_ROCK: i32 = 1;
 const BIOME_FOREST: i32 = 2;
 
 // Biome texture parameters uniform (matches BiomeTextureUniformData in types.ts)
-// Simplified for 3 biomes (grass, rock, forest)
+// Simplified for 3 biomes (grass, rock, forest) — 6 vec4f = 96 bytes
 struct BiomeTextureParams {
   // Enable flags (1.0 = enabled, 0.0 = disabled) - vec4f aligned
   // [grass, rock, forest, unused]
   albedoEnabled: vec4f,
   normalEnabled: vec4f,
   aoEnabled: vec4f,
+  roughnessEnabled: vec4f,
+  displacementEnabled: vec4f,
   
   // Tiling scales (world units per texture tile) - vec4f aligned
   // [grass, rock, forest, unused]
@@ -107,22 +111,25 @@ struct BiomeTextureParams {
 @group(1) @binding(0) var biomeAlbedoArray: texture_2d_array<f32>;
 @group(1) @binding(1) var biomeNormalArray: texture_2d_array<f32>;
 @group(1) @binding(2) var biomeAoArray: texture_2d_array<f32>;
+@group(1) @binding(3) var biomeRoughnessArray: texture_2d_array<f32>;
+@group(1) @binding(4) var biomeDisplacementArray: texture_2d_array<f32>;
 
 // Sampler for biome textures
-@group(1) @binding(3) var biomeSampler: sampler;
+@group(1) @binding(5) var biomeSampler: sampler;
 
 // Biome parameters uniform
-@group(1) @binding(4) var<uniform> biomeParams: BiomeTextureParams;
+@group(1) @binding(6) var<uniform> biomeParams: BiomeTextureParams;
 
 // ============================================================================
 // Environment Bindings (Group 3) - IBL + CSM for ambient lighting and shadows
 // ============================================================================
 
-// Terrain only uses diffuse IBL from SceneEnvironment (non-metallic surface)
-// Specular IBL (env_iblSpecular, env_brdfLut) not needed for diffuse terrain
-// NOTE: Other bindings (0,1,3,4,6) exist in SceneEnvironment but are unused here
+// Full IBL from SceneEnvironment for PBR terrain shading
 @group(3) @binding(2) var env_iblDiffuse: texture_cube<f32>;
+@group(3) @binding(3) var env_iblSpecular: texture_cube<f32>;
+@group(3) @binding(4) var env_brdfLut: texture_2d<f32>;
 @group(3) @binding(5) var env_cubeSampler: sampler;
+@group(3) @binding(6) var env_lutSampler: sampler;
 
 // CSM (Cascaded Shadow Maps) bindings from SceneEnvironment
 @group(3) @binding(7) var csmShadowArray: texture_depth_2d_array;
@@ -176,7 +183,7 @@ fn sampleVegetationShadow(worldPos: vec3f) -> f32 {
     return 1.0;
   }
   
-  let bias = 0.003;
+  let bias = 0.0003;
   let ts = vegShadow.texelSize;
   
   // 3×3 PCF for soft vegetation shadows
@@ -311,7 +318,7 @@ fn computeTerrainMultiLight(worldPos: vec3f, normal: vec3f) -> vec3f {
 }
 
 fn sampleIBLDiffuse(worldNormal: vec3f) -> vec3f {
-  return textureSample(env_iblDiffuse, env_cubeSampler, worldNormal).rgb;
+  return textureSampleLevel(env_iblDiffuse, env_cubeSampler, worldNormal, 0.0).rgb;
 }
 
 // ============================================================================
@@ -333,73 +340,80 @@ fn getBiomeAoEnabled(layer: i32) -> f32 {
   return biomeParams.aoEnabled[layer];
 }
 
+// Helper: Get roughness enabled flag for a biome layer (0-2: grass, rock, forest)
+fn getBiomeRoughnessEnabled(layer: i32) -> f32 {
+  return biomeParams.roughnessEnabled[layer];
+}
+
+// Helper: Get displacement enabled flag for a biome layer (0-2: grass, rock, forest)
+fn getBiomeDisplacementEnabled(layer: i32) -> f32 {
+  return biomeParams.displacementEnabled[layer];
+}
+
 // Helper: Get tiling scale for a biome layer (0-2: grass, rock, forest)
 fn getBiomeTiling(layer: i32) -> f32 {
   return biomeParams.tilingScales[layer];
 }
 
 // Sample biome albedo from texture array with fallback to solid color
-// layer: biome layer index (0-2: grass, rock, forest)
-// worldXZ: world position for UV calculation
-// fallbackColor: solid color to use when texture not enabled
 fn sampleBiomeAlbedoArray(
   layer: i32,
-  worldXZ: vec2f,
-  fallbackColor: vec3f
+  worldUV: vec2f,
+  fallbackColor: vec3f,
+  uvDdx: vec2f, uvDdy: vec2f
 ) -> vec3f {
-  let tiling = getBiomeTiling(layer);
-  let worldUV = worldXZ / tiling;
   let enabled = getBiomeAlbedoEnabled(layer);
-  
-  // Sample texture array (always sample to maintain uniform control flow)
-  let texColor = textureSample(biomeAlbedoArray, biomeSampler, worldUV, layer).rgb;
-  // Select between texture and fallback based on enabled flag
+  let texColor = textureSampleGrad(biomeAlbedoArray, biomeSampler, worldUV, layer, uvDdx, uvDdy).rgb;
   return select(fallbackColor, texColor, enabled > 0.5);
 }
 
 // Sample biome normal from texture array and unpack from [0,1] to [-1,1]
-// Returns Y-up tangent space normal, or (0,1,0) if not enabled
-// layer: biome layer index (0-2: grass, rock, forest)
-// worldXZ: world position for UV calculation
 fn sampleBiomeNormalArray(
   layer: i32,
-  worldXZ: vec2f
+  worldUV: vec2f,
+  uvDdx: vec2f, uvDdy: vec2f
 ) -> vec3f {
-  let tiling = getBiomeTiling(layer);
-  let worldUV = worldXZ / tiling;
   let enabled = getBiomeNormalEnabled(layer);
-  
-  // Sample normal map array (always sample for uniform control flow)
-  let texNormal = textureSample(biomeNormalArray, biomeSampler, worldUV, layer).rgb;
-  // Unpack from [0,1] to [-1,1] (standard normal map encoding)
+  let texNormal = textureSampleGrad(biomeNormalArray, biomeSampler, worldUV, layer, uvDdx, uvDdy).rgb;
   let unpacked = texNormal * 2.0 - 1.0;
-  // Ensure Y-up convention (some normal maps have Y inverted)
   let normalTangent = vec3f(unpacked.x, unpacked.y, unpacked.z);
-  // Return flat normal if not enabled
   return select(vec3f(0.0, 1.0, 0.0), normalize(normalTangent), enabled > 0.5);
 }
 
-// Sample biome AO (ambient occlusion) from texture array
-// Returns AO value (0 = fully occluded, 1 = no occlusion), or 1.0 if not enabled
-// layer: biome layer index (0-2: grass, rock, forest)
-// worldXZ: world position for UV calculation
+// Sample biome AO from texture array
 fn sampleBiomeAoArray(
   layer: i32,
-  worldXZ: vec2f
+  worldUV: vec2f,
+  uvDdx: vec2f, uvDdy: vec2f
 ) -> f32 {
-  let tiling = getBiomeTiling(layer);
-  let worldUV = worldXZ / tiling;
   let enabled = getBiomeAoEnabled(layer);
-  
-  // Sample AO map array (always sample for uniform control flow)
-  // AO is stored in the R channel (grayscale texture)
-  let texAo = textureSample(biomeAoArray, biomeSampler, worldUV, layer).r;
-  // Return 1.0 (no occlusion) if not enabled
+  let texAo = textureSampleGrad(biomeAoArray, biomeSampler, worldUV, layer, uvDdx, uvDdy).r;
   return select(1.0, texAo, enabled > 0.5);
 }
 
+// Sample biome roughness from texture array
+fn sampleBiomeRoughnessArray(
+  layer: i32,
+  worldUV: vec2f,
+  uvDdx: vec2f, uvDdy: vec2f
+) -> f32 {
+  let enabled = getBiomeRoughnessEnabled(layer);
+  let texRoughness = textureSampleGrad(biomeRoughnessArray, biomeSampler, worldUV, layer, uvDdx, uvDdy).r;
+  return select(DEFAULT_TERRAIN_ROUGHNESS, texRoughness, enabled > 0.5);
+}
+
+// Sample biome displacement height from texture array (R channel, 0=low, 1=high)
+// Uses textureSampleLevel to avoid uniform control flow issues
+fn sampleBiomeDisplacement(
+  layer: i32,
+  worldUV: vec2f
+) -> f32 {
+  let enabled = getBiomeDisplacementEnabled(layer);
+  let texDisp = textureSampleLevel(biomeDisplacementArray, biomeSampler, worldUV, layer, 0.0).r;
+  return select(0.0, texDisp, enabled > 0.5);
+}
+
 // Blend 3 biome normals weighted by biome weights (grass, rock, forest)
-// Uses simple weighted average for terrain blending
 fn blendBiomeNormals(
   grassNormal: vec3f, grassWeight: f32,
   rockNormal: vec3f, rockWeight: f32,
@@ -411,7 +425,7 @@ fn blendBiomeNormals(
   return normalize(blended);
 }
 
-// Blend 3 biome AO values weighted by biome weights (grass, rock, forest)
+// Blend 3 biome AO values weighted by biome weights
 fn blendBiomeAo(
   grassAo: f32, grassWeight: f32,
   rockAo: f32, rockWeight: f32,
@@ -426,22 +440,16 @@ fn blendBiomeAo(
 // Biome Mask Sampling
 // ============================================================================
 
-// Sample biome mask at UV coordinates
-// Returns vec3(grassWeight, rockWeight, forestWeight) from the biome mask texture
-// Biome mask: R=grass, G=rock, B=forest (generated by BiomeMaskGenerator)
-fn sampleBiomeMaskWeights(uv: vec2f) -> vec3f {
+fn sampleBiomeMaskWeights(uv: vec2f, uvDdx: vec2f, uvDdy: vec2f) -> vec3f {
   let clampedUV = clamp(uv, vec2f(0.0), vec2f(1.0));
-  let biome = textureSample(biomeMask, texSampler, clampedUV);
+  let biome = textureSampleGrad(biomeMask, texSampler, clampedUV, uvDdx, uvDdy);
   return vec3f(biome.r, biome.g, biome.b);
 }
 
 // ============================================================================
-// Bounds Overlay SDF (for layer bounds visualization on terrain surface)
+// Bounds Overlay SDF
 // ============================================================================
 
-// Compute oriented-rect mask for the bounds overlay.
-// Returns 1.0 inside the rect, feathered to 0.0 outside.
-// Ported from terrain-layer-composite.wgsl computeOrientedRectMask().
 fn computeBoundsOverlayMask(worldXZ: vec2f) -> f32 {
   if (uniforms.boundsOverlayEnabled < 0.5) {
     return 0.0;
@@ -452,7 +460,6 @@ fn computeBoundsOverlayMask(worldXZ: vec2f) -> f32 {
   let rotation = uniforms.boundsOverlayRotation;
   let featherWidth = uniforms.boundsOverlayFeatherWidth;
 
-  // Transform world position to layer-local space
   let cosR = cos(rotation);
   let sinR = sin(rotation);
   let offset = worldXZ - center;
@@ -461,24 +468,224 @@ fn computeBoundsOverlayMask(worldXZ: vec2f) -> f32 {
     -offset.x * sinR + offset.y * cosR
   );
 
-  // Box SDF: distance to nearest edge (positive = outside)
   let d = abs(local) - halfExtent;
   let outside = length(max(d, vec2f(0.0)));
 
-  // Feathered falloff: 1.0 inside, smoothstep to 0.0 over featherWidth
   if (featherWidth <= 0.0) {
     return select(0.0, 1.0, outside <= 0.0);
   }
   return 1.0 - smoothstep(0.0, featherWidth, outside);
 }
 
-// Simplified IBL for terrain - diffuse only (terrain is non-metallic)
-// Uses diffuse cubemap to replace flat ambient color
+// ============================================================================
+// PBR Functions for Terrain (GGX Cook-Torrance BRDF)
+// ============================================================================
+
+const PBR_EPSILON: f32 = 0.0001;
+
+fn terrainFresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {
+  return F0 + (vec3f(1.0) - F0) * pow(saturate(1.0 - cosTheta), 5.0);
+}
+
+fn terrainFresnelSchlickRoughness(cosTheta: f32, F0: vec3f, roughness: f32) -> vec3f {
+  return F0 + (max(vec3f(1.0 - roughness), F0) - F0) * pow(saturate(1.0 - cosTheta), 5.0);
+}
+
+fn terrainDistributionGGX(NdotH: f32, roughness: f32) -> f32 {
+  let a = roughness * roughness;
+  let a2 = a * a;
+  let NdotH2 = NdotH * NdotH;
+  let denom = NdotH2 * (a2 - 1.0) + 1.0;
+  return a2 / (PI * denom * denom + PBR_EPSILON);
+}
+
+fn terrainGeometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {
+  let r = roughness + 1.0;
+  let k = (r * r) / 8.0;
+  return NdotV / (NdotV * (1.0 - k) + k + PBR_EPSILON);
+}
+
+fn terrainGeometrySmith(NdotV: f32, NdotL: f32, roughness: f32) -> f32 {
+  return terrainGeometrySchlickGGX(NdotV, roughness) * terrainGeometrySchlickGGX(NdotL, roughness);
+}
+
+// Full PBR directional light (Cook-Torrance BRDF) — NEAR tier only
+fn terrainPBRDirectional(
+  N: vec3f, V: vec3f, L: vec3f,
+  albedo: vec3f, metallic: f32, roughness: f32,
+  lightColor: vec3f
+) -> vec3f {
+  let H = normalize(V + L);
+  let NdotL = max(dot(N, L), 0.0);
+  let NdotV = max(dot(N, V), PBR_EPSILON);
+  let NdotH = max(dot(N, H), 0.0);
+  let VdotH = max(dot(V, H), 0.0);
+  
+  if (NdotL <= 0.0) { return vec3f(0.0); }
+  
+  let clampedRoughness = clamp(roughness, 0.04, 1.0);
+  let F0 = mix(vec3f(0.04), albedo, metallic);
+  
+  let D = terrainDistributionGGX(NdotH, clampedRoughness);
+  let G = terrainGeometrySmith(NdotV, NdotL, clampedRoughness);
+  let F = terrainFresnelSchlick(VdotH, F0);
+  
+  let specular = (D * G * F) / (4.0 * NdotV * NdotL + PBR_EPSILON);
+  let kS = F;
+  let kD = (vec3f(1.0) - kS) * (1.0 - metallic);
+  let diffuse = kD * albedo / PI;
+  
+  return (diffuse + specular) * lightColor * NdotL;
+}
+
+// Full PBR IBL (diffuse + specular) — NEAR tier only
+fn calculateTerrainPBRIBL(
+  N: vec3f, V: vec3f,
+  albedo: vec3f, metallic: f32, roughness: f32
+) -> vec3f {
+  let NdotV = max(dot(N, V), PBR_EPSILON);
+  let F0 = mix(vec3f(0.04), albedo, metallic);
+  
+  // Diffuse IBL (use textureSampleLevel for non-uniform control flow safety)
+  let irradiance = textureSampleLevel(env_iblDiffuse, env_cubeSampler, N, 0.0).rgb;
+  let F_diff = terrainFresnelSchlickRoughness(NdotV, F0, roughness);
+  let kD = (vec3f(1.0) - F_diff) * (1.0 - metallic);
+  let diffuseIBL = kD * irradiance * albedo;
+  
+  // Specular IBL
+  let R = reflect(-V, N);
+  let maxMipLevel = 6.0;
+  let specularColor = textureSampleLevel(env_iblSpecular, env_cubeSampler, R, roughness * maxMipLevel).rgb;
+  let brdf = textureSampleLevel(env_brdfLut, env_lutSampler, vec2f(NdotV, roughness), 0.0).rg;
+  let F_spec = terrainFresnelSchlickRoughness(NdotV, F0, roughness);
+  let specularIBL = specularColor * (F_spec * brdf.x + brdf.y);
+  
+  return diffuseIBL + specularIBL;
+}
+
+// Simplified Lambert-only directional — FAR tier (no GGX, no Fresnel, no geometry term)
+fn terrainLambertDirectional(
+  N: vec3f, L: vec3f,
+  albedo: vec3f,
+  lightColor: vec3f
+) -> vec3f {
+  let NdotL = max(dot(N, L), 0.0);
+  return albedo / PI * lightColor * NdotL;
+}
+
+// Simplified diffuse-only IBL — FAR tier (skip specular cubemap + BRDF LUT)
+fn calculateTerrainDiffuseOnlyIBL(
+  N: vec3f,
+  albedo: vec3f
+) -> vec3f {
+  let irradiance = textureSampleLevel(env_iblDiffuse, env_cubeSampler, N, 0.0).rgb;
+  return irradiance * albedo / PI;
+}
+
 fn calculateTerrainIBL(worldNormal: vec3f, albedo: vec3f) -> vec3f {
-  // Sample diffuse irradiance (already convolved for hemisphere)
   let irradiance = sampleIBLDiffuse(worldNormal);
-  // Apply moderate intensity for natural outdoor lighting
   return irradiance / PI * albedo;
+}
+
+// ============================================================================
+// POM (Parallax Occlusion Mapping) Functions
+// ============================================================================
+
+// Perform steep parallax ray-march + binary refinement for a single biome layer.
+// Returns the shifted worldUV after POM displacement.
+// viewDirTS: view direction in tangent space (must point INTO the surface, i.e., towards negative Z)
+// worldUV: original tiling UV for this biome
+// layer: biome layer index (0-2)
+// heightScale: displacement height scaled by distance fade
+fn performPOM(
+  viewDirTS: vec3f,
+  worldUV: vec2f,
+  layer: i32,
+  heightScale: f32
+) -> vec2f {
+  // Skip if no displacement texture or zero scale
+  if (getBiomeDisplacementEnabled(layer) < 0.5 || heightScale <= 0.0) {
+    return worldUV;
+  }
+  
+  // Adaptive step count: more steps at grazing angles
+  let NdotV = abs(viewDirTS.z);
+  let numSteps = i32(mix(uniforms.pomMaxSteps, uniforms.pomMinSteps, NdotV));
+  let layerDepth = 1.0 / f32(numSteps);
+  
+  // Direction to march along (XY of view dir, scaled by height)
+  let p = viewDirTS.xy / max(abs(viewDirTS.z), 0.001) * heightScale;
+  let deltaUV = p / f32(numSteps);
+  
+  // Linear search: march from top (depth=0) to bottom (depth=1)
+  // Use textureSampleLevel(mip=0) instead of textureSample to satisfy uniform control flow
+  var currentUV = worldUV;
+  var currentDepth = 0.0;
+  var currentHeight = 1.0 - textureSampleLevel(biomeDisplacementArray, biomeSampler, currentUV, layer, 0.0).r;
+  
+  for (var i = 0; i < numSteps; i++) {
+    if (currentDepth >= currentHeight) {
+      break;
+    }
+    currentUV -= deltaUV;
+    currentDepth += layerDepth;
+    currentHeight = 1.0 - textureSampleLevel(biomeDisplacementArray, biomeSampler, currentUV, layer, 0.0).r;
+  }
+  
+  // Binary refinement (3 iterations) for precise intersection
+  var prevUV = currentUV + deltaUV;
+  var prevDepth = currentDepth - layerDepth;
+  
+  for (var j = 0; j < 3; j++) {
+    let midUV = (currentUV + prevUV) * 0.5;
+    let midDepth = (currentDepth + prevDepth) * 0.5;
+    let midHeight = 1.0 - textureSampleLevel(biomeDisplacementArray, biomeSampler, midUV, layer, 0.0).r;
+    
+    if (midDepth >= midHeight) {
+      currentUV = midUV;
+      currentDepth = midDepth;
+    } else {
+      prevUV = midUV;
+      prevDepth = midDepth;
+    }
+  }
+  
+  return currentUV;
+}
+
+// POM self-shadow: cast a second ray from the POM intersection toward the light.
+// Returns shadow factor (0 = fully shadowed, 1 = fully lit).
+fn pomSelfShadow(
+  lightDirTS: vec3f,
+  worldUV: vec2f,
+  layer: i32,
+  heightScale: f32,
+  currentHeight: f32
+) -> f32 {
+  if (getBiomeDisplacementEnabled(layer) < 0.5 || heightScale <= 0.0) {
+    return 1.0;
+  }
+  
+  // March toward light, check if any height occludes
+  let numSteps = 8;
+  let p = lightDirTS.xy / max(abs(lightDirTS.z), 0.001) * heightScale;
+  let deltaUV = p / f32(numSteps);
+  let layerDepth = 1.0 / f32(numSteps);
+  
+  var sampleUV = worldUV;
+  var sampleDepth = currentHeight;
+  
+  for (var i = 0; i < numSteps; i++) {
+    sampleUV += deltaUV;
+    sampleDepth -= layerDepth;
+    let h = 1.0 - textureSampleLevel(biomeDisplacementArray, biomeSampler, sampleUV, layer, 0.0).r;
+    if (h < sampleDepth) {
+      // An occluder found — shadow
+      return 0.0;
+    }
+  }
+  
+  return 1.0;
 }
 
 // ============================================================================
@@ -487,15 +694,15 @@ fn calculateTerrainIBL(worldNormal: vec3f, albedo: vec3f) -> vec3f {
 
 struct VertexInput {
   // Per-vertex attributes
-  @location(0) gridPosition: vec2f,  // Grid position (-0.5 to 0.5)
-  @location(1) uv: vec2f,            // UV coordinates (0 to 1)
-  @location(6) isSkirt: f32,         // 1.0 for skirt vertices, 0.0 otherwise
+  @location(0) gridPosition: vec2f,
+  @location(1) uv: vec2f,
+  @location(6) isSkirt: f32,
   
   // Per-instance attributes
-  @location(2) nodeOffset: vec2f,    // Node center XZ in world space
-  @location(3) nodeScale: f32,       // World units per grid vertex
-  @location(4) nodeMorph: f32,       // Morph factor (0-1)
-  @location(5) nodeLOD: f32,         // LOD level
+  @location(2) nodeOffset: vec2f,
+  @location(3) nodeScale: f32,
+  @location(4) nodeMorph: f32,
+  @location(5) nodeLOD: f32,
 }
 
 struct VertexOutput {
@@ -507,95 +714,65 @@ struct VertexOutput {
   @location(4) slope: f32,
   @location(5) lodLevel: f32,
   @location(6) morphFactor: f32,
-  @location(7) lightSpacePos: vec4f,  // Position in light/shadow space
+  @location(7) lightSpacePos: vec4f,
 }
 
 // ============================================================================
 // Noise Functions for Procedural Detail (with Analytical Derivatives)
 // ============================================================================
 
-// Hash function for noise generation (deterministic pseudo-random)
 fn hash2(p: vec2f) -> f32 {
   var p3 = fract(vec3f(p.xyx) * 0.1031);
   p3 = p3 + dot(p3, p3.yzx + 33.33);
   return fract((p3.x + p3.y) * p3.z);
 }
 
-// 2D gradient noise (value noise with smooth interpolation)
 fn gradientNoise2D(p: vec2f) -> f32 {
   let i = floor(p);
   let f = fract(p);
-  
-  // Quintic Hermite interpolation for C2 continuity (smoother than smoothstep)
   let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-  
-  // Sample corners
   let a = hash2(i);
   let b = hash2(i + vec2f(1.0, 0.0));
   let c = hash2(i + vec2f(0.0, 1.0));
   let d = hash2(i + vec2f(1.0, 1.0));
-  
-  // Bilinear interpolation with smooth u
-  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0; // Range [-1, 1]
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 2.0 - 1.0;
 }
 
-// 2D gradient noise WITH derivatives - returns vec3(value, dvalue/dx, dvalue/dy)
 fn gradientNoise2DWithDerivatives(p: vec2f) -> vec3f {
   let i = floor(p);
   let f = fract(p);
-  
-  // Quintic Hermite interpolation: u = 6t^5 - 15t^4 + 10t^3
   let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-  // Derivative of quintic: du/dt = 30t^4 - 60t^3 + 30t^2 = 30t^2(t-1)^2
   let du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
-  
-  // Sample corners (mapped from [0,1] to [-1,1])
   let a = hash2(i) * 2.0 - 1.0;
   let b = hash2(i + vec2f(1.0, 0.0)) * 2.0 - 1.0;
   let c = hash2(i + vec2f(0.0, 1.0)) * 2.0 - 1.0;
   let d = hash2(i + vec2f(1.0, 1.0)) * 2.0 - 1.0;
-  
-  // Bilinear interpolation coefficients
-  // value = a + (b-a)*ux + (c-a)*uy + (a-b-c+d)*ux*uy
   let k0 = a;
   let k1 = b - a;
   let k2 = c - a;
   let k3 = a - b - c + d;
-  
-  // Value
   let value = k0 + k1 * u.x + k2 * u.y + k3 * u.x * u.y;
-  
-  // Derivatives using chain rule
-  // dv/dx = k1 * du.x + k3 * du.x * u.y
-  // dv/dy = k2 * du.y + k3 * u.x * du.y
   let dvdx = du.x * (k1 + k3 * u.y);
   let dvdy = du.y * (k2 + k3 * u.x);
-  
   return vec3f(value, dvdx, dvdy);
 }
 
-// Fractional Brownian Motion (FBM) - multi-octave noise (value only, for vertex shader)
 fn fbm(p: vec2f, octaves: i32) -> f32 {
   var value = 0.0;
   var amplitude = 0.5;
   var frequency = 1.0;
   var totalAmplitude = 0.0;
   var pos = p;
-  
   for (var i = 0; i < octaves; i++) {
     value += amplitude * gradientNoise2D(pos * frequency);
     totalAmplitude += amplitude;
-    amplitude *= 0.5;  // Persistence
-    frequency *= 2.0;  // Lacunarity
-    // Rotate slightly each octave to reduce axis-aligned artifacts
+    amplitude *= 0.5;
+    frequency *= 2.0;
     pos = vec2f(pos.x * 0.866 - pos.y * 0.5, pos.x * 0.5 + pos.y * 0.866);
   }
-  
-  return value / totalAmplitude;  // Normalize to [-1, 1]
+  return value / totalAmplitude;
 }
 
-// FBM with analytical derivatives - returns vec3(value, dv/dx, dv/dy)
-// Used in fragment shader to compute detail normals
 fn fbmWithDerivatives(p: vec2f, octaves: i32) -> vec3f {
   var value = 0.0;
   var deriv = vec2f(0.0);
@@ -603,146 +780,70 @@ fn fbmWithDerivatives(p: vec2f, octaves: i32) -> vec3f {
   var frequency = 1.0;
   var totalAmplitude = 0.0;
   var pos = p;
-  
-  // Rotation matrix for octave variation (30 degrees)
   let cos30 = 0.866;
   let sin30 = 0.5;
-  
-  // Track cumulative rotation for derivative transformation
   var rotCos = 1.0;
   var rotSin = 0.0;
-  
   for (var i = 0; i < octaves; i++) {
     let scaledPos = pos * frequency;
     let noiseResult = gradientNoise2DWithDerivatives(scaledPos);
-    
     value += amplitude * noiseResult.x;
-    
-    // Transform derivatives back through rotation and frequency scaling
-    // The derivative in rotated space needs to be rotated back
     let localDeriv = vec2f(noiseResult.y, noiseResult.z) * frequency;
-    // Rotate derivative back to original coordinate system
     let rotatedDeriv = vec2f(
       localDeriv.x * rotCos + localDeriv.y * rotSin,
       -localDeriv.x * rotSin + localDeriv.y * rotCos
     );
     deriv += amplitude * rotatedDeriv;
-    
     totalAmplitude += amplitude;
-    amplitude *= 0.5;  // Persistence
-    frequency *= 2.0;  // Lacunarity
-    
-    // Rotate position for next octave
+    amplitude *= 0.5;
+    frequency *= 2.0;
     pos = vec2f(pos.x * cos30 - pos.y * sin30, pos.x * sin30 + pos.y * cos30);
-    
-    // Update cumulative rotation
     let newRotCos = rotCos * cos30 - rotSin * sin30;
     let newRotSin = rotCos * sin30 + rotSin * cos30;
     rotCos = newRotCos;
     rotSin = newRotSin;
   }
-  
-  // Normalize
   return vec3f(value, deriv.x, deriv.y) / totalAmplitude;
 }
 
-// Calculate procedural detail height displacement (for vertex shader)
-// Uses slope-dependent noise: rolling clumps on flat, vertical striations on steep
 fn getProceduralDetail(worldXZ: vec2f, distanceToCamera: f32, slope: f32) -> f32 {
-  // Early out if detail is disabled
-  if (uniforms.detailAmplitude <= 0.0) {
-    return 0.0;
-  }
-  
-  // Calculate distance-based fade
+  if (uniforms.detailAmplitude <= 0.0) { return 0.0; }
   let fadeRange = uniforms.detailFadeEnd - uniforms.detailFadeStart;
   let fadeFactor = 1.0 - clamp((distanceToCamera - uniforms.detailFadeStart) / max(fadeRange, 0.001), 0.0, 1.0);
-  
-  // Early out if fully faded
-  if (fadeFactor <= 0.0) {
-    return 0.0;
-  }
-  
-  // ===== Slope-Based Noise Selection =====
-  // Flat areas: low-frequency rolling noise (grass/dirt clumps)
-  // Steep areas: high-frequency noise (rocky details)
-  
-  // Blend factor: 0 = flat (use rolling), 1 = steep (use rocky)
-  let slopeBlendLow = 0.25;  // Below this = fully flat noise
-  let slopeBlendHigh = 0.55; // Above this = fully steep noise
-  let slopeBlend = smoothstep(slopeBlendLow, slopeBlendHigh, slope);
-  // Apply detailSlopeInfluence to control how much slope affects noise type
-  let blendFactor = slopeBlend * uniforms.detailSlopeInfluence;
-  
-  // Flat noise: lower frequency, fewer octaves, smoother "rolling" character
-  let flatFreq = uniforms.detailFrequency * 0.4;
-  let flatCoord = worldXZ * flatFreq;
-  let flatNoise = fbm(flatCoord, 2);  // Only 2 octaves for smooth rolling
-  
-  // Steep noise: higher frequency, more octaves, sharper details
-  let steepFreq = uniforms.detailFrequency * 1.8;
-  let steepCoord = worldXZ * steepFreq;
-  let steepNoise = fbm(steepCoord, max(i32(uniforms.detailOctaves), 4));  // At least 4 octaves for rocky detail
-  
-  // Blend between flat and steep noise based on slope
-  let noiseValue = mix(flatNoise, steepNoise, blendFactor);
-  
-  // Amplitude modulation: steep areas get slightly more amplitude
-  let amplitudeModulation = mix(0.8, 1.2, blendFactor);
-  
-  // Apply amplitude, fade, and modulation
-  return noiseValue * uniforms.detailAmplitude * fadeFactor * amplitudeModulation;
-}
-
-// Calculate procedural detail normal perturbation (for fragment shader)
-// Returns the detail normal in tangent space (Y-up)
-// Uses same slope-based noise blending as getProceduralDetail() for consistency
-fn getProceduralDetailNormal(worldXZ: vec2f, distanceToCamera: f32, slope: f32) -> vec3f {
-  // Default to flat normal if detail is disabled
-  if (uniforms.detailAmplitude <= 0.0) {
-    return vec3f(0.0, 1.0, 0.0);
-  }
-  
-  // Calculate distance-based fade
-  let fadeRange = uniforms.detailFadeEnd - uniforms.detailFadeStart;
-  let fadeFactor = 1.0 - clamp((distanceToCamera - uniforms.detailFadeStart) / max(fadeRange, 0.001), 0.0, 1.0);
-  
-  // Return flat normal if fully faded
-  if (fadeFactor <= 0.0) {
-    return vec3f(0.0, 1.0, 0.0);
-  }
-  
-  // ===== Slope-Based Noise Selection (matches getProceduralDetail) =====
+  if (fadeFactor <= 0.0) { return 0.0; }
   let slopeBlendLow = 0.25;
   let slopeBlendHigh = 0.55;
   let slopeBlend = smoothstep(slopeBlendLow, slopeBlendHigh, slope);
   let blendFactor = slopeBlend * uniforms.detailSlopeInfluence;
-  
-  // Flat noise: lower frequency, fewer octaves
   let flatFreq = uniforms.detailFrequency * 0.4;
-  let flatCoord = worldXZ * flatFreq;
-  let flatResult = fbmWithDerivatives(flatCoord, 2);
-  
-  // Steep noise: higher frequency, more octaves
+  let flatNoise = fbm(worldXZ * flatFreq, 2);
   let steepFreq = uniforms.detailFrequency * 1.8;
-  let steepCoord = worldXZ * steepFreq;
-  let steepResult = fbmWithDerivatives(steepCoord, max(i32(uniforms.detailOctaves), 4));
-  
-  // Blend derivatives based on slope
-  // Note: derivatives need to be scaled by their respective frequencies
+  let steepNoise = fbm(worldXZ * steepFreq, max(i32(uniforms.detailOctaves), 4));
+  let noiseValue = mix(flatNoise, steepNoise, blendFactor);
+  let amplitudeModulation = mix(0.8, 1.2, blendFactor);
+  return noiseValue * uniforms.detailAmplitude * fadeFactor * amplitudeModulation;
+}
+
+fn getProceduralDetailNormal(worldXZ: vec2f, distanceToCamera: f32, slope: f32) -> vec3f {
+  if (uniforms.detailAmplitude <= 0.0) { return vec3f(0.0, 1.0, 0.0); }
+  let fadeRange = uniforms.detailFadeEnd - uniforms.detailFadeStart;
+  let fadeFactor = 1.0 - clamp((distanceToCamera - uniforms.detailFadeStart) / max(fadeRange, 0.001), 0.0, 1.0);
+  if (fadeFactor <= 0.0) { return vec3f(0.0, 1.0, 0.0); }
+  let slopeBlendLow = 0.25;
+  let slopeBlendHigh = 0.55;
+  let slopeBlend = smoothstep(slopeBlendLow, slopeBlendHigh, slope);
+  let blendFactor = slopeBlend * uniforms.detailSlopeInfluence;
+  let flatFreq = uniforms.detailFrequency * 0.4;
+  let flatResult = fbmWithDerivatives(worldXZ * flatFreq, 2);
+  let steepFreq = uniforms.detailFrequency * 1.8;
+  let steepResult = fbmWithDerivatives(worldXZ * steepFreq, max(i32(uniforms.detailOctaves), 4));
   let flatDeriv = vec2f(flatResult.y, flatResult.z) * flatFreq;
   let steepDeriv = vec2f(steepResult.y, steepResult.z) * steepFreq;
   let blendedDeriv = mix(flatDeriv, steepDeriv, blendFactor);
-  
-  // Amplitude modulation (matches getProceduralDetail)
   let amplitudeModulation = mix(0.8, 1.2, blendFactor);
-  
-  // Scale derivatives by amplitude and fade
   let scale = uniforms.detailAmplitude * fadeFactor * amplitudeModulation;
   let dhdx = blendedDeriv.x * scale;
   let dhdz = blendedDeriv.y * scale;
-  
-  // Compute normal from height gradient: n = normalize(-dh/dx, 1, -dh/dz)
   return normalize(vec3f(-dhdx, 1.0, -dhdz));
 }
 
@@ -750,107 +851,60 @@ fn getProceduralDetailNormal(worldXZ: vec2f, distanceToCamera: f32, slope: f32) 
 // Helper Functions
 // ============================================================================
 
-// Convert world XZ position to heightmap UV coordinates
 fn worldToUV(worldXZ: vec2f) -> vec2f {
-  // Terrain is centered at origin, so offset by half terrain size
   let terrainOrigin = vec2f(-uniforms.terrainSize * 0.5);
   return (worldXZ - terrainOrigin) / uniforms.terrainSize;
 }
 
-// Sample island mask at UV coordinates using textureLoad (r32float is unfilterable)
-// Returns 0-1, where 1 = land, 0 = ocean
 fn sampleIslandMask(uv: vec2f) -> f32 {
   let clampedUV = clamp(uv, vec2f(0.0), vec2f(1.0));
-  
-  // Get texture dimensions
   let dims = textureDimensions(islandMask);
-  
-  // Convert UV to texel coordinates (floating point)
   let texelF = clampedUV * vec2f(f32(dims.x) - 1.0, f32(dims.y) - 1.0);
-  
-  // Get integer texel coordinates for the 4 corners
   let texel00 = vec2i(i32(floor(texelF.x)), i32(floor(texelF.y)));
   let texel10 = clamp(texel00 + vec2i(1, 0), vec2i(0), vec2i(i32(dims.x) - 1, i32(dims.y) - 1));
   let texel01 = clamp(texel00 + vec2i(0, 1), vec2i(0), vec2i(i32(dims.x) - 1, i32(dims.y) - 1));
   let texel11 = clamp(texel00 + vec2i(1, 1), vec2i(0), vec2i(i32(dims.x) - 1, i32(dims.y) - 1));
-  
-  // Sample the 4 corners
   let m00 = textureLoad(islandMask, texel00, 0).r;
   let m10 = textureLoad(islandMask, texel10, 0).r;
   let m01 = textureLoad(islandMask, texel01, 0).r;
   let m11 = textureLoad(islandMask, texel11, 0).r;
-  
-  // Bilinear interpolation
-  let frac = fract(texelF);
-  let m0 = mix(m00, m10, frac.x);
-  let m1 = mix(m01, m11, frac.x);
-  return mix(m0, m1, frac.y);
+  let frac_uv = fract(texelF);
+  let m0 = mix(m00, m10, frac_uv.x);
+  let m1 = mix(m01, m11, frac_uv.x);
+  return mix(m0, m1, frac_uv.y);
 }
 
-// Sample height from heightmap texture using textureLoad (r32float is unfilterable)
 fn sampleHeightAt(texCoord: vec2i, mipLevel: i32) -> f32 {
-  // Clamp to texture dimensions
   let dims = textureDimensions(heightmap, mipLevel);
   let clampedCoord = clamp(texCoord, vec2i(0), vec2i(i32(dims.x) - 1, i32(dims.y) - 1));
   return textureLoad(heightmap, clampedCoord, mipLevel).r;
 }
 
-// Sample height with manual bilinear interpolation (since r32float is unfilterable)
 fn sampleHeightSmooth(worldXZ: vec2f, lodLevel: f32) -> f32 {
   let uv = worldToUV(worldXZ);
   let clampedUV = clamp(uv, vec2f(0.0), vec2f(1.0));
-  
-  // Get mip level as integer (floor for the current mip)
   let mipLevel = i32(lodLevel);
   let dims = textureDimensions(heightmap, mipLevel);
-  
-  // Convert UV to texel coordinates (floating point)
   let texelF = clampedUV * vec2f(f32(dims.x) - 1.0, f32(dims.y) - 1.0);
-  
-  // Get integer texel coordinates for the 4 corners
   let texel00 = vec2i(i32(floor(texelF.x)), i32(floor(texelF.y)));
   let texel10 = texel00 + vec2i(1, 0);
   let texel01 = texel00 + vec2i(0, 1);
   let texel11 = texel00 + vec2i(1, 1);
-  
-  // Sample the 4 corners
   let h00 = sampleHeightAt(texel00, mipLevel);
   let h10 = sampleHeightAt(texel10, mipLevel);
   let h01 = sampleHeightAt(texel01, mipLevel);
   let h11 = sampleHeightAt(texel11, mipLevel);
-  
-  // Bilinear interpolation weights
-  let frac = fract(texelF);
-  
-  // Interpolate along X, then along Y
-  let h0 = mix(h00, h10, frac.x);
-  let h1 = mix(h01, h11, frac.x);
-  return mix(h0, h1, frac.y);
+  let frac_uv = fract(texelF);
+  let h0 = mix(h00, h10, frac_uv.x);
+  let h1 = mix(h01, h11, frac_uv.x);
+  return mix(h0, h1, frac_uv.y);
 }
 
-// Sample normal from normal map texture at specified LOD level
 fn sampleNormalWorld(worldXZ: vec2f, lodLevel: f32) -> vec3f {
   let uv = worldToUV(worldXZ);
   let clampedUV = clamp(uv, vec2f(0.0), vec2f(1.0));
-  // Normal map is stored as rgba8snorm which is already in [-1,1] range
-  // No conversion needed
   let normalSample = textureSampleLevel(normalmap, texSampler, clampedUV, lodLevel).rgb;
-  // Ensure Y is up-facing (some normal maps store Y inverted)
   return normalize(vec3f(normalSample.x, normalSample.y, normalSample.z));
-}
-
-// Calculate terrain normal from height samples (fallback if normal map not available)
-fn calculateNormalFromHeight(worldXZ: vec2f, sampleDist: f32, mipLevel: f32) -> vec3f {
-  // Use sampleHeightSmooth for height lookups
-  let hL = sampleHeightSmooth(worldXZ + vec2f(-sampleDist, 0.0), mipLevel);
-  let hR = sampleHeightSmooth(worldXZ + vec2f(sampleDist, 0.0), mipLevel);
-  let hD = sampleHeightSmooth(worldXZ + vec2f(0.0, -sampleDist), mipLevel);
-  let hU = sampleHeightSmooth(worldXZ + vec2f(0.0, sampleDist), mipLevel);
-  
-  let dx = (hR - hL) / (2.0 * sampleDist);
-  let dz = (hU - hD) / (2.0 * sampleDist);
-  
-  return normalize(vec3f(-dx, 1.0, -dz));
 }
 
 // ============================================================================
@@ -861,109 +915,59 @@ fn calculateNormalFromHeight(worldXZ: vec2f, sampleDist: f32, mipLevel: f32) -> 
 fn vs_main(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
   
-  // Calculate world XZ position from grid position and instance data
   var worldXZ = input.gridPosition * input.nodeScale * (uniforms.gridSize - 1.0) + input.nodeOffset;
   
-  // ===== CDLOD Morphing =====
-  // Vertices at "odd" positions in the parent grid need to morph
-  // to the midpoint between their "even" neighbors when transitioning.
-  
   let parentScale = input.nodeScale * 2.0;
-  
-  // Determine if this vertex is at an odd position in parent grid
   let parentGridPos = worldXZ / parentScale;
   let fracPart = fract(parentGridPos + 0.5);
-  
-  // Odd positions are those at 0.5 in fractional space
   let oddX = 1.0 - abs(fracPart.x * 2.0 - 1.0);
   let oddZ = 1.0 - abs(fracPart.y * 2.0 - 1.0);
-  
-  // Apply morph factor to odd vertices
   let morphX = oddX * input.nodeMorph;
   let morphZ = oddZ * input.nodeMorph;
-  
-  // Snap to parent grid positions for morphing
   let snappedXZ = floor(worldXZ / parentScale + 0.5) * parentScale;
-  
-  // Morph world position
   let morphedXZ = vec2f(
     mix(worldXZ.x, snappedXZ.x, morphX),
     mix(worldXZ.y, snappedXZ.y, morphZ)
   );
   
-  // Sample height from heightmap texture at the appropriate LOD mipmap level
-  // Heightmap stores NORMALIZED values in range [-0.5, 0.5]
   var normalizedHeight = sampleHeightSmooth(morphedXZ, input.nodeLOD);
   
-  // Apply island mask if enabled - blend terrain height with sea floor
   if (uniforms.islandEnabled > 0.5) {
     let uv = worldToUV(morphedXZ);
     let mask = sampleIslandMask(uv);
-    // mask: 1 = land (use terrain height), 0 = ocean (use sea floor depth)
     normalizedHeight = mix(uniforms.seaFloorDepth, normalizedHeight, mask);
   }
   
-  // Apply heightScale to convert normalized height to world units
-  // [-0.5, 0.5] * heightScale → [-heightScale/2, +heightScale/2]
   var height = normalizedHeight * uniforms.heightScale;
-  
-  // Sample normal from normal map texture at the appropriate LOD mipmap level
   let normal = sampleNormalWorld(morphedXZ, input.nodeLOD);
-  
-  // Calculate slope from normal (0 = flat, 1 = vertical)
   let slope = 1.0 - normal.y;
-  
-  // Calculate distance from camera to this vertex (for detail fading)
   let cameraXZ = uniforms.cameraPosition.xz;
   let distanceToCamera = length(morphedXZ - cameraXZ);
-  
-  // Add procedural detail for close-up viewing (fills in missing heightmap resolution)
   let proceduralDetail = getProceduralDetail(morphedXZ, distanceToCamera, slope);
   height = height + proceduralDetail;
   
-  // Final world position
   var finalHeight: f32;
-  
-  // Debug mode: flat plane (no height displacement) to visualize heightmap
   if (uniforms.debugMode > 0.5) {
     finalHeight = 0.0;
   } else {
-    finalHeight = height;  // Already scaled to world units (with procedural detail)
-    
-    // For skirt vertices, offset Y downward to create vertical strips
-    // that hide gaps between LOD patches
+    finalHeight = height;
     if (input.isSkirt > 0.5) {
-      // Skirt depth scales with the node scale for consistent coverage
       let skirtOffset = input.nodeScale * (uniforms.gridSize - 1.0) * 0.15;
       finalHeight = height - skirtOffset;
     }
   }
   
   let worldPos = vec3f(morphedXZ.x, finalHeight, morphedXZ.y);
-  
-  // Transform to clip space
   let mvp = uniforms.viewProjectionMatrix * uniforms.modelMatrix;
   output.clipPosition = mvp * vec4f(worldPos, 1.0);
-  
-  // Transform world position
   let worldPos4 = uniforms.modelMatrix * vec4f(worldPos, 1.0);
   output.worldPosition = worldPos4.xyz;
-  
-  // Transform to light space for shadow mapping
   output.lightSpacePos = material.lightSpaceMatrix * worldPos4;
-  
-  // Calculate texture coordinate
   let terrainOrigin = vec2f(-uniforms.terrainSize * 0.5);
   output.texCoord = (morphedXZ - terrainOrigin) / uniforms.terrainSize;
   output.localUV = input.uv;
-  
-  // Normal in world space
   output.normal = normalize((uniforms.modelMatrix * vec4f(normal, 0.0)).xyz);
-  
-  // Calculate slope
   output.slope = 1.0 - normal.y;
-  
-  // Pass through LOD data
   output.lodLevel = input.nodeLOD;
   output.morphFactor = input.nodeMorph;
   
@@ -971,83 +975,62 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 }
 
 // ============================================================================
-// Fragment Shader
+// Fragment Shader Helper: TBN
 // ============================================================================
 
+fn buildTerrainTBN(worldNormal: vec3f) -> mat3x3f {
+  let worldUp = vec3f(0.0, 1.0, 0.0);
+  var tangent = cross(worldUp, worldNormal);
+  let tangentLen = length(tangent);
+  if (tangentLen < 0.001) {
+    tangent = vec3f(1.0, 0.0, 0.0);
+  } else {
+    tangent = tangent / tangentLen;
+  }
+  let bitangent = normalize(cross(worldNormal, tangent));
+  return mat3x3f(tangent, bitangent, worldNormal);
+}
+
+fn blendNormalsUDN(baseN: vec3f, detailN: vec3f) -> vec3f {
+  return normalize(vec3f(baseN.xy + detailN.xy, baseN.z));
+}
+
 // ============================================================================
-// Shadow Sampling Functions
+// Shadow Sampling Functions (unchanged)
 // ============================================================================
 
-// Sample shadow map with comparison (hard shadows)
-// Note: WGSL requires uniform control flow - we must always sample.
-// Bounds checking is done via clamp and blend instead of early return.
 fn sampleShadowHard(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f) -> f32 {
-  // Perspective divide to get NDC coordinates
   let projCoords = lightSpacePos.xyz / lightSpacePos.w;
-  
-  // Transform from NDC [-1,1] to texture UV [0,1]
-  // WebGPU: NDC has Y pointing up, but texture UV has Y pointing down (origin top-left)
-  // So we need to flip Y: shadowUV.y = 1 - (ndc.y * 0.5 + 0.5) = 0.5 - ndc.y * 0.5
   let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
-  
-  // Clamp UV to valid range (must always sample at valid coords)
   let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
-  
-  // Apply slope-dependent receiver-side bias to prevent self-shadowing artifacts
-  // This accounts for:
-  // 1. Procedural detail in main terrain that shadow map doesn't have
-  // 2. LOD differences between shadow map (LOD 0) and visible terrain
-  // 3. Floating point precision at steep angles (high sun elevation)
-  // 4. Larger texel coverage on slopes (main source of artifacts)
   let NdotL = max(dot(normal, lightDir), 0.001);
-  let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL; // tan(acos(NdotL))
+  let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
   let baseBias = 0.0003;
-  let slopeBias = 0.002;
+  let slopeBias = 0.0006;
   let shadowBias = baseBias + clamp(slopeFactor, 0.0, 5.0) * slopeBias;
   let clampedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
-  
-  // Always sample shadow map (uniform control flow)
   let shadowValue = textureSampleCompare(shadowMap, shadowSampler, clampedUV, clampedDepth);
-  
-  // Check if outside shadow map bounds AFTER sampling
-  // If outside bounds, return 1.0 (no shadow)
   let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
   let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
   let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
   let inBounds = inBoundsX * inBoundsY * inBoundsZ;
-  
-  // Return shadow value if in bounds, 1.0 (no shadow) if out of bounds
   return mix(1.0, shadowValue, inBounds);
 }
 
-// Sample shadow map with PCF (soft shadows)
-// Note: WGSL requires uniform control flow - we must always sample.
-// Bounds checking is done via clamp and blend instead of early return.
 fn sampleShadowPCF(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f, kernelSize: i32) -> f32 {
-  // Perspective divide to get NDC coordinates
   let projCoords = lightSpacePos.xyz / lightSpacePos.w;
-  
-  // Transform from NDC [-1,1] to texture UV [0,1]
-  // WebGPU: NDC has Y pointing up, but texture UV has Y pointing down (origin top-left)
-  // So we need to flip Y: shadowUV.y = 1 - (ndc.y * 0.5 + 0.5) = 0.5 - ndc.y * 0.5
   let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
-  
-  // Apply slope-dependent receiver-side bias to prevent self-shadowing artifacts
   let NdotL = max(dot(normal, lightDir), 0.001);
-  let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL; // tan(acos(NdotL))
+  let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
   let baseBias = 0.0003;
-  let slopeBias = 0.002;
+  let slopeBias = 0.0006;
   let shadowBias = baseBias + clamp(slopeFactor, 0.0, 5.0) * slopeBias;
   let biasedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
-  
   let shadowMapSize = textureDimensions(shadowMap);
   let texelSize = vec2f(1.0 / f32(shadowMapSize.x), 1.0 / f32(shadowMapSize.y));
-  
-  // PCF kernel sampling - always sample (uniform control flow)
   var shadow = 0.0;
   let halfKernel = kernelSize / 2;
   var samples = 0.0;
-  
   for (var x = -halfKernel; x <= halfKernel; x++) {
     for (var y = -halfKernel; y <= halfKernel; y++) {
       let offset = vec2f(f32(x), f32(y)) * texelSize;
@@ -1056,17 +1039,11 @@ fn sampleShadowPCF(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f, kernelS
       samples += 1.0;
     }
   }
-  
   let shadowValue = shadow / samples;
-  
-  // Check if outside shadow map bounds AFTER sampling
-  // If outside bounds, return 1.0 (no shadow)
   let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
   let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
   let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
   let inBounds = inBoundsX * inBoundsY * inBoundsZ;
-  
-  // Return shadow value if in bounds, 1.0 (no shadow) if out of bounds
   return mix(1.0, shadowValue, inBounds);
 }
 
@@ -1074,10 +1051,8 @@ fn sampleShadowPCF(lightSpacePos: vec4f, normal: vec3f, lightDir: vec3f, kernelS
 // CSM Shadow Sampling Functions
 // ============================================================================
 
-// Select the appropriate cascade based on view-space depth
 fn selectCascade(viewDepth: f32) -> i32 {
   let cascadeCount = i32(csmUniforms.config.x);
-  // Compare against cascade split distances
   if (viewDepth < csmUniforms.cascadeSplits.x) { return 0; }
   if (viewDepth < csmUniforms.cascadeSplits.y && cascadeCount > 1) { return 1; }
   if (viewDepth < csmUniforms.cascadeSplits.z && cascadeCount > 2) { return 2; }
@@ -1085,7 +1060,6 @@ fn selectCascade(viewDepth: f32) -> i32 {
   return cascadeCount - 1;
 }
 
-// Get cascade split distance by index
 fn getCascadeSplit(cascade: i32) -> f32 {
   if (cascade == 0) { return csmUniforms.cascadeSplits.x; }
   if (cascade == 1) { return csmUniforms.cascadeSplits.y; }
@@ -1093,49 +1067,34 @@ fn getCascadeSplit(cascade: i32) -> f32 {
   return csmUniforms.cascadeSplits.w;
 }
 
-// Project world position to a cascade's shadow UV + depth.
-// Returns vec4(shadowUV.xy, biasedDepth, inBounds) where inBounds > 0.5 means valid.
 fn projectToCascade(worldPos: vec4f, cascade: i32, normal: vec3f, lightDir: vec3f) -> vec4f {
   let lightSpacePos = csmUniforms.viewProjectionMatrices[cascade] * worldPos;
   let projCoords = lightSpacePos.xyz / lightSpacePos.w;
   let shadowUV = vec2f(projCoords.x * 0.5 + 0.5, 0.5 - projCoords.y * 0.5);
-  
-  // Slope-dependent bias scaled to shadow map texel size.
-  // Using a fixed NDC bias (e.g. 0.001) causes visible gaps at peaks because
-  // the ortho Z range can span hundreds of world units, amplifying the bias.
-  // Instead, we use a bias proportional to shadow map texel coverage:
-  // ~1-2 texels of depth offset, which is constant in world-space regardless of Z range.
   let cascadeSize = textureDimensions(csmShadowArray);
-  let texelDepth = 1.0 / f32(cascadeSize.x); // one texel in NDC depth space
+  let texelDepth = 1.0 / f32(cascadeSize.x);
   let NdotL = max(dot(normal, lightDir), 0.001);
   let slopeFactor = sqrt(1.0 - NdotL * NdotL) / NdotL;
-  let baseBias = texelDepth * 0.5; // half a texel base bias
-  let slopeBias = texelDepth * 2.0; // up to 2 texels on slopes
-  let shadowBias = baseBias + clamp(slopeFactor, 0.0, 5.0) * slopeBias;
+  let baseBias = texelDepth * 0.5;
+  let slopeBias_val = texelDepth * 2.0;
+  let shadowBias = baseBias + clamp(slopeFactor, 0.0, 5.0) * slopeBias_val;
   let biasedDepth = clamp(projCoords.z - shadowBias, 0.0, 1.0);
-  
-  // Bounds check: fragment must be within [0,1] in UV and depth
   let inBoundsX = step(0.0, shadowUV.x) * step(shadowUV.x, 1.0);
   let inBoundsY = step(0.0, shadowUV.y) * step(shadowUV.y, 1.0);
   let inBoundsZ = step(0.0, projCoords.z) * step(projCoords.z, 1.0);
   let inBounds = inBoundsX * inBoundsY * inBoundsZ;
-  
   return vec4f(shadowUV, biasedDepth, inBounds);
 }
 
-// Sample a single cascade shadow map - hard shadow (single texel comparison)
 fn sampleCascadeHard(cascade: i32, shadowUV: vec2f, biasedDepth: f32) -> f32 {
   let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
   return textureSampleCompareLevel(csmShadowArray, shadowSampler, clampedUV, cascade, biasedDepth);
 }
 
-// Sample a single cascade shadow map with PCF at the given projection (soft shadows)
 fn sampleCascadePCF(cascade: i32, shadowUV: vec2f, biasedDepth: f32) -> f32 {
   let cascadeSize = textureDimensions(csmShadowArray);
   let texelSize = vec2f(1.0 / f32(cascadeSize.x), 1.0 / f32(cascadeSize.y));
   let clampedUV = clamp(shadowUV, vec2f(0.001), vec2f(0.999));
-  
-  // 3x3 PCF using textureSampleCompareLevel (non-uniform cascade index safe)
   var shadow = 0.0;
   for (var x = -1; x <= 1; x++) {
     for (var y = -1; y <= 1; y++) {
@@ -1147,29 +1106,17 @@ fn sampleCascadePCF(cascade: i32, shadowUV: vec2f, biasedDepth: f32) -> f32 {
   return shadow / 9.0;
 }
 
-// Sample cascade shadow with softness blending (matches single shadow map behavior)
 fn sampleCascadeShadow(cascade: i32, shadowUV: vec2f, biasedDepth: f32) -> f32 {
   let hardShadow = sampleCascadeHard(cascade, shadowUV, biasedDepth);
   let softShadow = sampleCascadePCF(cascade, shadowUV, biasedDepth);
   return mix(hardShadow, softShadow, material.shadowSoftness);
 }
 
-// Sample CSM with cascade fallback for terrain.
-// On terrain, a fragment's world Y may extend above the ortho box of the
-// view-depth-selected cascade (e.g. tall hills). When the selected cascade
-// doesn't cover the fragment (out-of-bounds UV), we promote to the next
-// cascade which has a larger ortho volume. PCF is only applied once we
-// find a valid cascade.
 fn sampleCSMShadow(worldPos: vec4f, viewDepth: f32, normal: vec3f, lightDir: vec3f) -> f32 {
   let startCascade = selectCascade(viewDepth);
   let cascadeCount = i32(csmUniforms.config.x);
-  
-  // Try cascades from the selected one upward until we find one that covers the fragment
   var validCascade = -1;
   var validProj = vec4f(0.0);
-  
-  // Unrolled loop over max 4 cascades for GPU efficiency
-  // (WGSL for-loops with non-const bounds can be problematic on some drivers)
   if (startCascade <= 0 && 0 < cascadeCount && validCascade < 0) {
     let proj = projectToCascade(worldPos, 0, normal, lightDir);
     if (proj.w > 0.5) { validCascade = 0; validProj = proj; }
@@ -1186,20 +1133,11 @@ fn sampleCSMShadow(worldPos: vec4f, viewDepth: f32, normal: vec3f, lightDir: vec
     let proj = projectToCascade(worldPos, 3, normal, lightDir);
     if (proj.w > 0.5) { validCascade = 3; validProj = proj; }
   }
-  
-  // No cascade covers this fragment — fully lit (outside shadow region)
-  if (validCascade < 0) {
-    return 1.0;
-  }
-  
-  // Sample shadow on the valid cascade (respects material.shadowSoftness)
+  if (validCascade < 0) { return 1.0; }
   let shadow0 = sampleCascadeShadow(validCascade, validProj.xy, validProj.z);
-  
-  // Cascade blending: if near the boundary of the valid cascade, blend with the next
   let cascadeSplit = getCascadeSplit(validCascade);
   let blendRegion = cascadeSplit * csmUniforms.config.z;
   let blendStart = cascadeSplit - blendRegion;
-  
   if (viewDepth > blendStart && validCascade < cascadeCount - 1) {
     let nextCascade = validCascade + 1;
     let nextProj = projectToCascade(worldPos, nextCascade, normal, lightDir);
@@ -1209,54 +1147,32 @@ fn sampleCSMShadow(worldPos: vec4f, viewDepth: f32, normal: vec3f, lightDir: vec
       return mix(shadow0, shadow1, blendFactor);
     }
   }
-  
   return shadow0;
 }
 
-// Calculate shadow factor with distance-based fade
-// Supports both single shadow map and CSM modes
 fn calculateShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDir: vec3f) -> f32 {
-  // Calculate distance from camera for fade
   let cameraXZ = uniforms.cameraPosition.xz;
   let fragXZ = worldPos.xz;
   let distanceFromCamera = length(fragXZ - cameraXZ);
-  
-  // Fade shadow at the edge of shadow radius
   let fadeStart = material.shadowRadius * 0.8;
   let fadeEnd = material.shadowRadius;
   let fadeFactor = 1.0 - smoothstep(fadeStart, fadeEnd, distanceFromCamera);
-  
   var shadowValue = 1.0;
-  
-  // Choose shadow method based on CSM enabled flag
   if (material.csmEnabled > 0.5) {
-    // Use CSM (Cascaded Shadow Maps)
-    // Calculate view-space depth using projection onto camera forward axis
     let cameraFwd = normalize(csmUniforms.cameraForward.xyz);
     let viewDepth = abs(dot(worldPos - uniforms.cameraPosition, cameraFwd));
     shadowValue = sampleCSMShadow(vec4f(worldPos, 1.0), viewDepth, normal, lightDir);
   } else {
-    // Use single shadow map
-    // Always sample both methods for uniform control flow
     let hardShadow = sampleShadowHard(lightSpacePos, normal, lightDir);
     let softShadow = sampleShadowPCF(lightSpacePos, normal, lightDir, 3);
     shadowValue = mix(hardShadow, softShadow, material.shadowSoftness);
   }
-  
-  // Apply cloud shadow (multiply CSM shadow with cloud transmittance)
   let cloudShadow = sampleCloudShadowTerrain(worldPos);
   shadowValue = shadowValue * cloudShadow;
-  
-  // Apply vegetation shadow (grass blade shadows on terrain ground)
   shadowValue = shadowValue * sampleVegetationShadow(worldPos);
-  
-  // Apply overcast shadow fade (CSM shadows fade under heavy cloud cover)
   let overcastFade = getOvercastShadowFade();
-  
-  // Apply fade and enable flag
   let enabledFactor = step(0.5, material.shadowEnabled);
   let finalFadeFactor = fadeFactor * enabledFactor * overcastFade;
-  
   return mix(1.0, shadowValue, finalFadeFactor);
 }
 
@@ -1264,302 +1180,263 @@ fn calculateShadow(lightSpacePos: vec4f, worldPos: vec3f, normal: vec3f, lightDi
 // Fragment Shader
 // ============================================================================
 
-// Build a TBN (Tangent-Bitangent-Normal) matrix for transforming tangent-space
-// normals to world space. For terrain, we construct tangent along the world X-axis
-// and derive bitangent from the cross product.
-// worldNormal: the terrain normal in world space (Y-up)
-// Returns: mat3x3f where column 0 = tangent, column 1 = bitangent, column 2 = normal
-fn buildTerrainTBN(worldNormal: vec3f) -> mat3x3f {
-  // For terrain, tangent generally follows world X-axis
-  // We use cross product to compute a tangent perpendicular to the normal
-  let worldUp = vec3f(0.0, 1.0, 0.0);
-  
-  // Compute tangent: perpendicular to normal, in the XZ plane
-  // If normal is nearly vertical, tangent defaults to world X-axis
-  var tangent = cross(worldUp, worldNormal);
-  let tangentLen = length(tangent);
-  if (tangentLen < 0.001) {
-    // Normal is nearly straight up/down, use X-axis as tangent
-    tangent = vec3f(1.0, 0.0, 0.0);
-  } else {
-    tangent = tangent / tangentLen; // normalize
-  }
-  
-  // Compute bitangent: perpendicular to both normal and tangent
-  let bitangent = normalize(cross(worldNormal, tangent));
-  
-  // TBN matrix: transforms from tangent space to world space
-  // Column-major: TBN * tangentSpaceNormal = worldSpaceNormal
-  return mat3x3f(tangent, bitangent, worldNormal);
-}
-
-// Blend two normals using Reoriented Normal Mapping (RNM)
-// This properly combines the base normal with a detail normal
-// baseN: the base/macro normal from heightmap
-// detailN: the detail/micro normal from procedural noise
-fn blendNormalsRNM(baseN: vec3f, detailN: vec3f) -> vec3f {
-  // Reoriented Normal Mapping technique
-  // Ref: https://blog.selfshadow.com/publications/blending-in-detail/
-  let t = baseN + vec3f(0.0, 0.0, 1.0);
-  let u = detailN * vec3f(-1.0, -1.0, 1.0);
-  return normalize(t * dot(t, u) - u * t.z);
-}
-
-// Alternative: UDN (Unreal Developer Network) blending - simpler but less accurate
-fn blendNormalsUDN(baseN: vec3f, detailN: vec3f) -> vec3f {
-  return normalize(vec3f(baseN.xy + detailN.xy, baseN.z));
-}
-
-// ============ Selection Highlight ============
-// Consistent orange outline effect for selected objects (shared with object.wgsl)
-// Uses screen-space normal discontinuity to detect silhouette edges
-
-fn _applySelectionHighlight_REMOVED(color: vec3f, N: vec3f, worldPos: vec3f, cameraPos: vec3f, isSelected: f32) -> vec3f {
-  if (isSelected < 0.5) {
-    return color;
-  }
-  
-  let outlineColor = vec3f(1.0, 0.5, 0.0); // orange
-  
-  // Fresnel rim: surfaces perpendicular to view direction get highlighted
-  let V = normalize(cameraPos - worldPos);
-  let NdotV = max(dot(N, V), 0.0);
-  
-  // rimFactor = 1 at silhouette edges, 0 when facing camera
-  let rimFactor = 1.0 - NdotV;
-  
-  // Sharpen the rim into a narrow band using smoothstep
-  let rim = smoothstep(0.45, 0.85, rimFactor);
-  
-  // Apply strong orange on rim edges
-  var result = mix(color, outlineColor, rim * 0.92);
-  
-  // Very subtle overall tint so the selected object is always distinguishable
-  result = mix(result, outlineColor, 0.05);
-  
-  return result;
-}
-
 struct FragmentOutput {
-  @location(0) color: vec4f,           // HDR scene color
-  @location(1) normals: vec4f,         // World-space normal packed [0,1] + metallic in .w
+  @location(0) color: vec4f,
+  @location(1) normals: vec4f,
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> FragmentOutput {
   var fragOutput: FragmentOutput;
-  // Get base normal from vertex shader (from normal map)
   let baseNormal = normalize(input.normal);
   
-  // Debug mode: show heightmap as grayscale on flat plane
+  // Debug mode
   if (uniforms.debugMode > 0.5) {
-    // Reconstruct world XZ from texCoord (texCoord goes 0-1 over terrain)
     let worldXZ = input.texCoord * uniforms.terrainSize - vec2f(uniforms.terrainSize * 0.5);
-    
-    // Sample heightmap at this fragment's location
-    // Heightmap stores NORMALIZED values in range [-0.5, 0.5]
     let height = sampleHeightSmooth(worldXZ, input.lodLevel);
-    
-    // Convert normalized height [-0.5, 0.5] to display range [0, 1]
     let normalizedHeight = clamp(height + 0.5, 0.0, 1.0);
-    
-    // Add tile boundary visualization (red lines)
     let edgeThreshold = 0.02;
     var patchEdge = 0.0;
     if (input.localUV.x < edgeThreshold || input.localUV.x > 1.0 - edgeThreshold ||
         input.localUV.y < edgeThreshold || input.localUV.y > 1.0 - edgeThreshold) {
       patchEdge = 1.0;
     }
-    
-    // Show heightmap as pure grayscale
     var debugColor = vec3f(normalizedHeight);
-    
-    // Mix with red tile boundary
     debugColor = mix(debugColor, vec3f(1.0, 0.0, 0.0), patchEdge * 0.5);
-    
     fragOutput.color = vec4f(debugColor, 1.0);
     fragOutput.normals = vec4f(0.0, 0.0, 0.0, 0.0);
     return fragOutput;
   }
   
-  // ===== Compute Detail Normal from Procedural Noise =====
-  // Get world XZ position for noise sampling
+  // ===== Compute distances and LOD tier =====
   let worldXZ = input.worldPosition.xz;
-  
-  // Calculate distance from camera for detail fade
   let cameraXZ = uniforms.cameraPosition.xz;
   let distanceToCamera = length(worldXZ - cameraXZ);
   
-  // Get the detail normal from procedural FBM (in world space, Y-up)
-  let detailNormal = getProceduralDetailNormal(worldXZ, distanceToCamera, input.slope);
+  // Distance-based shading LOD: two-tier system
+  // nearFactor: 1.0 = full near tier, 0.0 = full far tier
+  let nearFactor = 1.0 - smoothstep(uniforms.detailFadeStart, uniforms.detailFadeEnd, distanceToCamera);
+  let isNearTier = nearFactor > 0.01;
   
-  // Blend base normal with detail normal
-  // The detail normal is already in world space (Y-up tangent space for terrain)
-  // We use the simpler UDN blend since our base normal may have arbitrary orientation
-  // For terrain with mostly vertical-ish normals, this works well
+  // Procedural detail normal (same for both tiers as it's vertex-level detail)
+  let detailNormal = getProceduralDetailNormal(worldXZ, distanceToCamera, input.slope);
   let blendedNormal = blendNormalsUDN(baseNormal, detailNormal);
   
-  // Normal terrain rendering
-  // Heights are in range [-heightScale/2, +heightScale/2] (centered at Y=0)
-  // Divide by heightScale to get [-0.5, +0.5], then add 0.5 to normalize to [0, 1]
-  let normalizedHeight = (input.worldPosition.y / max(uniforms.heightScale, 1.0)) + 0.5;
-  let slope = input.slope;
+  // ===== Precompute UV derivatives (must be in uniform control flow, before non-uniform branches) =====
+  let tcDdx = dpdx(input.texCoord);
+  let tcDdy = dpdy(input.texCoord);
   
-  // ===== Sample Biome Weights from Biome Mask Texture =====
-  // Biome mask is generated by BiomeMaskGenerator based on height, slope, flow
-  // R = grass probability, G = rock probability, B = forest probability
-  let biomeWeights = sampleBiomeMaskWeights(input.texCoord);
+  // ===== Biome weights =====
+  let biomeWeights = sampleBiomeMaskWeights(input.texCoord, tcDdx, tcDdy);
   var grassWeight = biomeWeights.x;
   var rockWeight = biomeWeights.y;
   var forestWeight = biomeWeights.z;
-  
-  // Normalize weights to ensure they sum to 1
   let totalWeight = grassWeight + rockWeight + forestWeight;
   if (totalWeight > 0.001) {
     grassWeight /= totalWeight;
     rockWeight /= totalWeight;
     forestWeight /= totalWeight;
   } else {
-    // Fallback if biome mask is all black
     grassWeight = 1.0;
     rockWeight = 0.0;
     forestWeight = 0.0;
   }
   
-  // ===== Sample Biome Textures (Albedo) from Texture Arrays =====
-  // Sample albedo textures with fallback to material colors (3 biomes)
-  let grassAlbedoColor = sampleBiomeAlbedoArray(BIOME_GRASS, worldXZ, material.grassColor.rgb);
-  let rockAlbedoColor = sampleBiomeAlbedoArray(BIOME_ROCK, worldXZ, material.rockColor.rgb);
-  let forestAlbedoColor = sampleBiomeAlbedoArray(BIOME_FOREST, worldXZ, material.forestColor.rgb);
+  // ===== Compute tiling UVs per biome =====
+  var grassUV = worldXZ / getBiomeTiling(BIOME_GRASS);
+  var rockUV = worldXZ / getBiomeTiling(BIOME_ROCK);
+  var forestUV = worldXZ / getBiomeTiling(BIOME_FOREST);
   
-  // Blend albedo from sampled textures (or fallback colors)
+  // Precompute per-biome UV gradients (before non-uniform branches)
+  let grassUVDdx = dpdx(grassUV); let grassUVDdy = dpdy(grassUV);
+  let rockUVDdx = dpdx(rockUV); let rockUVDdy = dpdy(rockUV);
+  let forestUVDdx = dpdx(forestUV); let forestUVDdy = dpdy(forestUV);
+  
+  // ===== POM: Parallax Occlusion Mapping (NEAR TIER ONLY) =====
+  // Compute view direction in tangent space for POM
+  if (isNearTier) {
+    let TBN_pom = buildTerrainTBN(blendedNormal);
+    let V_world = normalize(uniforms.cameraPosition - input.worldPosition);
+    // Transform view direction to tangent space (transpose of TBN = inverse for orthonormal basis)
+    let V_tangent = normalize(vec3f(
+      dot(V_world, TBN_pom[0]),
+      dot(V_world, TBN_pom[1]),
+      dot(V_world, TBN_pom[2])
+    ));
+    
+    // Fade POM height to 0 as distance approaches detailFadeStart
+    let pomHeightScale = uniforms.displacementScale * nearFactor;
+    
+    // Perform POM per biome (skip if biome has no displacement or zero weight)
+    if (grassWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_GRASS) > 0.5) {
+      grassUV = performPOM(V_tangent, grassUV, BIOME_GRASS, pomHeightScale);
+    }
+    if (rockWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_ROCK) > 0.5) {
+      rockUV = performPOM(V_tangent, rockUV, BIOME_ROCK, pomHeightScale);
+    }
+    if (forestWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_FOREST) > 0.5) {
+      forestUV = performPOM(V_tangent, forestUV, BIOME_FOREST, pomHeightScale);
+    }
+  }
+  
+  // ===== Sample biome textures using (potentially POM-shifted) UVs =====
+  // Albedo always sampled (needed by both tiers)
+  let grassAlbedoColor = sampleBiomeAlbedoArray(BIOME_GRASS, grassUV, material.grassColor.rgb, grassUVDdx, grassUVDdy);
+  let rockAlbedoColor = sampleBiomeAlbedoArray(BIOME_ROCK, rockUV, material.rockColor.rgb, rockUVDdx, rockUVDdy);
+  let forestAlbedoColor = sampleBiomeAlbedoArray(BIOME_FOREST, forestUV, material.forestColor.rgb, forestUVDdx, forestUVDdy);
   var albedo = grassAlbedoColor * grassWeight
              + rockAlbedoColor * rockWeight
              + forestAlbedoColor * forestWeight;
   
-  // ===== Sample Biome Normal Maps from Texture Arrays =====
-  // Sample normal textures for each biome (3 biomes) - these are in tangent space
-  let grassBiomeNormalTS = sampleBiomeNormalArray(BIOME_GRASS, worldXZ);
-  let rockBiomeNormalTS = sampleBiomeNormalArray(BIOME_ROCK, worldXZ);
-  let forestBiomeNormalTS = sampleBiomeNormalArray(BIOME_FOREST, worldXZ);
+  // ===== Declare variables for both tiers =====
+  var normal = blendedNormal;
+  var biomeAo = 1.0;
+  var terrainRoughness = DEFAULT_TERRAIN_ROUGHNESS;  // Default for far tier
   
-  // ===== Sample Biome AO (Ambient Occlusion) from Texture Arrays =====
-  let grassAo = sampleBiomeAoArray(BIOME_GRASS, worldXZ);
-  let rockAo = sampleBiomeAoArray(BIOME_ROCK, worldXZ);
-  let forestAo = sampleBiomeAoArray(BIOME_FOREST, worldXZ);
-  
-  // Blend AO values weighted by biome presence
-  let biomeAo = blendBiomeAo(grassAo, grassWeight, rockAo, rockWeight, forestAo, forestWeight);
-  
-  // Build TBN matrix to transform biome normals from tangent space to world space
-  // This ensures proper normal blending on steep slopes
-  let TBN = buildTerrainTBN(blendedNormal);
-  
-  // Transform each biome normal from tangent space to world space
-  let grassBiomeNormal = normalize(TBN * grassBiomeNormalTS);
-  let rockBiomeNormal = normalize(TBN * rockBiomeNormalTS);
-  let forestBiomeNormal = normalize(TBN * forestBiomeNormalTS);
-  
-  // Blend biome normals weighted by biome presence (now in world space)
-  let biomeDetailNormal = blendBiomeNormals(
-    grassBiomeNormal, grassWeight,
-    rockBiomeNormal, rockWeight,
-    forestBiomeNormal, forestWeight
-  );
-  
-  // ===== Blend Base Normal with Biome Detail Normals =====
-  // First blend base heightmap normal with procedural detail normal (existing)
-  // Then blend with biome texture normals for additional detail
-  // Sum all normal enable flags to check if any biome normal is active (3 biomes)
-  let hasAnyBiomeNormal = getBiomeNormalEnabled(BIOME_GRASS) + getBiomeNormalEnabled(BIOME_ROCK) 
-                        + getBiomeNormalEnabled(BIOME_FOREST);
-  
-  // If any biome normal maps are enabled, use the TBN-transformed world-space normals
-  var finalBlendedNormal = blendedNormal;
-  if (hasAnyBiomeNormal > 0.0) {
-    // Biome normals are already transformed to world space via TBN
-    // Use weighted blend to combine base terrain normal with biome detail
-    // This preserves the macro terrain shape while adding biome micro-detail
-    finalBlendedNormal = normalize(blendedNormal * 0.5 + biomeDetailNormal * 0.5);
+  // ===== NEAR TIER: Full detail (biome normals, AO, roughness, POM) =====
+  if (isNearTier) {
+    // Sample normal maps with POM-shifted UVs
+    let grassBiomeNormalTS = sampleBiomeNormalArray(BIOME_GRASS, grassUV, grassUVDdx, grassUVDdy);
+    let rockBiomeNormalTS = sampleBiomeNormalArray(BIOME_ROCK, rockUV, rockUVDdx, rockUVDdy);
+    let forestBiomeNormalTS = sampleBiomeNormalArray(BIOME_FOREST, forestUV, forestUVDdx, forestUVDdy);
+    
+    // Sample AO with POM-shifted UVs
+    let grassAo = sampleBiomeAoArray(BIOME_GRASS, grassUV, grassUVDdx, grassUVDdy);
+    let rockAo = sampleBiomeAoArray(BIOME_ROCK, rockUV, rockUVDdx, rockUVDdy);
+    let forestAo = sampleBiomeAoArray(BIOME_FOREST, forestUV, forestUVDdx, forestUVDdy);
+    let nearBiomeAo = blendBiomeAo(grassAo, grassWeight, rockAo, rockWeight, forestAo, forestWeight);
+    
+    // Sample roughness with POM-shifted UVs
+    let grassRoughness = sampleBiomeRoughnessArray(BIOME_GRASS, grassUV, grassUVDdx, grassUVDdy);
+    let rockRoughness = sampleBiomeRoughnessArray(BIOME_ROCK, rockUV, rockUVDdx, rockUVDdy);
+    let forestRoughness = sampleBiomeRoughnessArray(BIOME_FOREST, forestUV, forestUVDdx, forestUVDdy);
+    let nearRoughness = grassRoughness * grassWeight
+                      + rockRoughness * rockWeight
+                      + forestRoughness * forestWeight;
+    
+    // Transform biome normals to world space via TBN
+    let TBN = buildTerrainTBN(blendedNormal);
+    let grassBiomeNormal = normalize(TBN * grassBiomeNormalTS);
+    let rockBiomeNormal = normalize(TBN * rockBiomeNormalTS);
+    let forestBiomeNormal = normalize(TBN * forestBiomeNormalTS);
+    let biomeDetailNormal = blendBiomeNormals(
+      grassBiomeNormal, grassWeight,
+      rockBiomeNormal, rockWeight,
+      forestBiomeNormal, forestWeight
+    );
+    
+    // Blend base normal with biome detail normals
+    let hasAnyBiomeNormal = getBiomeNormalEnabled(BIOME_GRASS) + getBiomeNormalEnabled(BIOME_ROCK) 
+                          + getBiomeNormalEnabled(BIOME_FOREST);
+    var nearNormal = blendedNormal;
+    if (hasAnyBiomeNormal > 0.0) {
+      nearNormal = normalize(blendedNormal * 0.5 + biomeDetailNormal * 0.5);
+    }
+    
+    // Blend near/far based on nearFactor
+    // Near tier normal, AO, roughness fade into far tier values
+    normal = normalize(mix(blendedNormal, nearNormal, nearFactor));
+    biomeAo = mix(1.0, nearBiomeAo, nearFactor);
+    terrainRoughness = mix(DEFAULT_TERRAIN_ROUGHNESS, nearRoughness, nearFactor);
   }
+  // FAR TIER: normal = blendedNormal (heightmap only), biomeAo = 1.0, terrainRoughness = 0.5
   
-  // Use final blended normal for lighting
-  let normal = finalBlendedNormal;
-  
-  // Simple directional lighting with shadows
+  // ===== Lighting =====
+  let terrainMetallic = 0.0;
   let lightDir = normalize(material.lightDir);
-  let NdotL = max(dot(normal, lightDir), 0.0);
-  
-  // Calculate shadow (with slope-dependent bias for artifact-free slopes)
+  let V = normalize(uniforms.cameraPosition - input.worldPosition);
   let shadow = calculateShadow(input.lightSpacePos, input.worldPosition, normal, lightDir);
   
-  // ===== Ambient Lighting: IBL or Flat =====
-  // Use IBL diffuse irradiance if available (from SceneEnvironment Group 3)
-  // IBL provides physically-based ambient that varies with normal direction
-  // Sample raw IBL first (before any scaling) to check availability
-  let rawIBL = calculateTerrainIBL(normal, albedo);
+  // ===== Two-tier shading =====
+  var directColor: vec3f;
+  var ambientColor: vec3f;
   
-  // Scale by ambientIntensity for consistent behavior with object shader
-  let iblAmbient = rawIBL * material.ambientIntensity;
+  if (isNearTier && nearFactor > 0.99) {
+    // Pure near tier: full PBR
+    directColor = terrainPBRDirectional(normal, V, lightDir, albedo, terrainMetallic, terrainRoughness, material.lightColor.rgb) * shadow;
+    let rawPBRIBL = calculateTerrainPBRIBL(normal, V, albedo, terrainMetallic, terrainRoughness);
+    let pbrIBLAmbient = rawPBRIBL * material.ambientIntensity;
+    let flatAmbient = albedo * material.ambientIntensity;
+    let iblStrength = length(rawPBRIBL);
+    let useIBL = step(0.001, iblStrength);
+    ambientColor = mix(flatAmbient, pbrIBLAmbient, useIBL);
+  } else if (!isNearTier) {
+    // Pure far tier: Lambert only (no GGX, no Fresnel, no geometry term)
+    directColor = terrainLambertDirectional(normal, lightDir, albedo, material.lightColor.rgb) * shadow;
+    let diffuseIBL = calculateTerrainDiffuseOnlyIBL(normal, albedo);
+    let diffuseIBLAmbient = diffuseIBL * material.ambientIntensity;
+    let flatAmbient = albedo * material.ambientIntensity;
+    let iblStrength = length(diffuseIBL);
+    let useIBL = step(0.001, iblStrength);
+    ambientColor = mix(flatAmbient, diffuseIBLAmbient, useIBL);
+  } else {
+    // Transition zone: blend near PBR and far Lambert
+    let nearDirect = terrainPBRDirectional(normal, V, lightDir, albedo, terrainMetallic, terrainRoughness, material.lightColor.rgb) * shadow;
+    let farDirect = terrainLambertDirectional(normal, lightDir, albedo, material.lightColor.rgb) * shadow;
+    directColor = mix(farDirect, nearDirect, nearFactor);
+    
+    let nearIBL = calculateTerrainPBRIBL(normal, V, albedo, terrainMetallic, terrainRoughness);
+    let farIBL = calculateTerrainDiffuseOnlyIBL(normal, albedo);
+    let blendedIBL = mix(farIBL, nearIBL, nearFactor);
+    let iblAmbient = blendedIBL * material.ambientIntensity;
+    let flatAmbient = albedo * material.ambientIntensity;
+    let iblStrength = length(blendedIBL);
+    let useIBL = step(0.001, iblStrength);
+    ambientColor = mix(flatAmbient, iblAmbient, useIBL);
+  }
   
-  // Flat ambient fallback (scaled by material intensity)
-  let flatAmbient = albedo * material.ambientIntensity;
-  
-  // Blend between IBL and flat ambient (IBL takes precedence if available)
-  // IBL is considered "available" if it produces non-black values
-  let iblStrength = length(rawIBL);
-  let useIBL = step(0.001, iblStrength);  // 1 if IBL has content, 0 if black
-  let ambientColor = mix(flatAmbient, iblAmbient, useIBL);
-  
-  // Apply biome AO to ambient lighting (AO primarily affects indirect/ambient light)
+  // Apply biome AO to ambient
   let aoAmbientColor = ambientColor * biomeAo;
   
-  // Apply shadow to diffuse component only (ambient is always visible)
-  let diffuse = NdotL * material.lightColor.rgb * shadow;
-  
-  // Multi-light contribution (point + spot lights)
+  // Multi-light contribution
   let multiLight = computeTerrainMultiLight(input.worldPosition, normal) * albedo;
 
-  var finalColor = aoAmbientColor + albedo * diffuse + multiLight;
+  var finalColor = aoAmbientColor + directColor + multiLight;
+  
+  // ===== POM Self-Shadow (NEAR TIER ONLY) =====
+  if (isNearTier && uniforms.displacementScale > 0.0) {
+    let TBN_shadow = buildTerrainTBN(blendedNormal);
+    let L_tangent = normalize(vec3f(
+      dot(lightDir, TBN_shadow[0]),
+      dot(lightDir, TBN_shadow[1]),
+      dot(lightDir, TBN_shadow[2])
+    ));
+    let pomHeightScale = uniforms.displacementScale * nearFactor;
+    var pomShadow = 1.0;
+    // Weighted POM shadow across biomes (use textureSampleLevel for uniform control flow)
+    if (grassWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_GRASS) > 0.5) {
+      let h = 1.0 - textureSampleLevel(biomeDisplacementArray, biomeSampler, grassUV, BIOME_GRASS, 0.0).r;
+      pomShadow = min(pomShadow, mix(1.0, pomSelfShadow(L_tangent, grassUV, BIOME_GRASS, pomHeightScale, h), grassWeight));
+    }
+    if (rockWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_ROCK) > 0.5) {
+      let h = 1.0 - textureSampleLevel(biomeDisplacementArray, biomeSampler, rockUV, BIOME_ROCK, 0.0).r;
+      pomShadow = min(pomShadow, mix(1.0, pomSelfShadow(L_tangent, rockUV, BIOME_ROCK, pomHeightScale, h), rockWeight));
+    }
+    if (forestWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_FOREST) > 0.5) {
+      let h = 1.0 - textureSampleLevel(biomeDisplacementArray, biomeSampler, forestUV, BIOME_FOREST, 0.0).r;
+      pomShadow = min(pomShadow, mix(1.0, pomSelfShadow(L_tangent, forestUV, BIOME_FOREST, pomHeightScale, h), forestWeight));
+    }
+    finalColor *= mix(1.0, pomShadow, nearFactor * 0.7); // Soften POM shadow intensity
+  }
   
   // ===== Vegetation Density Ground Darkening =====
-  // Sample the vegetation density map to analytically darken terrain under vegetation.
-  // This creates a smooth transition between grass blades and the ground surface,
-  // simulating the occlusion from the grass canopy above.
-  let vegDensity = textureSample(vegetationDensityMap, texSampler, input.texCoord).r;
+  let vegDensity = textureSampleGrad(vegetationDensityMap, texSampler, input.texCoord, tcDdx, tcDdy).r;
   if (vegDensity > 0.001) {
-    // Light-direction-aware darkening: overhead sun → less ground shadow,
-    // low-angle sun → deeper shadow under vegetation canopy
     let sunElevation = max(dot(lightDir, vec3f(0.0, 1.0, 0.0)), 0.0);
-    // darkening ranges from 0.4 (heavy canopy, low sun) to 1.0 (no darkening)
     let darkeningAmount = mix(0.1, 0.7, sunElevation);
-    let vegShadow = mix(1.0, darkeningAmount, vegDensity * vegDensity);
-    finalColor *= vegShadow;
+    let vegShadow_val = mix(1.0, darkeningAmount, vegDensity * vegDensity);
+    finalColor *= vegShadow_val;
   }
   
-  // ===== Bounds Overlay (terrain-conforming layer bounds visualization) =====
-  // Rendered as a semi-transparent cyan tint on the terrain surface
+  // ===== Bounds Overlay =====
   let boundsOverlayMask = computeBoundsOverlayMask(worldXZ);
   if (boundsOverlayMask > 0.001) {
-    let overlayColor = vec3f(0.2, 0.8, 1.0); // Cyan
-    let overlayOpacity = boundsOverlayMask * 0.30; // 30% at full mask
+    let overlayColor = vec3f(0.2, 0.8, 1.0);
+    let overlayOpacity = boundsOverlayMask * 0.30;
     finalColor = mix(finalColor, overlayColor, overlayOpacity);
-  }
-  
-  // Selection highlighting is now handled via a separate outline pass (SelectionOutlinePass)
-
-  // Debug: visualize shadow UV coordinates
-  let debugUV = 0.0;
-  if (debugUV > 0.5) {
-    let projCoords = input.lightSpacePos.xyz / input.lightSpacePos.w;
-    let shadowUV = projCoords.xy * 0.5 + 0.5;
-    fragOutput.color = vec4f(shadowUV.x, shadowUV.y, projCoords.z, 1.0);
-    fragOutput.normals = vec4f(0.0, 0.0, 0.0, 0.0);
-    return fragOutput;
   }
 
   fragOutput.color = vec4f(finalColor, 1.0);
-  // Pack world-space normal from [-1,1] to [0,1] for G-buffer; terrain metallic = 0
   fragOutput.normals = vec4f(normal * 0.5 + 0.5, 0.0);
   return fragOutput;
 }

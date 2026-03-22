@@ -39,7 +39,7 @@ export const BIOME_LAYERS = {
 } as const;
 
 export type BiomeType = keyof typeof BIOME_LAYERS;
-export type TextureType = 'albedo' | 'normal' | 'ao';
+export type TextureType = 'albedo' | 'normal' | 'ao' | 'roughness' | 'displacement' | 'bump';
 
 /** Supported texture array resolutions */
 export type BiomeResolution = 1024 | 2048 | 4096;
@@ -101,6 +101,18 @@ const TEXTURE_TYPE_CONFIGS: TextureTypeConfig[] = [
     placeholderColor: [255, 255, 255, 255],  // white (no occlusion)
     label: 'ao',
   },
+  { 
+    name: 'roughness', 
+    bindingIndex: 3, 
+    placeholderColor: [128, 128, 128, 255],  // 0.5 roughness default
+    label: 'roughness',
+  },
+  { 
+    name: 'displacement', 
+    bindingIndex: 4, 
+    placeholderColor: [0, 0, 0, 255],  // zero displacement (black = no height offset)
+    label: 'displacement',
+  },
 ];
 
 /** Sampler binding index (after all texture types) */
@@ -120,14 +132,12 @@ interface CachedSourceImage {
 }
 
 /**
- * Get the config for a texture type
+ * Get the config for a texture type.
+ * Returns null for texture types that don't have GPU array support yet
+ * (e.g., displacement, bump — these are handled at a higher level).
  */
-function getTextureTypeConfig(type: TextureType): TextureTypeConfig {
-  const config = TEXTURE_TYPE_CONFIGS.find(c => c.name === type);
-  if (!config) {
-    throw new Error(`Unknown texture type: ${type}`);
-  }
-  return config;
+function getTextureTypeConfig(type: TextureType): TextureTypeConfig | null {
+  return TEXTURE_TYPE_CONFIGS.find(c => c.name === type) ?? null;
 }
 
 /**
@@ -393,14 +403,14 @@ export class TerrainBiomeTextureResources {
   
   /**
    * Create the params uniform buffer.
-   * Size: 64 bytes for BiomeTextureUniformData (16 floats * 4 bytes) - 4 vec4f
+   * Size: 96 bytes for BiomeTextureUniformData (24 floats * 4 bytes) - 6 vec4f
    */
   private createParamsBuffer(): void {
-    // 64 bytes for BiomeTextureUniformData (16 floats * 4 bytes) - 4 vec4f
-    // [albedoEnabled, normalEnabled, aoEnabled, tilingScales]
+    // 96 bytes for BiomeTextureUniformData (24 floats * 4 bytes) - 6 vec4f
+    // [albedoEnabled, normalEnabled, aoEnabled, roughnessEnabled, displacementEnabled, tilingScales]
     this.paramsBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'terrain-biome-params',
-      size: 64,
+      size: 96,
     });
   }
   
@@ -418,11 +428,15 @@ export class TerrainBiomeTextureResources {
     const albedoResources = this.textureResources.get('albedo')!;
     const normalResources = this.textureResources.get('normal')!;
     const aoResources = this.textureResources.get('ao')!;
+    const roughnessResources = this.textureResources.get('roughness')!;
+    const displacementResources = this.textureResources.get('displacement')!;
     
     for (let i = 0; i < NUM_BIOME_LAYERS; i++) {
       uniformData.albedoEnabled[i] = albedoResources.loadedLayers.has(i) ? 1.0 : 0.0;
       uniformData.normalEnabled[i] = normalResources.loadedLayers.has(i) ? 1.0 : 0.0;
       uniformData.aoEnabled[i] = aoResources.loadedLayers.has(i) ? 1.0 : 0.0;
+      uniformData.roughnessEnabled[i] = roughnessResources.loadedLayers.has(i) ? 1.0 : 0.0;
+      uniformData.displacementEnabled[i] = displacementResources.loadedLayers.has(i) ? 1.0 : 0.0;
     }
     
     // Override tiling scales from our stored values
@@ -587,7 +601,7 @@ export class TerrainBiomeTextureResources {
     const resources = this.textureResources.get(type);
     const config = getTextureTypeConfig(type);
     
-    if (!resources) return;
+    if (!resources || !config) return;
     
     resources.loadedLayers.delete(layer);
     
@@ -711,7 +725,9 @@ export class TerrainBiomeTextureResources {
    * Get the binding index for a texture type (useful for shader generation)
    */
   static getBindingIndex(type: TextureType): number {
-    return getTextureTypeConfig(type).bindingIndex;
+    const config = getTextureTypeConfig(type);
+    if (!config) throw new Error(`[BiomeTextures] No GPU binding for texture type: ${type}`);
+    return config.bindingIndex;
   }
   
   /**

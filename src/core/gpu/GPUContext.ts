@@ -96,7 +96,10 @@ export class GPUContext {
     // Request device with features and limits
     const deviceDescriptor: GPUDeviceDescriptor = {
       requiredFeatures: options?.requiredFeatures || [],
-      requiredLimits: options?.requiredLimits || {},
+      requiredLimits: {
+        maxSampledTexturesPerShaderStage: 32,
+        ...options?.requiredLimits,
+      },
     };
 
     ctx._device = await ctx._adapter.requestDevice(deviceDescriptor);
