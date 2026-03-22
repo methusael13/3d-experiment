@@ -1134,6 +1134,10 @@ export class Viewport {
 
   // ==================== Render Loop ====================
 
+  get engineAnimationLoop() {
+    return this.animationLoop;
+  }
+
   private startRendering(): void {
     this.animationLoop?.stop();
 

@@ -1,0 +1,320 @@
+/* Shared node styles for material editor nodes */
+
+.node {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #ddd;
+  min-width: 200px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.node:hover {
+  border-color: #555;
+}
+
+/* Selection highlight — React Flow adds .selected class to the wrapper */
+:global(.react-flow__node.selected) .node {
+  border-color: var(--accent, #f08070);
+  box-shadow: 0 0 0 1px var(--accent, #f08070), 0 2px 12px rgba(240, 128, 112, 0.25);
+}
+
+/* Edge selection highlight */
+:global(.react-flow__edge.selected) :global(.react-flow__edge-path) {
+  stroke: var(--accent, #f08070) !important;
+  stroke-width: 3px !important;
+}
+
+/* Base header style — each typed header extends with its own gradient */
+.nodeHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: #333;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.nodeHeaderIcon {
+  font-size: 14px;
+}
+
+.nodeBody {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Handle rows (input/output) */
+.handleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 26px;
+  position: relative;
+  padding: 1px 0;
+}
+
+/* Override React Flow default handle positioning to align with rows */
+.handleRow :global(.react-flow__handle) {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.handleRow :global(.react-flow__handle-left) {
+  left: -10px;
+}
+
+.handleRow :global(.react-flow__handle-right) {
+  right: -10px;
+}
+
+.handleLabel {
+  font-size: 11px;
+  color: #aaa;
+}
+
+.handleLabelLeft {
+  font-size: 11px;
+  color: #aaa;
+  padding-left: 8px;
+}
+
+.handleLabelRight {
+  font-size: 11px;
+  color: #aaa;
+  padding-right: 8px;
+  text-align: right;
+}
+
+/* Inline controls (shown when no edge connected) */
+.inlineControl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.inlineSlider {
+  width: 80px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #444;
+  border-radius: 2px;
+  outline: none;
+}
+
+.inlineSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  background: #4a9eff;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.inlineValue {
+  font-size: 10px;
+  color: #888;
+  min-width: 28px;
+  text-align: right;
+}
+
+/* Color swatch in nodes */
+.colorSwatch {
+  width: 40px;
+  height: 20px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+}
+
+/* Color input (native) */
+.colorInput {
+  width: 40px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  background: none;
+}
+
+.colorInput::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.colorInput::-webkit-color-swatch {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+/* Texture node specific */
+.texturePreview {
+  width: 100%;
+  height: 60px;
+  background: #1a1a1a;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #555;
+  font-size: 11px;
+  border: 1px dashed #3a3a3a;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.texturePreview:hover {
+  border-color: #4a9eff;
+  color: #888;
+}
+
+.textureLoaded {
+  border-style: solid;
+  border-color: #444;
+}
+
+.textureName {
+  font-size: 10px;
+  color: #888;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+/* Output handles section */
+.outputSection {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+  border-top: 1px solid #3a3a3a;
+  margin-top: 4px;
+}
+
+.outputHandle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 2px 0;
+  position: relative;
+}
+
+/* Preview node specific */
+.previewContainer {
+  width: 160px;
+  height: 160px;
+  background: radial-gradient(circle at 40% 35%, #555, #222 70%, #111);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.previewSphere {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  position: relative;
+}
+
+.previewLabel {
+  font-size: 10px;
+  color: #666;
+  text-align: center;
+  padding-top: 4px;
+}
+
+/* Typed node headers — each has its own gradient */
+.pbrHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #2d5a3d, #1a3a25);
+}
+
+.textureHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #3d4a5a, #252e3a);
+}
+
+.colorHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #5a3d4a, #3a252e);
+}
+
+.numberHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #5a4a3d, #3a3225);
+}
+
+.previewHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #4a3d5a, #302538);
+}
+
+/* Browse button */
+.browseBtn {
+  padding: 4px 8px;
+  background: #3a3a3a;
+  color: #bbb;
+  border: 1px solid #4a4a4a;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  transition: background 0.15s;
+}
+
+.browseBtn:hover {
+  background: #4a4a4a;
+  color: #fff;
+}

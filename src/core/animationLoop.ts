@@ -29,6 +29,10 @@ export interface AnimationLoop {
   stop(): void;
   /** Check if the loop is currently running */
   isRunning(): boolean;
+  /** Pause rendering (rAF still ticks but frame callback is skipped) */
+  setPaused(paused: boolean): void;
+  /** Check if the loop is paused */
+  isPaused(): boolean;
 }
 
 /**
@@ -40,6 +44,7 @@ export function createAnimationLoop(options: AnimationLoopOptions = {}): Animati
   let animationId: number | null = null;
   let lastTime: number | null = null;
   let frameCallback: FrameCallback | null = null;
+  let paused = false;
   
   // FPS tracking
   let frameCount = 0;
@@ -64,8 +69,8 @@ export function createAnimationLoop(options: AnimationLoopOptions = {}): Animati
       fpsLastTime = time;
     }
     
-    // Call the frame callback
-    if (frameCallback) {
+    // Call the frame callback (skip if paused — saves GPU work)
+    if (frameCallback && !paused) {
       frameCallback(deltaTime, time);
     }
     
@@ -102,6 +107,21 @@ export function createAnimationLoop(options: AnimationLoopOptions = {}): Animati
      */
     isRunning(): boolean {
       return animationId !== null;
+    },
+    
+    /**
+     * Pause/resume rendering. When paused, rAF keeps ticking (to maintain FPS tracking)
+     * but the frame callback is skipped (no GPU commands submitted).
+     */
+    setPaused(value: boolean): void {
+      paused = value;
+    },
+    
+    /**
+     * Check if rendering is paused
+     */
+    isPaused(): boolean {
+      return paused;
     },
   };
 }

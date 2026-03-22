@@ -8,30 +8,65 @@
   position: relative;
 }
 
+/* Left section: Title + Menus */
+.leftSection {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.title {
+  color: var(--accent, #f08070);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  padding: 0 12px 0 16px;
+  white-space: nowrap;
+}
+
 .menuSection {
   display: flex;
   flex-shrink: 0;
 }
 
-.titleSection {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-}
-
-.title {
-  color: var(--accent, #f08070);
-  font-size: 16px;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-}
-
-.spacer {
+/* Center section: Tab buttons */
+.tabSection {
   flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
 }
 
+.tabButton {
+  padding: 6px 20px;
+  background: transparent;
+  color: #777;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  height: 36px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tabButton:hover {
+  color: #bbb;
+}
+
+.tabActive {
+  color: #fff;
+  border-bottom-color: var(--accent, #f08070);
+}
+
+.tabActive:hover {
+  color: #fff;
+}
+
+/* Right section: Stats */
 .fpsSection {
   flex-shrink: 0;
   padding-right: 16px;
@@ -50,6 +85,7 @@
   margin-left: 12px;
 }
 
+/* Menu buttons */
 .menuButton {
   position: relative;
 }

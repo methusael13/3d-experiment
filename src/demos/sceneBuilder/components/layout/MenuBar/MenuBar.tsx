@@ -18,11 +18,15 @@ export interface MenuDefinition {
   items: MenuAction[];
 }
 
+export type AppTab = 'editor' | 'materials';
+
 export interface MenuBarProps {
   menus: MenuDefinition[];
   title?: string;
   fps?: number;
   drawCalls?: number;
+  activeTab?: AppTab;
+  onTabChange?: (tab: AppTab) => void;
 }
 
 interface SubmenuState {
@@ -30,7 +34,7 @@ interface SubmenuState {
   path: string[];
 }
 
-export function MenuBar({ menus, title = 'Pyro Engine', fps, drawCalls }: MenuBarProps) {
+export function MenuBar({ menus, title = 'Pyro Engine', fps, drawCalls, activeTab = 'editor', onTabChange }: MenuBarProps) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [hoverPath, setHoverPath] = useState<string[]>([]);
   const menuBarRef = useRef<HTMLDivElement>(null);
@@ -102,28 +106,39 @@ export function MenuBar({ menus, title = 'Pyro Engine', fps, drawCalls }: MenuBa
 
   return (
     <div class={styles.menuBar} ref={menuBarRef}>
-      {/* Left section: Menu buttons */}
-      <div class={styles.menuSection}>
-        {menus.map((menu) => (
-          <div
-            key={menu.id}
-            class={`${styles.menuButton} ${openMenu === menu.id ? styles.open : ''}`}
-          >
-            <button onClick={() => handleMenuClick(menu.id)}>{menu.label}</button>
-            {openMenu === menu.id && (
-              <div class={styles.dropdown}>{renderMenuItems(menu.items)}</div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Center section: Title (absolutely positioned) */}
-      <div class={styles.titleSection}>
+      {/* Left section: Title + Menu buttons */}
+      <div class={styles.leftSection}>
         <span class={styles.title}>{title}</span>
+        <div class={styles.menuSection}>
+          {menus.map((menu) => (
+            <div
+              key={menu.id}
+              class={`${styles.menuButton} ${openMenu === menu.id ? styles.open : ''}`}
+            >
+              <button onClick={() => handleMenuClick(menu.id)}>{menu.label}</button>
+              {openMenu === menu.id && (
+                <div class={styles.dropdown}>{renderMenuItems(menu.items)}</div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* Spacer to push FPS to the right */}
-      <div class={styles.spacer} />
+      {/* Center section: Tab buttons */}
+      <div class={styles.tabSection}>
+        <button
+          class={`${styles.tabButton} ${activeTab === 'editor' ? styles.tabActive : ''}`}
+          onClick={() => onTabChange?.('editor')}
+        >
+          Editor
+        </button>
+        <button
+          class={`${styles.tabButton} ${activeTab === 'materials' ? styles.tabActive : ''}`}
+          onClick={() => onTabChange?.('materials')}
+        >
+          Materials
+        </button>
+      </div>
 
       {/* Right section: Stats display */}
       <div class={styles.fpsSection}>

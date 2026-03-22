@@ -1,0 +1,34 @@
+/* MaterialEditorView - Full materials tab layout */
+
+.container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 16px;
+  gap: 16px;
+  background: #111;
+}
+
+/* Left sidebar: Material browser */
+.browserPanel {
+  width: 280px;
+  min-width: 220px;
+  max-width: 360px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Center: Node editor */
+.editorPanel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid #333;
+  background: #1a1a1a;
+}

@@ -6,7 +6,7 @@
 import { useComputed, signal } from '@preact/signals';
 import { useCallback, useMemo, useRef } from 'preact/hooks';
 import { getSceneBuilderStore, duplicateSelected, deleteSelected, selectAll, groupSelection, ungroupSelection } from '../state';
-import { MenuBar, type MenuDefinition, type MenuAction } from '../layout';
+import { MenuBar, type MenuDefinition, type MenuAction, type AppTab } from '../layout';
 import { shaderPanelVisible, toggleShaderPanel } from './ShaderDebugPanelBridge';
 import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity, createPointLightEntity, createSpotLightEntity, createEmptyEntity, createPlayerEntity } from '@/core/ecs/factories';
 import { PrimitiveGeometryComponent } from '@/core/ecs/components/PrimitiveGeometryComponent';
@@ -17,6 +17,9 @@ import { TerrainManager } from '@/core/terrain/TerrainManager';
 import { OceanManager } from '@/core/ocean/OceanManager';
 import { generatePrimitiveGeometry } from '@/core/utils/primitiveGeometry';
 import { MeshComponent, BoundsComponent } from '@/core/ecs';
+
+// Signal to track active app tab (editor vs materials)
+export const activeAppTab = signal<AppTab>('editor');
 
 // Signal to track FPS mode state
 export const fpsModeActive = signal(false);
@@ -511,5 +514,17 @@ export function ConnectedMenuBar() {
     hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value, fpsModeActive.value, debugCameraModeActive.value,
   ]);
   
-  return <MenuBar menus={menus} fps={currentFps.value} drawCalls={currentDrawCalls.value} />;
+  const handleTabChange = useCallback((tab: AppTab) => {
+    activeAppTab.value = tab;
+  }, []);
+  
+  return (
+    <MenuBar
+      menus={menus}
+      fps={currentFps.value}
+      drawCalls={currentDrawCalls.value}
+      activeTab={activeAppTab.value}
+      onTabChange={handleTabChange}
+    />
+  );
 }

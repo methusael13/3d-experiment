@@ -58,18 +58,36 @@ export type TextureType = 'albedo' | 'ao' | 'bump' | 'cavity' | 'displacement'
  * Texture type values exported by Quixel MegaScans
  */
 export const TextureTypeValues: { pattern: string, type: TextureType }[] = [
+  // Quixel MegaScans full names (matched first — most specific)
   { pattern: 'basecolor', type: 'albedo' },
   { pattern: 'albedo', type: 'albedo' },
-  { pattern: 'ao', type: 'ao' },
-  { pattern: 'bump', type: 'bump' },
-  { pattern: 'cavity', type: 'cavity' },
   { pattern: 'displacement', type: 'displacement' },
-  { pattern: 'gloss', type: 'gloss' },
-  { pattern: 'normal', type: 'normal' },
-  { pattern: 'opacity', type: 'opacity' },
   { pattern: 'roughness', type: 'roughness' },
+  { pattern: 'normal', type: 'normal' },
   { pattern: 'specular', type: 'specular' },
   { pattern: 'translucency', type: 'translucency' },
+  { pattern: 'opacity', type: 'opacity' },
+  { pattern: 'cavity', type: 'cavity' },
+  { pattern: 'gloss', type: 'gloss' },
+  { pattern: 'bump', type: 'bump' },
+  { pattern: 'ao', type: 'ao' },
+
+  // PolyHaven / common abbreviated patterns (use delimiter-safe patterns)
+  { pattern: 'diffuse', type: 'albedo' },   // Standard "diffuse" naming
+  { pattern: '_diff_', type: 'albedo' },     // PolyHaven: *_diff_4k.png
+  { pattern: '_diff.', type: 'albedo' },     // PolyHaven: *_diff.png (end of name)
+  { pattern: '_col_', type: 'albedo' },      // Common "color" abbreviated
+  { pattern: '_color_', type: 'albedo' },    // Common "color" full
+  { pattern: '_nor_', type: 'normal' },      // PolyHaven: *_nor_gl_4k.png
+  { pattern: '_nrm', type: 'normal' },       // Some tools use "nrm"
+  { pattern: '_rough_', type: 'roughness' }, // PolyHaven: *_rough_4k.png
+  { pattern: '_rough.', type: 'roughness' }, // PolyHaven: *_rough.png
+  { pattern: '_disp_', type: 'displacement' }, // PolyHaven: *_disp_4k.png
+  { pattern: '_disp.', type: 'displacement' }, // PolyHaven: *_disp.png
+  { pattern: '_arm_', type: 'ao' },          // ARM packed (AO/Roughness/Metallic)
+  { pattern: '_arm.', type: 'ao' },          // ARM packed (end of name)
+  { pattern: '_metallic', type: 'roughness' }, // Separate metallic maps (treat as roughness category)
+
   // Quixel MegaScans billboard naming conventions
   { pattern: 'b-o', type: 'albedo' },       // BaseColor+Opacity
   { pattern: 'n-t', type: 'normal' },       // Normal+Translucency
