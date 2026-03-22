@@ -67,8 +67,14 @@ struct MaterialUniforms {
   // Triplanar mapping control
   triplanarMode: f32,        // 0.0 = UV mapping, 1.0 = triplanar projection
   triplanarScale: f32,       // World-space tiling scale (default 1.0)
-  _triPad0: f32,
-  _triPad1: f32,
+  hasBumpTex: f32,           // 1.0 if bump texture is present
+  hasDisplacementTex: f32,   // 1.0 if displacement texture is present
+
+  // Bump and displacement parameters
+  bumpScale: f32,            // Bump map intensity (default 1.0)
+  displacementScale: f32,    // Displacement along normal (default 0.05)
+  displacementBias: f32,     // Displacement offset bias (default 0.0)
+  _bumpDispPad: f32,
 
   /*{{EXTRA_UNIFORM_FIELDS}}*/
 }

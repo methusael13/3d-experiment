@@ -13,6 +13,8 @@
  *   @group(0) @binding(4) : metallicRoughness texture (G=rough, B=metal)
  *   @group(0) @binding(5) : occlusion texture
  *   @group(0) @binding(6) : emissive texture
+ *   @group(0) @binding(7) : bump texture (grayscale height → normal perturbation)
+ *   @group(0) @binding(8) : displacement texture (vertex offset along normal)
  */
 
 // ==================== Constants ====================
@@ -33,6 +35,8 @@ struct MaterialUniforms {
   clearcoatTexFlags1: vec4f,
   // vec4(hasMRTex, hasOcclusionTex, hasEmissiveTex, shapeType) — 0=sphere, 1=cube, 2=plane
   texFlags2Shape: vec4f,
+  // vec4(hasBumpTex, bumpScale, hasDisplacementTex, displacementScale)
+  bumpDispParams: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> material: MaterialUniforms;
@@ -42,6 +46,8 @@ struct MaterialUniforms {
 @group(0) @binding(4) var metallicRoughnessTex: texture_2d<f32>;
 @group(0) @binding(5) var occlusionTex: texture_2d<f32>;
 @group(0) @binding(6) var emissiveTex: texture_2d<f32>;
+@group(0) @binding(7) var bumpTex: texture_2d<f32>;
+@group(0) @binding(8) var displacementTex: texture_2d<f32>;
 
 // ==================== Vertex ====================
 
@@ -92,8 +98,15 @@ fn sphereVertex(vertexIndex: u32) -> VertexOutput {
   let sinTheta = sin(theta);
   let cosTheta = cos(theta);
   
-  let pos = vec3f(sinPhi * cosTheta, cosPhi, sinPhi * sinTheta);
+  var pos = vec3f(sinPhi * cosTheta, cosPhi, sinPhi * sinTheta);
   let normal = normalize(pos);
+  
+  // Displacement: offset sphere surface along normal
+  if (material.bumpDispParams.z > 0.5) {
+    let dispSample = textureSampleLevel(displacementTex, texSampler, vec2f(u, v), 0.0).r;
+    let dispScale = material.bumpDispParams.w;
+    pos = pos + normal * dispSample * dispScale;
+  }
   
   // Tangent: derivative of position w.r.t. u (theta)
   let tangent = normalize(vec3f(-sinPhi * sinTheta, 0.0, sinPhi * cosTheta));
@@ -382,6 +395,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     N = normalize(TBN * tangentNormal);
   }
   
+  // --- Bump mapping (height → normal perturbation via screen-space derivatives) ---
+  if (material.bumpDispParams.x > 0.5) {
+    let bumpH = textureSample(bumpTex, texSampler, uv).r;
+    let bumpHdx = dpdx(bumpH);
+    let bumpHdy = dpdy(bumpH);
+    let bumpScaleVal = material.bumpDispParams.y;
+    
+    let T = normalize(input.worldTangent);
+    let B = cross(N, T) * input.bitangentSign;
+    let TBN_bump = mat3x3f(T, B, N);
+    let bumpPerturb = normalize(vec3f(-bumpHdx * bumpScaleVal, -bumpHdy * bumpScaleVal, 1.0));
+    N = normalize(TBN_bump * bumpPerturb);
+  }
+  
   // --- Camera and Light setup ---
   
   // Camera position (matches vertex shader)
@@ -400,11 +427,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   
   // Key light: warm directional from upper-right
   let L1 = normalize(vec3f(0.8, 1.0, 0.6));
-  let lightColor1 = vec3f(1.0, 0.95, 0.9) * 4.0;
+  let lightColor1 = vec3f(1.0, 0.95, 0.9) * 6.0;
   
   // Fill light: cool directional from lower-left  
   let L2 = normalize(vec3f(-0.5, 0.3, -0.8));
-  let lightColor2 = vec3f(0.3, 0.4, 0.6) * 1.5;
+  let lightColor2 = vec3f(0.3, 0.4, 0.6) * 2.5;
   
   // --- F0 from IOR (dielectric) blended with albedo (metallic) ---
   let ior = material.emissiveIOR.w;

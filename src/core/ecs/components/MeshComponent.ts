@@ -192,6 +192,12 @@ export class MeshComponent extends Component {
         if (glbMaterial.emissiveTextureIndex !== undefined) {
           textures.emissive = textureMap.get(glbMaterial.emissiveTextureIndex);
         }
+        if (glbMaterial.bumpTextureIndex !== undefined) {
+          textures.bump = textureMap.get(glbMaterial.bumpTextureIndex);
+        }
+        if (glbMaterial.displacementTextureIndex !== undefined) {
+          textures.displacement = textureMap.get(glbMaterial.displacementTextureIndex);
+        }
         gpuMaterial.textures = textures;
       }
 

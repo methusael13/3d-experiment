@@ -388,6 +388,8 @@ export class VariantMeshPool {
     RES.METALLIC_ROUGHNESS_TEX, RES.METALLIC_ROUGHNESS_SAMP,
     RES.OCCLUSION_TEX, RES.OCCLUSION_SAMP,
     RES.EMISSIVE_TEX, RES.EMISSIVE_SAMP,
+    RES.BUMP_TEX, RES.BUMP_SAMP,
+    RES.DISPLACEMENT_TEX, RES.DISPLACEMENT_SAMP,
   ];
 
   private populatePBRTextureResources(
@@ -853,7 +855,7 @@ export class VariantMeshPool {
    * Layout must match MaterialUniforms in shader template (same as ObjectRendererGPU).
    */
   private writeMaterialToBuffer(buffer: UnifiedGPUBuffer, material: GPUMaterial): void {
-    const data = new Float32Array(24); // 96 bytes / 4
+    const data = new Float32Array(28); // 112 bytes / 4
 
     // albedo (vec3f) + metallic (f32)
     data[0] = material.albedo[0];
@@ -886,11 +888,17 @@ export class VariantMeshPool {
     data[18] = material.clearcoatRoughness ?? 0.0;
     data[19] = tex?.emissive ? 1.0 : 0.0;
 
-    // Triplanar mapping
+    // Triplanar mapping + bump/displacement flags
     data[20] = material.triplanarMode ?? 0.0;
     data[21] = material.triplanarScale ?? 1.0;
-    data[22] = 0;
-    data[23] = 0;
+    data[22] = tex?.bump ? 1.0 : 0.0;          // hasBumpTex
+    data[23] = tex?.displacement ? 1.0 : 0.0;   // hasDisplacementTex
+
+    // Bump and displacement parameters (vec4 at offset 24-27)
+    data[24] = material.bumpScale ?? 1.0;
+    data[25] = material.displacementScale ?? 0.05;
+    data[26] = material.displacementBias ?? 0.0;
+    data[27] = 0; // pad
 
     buffer.write(this.ctx, data);
   }

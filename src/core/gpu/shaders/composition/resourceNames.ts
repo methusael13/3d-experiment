@@ -29,6 +29,10 @@ export const RES = {
   OCCLUSION_SAMP: 'occlusionSampler',
   EMISSIVE_TEX: 'emissiveTexture',
   EMISSIVE_SAMP: 'emissiveSampler',
+  BUMP_TEX: 'bumpTexture',
+  BUMP_SAMP: 'bumpSampler',
+  DISPLACEMENT_TEX: 'displacementTexture',
+  DISPLACEMENT_SAMP: 'displacementSampler',
 
   // ==================== Wind (per-object uniforms) ====================
   WIND_DISPLACEMENT_X: 'windDisplacementX',

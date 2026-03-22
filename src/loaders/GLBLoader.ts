@@ -435,6 +435,25 @@ export class GLBLoader extends BaseLoader<GLBModel> {
       if (mat.emissiveTexture?.index !== undefined) {
         textureUsages.set(mat.emissiveTexture.index, 'emissive');
       }
+      
+      // KHR_materials_bump extension
+      const bumpExt = (mat.extensions as Record<string, unknown>)?.['KHR_materials_bump'] as {
+        bumpFactor?: number;
+        bumpTexture?: { index: number };
+      } | undefined;
+      if (bumpExt?.bumpTexture?.index !== undefined) {
+        textureUsages.set(bumpExt.bumpTexture.index, 'bump');
+      }
+      
+      // KHR_materials_displacement extension
+      const dispExt = (mat.extensions as Record<string, unknown>)?.['KHR_materials_displacement'] as {
+        displacementGeometryFactor?: number;
+        displacementGeometryOffset?: number;
+        displacementTexture?: { index: number };
+      } | undefined;
+      if (dispExt?.displacementTexture?.index !== undefined) {
+        textureUsages.set(dispExt.displacementTexture.index, 'displacement');
+      }
     }
     
     // Load textures with type information
@@ -729,6 +748,19 @@ export class GLBLoader extends BaseLoader<GLBModel> {
 
       // Parse KHR_materials_unlit extension (presence = unlit, no parameters)
       const unlitExt = (mat.extensions as Record<string, unknown>)?.['KHR_materials_unlit'];
+
+      // Parse KHR_materials_bump extension
+      const bumpExt = (mat.extensions as Record<string, unknown>)?.['KHR_materials_bump'] as {
+        bumpFactor?: number;
+        bumpTexture?: { index: number };
+      } | undefined;
+
+      // Parse KHR_materials_displacement extension
+      const dispExt = (mat.extensions as Record<string, unknown>)?.['KHR_materials_displacement'] as {
+        displacementGeometryFactor?: number;
+        displacementGeometryOffset?: number;
+        displacementTexture?: { index: number };
+      } | undefined;
       
       return {
         baseColorFactor: (pbr.baseColorFactor || [1, 1, 1, 1]) as [number, number, number, number],
@@ -755,6 +787,12 @@ export class GLBLoader extends BaseLoader<GLBModel> {
         clearcoatRoughness: clearcoatExt?.clearcoatRoughnessFactor ?? 0.0,
         // KHR_materials_unlit
         unlit: unlitExt !== undefined,
+        // Bump / displacement
+        bumpTextureIndex: bumpExt?.bumpTexture?.index,
+        bumpScale: bumpExt?.bumpFactor ?? 1.0,
+        displacementTextureIndex: dispExt?.displacementTexture?.index,
+        displacementScale: dispExt?.displacementGeometryFactor ?? 0.05,
+        displacementBias: dispExt?.displacementGeometryOffset ?? 0.0,
       };
     });
     

@@ -12,7 +12,7 @@ import { RES } from '../composition/resourceNames';
  */
 export const texturedFeature: ShaderFeature = {
   id: 'textured',
-  stage: 'fragment',
+  stage: 'both',  // 'both' because displacement uses vertexInject (textureSampleLevel in VS)
 
   resources: [
     {
@@ -80,6 +80,34 @@ export const texturedFeature: ShaderFeature = {
     },
     {
       name: RES.EMISSIVE_SAMP,
+      kind: 'sampler',
+      samplerType: 'sampler',
+      group: 'textures',
+      provider: 'MeshComponent',
+    },
+    {
+      name: RES.BUMP_TEX,
+      kind: 'texture',
+      textureType: 'texture_2d<f32>',
+      group: 'textures',
+      provider: 'MeshComponent',
+    },
+    {
+      name: RES.BUMP_SAMP,
+      kind: 'sampler',
+      samplerType: 'sampler',
+      group: 'textures',
+      provider: 'MeshComponent',
+    },
+    {
+      name: RES.DISPLACEMENT_TEX,
+      kind: 'texture',
+      textureType: 'texture_2d<f32>',
+      group: 'textures',
+      provider: 'MeshComponent',
+    },
+    {
+      name: RES.DISPLACEMENT_SAMP,
       kind: 'sampler',
       samplerType: 'sampler',
       group: 'textures',
@@ -192,6 +220,28 @@ fn triplanarSample(tex: texture_2d<f32>, samp: sampler, worldPos: vec3f, worldNo
       emissiveSample = textureSample(emissiveTexture, emissiveSampler, input.uv).rgb;
     }
     emissive = srgbToLinear(emissiveSample) * material.emissiveFactor;
+  }
+
+  // Bump map — convert grayscale height to normal perturbation via screen-space derivatives
+  if (material.hasBumpTex > 0.5) {
+    let bumpH = textureSample(bumpTexture, bumpSampler, input.uv).r;
+    let bumpHdx = dpdx(bumpH);
+    let bumpHdy = dpdy(bumpH);
+
+    // Build perturbation in tangent space from finite-difference gradient
+    let TBN_bump = cotangentFrame(N, input.worldPosition, input.uv);
+    let bumpPerturb = normalize(vec3f(-bumpHdx * material.bumpScale, -bumpHdy * material.bumpScale, 1.0));
+    N = normalize(TBN_bump * bumpPerturb);
+  }
+`,
+
+  // Vertex injection for displacement mapping — displaces vertices along normal
+  vertexInject: `
+  // Displacement map — offset vertex along normal in local space
+  if (material.hasDisplacementTex > 0.5) {
+    let dispSample = textureSampleLevel(displacementTexture, displacementSampler, input.uv, 0.0).r;
+    let dispOffset = (dispSample + material.displacementBias) * material.displacementScale;
+    localPos = localPos + skinnedNormal * dispOffset;
   }
 `,
 };

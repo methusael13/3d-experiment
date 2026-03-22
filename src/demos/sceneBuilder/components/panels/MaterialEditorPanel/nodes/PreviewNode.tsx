@@ -52,7 +52,17 @@ export const portDef: NodePortDef = {
           metallicRoughnessTexPath:   'metallicRoughnessTexPath',
           occlusionTexPath:           'occlusionTexPath',
           emissiveTexPath:            'emissiveTexPath',
+          bumpTexPath:                'bumpTexPath',
+          displacementTexPath:        'displacementTexPath',
         };
+        
+        // Forward bump/displacement scalar parameters
+        const scalarKeys2 = ['bumpScale', 'displacementScale'];
+        for (const key of scalarKeys2) {
+          if (pbrData[key] !== undefined) {
+            result[key] = pbrData[key];
+          }
+        }
         for (const [pbrKey, previewKey] of Object.entries(texPathMap)) {
           if (typeof pbrData[pbrKey] === 'string') {
             result[previewKey] = pbrData[pbrKey];
@@ -82,6 +92,10 @@ interface PreviewNodeData {
   metallicRoughnessTexPath?: string | null;
   occlusionTexPath?: string | null;
   emissiveTexPath?: string | null;
+  bumpTexPath?: string | null;
+  displacementTexPath?: string | null;
+  bumpScale?: number;
+  displacementScale?: number;
   // Shape (persisted in node data)
   shape?: PreviewShape;
   [key: string]: unknown;
@@ -210,6 +224,10 @@ export function PreviewNode({ data, id }: NodeProps) {
         metallicRoughnessTexPath: d.metallicRoughnessTexPath ?? null,
         occlusionTexPath: d.occlusionTexPath ?? null,
         emissiveTexPath: d.emissiveTexPath ?? null,
+        bumpTexPath: d.bumpTexPath ?? null,
+        displacementTexPath: d.displacementTexPath ?? null,
+        bumpScale: d.bumpScale ?? 1.0,
+        displacementScale: d.displacementScale ?? 0.05,
       };
       
       setRendering(true);
@@ -234,7 +252,8 @@ export function PreviewNode({ data, id }: NodeProps) {
     d.emissiveFactor?.[0], d.emissiveFactor?.[1], d.emissiveFactor?.[2],
     d.ior, d.clearcoatFactor, d.clearcoatRoughness, d.alphaCutoff,
     d.baseColorTexPath, d.normalTexPath, d.metallicRoughnessTexPath,
-    d.occlusionTexPath, d.emissiveTexPath,
+    d.occlusionTexPath, d.emissiveTexPath, d.bumpTexPath, d.displacementTexPath,
+    d.bumpScale, d.displacementScale,
   ]);
   
   // CSS fallback gradient (shown when GPU not available or still loading)
@@ -269,8 +288,8 @@ export function PreviewNode({ data, id }: NodeProps) {
           {/* GPU canvas (hidden when not ready) */}
           <canvas
             ref={canvasRef}
-            width={256}
-            height={256}
+            width={512}
+            height={512}
             class={styles.previewCanvas}
             style={{
               display: gpuReady ? 'block' : 'none',

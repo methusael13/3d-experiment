@@ -180,7 +180,9 @@ export type TextureType =
   | 'emissive'       // sRGB - needs gamma correction
   | 'normal'         // Linear - no conversion
   | 'metallicRoughness' // Linear - no conversion
-  | 'occlusion';     // Linear - no conversion
+  | 'occlusion'      // Linear - no conversion
+  | 'bump'           // Linear - grayscale height map
+  | 'displacement';  // Linear - grayscale height map
 
 /**
  * Texture with type metadata for proper shader handling
@@ -219,6 +221,14 @@ export interface GLBMaterial {
   clearcoatRoughness: number;
   // KHR_materials_unlit extension
   unlit: boolean;
+  // Bump / displacement texture support
+  // Extracted from KHR_materials_displacement extension or
+  // matched by texture filename patterns during asset indexing
+  bumpTextureIndex?: number;
+  bumpScale: number;
+  displacementTextureIndex?: number;
+  displacementScale: number;
+  displacementBias: number;
 }
 
 /**
@@ -288,6 +298,8 @@ export const TEXTURE_COLOR_SPACES: Record<TextureType, TextureColorSpace> = {
   'normal': 'linear',
   'metallicRoughness': 'linear',
   'occlusion': 'linear',
+  'bump': 'linear',
+  'displacement': 'linear',
 };
 
 /**
@@ -306,5 +318,7 @@ export function getTextureType(material: GLBMaterial, textureIndex: number): Tex
   if (material.normalTextureIndex === textureIndex) return 'normal';
   if (material.metallicRoughnessTextureIndex === textureIndex) return 'metallicRoughness';
   if (material.occlusionTextureIndex === textureIndex) return 'occlusion';
+  if (material.bumpTextureIndex === textureIndex) return 'bump';
+  if (material.displacementTextureIndex === textureIndex) return 'displacement';
   return null;
 }

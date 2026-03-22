@@ -122,14 +122,14 @@ function buildTextureBindGroupLayout(
       const sampleType = getTextureSampleType(res.textureType);
       entries.push({
         binding: res.bindingIndex,
-        visibility: GPUShaderStage.FRAGMENT,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
         texture: { sampleType, viewDimension },
       });
     } else if (res.kind === 'sampler') {
       const type = res.samplerType === 'sampler_comparison' ? 'comparison' : 'filtering';
       entries.push({
         binding: res.bindingIndex,
-        visibility: GPUShaderStage.FRAGMENT,
+        visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
         sampler: { type },
       });
     } else if (res.kind === 'storage') {

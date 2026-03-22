@@ -157,12 +157,14 @@ Presets dropdown: "Metallic-Roughness", "ARM (AO+Rough+Metal)", "Custom"
 - Update TerrainBiomeTextureResources to accept material IDs from registry
 - Update MaterialSection UI to show material picker dropdown (from registry) instead of individual texture pickers per biome
 - Subscribe terrain to registry change events for live material updates
+- Add full PBR shading support for terrains supporting all texture types from the material registry
 - Add roughness/displacement support to terrain shader (extend `TEXTURE_TYPE_CONFIGS`)
 
 ### Phase 6: Object Integration  
 - Migrate existing MaterialPanel to use MaterialRegistry
 - Objects can reference registry materials or have inline overrides
 - Existing per-entity procedural texture workflow preserved as a node type
+  - Create a separate Procedural texture node that can be used as texture input for PBR node (uses existing ProceduralTextureGenerator)
 
 ## File Structure
 

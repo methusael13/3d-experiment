@@ -44,6 +44,7 @@ export type MaterialTextureSlot =
   | 'metallicRoughness'
   | 'occlusion'
   | 'emissive'
+  | 'bump'
   | 'displacement';
 
 // ============================================================================

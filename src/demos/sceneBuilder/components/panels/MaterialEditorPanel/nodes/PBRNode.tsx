@@ -49,6 +49,11 @@ export const portDef: NodePortDef = {
     normal:             { accepts: ['texture'],           receiver: (_v, h) => ({ [`${h}TexPath`]: _v }) },
     occlusion:          { accepts: ['texture'],           receiver: (_v, h) => ({ [`${h}TexPath`]: _v }) },
     metallicRoughness:  { accepts: ['texture'],           receiver: (_v, h) => ({ [`${h}TexPath`]: _v }) },
+    bump:               { accepts: ['texture'],           receiver: (_v, h) => ({ [`${h}TexPath`]: _v }) },
+    displacement:       { accepts: ['texture'],           receiver: (_v, h) => ({ [`${h}TexPath`]: _v }) },
+    // Pure scalar inputs for bump/displacement parameters
+    bumpScale:          { accepts: ['float'],             dataKey: 'bumpScale' },
+    displacementScale:  { accepts: ['float'],             dataKey: 'displacementScale' },
   },
 };
 
@@ -62,6 +67,8 @@ interface PBRNodeData {
   emissiveFactor?: [number, number, number];
   normalScale?: number;
   occlusionStrength?: number;
+  bumpScale?: number;
+  displacementScale?: number;
   [key: string]: unknown;
 }
 
@@ -181,6 +188,52 @@ export function PBRNode({ data, id }: NodeProps) {
           <span class={styles.handleLabelLeft}>Emissive</span>
           {isConnected('emissive') && <span class={styles.inlineValue} style={{ color: '#4a9eff', fontStyle: 'italic' }}>linked</span>}
         </div>
+        
+        {/* Bump input */}
+        <div class={styles.handleRow}>
+          <Handle type="target" position={Position.Left} id="bump" />
+          <span class={styles.handleLabelLeft}>Bump</span>
+          {isConnected('bump') ? (
+            <span class={styles.inlineValue} style={{ color: '#4a9eff', fontStyle: 'italic' }}>linked</span>
+          ) : (
+            <span class={styles.inlineValue} style={{ color: '#666' }}>—</span>
+          )}
+        </div>
+        
+        {/* Bump Scale (only shown when bump is connected) */}
+        {isConnected('bump') && (
+          <div class={styles.handleRow}>
+            <Handle type="target" position={Position.Left} id="bumpScale" />
+            <span class={styles.handleLabelLeft}>Bump Scale</span>
+            <div class={`${styles.inlineControl} nopan nodrag`}>
+              <input type="range" class={styles.inlineSlider} min="0" max="5" step="0.1" value={d.bumpScale ?? 1.0} onInput={handleSlider('bumpScale')} />
+              <span class={styles.inlineValue}>{(d.bumpScale ?? 1.0).toFixed(1)}</span>
+            </div>
+          </div>
+        )}
+        
+        {/* Displacement input */}
+        <div class={styles.handleRow}>
+          <Handle type="target" position={Position.Left} id="displacement" />
+          <span class={styles.handleLabelLeft}>Displacement</span>
+          {isConnected('displacement') ? (
+            <span class={styles.inlineValue} style={{ color: '#4a9eff', fontStyle: 'italic' }}>linked</span>
+          ) : (
+            <span class={styles.inlineValue} style={{ color: '#666' }}>—</span>
+          )}
+        </div>
+        
+        {/* Displacement Scale (only shown when displacement is connected) */}
+        {isConnected('displacement') && (
+          <div class={styles.handleRow}>
+            <Handle type="target" position={Position.Left} id="displacementScale" />
+            <span class={styles.handleLabelLeft}>Disp Scale</span>
+            <div class={`${styles.inlineControl} nopan nodrag`}>
+              <input type="range" class={styles.inlineSlider} min="0" max="0.5" step="0.005" value={d.displacementScale ?? 0.05} onInput={handleSlider('displacementScale')} />
+              <span class={styles.inlineValue}>{(d.displacementScale ?? 0.05).toFixed(3)}</span>
+            </div>
+          </div>
+        )}
         
         {/* IOR */}
         <div class={styles.handleRow}>

@@ -60,16 +60,21 @@ export interface PreviewMaterialProps {
   metallicRoughnessTexPath?: string | null;
   occlusionTexPath?: string | null;
   emissiveTexPath?: string | null;
+  bumpTexPath?: string | null;
+  displacementTexPath?: string | null;
+  bumpScale?: number;
+  displacementScale?: number;
+  displacementBias?: number;
 }
 
 // ============================================================================
 // Renderer
 // ============================================================================
 
-const PREVIEW_SIZE = 256;
+const PREVIEW_SIZE = 512;
 
-// Uniform buffer: 5 × vec4f = 80 bytes
-const UNIFORM_SIZE = 80;
+// Uniform buffer: 6 × vec4f = 96 bytes
+const UNIFORM_SIZE = 96;
 
 /**
  * Offscreen material preview renderer.
@@ -120,12 +125,14 @@ export class MaterialPreviewRenderer {
       label: 'material-preview-bind-group-layout',
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }, // baseColor
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }, // normal
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }, // metallicRoughness
         { binding: 5, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }, // occlusion
         { binding: 6, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }, // emissive
+        { binding: 7, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }, // bump
+        { binding: 8, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }, // displacement (vertex: offset along normal)
       ],
     });
     
@@ -216,16 +223,18 @@ export class MaterialPreviewRenderer {
     const cache = getMaterialGPUCache();
     
     // Load textures (async, cached)
-    const [baseColorTex, normalTex, mrTex, occlusionTex, emissiveTex] = await Promise.all([
+    const [baseColorTex, normalTex, mrTex, occlusionTex, emissiveTex, bumpTex, dispTex] = await Promise.all([
       this.resolveTexture(props.baseColorTexPath, cache.placeholder),
       this.resolveTexture(props.normalTexPath, cache.normalPlaceholder),
       this.resolveTexture(props.metallicRoughnessTexPath, cache.placeholder),
       this.resolveTexture(props.occlusionTexPath, cache.placeholder),
       this.resolveTexture(props.emissiveTexPath, cache.placeholder),
+      this.resolveTexture(props.bumpTexPath, cache.placeholder),
+      this.resolveTexture(props.displacementTexPath, cache.placeholder),
     ]);
     
     // Write uniforms
-    const uniforms = new Float32Array(20);
+    const uniforms = new Float32Array(24);
     
     // vec4(albedo.rgb, metallic)
     uniforms[0] = props.albedo[0];
@@ -257,6 +266,12 @@ export class MaterialPreviewRenderer {
     uniforms[18] = props.emissiveTexPath ? 1.0 : 0.0;
     uniforms[19] = SHAPE_INDEX[shape];
     
+    // vec4(hasBumpTex, bumpScale, hasDisplacementTex, displacementScale)
+    uniforms[20] = props.bumpTexPath ? 1.0 : 0.0;
+    uniforms[21] = props.bumpScale ?? 1.0;
+    uniforms[22] = props.displacementTexPath ? 1.0 : 0.0;
+    uniforms[23] = props.displacementScale ?? 0.05;
+    
     this.uniformBuffer.write(ctx, uniforms);
     
     // Create bind group
@@ -271,6 +286,8 @@ export class MaterialPreviewRenderer {
         { binding: 4, resource: mrTex.view },
         { binding: 5, resource: occlusionTex.view },
         { binding: 6, resource: emissiveTex.view },
+        { binding: 7, resource: bumpTex.view },
+        { binding: 8, resource: dispTex.view },
       ],
     });
     

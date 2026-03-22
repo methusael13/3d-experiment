@@ -50,6 +50,8 @@ export interface GPUMaterialTextures {
   metallicRoughness?: UnifiedGPUTexture;
   occlusion?: UnifiedGPUTexture;
   emissive?: UnifiedGPUTexture;
+  bump?: UnifiedGPUTexture;
+  displacement?: UnifiedGPUTexture;
 }
 
 /**
@@ -76,6 +78,9 @@ export interface GPUMaterial {
   unlit?: boolean;            // KHR_materials_unlit — skip PBR, output albedo directly
   triplanarMode?: number;     // 0 = UV mapping (default), 1 = triplanar projection
   triplanarScale?: number;    // World-space tiling scale for triplanar (default 1.0)
+  bumpScale?: number;         // Bump map intensity (default 1.0)
+  displacementScale?: number; // Displacement along normal (default 0.05)
+  displacementBias?: number;  // Displacement offset bias (default 0.0)
   textures?: GPUMaterialTextures;
 }
 
@@ -706,7 +711,7 @@ export class ObjectRendererGPU {
    * Layout must match MaterialUniforms in shader template
    */
   private writeMaterialToBuffer(buffer: UnifiedGPUBuffer, material: GPUMaterial): void {
-    const data = new Float32Array(24); // 96 bytes / 4
+    const data = new Float32Array(28); // 112 bytes / 4
     
     // albedo (vec3f) + metallic (f32)
     data[0] = material.albedo[0];
@@ -743,11 +748,17 @@ export class ObjectRendererGPU {
     // hasEmissiveTex flag
     data[19] = tex?.emissive ? 1.0 : 0.0;
     
-    // Triplanar mapping (vec4 at offset 20-23)
+    // Triplanar mapping + bump/displacement flags (vec4 at offset 20-23)
     data[20] = material.triplanarMode ?? 0.0;
     data[21] = material.triplanarScale ?? 1.0;
-    data[22] = 0; // pad
-    data[23] = 0; // pad
+    data[22] = tex?.bump ? 1.0 : 0.0;          // hasBumpTex
+    data[23] = tex?.displacement ? 1.0 : 0.0;   // hasDisplacementTex
+    
+    // Bump and displacement parameters (vec4 at offset 24-27)
+    data[24] = material.bumpScale ?? 1.0;
+    data[25] = material.displacementScale ?? 0.05;
+    data[26] = material.displacementBias ?? 0.0;
+    data[27] = 0; // pad
     
     buffer.write(this.ctx, data);
   }
