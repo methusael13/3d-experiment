@@ -211,12 +211,10 @@ export function SceneBuilderApp({
           </div>
         </div>
 
-        {/* Materials Tab — destroyed/recreated on switch, reloads from registry */}
-        {currentTab === 'materials' && (
-          <div class={styles.mainArea}>
-            <MaterialEditorView />
-          </div>
-        )}
+        {/* Materials Tab — always mounted (preserves React Flow state), hidden when inactive */}
+        <div class={styles.mainArea} style={{ display: currentTab === 'materials' ? 'flex' : 'none' }}>
+          <MaterialEditorView />
+        </div>
       
         {/* Shader Debug Panel - Floating at root level */}
         <ShaderDebugPanelContainer />
