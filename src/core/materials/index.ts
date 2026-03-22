@@ -32,3 +32,17 @@ export {
 
 // Presets
 export { createBuiltInPresets } from './presets';
+
+// GPU Cache (Phase 4)
+export {
+  getMaterialGPUCache,
+  type MaterialGPUCache,
+} from './MaterialGPUCache';
+
+// Preview Renderer (Phase 4)
+export {
+  getMaterialPreviewRenderer,
+  MaterialPreviewRenderer,
+  type PreviewMaterialProps,
+  type PreviewShape,
+} from './MaterialPreviewRenderer';

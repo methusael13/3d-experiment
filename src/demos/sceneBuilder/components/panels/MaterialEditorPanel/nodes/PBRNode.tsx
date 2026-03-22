@@ -10,7 +10,47 @@
 
 import { useCallback } from 'preact/hooks';
 import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react';
+import type { NodePortDef } from './portTypes';
 import styles from './nodeStyles.module.css';
+
+/**
+ * Smart receiver for PBR inputs that accept both scalar/color AND texture values.
+ * - If the incoming value is a string → it's a texture path, stored under `{handle}TexPath`
+ * - If it's a number or array → it's a scalar/color, stored under the normal data key
+ * This prevents texture path strings from overwriting albedo RGB arrays, etc.
+ */
+function pbrInputReceiver(scalarKey: string) {
+  return (value: unknown, handleId: string): Record<string, unknown> => {
+    if (typeof value === 'string') {
+      // Texture path — store separately so scalar value is preserved
+      return { [`${handleId}TexPath`]: value };
+    }
+    return { [scalarKey]: value };
+  };
+}
+
+/** Port definition — co-located with the node component */
+export const portDef: NodePortDef = {
+  outputs: {
+    material: { type: 'material', spread: true },
+  },
+  inputs: {
+    // Inputs that accept both scalar/color AND texture use smart receivers
+    metallic:           { accepts: ['float', 'texture'], receiver: pbrInputReceiver('metallic') },
+    roughness:          { accepts: ['float', 'texture'], receiver: pbrInputReceiver('roughness') },
+    albedo:             { accepts: ['color', 'texture'],  receiver: pbrInputReceiver('albedo') },
+    emissive:           { accepts: ['texture'],           receiver: (_v, h) => ({ [`${h}TexPath`]: _v }) },
+    // Pure scalar inputs (never receive texture paths)
+    ior:                { accepts: ['float'],             dataKey: 'ior' },
+    clearcoat:          { accepts: ['float'],             dataKey: 'clearcoatFactor' },
+    normalScale:        { accepts: ['float'],             dataKey: 'normalScale' },
+    occlusionStrength:  { accepts: ['float'],             dataKey: 'occlusionStrength' },
+    // Pure texture inputs — always string paths
+    normal:             { accepts: ['texture'],           receiver: (_v, h) => ({ [`${h}TexPath`]: _v }) },
+    occlusion:          { accepts: ['texture'],           receiver: (_v, h) => ({ [`${h}TexPath`]: _v }) },
+    metallicRoughness:  { accepts: ['texture'],           receiver: (_v, h) => ({ [`${h}TexPath`]: _v }) },
+  },
+};
 
 interface PBRNodeData {
   albedo?: [number, number, number];
@@ -82,11 +122,13 @@ export function PBRNode({ data, id }: NodeProps) {
           )}
         </div>
         
-        {/* Metallic input */}
+        {/* Metallic input — disabled when MR packed is connected */}
         <div class={styles.handleRow}>
           <Handle type="target" position={Position.Left} id="metallic" />
           <span class={styles.handleLabelLeft}>Metallic</span>
-          {isConnected('metallic') ? (
+          {isConnected('metallicRoughness') ? (
+            <span class={styles.inlineValue} style={{ color: '#888', fontStyle: 'italic' }}>overridden</span>
+          ) : isConnected('metallic') ? (
             <span class={styles.inlineValue} style={{ color: '#4a9eff', fontStyle: 'italic' }}>linked</span>
           ) : (
             <div class={`${styles.inlineControl} nopan nodrag`}>
@@ -96,11 +138,13 @@ export function PBRNode({ data, id }: NodeProps) {
           )}
         </div>
         
-        {/* Roughness input */}
+        {/* Roughness input — disabled when MR packed is connected */}
         <div class={styles.handleRow}>
           <Handle type="target" position={Position.Left} id="roughness" />
           <span class={styles.handleLabelLeft}>Roughness</span>
-          {isConnected('roughness') ? (
+          {isConnected('metallicRoughness') ? (
+            <span class={styles.inlineValue} style={{ color: '#888', fontStyle: 'italic' }}>overridden</span>
+          ) : isConnected('roughness') ? (
             <span class={styles.inlineValue} style={{ color: '#4a9eff', fontStyle: 'italic' }}>linked</span>
           ) : (
             <div class={`${styles.inlineControl} nopan nodrag`}>

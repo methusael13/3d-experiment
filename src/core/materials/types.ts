@@ -59,7 +59,7 @@ export interface NodePosition {
 /** Serialized node in the material graph */
 export interface SerializedNode {
   id: string;
-  type: 'pbr' | 'textureSet' | 'color' | 'number' | 'preview';
+  type: 'pbr' | 'textureSet' | 'color' | 'number' | 'preview' | 'channelPack';
   position: NodePosition;
   data: Record<string, unknown>;
 }

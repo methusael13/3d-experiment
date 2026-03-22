@@ -302,6 +302,98 @@
   background: linear-gradient(135deg, #4a3d5a, #302538);
 }
 
+/* Preview canvas (GPU-rendered) */
+.previewCanvas {
+  width: 160px;
+  height: 160px;
+  border-radius: 4px;
+  image-rendering: auto;
+}
+
+/* Shape selector button */
+.shapeBtn {
+  margin-left: auto;
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #aaa;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  transition: background 0.15s;
+}
+
+.shapeBtn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+/* Loading spinner overlay */
+.previewLoading {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 14px;
+  color: #4a9eff;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Channel Pack header */
+.channelPackHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #4a5a3d, #2e3a25);
+}
+
+/* Preset dropdown */
+.presetSelect {
+  width: 100%;
+  padding: 4px 6px;
+  background: #1a1a1a;
+  color: #bbb;
+  border: 1px solid #444;
+  border-radius: 3px;
+  font-size: 10px;
+  cursor: pointer;
+  outline: none;
+}
+
+.presetSelect:hover {
+  border-color: #555;
+}
+
+.presetSelect:focus {
+  border-color: #4a9eff;
+}
+
+/* Channel preview bars */
+.channelPreview {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  margin-top: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.channelBar {
+  flex: 1;
+  border-radius: 1px;
+}
+
 /* Browse button */
 .browseBtn {
   padding: 4px 8px;

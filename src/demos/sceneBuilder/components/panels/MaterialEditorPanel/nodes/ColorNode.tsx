@@ -6,7 +6,16 @@
 
 import { useCallback } from 'preact/hooks';
 import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react';
+import type { NodePortDef } from './portTypes';
 import styles from './nodeStyles.module.css';
+
+/** Port definition — co-located with the node component */
+export const portDef: NodePortDef = {
+  outputs: {
+    color: { type: 'color', dataKey: 'color' },
+  },
+  inputs: {},
+};
 
 interface ColorNodeData {
   color?: [number, number, number];

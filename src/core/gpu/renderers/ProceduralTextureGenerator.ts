@@ -15,6 +15,7 @@ import { UnifiedGPUBuffer } from '../GPUBuffer';
 import { UnifiedGPUTexture } from '../GPUTexture';
 import proceduralTextureShader from '../shaders/procedural-texture.wgsl?raw';
 import packMRShader from '../shaders/pack-metallic-roughness.wgsl?raw';
+import channelPackShader from '../shaders/channel-pack.wgsl?raw';
 
 // ==================== Types ====================
 
@@ -420,11 +421,156 @@ export class ProceduralTextureGenerator {
     return this.whitePlaceholder;
   }
 
+  // ==================== Generic Channel Packing ====================
+
+  private channelPackPipeline: GPUComputePipeline | null = null;
+  private channelPackBGL: GPUBindGroupLayout | null = null;
+  private channelPackParamBuffer: UnifiedGPUBuffer | null = null;
+
+  /**
+   * Ensure the generic channel pack pipeline is created (lazy init).
+   */
+  private ensureChannelPackPipeline(): void {
+    if (this.channelPackPipeline) return;
+
+    const shaderModule = this.ctx.device.createShaderModule({
+      label: 'channel-pack-shader',
+      code: channelPackShader,
+    });
+
+    this.channelPackBGL = this.ctx.device.createBindGroupLayout({
+      label: 'channel-pack-bind-group-layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } }, // inputR
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } }, // inputG
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } }, // inputB
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } }, // inputA
+        {
+          binding: 4,
+          visibility: GPUShaderStage.COMPUTE,
+          storageTexture: { access: 'write-only', format: 'rgba8unorm', viewDimension: '2d' },
+        }, // output
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } }, // params
+      ],
+    });
+
+    const layout = this.ctx.device.createPipelineLayout({
+      label: 'channel-pack-pipeline-layout',
+      bindGroupLayouts: [this.channelPackBGL],
+    });
+
+    this.channelPackPipeline = this.ctx.device.createComputePipeline({
+      label: 'channel-pack-pipeline',
+      layout,
+      compute: { module: shaderModule, entryPoint: 'main' },
+    });
+
+    // Params: 3 × vec4f = 48 bytes
+    this.channelPackParamBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
+      label: 'channel-pack-params',
+      size: 48,
+    });
+  }
+
+  /**
+   * Generic N-channel packer.
+   * 
+   * Composes up to 4 input textures into a single RGBA output texture.
+   * Each channel reads from its input texture's specified source channel,
+   * or falls back to a scalar value if no texture is provided.
+   * 
+   * @param inputs Per-channel configuration:
+   *   - `texture`: Source texture (null = use scalar)
+   *   - `scalar`: Fallback scalar value (0-1)
+   *   - `sourceChannel`: Which channel to read from the source texture (0=R, 1=G, 2=B, 3=A)
+   * @param resolution Output texture resolution (square)
+   * @returns A new UnifiedGPUTexture with packed channels + mipmaps.
+   */
+  packChannels(
+    inputs: {
+      r: { texture: UnifiedGPUTexture | null; scalar: number; sourceChannel?: number };
+      g: { texture: UnifiedGPUTexture | null; scalar: number; sourceChannel?: number };
+      b: { texture: UnifiedGPUTexture | null; scalar: number; sourceChannel?: number };
+      a: { texture: UnifiedGPUTexture | null; scalar: number; sourceChannel?: number };
+    },
+    resolution: number,
+  ): UnifiedGPUTexture {
+    this.ensureChannelPackPipeline();
+
+    const placeholder = this.getWhitePlaceholder();
+
+    // Write params uniform
+    const params = new Float32Array(12);
+    // vec4: hasChannel (R, G, B, A)
+    params[0] = inputs.r.texture ? 1.0 : 0.0;
+    params[1] = inputs.g.texture ? 1.0 : 0.0;
+    params[2] = inputs.b.texture ? 1.0 : 0.0;
+    params[3] = inputs.a.texture ? 1.0 : 0.0;
+    // vec4: scalarValues
+    params[4] = inputs.r.scalar;
+    params[5] = inputs.g.scalar;
+    params[6] = inputs.b.scalar;
+    params[7] = inputs.a.scalar;
+    // vec4: swizzle (source channel index per output channel)
+    params[8] = inputs.r.sourceChannel ?? 0;
+    params[9] = inputs.g.sourceChannel ?? 0;
+    params[10] = inputs.b.sourceChannel ?? 0;
+    params[11] = inputs.a.sourceChannel ?? 0;
+
+    this.channelPackParamBuffer!.write(this.ctx, params);
+
+    // Create output texture
+    const output = UnifiedGPUTexture.create2D(this.ctx, {
+      label: `channel-pack-${resolution}`,
+      width: resolution,
+      height: resolution,
+      format: 'rgba8unorm',
+      mipLevelCount: Math.floor(Math.log2(resolution)) + 1,
+      storage: true,
+      sampled: true,
+      renderTarget: true,
+      copyDst: false,
+      copySrc: false,
+    });
+
+    const outputMip0View = output.texture.createView({
+      label: 'channel-pack-storage-mip0',
+      baseMipLevel: 0,
+      mipLevelCount: 1,
+    });
+
+    const bindGroup = this.ctx.device.createBindGroup({
+      label: 'channel-pack-bind-group',
+      layout: this.channelPackBGL!,
+      entries: [
+        { binding: 0, resource: (inputs.r.texture ?? placeholder).view },
+        { binding: 1, resource: (inputs.g.texture ?? placeholder).view },
+        { binding: 2, resource: (inputs.b.texture ?? placeholder).view },
+        { binding: 3, resource: (inputs.a.texture ?? placeholder).view },
+        { binding: 4, resource: outputMip0View },
+        { binding: 5, resource: { buffer: this.channelPackParamBuffer!.buffer } },
+      ],
+    });
+
+    const encoder = this.ctx.device.createCommandEncoder({ label: 'channel-pack-encoder' });
+    const pass = encoder.beginComputePass({ label: 'channel-pack-pass' });
+    pass.setPipeline(this.channelPackPipeline!);
+    pass.setBindGroup(0, bindGroup);
+    const wg = Math.ceil(resolution / 8);
+    pass.dispatchWorkgroups(wg, wg, 1);
+    pass.end();
+    this.ctx.queue.submit([encoder.finish()]);
+
+    output.generateMipmaps(this.ctx);
+    return output;
+  }
+
   /**
    * Destroy GPU resources
    */
   destroy(): void {
     this.paramBuffer.destroy();
     this.whitePlaceholder?.destroy();
+    this.channelPackParamBuffer?.destroy();
   }
 }

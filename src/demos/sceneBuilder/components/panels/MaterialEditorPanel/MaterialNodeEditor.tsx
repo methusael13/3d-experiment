@@ -12,7 +12,7 @@
  * - Preview Node: 2D material preview
  */
 
-import { useState, useCallback, useMemo, useEffect } from 'preact/hooks';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'preact/hooks';
 import { useComputed } from '@preact/signals';
 import {
   ReactFlow,
@@ -32,21 +32,44 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { getMaterialRegistry } from '@/core/materials';
-import { PBRNode } from './nodes/PBRNode';
-import { ColorNode } from './nodes/ColorNode';
-import { NumberNode } from './nodes/NumberNode';
-import { TextureSetNode } from './nodes/TextureSetNode';
-import { PreviewNode } from './nodes/PreviewNode';
+import {
+  type NodePortDef,
+  resolveOutput,
+  applyInput,
+  isConnectionValid,
+} from './nodes/portTypes';
+import { PBRNode, portDef as pbrPortDef } from './nodes/PBRNode';
+import { ColorNode, portDef as colorPortDef } from './nodes/ColorNode';
+import { NumberNode, portDef as numberPortDef } from './nodes/NumberNode';
+import { TextureSetNode, portDef as textureSetPortDef } from './nodes/TextureSetNode';
+import { PreviewNode, portDef as previewPortDef } from './nodes/PreviewNode';
+import { ChannelPackNode, portDef as channelPackPortDef } from './nodes/ChannelPackNode';
 import styles from './MaterialNodeEditor.module.css';
 
-// ==================== Node Type Registration ====================
+// ==================== Node Type + Port Definition Registration ====================
 
+/** React Flow node type → component map */
 const nodeTypes: NodeTypes = {
   pbr: PBRNode,
   color: ColorNode,
   number: NumberNode,
   textureSet: TextureSetNode,
   preview: PreviewNode,
+  channelPack: ChannelPackNode,
+};
+
+/**
+ * Node type → port definition map.
+ * Each entry is the portDef exported by the corresponding node component.
+ * The generic propagation engine uses this — no node-specific logic needed.
+ */
+const nodePortDefs: Record<string, NodePortDef> = {
+  pbr: pbrPortDef,
+  color: colorPortDef,
+  number: numberPortDef,
+  textureSet: textureSetPortDef,
+  preview: previewPortDef,
+  channelPack: channelPackPortDef,
 };
 
 // ==================== Default Graph for New Materials ====================
@@ -166,72 +189,58 @@ export function MaterialNodeEditor() {
   }, [selectedId.value, registry]);
   
   /**
-   * Propagate data through edges immutably.
-   * Returns a new array of nodes if any data changed, or the same array if not.
-   * React Flow requires immutable node objects to detect changes.
+   * Generic data propagation engine.
+   * 
+   * Iterates all edges and uses the declarative portDef from each node type
+   * to resolve output values and apply them to target inputs.
+   * Also tracks _connectedInputs for any node with input ports.
+   * 
+   * No node-type-specific logic — all behavior is driven by the portDef
+   * exported from each node component file.
    */
   const propagateData = useCallback((currentNodes: Node[], currentEdges: Edge[]): Node[] => {
     const nodeMap = new Map(currentNodes.map(n => [n.id, n]));
     const updates = new Map<string, Record<string, unknown>>();
     
+    // Pass 1: Track _connectedInputs for all nodes with input ports
+    for (const edge of currentEdges) {
+      const targetNode = nodeMap.get(edge.target);
+      if (!targetNode?.type || !edge.targetHandle) continue;
+      
+      const targetPortDef = nodePortDefs[targetNode.type];
+      if (!targetPortDef || Object.keys(targetPortDef.inputs).length === 0) continue;
+      
+      const existing = updates.get(targetNode.id) ?? {};
+      const connectedSet = new Set<string>((existing._connectedInputs as string[]) ?? []);
+      connectedSet.add(edge.targetHandle);
+      existing._connectedInputs = Array.from(connectedSet);
+      updates.set(targetNode.id, existing);
+    }
+    
+    // Pass 2: Resolve outputs and apply to target inputs
     for (const edge of currentEdges) {
       const sourceNode = nodeMap.get(edge.source);
       const targetNode = nodeMap.get(edge.target);
-      if (!sourceNode || !targetNode) continue;
+      if (!sourceNode?.type || !targetNode?.type) continue;
       
       const sourceHandle = edge.sourceHandle ?? '';
       const targetHandle = edge.targetHandle ?? '';
       
-      // Determine the value to propagate from source
-      let value: unknown = undefined;
+      const srcPortDef = nodePortDefs[sourceNode.type];
+      const tgtPortDef = nodePortDefs[targetNode.type];
+      if (!srcPortDef || !tgtPortDef) continue;
       
-      if (sourceNode.type === 'color' && sourceHandle === 'color') {
-        value = (sourceNode.data as any).color;
-      } else if (sourceNode.type === 'number' && sourceHandle === 'value') {
-        value = (sourceNode.data as any).value;
-      } else if (sourceNode.type === 'textureSet') {
-        // Texture set outputs a file path per map type (albedo, normal, roughness, etc.)
-        const asset = (sourceNode.data as any).asset;
-        if (asset?.files) {
-          const file = asset.files.find((f: any) => f.fileSubType === sourceHandle);
-          if (file) {
-            value = file.path; // Pass file path as a string reference
-          }
-        }
-      } else if (sourceNode.type === 'pbr' && sourceHandle === 'material') {
-        // Pass PBR data to preview
-        value = { ...(sourceNode.data as any) };
-      }
-      
+      // Resolve output value using source node's portDef
+      const value = resolveOutput(srcPortDef, sourceHandle, sourceNode.data as Record<string, unknown>);
       if (value === undefined) continue;
       
-      // Collect updates for target nodes
-      if (targetNode.type === 'pbr' && targetHandle) {
-        const existing = updates.get(targetNode.id) ?? {};
-        existing[targetHandle] = value;
-        updates.set(targetNode.id, existing);
-      } else if (targetNode.type === 'preview' && targetHandle === 'material') {
-        const pbrData = value as Record<string, unknown>;
-        const existing = updates.get(targetNode.id) ?? {};
-        for (const key of ['albedo', 'metallic', 'roughness']) {
-          if (pbrData[key] !== undefined) {
-            existing[key] = pbrData[key];
-          }
-        }
-        updates.set(targetNode.id, existing);
-      }
-    }
-    
-    // Also track which PBR inputs have connections (for disabling inline controls)
-    for (const edge of currentEdges) {
-      const targetNode = nodeMap.get(edge.target);
-      if (targetNode?.type === 'pbr' && edge.targetHandle) {
-        const existing = updates.get(targetNode.id) ?? {};
-        const connectedSet = new Set<string>((existing._connectedInputs as string[]) ?? []);
-        connectedSet.add(edge.targetHandle);
-        existing._connectedInputs = Array.from(connectedSet);
-        updates.set(targetNode.id, existing);
-      }
+      // Apply input value using target node's portDef
+      const inputUpdates = applyInput(tgtPortDef, targetHandle, value);
+      
+      // Merge into accumulated updates for this target node
+      const existing = updates.get(targetNode.id) ?? {};
+      Object.assign(existing, inputUpdates);
+      updates.set(targetNode.id, existing);
     }
     
     if (updates.size === 0) return currentNodes;
@@ -241,7 +250,6 @@ export function MaterialNodeEditor() {
       const nodeUpdates = updates.get(node.id);
       if (!nodeUpdates) return node;
       
-      // Check if anything actually changed
       const currentData = node.data as Record<string, unknown>;
       let hasChange = false;
       for (const [key, val] of Object.entries(nodeUpdates)) {
@@ -253,7 +261,6 @@ export function MaterialNodeEditor() {
       
       if (!hasChange) return node;
       
-      // Return new node with merged data
       return {
         ...node,
         data: { ...currentData, ...nodeUpdates },
@@ -261,18 +268,54 @@ export function MaterialNodeEditor() {
     });
   }, []);
 
-  // Run propagation after nodes or edges change
+  // Serialized edge fingerprint — changes on add/remove, not just count
+  const edgeKey = edges.map(e => `${e.source}:${e.sourceHandle}->${e.target}:${e.targetHandle}`).join('|');
+  // Track previous edge key to detect edge changes (not just node data changes)
+  const prevEdgeKeyRef = useRef(edgeKey);
+  
   useEffect(() => {
-    if (nodes.length === 0 || edges.length === 0) return;
-    const propagated = propagateData(nodes, edges);
-    if (propagated !== nodes) {
+    if (nodes.length === 0) return;
+    
+    const edgesChanged = prevEdgeKeyRef.current !== edgeKey;
+    prevEdgeKeyRef.current = edgeKey;
+    
+    // Build base nodes: if edges changed, strip propagated keys first to avoid stale data
+    let baseNodes = nodes;
+    if (edgesChanged) {
+      baseNodes = nodes.map(node => {
+        if (!node.type) return node;
+        const pDef = nodePortDefs[node.type];
+        if (!pDef || Object.keys(pDef.inputs).length === 0) return node;
+        
+        const data = node.data as Record<string, unknown>;
+        const cleanedData = { ...data };
+        delete cleanedData._connectedInputs;
+        for (const key of Object.keys(cleanedData)) {
+          if (key.endsWith('TexPath')) delete cleanedData[key];
+        }
+        return { ...node, data: cleanedData };
+      });
+    }
+    
+    const propagated = propagateData(baseNodes, edges);
+    
+    // Check if anything actually changed
+    let changed = false;
+    for (let i = 0; i < nodes.length; i++) {
+      if (JSON.stringify(nodes[i].data) !== JSON.stringify(propagated[i].data)) {
+        changed = true;
+        break;
+      }
+    }
+    
+    if (changed) {
       setNodes(propagated);
     }
   }, [
-    // Re-propagate when any node data changes — use a serialized key of all node data
     nodes.map(n => JSON.stringify(n.data)).join('|'),
-    edges.length,
+    edgeKey,
   ]);
+
 
   const onNodesChange: OnNodesChange = useCallback((changes) => {
     setNodes((nds) => {
@@ -295,56 +338,36 @@ export function MaterialNodeEditor() {
   
   const onConnect: OnConnect = useCallback((connection) => {
     setEdges((eds) => {
-      const updated = addEdge(connection, eds);
+      // Remove any existing edges to the same target input handle (single-connection-per-input)
+      const filtered = eds.filter(e =>
+        !(e.target === connection.target && e.targetHandle === connection.targetHandle)
+      );
+      const updated = addEdge(connection, filtered);
       setTimeout(() => saveGraph(nodes, updated), 0);
       return updated;
     });
   }, [saveGraph, nodes]);
   
   /**
-   * Type guardrails: validate connections based on source/target handle types.
-   * - Float inputs (metallic, roughness, ior, clearcoat, normalScale, occlusionStrength)
-   *   accept: number output, texture output (single channel)
-   *   reject: color output (vec3)
-   * - Color inputs (albedo, emissive) accept: color output, texture output
-   *   reject: number output
-   * - Texture inputs (normal) accept: texture output only
-   * - Material input (preview) accepts: pbr material output only
+   * Generic connection validation using portDef type compatibility.
+   * Each node's portDef declares what data types its outputs produce
+   * and what types each input accepts — no node-specific checks needed.
    */
-  const isValidConnection = useCallback((connection: { source: string; target: string; sourceHandle: string | null; targetHandle: string | null }) => {
+  const isValidConnectionCb = useCallback((connection: { source: string; target: string; sourceHandle: string | null; targetHandle: string | null }) => {
     const sourceNode = nodes.find(n => n.id === connection.source);
     const targetNode = nodes.find(n => n.id === connection.target);
-    if (!sourceNode || !targetNode) return false;
+    if (!sourceNode?.type || !targetNode?.type) return false;
     
-    const sourceType = sourceNode.type;
-    const targetHandle = connection.targetHandle ?? '';
+    const srcDef = nodePortDefs[sourceNode.type];
+    const tgtDef = nodePortDefs[targetNode.type];
+    if (!srcDef || !tgtDef) return true; // Permissive fallback for unknown types
     
-    // Preview node: only accept PBR material output
-    if (targetNode.type === 'preview' && targetHandle === 'material') {
-      return sourceType === 'pbr' && connection.sourceHandle === 'material';
-    }
-    
-    // PBR node inputs
-    if (targetNode.type === 'pbr') {
-      const floatInputs = ['metallic', 'roughness', 'ior', 'clearcoat', 'normalScale', 'occlusionStrength'];
-      const colorInputs = ['albedo', 'emissive'];
-      const textureInputs = ['normal', 'occlusion', 'metallicRoughness'];
-      
-      if (floatInputs.includes(targetHandle)) {
-        // Float inputs accept: number, textureSet (single channel maps like roughness/ao)
-        return sourceType === 'number' || sourceType === 'textureSet';
-      }
-      if (colorInputs.includes(targetHandle)) {
-        // Color inputs accept: color, textureSet (albedo maps)
-        return sourceType === 'color' || sourceType === 'textureSet';
-      }
-      if (textureInputs.includes(targetHandle)) {
-        // Texture inputs accept: textureSet only
-        return sourceType === 'textureSet';
-      }
-    }
-    
-    return true; // Allow other connections by default
+    return isConnectionValid(
+      srcDef,
+      connection.sourceHandle ?? '',
+      tgtDef,
+      connection.targetHandle ?? '',
+    );
   }, [nodes]);
   
   // Add node helpers
@@ -400,6 +423,9 @@ export function MaterialNodeEditor() {
           <button class={styles.addNodeBtn} onClick={() => addNode('number')}>
             + Number
           </button>
+          <button class={styles.addNodeBtn} onClick={() => addNode('channelPack')}>
+            + Channel Pack
+          </button>
         </div>
       </div>
       
@@ -411,7 +437,7 @@ export function MaterialNodeEditor() {
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          isValidConnection={isValidConnection}
+          isValidConnection={isValidConnectionCb}
           nodeTypes={nodeTypes}
           fitView
           colorMode="dark"

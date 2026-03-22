@@ -11,7 +11,26 @@ import { createPortal } from 'preact/compat';
 import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react';
 import { AssetPickerModal } from '../../../ui/AssetPickerModal';
 import type { Asset } from '../../../hooks/useAssetLibrary';
+import type { NodePortDef } from './portTypes';
 import styles from './nodeStyles.module.css';
+
+/** Port definition — co-located with the node component */
+export const portDef: NodePortDef = {
+  outputs: {
+    // Dynamic outputs: handle IDs are fileSubType values (albedo, normal, roughness, etc.)
+    // The '*' wildcard resolver extracts the file path from the asset data.
+    '*': {
+      type: 'texture',
+      resolver: (data, handleId) => {
+        const asset = data.asset as { files?: Array<{ fileSubType?: string; path?: string }> } | null;
+        if (!asset?.files) return undefined;
+        const file = asset.files.find(f => f.fileSubType === handleId);
+        return file?.path ?? undefined;
+      },
+    },
+  },
+  inputs: {},
+};
 
 interface TextureSetNodeData {
   asset?: Asset | null;
