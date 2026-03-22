@@ -40,14 +40,14 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { getMaterialRegistry } from '@/core/materials';
-import type { SerializedNodeGraph } from '@/core/materials/types';
+import type { MaterialDefinition, SerializedNodeGraph } from '@/core/materials/types';
 import {
   type NodePortDef,
   resolveOutput,
   applyInput,
   isConnectionValid,
 } from './nodes/portTypes';
-import { PBRNode, portDef as pbrPortDef } from './nodes/PBRNode';
+import { PBRNode, portDef as pbrPortDef, extractTextureRefs, extractPBRScalars } from './nodes/PBRNode';
 import { ColorNode, portDef as colorPortDef } from './nodes/ColorNode';
 import { NumberNode, portDef as numberPortDef } from './nodes/NumberNode';
 import { TextureSetNode, portDef as textureSetPortDef } from './nodes/TextureSetNode';
@@ -222,7 +222,23 @@ export function MaterialNodeEditor() {
       userEditVersionRef.current = loadVersionRef.current;
     }
 
-    registry.update(matId, { nodeGraph: serializeGraph(nodes, edges) });
+    // Build the update payload: always include the serialized node graph
+    const updatePayload: Partial<MaterialDefinition> = {
+      nodeGraph: serializeGraph(nodes, edges),
+    };
+
+    // Sync PBR node textures + scalars back to MaterialDefinition so
+    // downstream consumers (terrain, object rendering, serialization)
+    // can read material.textures / material.albedo / etc. directly
+    // without parsing the nodeGraph structure.
+    const pbrNode = nodes.find(n => n.type === 'pbr');
+    if (pbrNode) {
+      const pbrData = pbrNode.data as Record<string, unknown>;
+      updatePayload.textures = extractTextureRefs(pbrData);
+      Object.assign(updatePayload, extractPBRScalars(pbrData));
+    }
+
+    registry.update(matId, updatePayload);
   }, [nodes, edges]);
 
   // ==================== Material switch: load graph ====================

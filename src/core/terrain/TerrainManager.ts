@@ -40,6 +40,7 @@ import { BiomeType, TextureType } from './TerrainBiomeTextureResources';
 import { ShadowRendererGPU } from '../gpu/renderers';
 import { World } from '../ecs/World';
 import { LightComponent } from '../ecs/components';
+import { getMaterialRegistry } from '../materials';
 
 /**
  * Terrain generation configuration
@@ -988,10 +989,106 @@ export class TerrainManager {
     return this.renderer?.getDetailConfig() ?? null;
   }
   
-  // ============ Biome Textures ============
+  // ============ Biome Materials (Material Registry Integration) ============
   
   /**
-   * Set biome texture from URL path
+   * Set a biome's material from the MaterialRegistry by ID.
+   * Reads the MaterialDefinition, maps its texture slots to terrain texture types,
+   * and loads all available textures (albedo, normal, ao, roughness) into the
+   * biome texture arrays.
+   * 
+   * Also applies the material's albedo color as the biome fallback color.
+   * 
+   * @param biome Biome type (grass, rock, forest)
+   * @param materialId Material registry ID (or null to clear)
+   * @param tilingScale World-space tiling scale override (meters per tile)
+   */
+  async setBiomeMaterial(
+    biome: BiomeType,
+    materialId: string | null,
+    tilingScale?: number
+  ): Promise<void> {
+    if (!this.renderer) {
+      console.warn('[TerrainManager] Cannot set biome material - renderer not initialized');
+      return;
+    }
+
+    const registry = getMaterialRegistry();
+    
+    if (!materialId) {
+      // Clear all textures for this biome
+      const allTypes: TextureType[] = ['albedo', 'normal', 'ao', 'roughness'];
+      for (const type of allTypes) {
+        this.renderer.clearBiomeTexture(biome, type);
+      }
+      console.log(`[TerrainManager] Cleared material for ${biome} biome`);
+      return;
+    }
+    
+    const material = registry.get(materialId);
+    if (!material) {
+      console.warn(`[TerrainManager] Material not found: ${materialId}`);
+      return;
+    }
+    
+    // Resolve texture paths from MaterialDefinition.textures.
+    // The node editor's PBR node automatically syncs its texture paths
+    // back to MaterialDefinition.textures via extractTextureRefs(),
+    // so we only need to read from material.textures here.
+    const resolvedPaths: Record<string, string | null> = {};
+    
+    // Map MaterialTextureSlot → terrain TextureType
+    const slotMap: Array<{ slot: string; terrainType: TextureType }> = [
+      { slot: 'baseColor', terrainType: 'albedo' },
+      { slot: 'normal', terrainType: 'normal' },
+      { slot: 'occlusion', terrainType: 'ao' },
+      { slot: 'metallicRoughness', terrainType: 'roughness' },
+      { slot: 'displacement', terrainType: 'displacement' },
+      { slot: 'bump', terrainType: 'bump' },
+    ];
+    
+    for (const { slot, terrainType } of slotMap) {
+      const texRef = material.textures[slot as keyof typeof material.textures];
+      if (texRef && texRef.type === 'asset' && texRef.assetPath) {
+        resolvedPaths[terrainType] = texRef.assetPath;
+      }
+    }
+    
+    // Load resolved textures into biome arrays
+    for (const { terrainType } of slotMap) {
+      if (terrainType === 'bump') continue; // bump handled separately below
+      const path = resolvedPaths[terrainType];
+      if (path) {
+        console.log(`[TerrainManager] Loading ${biome} ${terrainType} from material "${material.name}": ${path}`);
+        await this.renderer.setBiomeTexture(biome, terrainType, path, tilingScale);
+      } else {
+        this.renderer.clearBiomeTexture(biome, terrainType);
+      }
+    }
+    
+    // Handle bump map: if no explicit normal map was loaded, use bump as a grayscale
+    // normal alternative (the shader converts grayscale bump to tangent-space normals)
+    if (!resolvedPaths['normal'] && resolvedPaths['bump']) {
+      console.log(`[TerrainManager] Loading ${biome} bump→normal from material "${material.name}": ${resolvedPaths['bump']}`);
+      await this.renderer.setBiomeTexture(biome, 'normal', resolvedPaths['bump']!, tilingScale);
+    }
+    
+    // Apply material's albedo as the biome fallback color
+    const colorKey = `${biome}Color` as 'grassColor' | 'rockColor' | 'forestColor';
+    this.setMaterial({ [colorKey]: material.albedo as [number, number, number] });
+    
+    // Update tiling if provided
+    if (tilingScale !== undefined) {
+      this.renderer.setBiomeTiling(biome, tilingScale);
+    }
+    
+    console.log(`[TerrainManager] Applied material "${material.name}" to ${biome} biome`);
+  }
+  
+  // ============ Biome Textures (Low-Level) ============
+  
+  /**
+   * Set biome texture from URL path (low-level, prefer setBiomeMaterial for registry integration)
    * Loads the texture and updates GPU bind group
    * 
    * @param biome Biome type (grass, rock, forest)

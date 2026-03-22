@@ -10,6 +10,7 @@
 
 import { useCallback } from 'preact/hooks';
 import { Handle, Position, type NodeProps, useReactFlow } from '@xyflow/react';
+import type { MaterialTextureSlot, MaterialTextureRef } from '@/core/materials/types';
 import type { NodePortDef } from './portTypes';
 import styles from './nodeStyles.module.css';
 
@@ -273,4 +274,61 @@ export function PBRNode({ data, id }: NodeProps) {
       </div>
     </div>
   );
+}
+
+// ==================== Sync helpers ====================
+
+/**
+ * Mapping from PBR node data texture path keys to MaterialTextureSlot names.
+ */
+const TEX_PATH_TO_SLOT: Record<string, MaterialTextureSlot> = {
+  baseColorTexPath: 'baseColor',
+  albedoTexPath: 'baseColor',
+  normalTexPath: 'normal',
+  metallicRoughnessTexPath: 'metallicRoughness',
+  occlusionTexPath: 'occlusion',
+  emissiveTexPath: 'emissive',
+  bumpTexPath: 'bump',
+  displacementTexPath: 'displacement',
+};
+
+/**
+ * Extract texture references from PBR node data into a MaterialDefinition-compatible
+ * `textures` map.  Only slots with non-empty paths are included.
+ */
+export function extractTextureRefs(
+  data: Record<string, unknown>,
+): Partial<Record<MaterialTextureSlot, MaterialTextureRef>> {
+  const textures: Partial<Record<MaterialTextureSlot, MaterialTextureRef>> = {};
+
+  for (const [key, slot] of Object.entries(TEX_PATH_TO_SLOT)) {
+    const assetPath = data[key];
+    if (typeof assetPath === 'string' && assetPath.length > 0) {
+      textures[slot] = { type: 'asset', assetPath };
+    }
+  }
+
+  return textures;
+}
+
+/**
+ * Extract PBR scalar properties from PBR node data into a partial
+ * MaterialDefinition update object.
+ */
+export function extractPBRScalars(
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const scalars: Record<string, unknown> = {};
+
+  if (Array.isArray(data.albedo))              scalars.albedo = data.albedo;
+  if (typeof data.metallic === 'number')       scalars.metallic = data.metallic;
+  if (typeof data.roughness === 'number')      scalars.roughness = data.roughness;
+  if (typeof data.normalScale === 'number')    scalars.normalScale = data.normalScale;
+  if (typeof data.occlusionStrength === 'number') scalars.occlusionStrength = data.occlusionStrength;
+  if (typeof data.ior === 'number')            scalars.ior = data.ior;
+  if (typeof data.clearcoatFactor === 'number') scalars.clearcoatFactor = data.clearcoatFactor;
+  if (typeof data.clearcoatRoughness === 'number') scalars.clearcoatRoughness = data.clearcoatRoughness;
+  if (Array.isArray(data.emissiveFactor))      scalars.emissiveFactor = data.emissiveFactor;
+
+  return scalars;
 }
