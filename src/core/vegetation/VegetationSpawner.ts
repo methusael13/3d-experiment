@@ -176,7 +176,7 @@ export class VegetationSpawner {
     spawnSeed: number = 42,
     lodDensityRatio: number = 1.0,
   ): void {
-    const renderModeMap: Record<RenderMode, number> = { 'billboard': 0, 'mesh': 1, 'hybrid': 2, 'grass-blade': 3 };
+    const renderModeMap: Record<RenderMode, number> = { 'billboard': 0, 'mesh': 1, 'hybrid': 2, 'grass-blade': 3, 'procedural-rock': 1 };
     const biomeChannelMap: Record<string, number> = { 'r': 0, 'g': 1, 'b': 2, 'a': 3 };
     
     const buffer = new ArrayBuffer(SPAWN_PARAMS_SIZE);

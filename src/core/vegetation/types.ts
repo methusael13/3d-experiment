@@ -27,7 +27,12 @@ export interface VegetationSubMesh {
   indexBuffer: GPUBuffer;
   indexCount: number;
   indexFormat: GPUIndexFormat;
+  // PBR textures (all optional — unset channels use material uniform values)
   baseColorTexture: UnifiedGPUTexture | null;
+  normalTexture: UnifiedGPUTexture | null;
+  metallicRoughnessTexture: UnifiedGPUTexture | null;
+  occlusionTexture: UnifiedGPUTexture | null;
+  emissiveTexture: UnifiedGPUTexture | null;
   windMultiplier: number;
 }
 
@@ -38,8 +43,10 @@ export interface VegetationSubMesh {
  * - 'billboard': Always rendered as camera-facing quads (atlas or billboard texture)
  * - 'mesh': Always rendered as 3D instanced mesh (GLTF model)
  * - 'hybrid': 3D mesh at close range, billboard at far range (distance-based transition)
+ * - 'grass-blade': Procedural Bézier-curve grass blades
+ * - 'procedural-rock': GPU-generated deformed icosphere rock meshes (per-plant seed)
  */
-export type RenderMode = 'billboard' | 'mesh' | 'hybrid' | 'grass-blade';
+export type RenderMode = 'billboard' | 'mesh' | 'hybrid' | 'grass-blade' | 'procedural-rock';
 
 // ==================== Model Reference ====================
 
@@ -115,6 +122,57 @@ export interface AtlasReference {
   regions: AtlasRegion[];
 }
 
+// ==================== Procedural Rock Types ====================
+
+/**
+ * Number of LOD tiers for procedural rock meshes.
+ * Each tier corresponds to a different icosphere subdivision level.
+ */
+export const ROCK_LOD_TIER_COUNT = 4;
+
+/**
+ * Icosphere subdivision level per LOD tier.
+ * Index 0 = lowest detail (distant), index 3 = highest detail (closest).
+ */
+export const ROCK_SUBDIVISION_LEVELS = [0, 1, 2, 3] as const;
+
+/**
+ * Reference to a generated procedural rock mesh set.
+ * Stores 4 LOD tiers of the same rock shape (same seed, different subdivision levels)
+ * plus shared albedo + normal map textures.
+ * 
+ * This is the runtime GPU data — created by ProceduralRockMeshGenerator and
+ * cached per plant type. Not serialized; regenerated from seed on scene load.
+ */
+export interface ProceduralRockRef {
+  /** The seed used to generate this rock shape */
+  seed: number;
+  /** The fallback color baked into the albedo texture */
+  bakedColor: [number, number, number];
+  /** Rock meshes per LOD tier: [lod0_distant, lod1_far, lod2_mid, lod3_close] */
+  lodMeshes: [VegetationMesh, VegetationMesh, VegetationMesh, VegetationMesh];
+  /** Baked albedo + AO texture (128×128 rgba8, shared across all LOD tiers) */
+  albedoTexture: UnifiedGPUTexture;
+  /** Baked normal map texture (128×128 rgba8, shared across all LOD tiers) */
+  normalTexture: UnifiedGPUTexture;
+}
+
+/**
+ * Map a CDLOD tile lodLevel to a rock LOD tier index (0-3).
+ * 
+ * @param lodLevel - CDLOD quadtree level (0 = root/coarsest, N = leaf/finest)
+ * @param maxLodLevels - Total number of LOD levels in the quadtree
+ * @returns Rock LOD tier index: 3 = closest (subdiv 3), 0 = distant (subdiv 0)
+ */
+export function lodLevelToRockTier(lodLevel: number, maxLodLevels: number): number {
+  const leafLevel = maxLodLevels - 1;
+  const levelsFromLeaf = leafLevel - lodLevel;
+  if (levelsFromLeaf <= 1) return 3;  // closest: subdiv 3 (642 verts)
+  if (levelsFromLeaf <= 3) return 2;  // mid: subdiv 2 (162 verts)
+  if (levelsFromLeaf <= 5) return 1;  // far: subdiv 1 (42 verts)
+  return 0;                            // distant: subdiv 0 (12 verts)
+}
+
 // ==================== Plant Types ====================
 
 /**
@@ -183,6 +241,15 @@ export interface PlantType {
    * Default: 0 (spawn on all visible tiles).
    */
   maxVegetationLOD: number;
+
+  // ---- Procedural Rock Fields ----
+  /** Shape seed for procedural rock generation. Each unique seed produces a different rock shape. Default: 42 */
+  rockSeed: number;
+  /**
+   * Runtime-only reference to the generated procedural rock mesh set (4 LOD tiers + textures).
+   * Null until user clicks "Generate". Not serialized — regenerated from rockSeed on scene load.
+   */
+  rockRef: ProceduralRockRef | null;
 }
 
 /**
@@ -212,6 +279,8 @@ export function createDefaultPlantType(id: string, name: string): PlantType {
     castShadows: false,
     shadowCastDistance: 50,
     maxVegetationLOD: 8,
+    rockSeed: 42,
+    rockRef: null,
   };
 }
 
@@ -380,6 +449,8 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     castShadows: false,
     shadowCastDistance: 50,
     maxVegetationLOD: 8,
+    rockSeed: 42,
+    rockRef: null,
   },
   {
     id: 'short-grass',
@@ -404,6 +475,8 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     castShadows: false,
     shadowCastDistance: 50,
     maxVegetationLOD: 8,
+    rockSeed: 42,
+    rockRef: null,
   },
   {
     id: 'wildflower-yellow',
@@ -428,6 +501,8 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     castShadows: false,
     shadowCastDistance: 50,
     maxVegetationLOD: 8,
+    rockSeed: 42,
+    rockRef: null,
   },
   {
     id: 'wildflower-purple',
@@ -452,6 +527,8 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     castShadows: false,
     shadowCastDistance: 50,
     maxVegetationLOD: 8,
+    rockSeed: 42,
+    rockRef: null,
   },
   {
     id: 'small-shrub',
@@ -476,6 +553,8 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     castShadows: false,
     shadowCastDistance: 50,
     maxVegetationLOD: 8,
+    rockSeed: 42,
+    rockRef: null,
   },
 ];
 
@@ -506,6 +585,8 @@ export const FOREST_PLANT_PRESETS: PlantType[] = [
     castShadows: false,
     shadowCastDistance: 50,
     maxVegetationLOD: 8,
+    rockSeed: 42,
+    rockRef: null,
   },
   {
     id: 'forest-grass',
@@ -530,6 +611,8 @@ export const FOREST_PLANT_PRESETS: PlantType[] = [
     castShadows: false,
     shadowCastDistance: 50,
     maxVegetationLOD: 8,
+    rockSeed: 42,
+    rockRef: null,
   },
 ];
 

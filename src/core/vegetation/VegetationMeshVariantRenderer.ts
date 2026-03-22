@@ -246,11 +246,17 @@ export class VegetationMeshVariantRenderer {
       alphaCutoff: 0.5,
     };
     
-    // If submesh has a base color texture, set it up
-    if (subMesh.baseColorTexture) {
-      material.textures = {
-        baseColor: subMesh.baseColorTexture,
-      } as GPUMaterialTextures;
+    // Set up all available PBR textures from the submesh
+    const hasAnyTexture = subMesh.baseColorTexture || subMesh.normalTexture || 
+      subMesh.metallicRoughnessTexture || subMesh.occlusionTexture || subMesh.emissiveTexture;
+    if (hasAnyTexture) {
+      const textures: Partial<GPUMaterialTextures> = {};
+      if (subMesh.baseColorTexture) textures.baseColor = subMesh.baseColorTexture;
+      if (subMesh.normalTexture) textures.normal = subMesh.normalTexture;
+      if (subMesh.metallicRoughnessTexture) textures.metallicRoughness = subMesh.metallicRoughnessTexture;
+      if (subMesh.occlusionTexture) textures.occlusion = subMesh.occlusionTexture;
+      if (subMesh.emissiveTexture) textures.emissive = subMesh.emissiveTexture;
+      material.textures = textures as GPUMaterialTextures;
     }
     
     // Compute vertex count from index data

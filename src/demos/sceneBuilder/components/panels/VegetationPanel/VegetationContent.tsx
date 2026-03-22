@@ -32,6 +32,10 @@ import styles from './VegetationContent.module.css';
 export interface VegetationContentProps {
   /** PlantRegistry instance from TerrainManager */
   registry: PlantRegistry;
+  /** Callback to generate a procedural rock mesh for a plant. Returns true on success. */
+  onGenerateRock?: (biome: BiomeChannel, plantId: string) => boolean;
+  /** Callback to check if a rock mesh has been generated for a plant. */
+  hasRockMesh?: (biome: BiomeChannel, plantId: string) => boolean;
 }
 
 interface BiomeTabInfo {
@@ -88,13 +92,16 @@ const ExpandIcon = ({ expanded }: { expanded: boolean }) => (
 
 interface PlantItemProps {
   plant: PlantType;
+  biome: BiomeChannel;
   onUpdate: (updates: Partial<PlantType>) => void;
   onDelete: () => void;
   onSelectAtlas: () => void;
   onSelectModel: () => void;
+  onGenerateRock?: (biome: BiomeChannel, plantId: string) => boolean;
+  hasRockMesh?: (biome: BiomeChannel, plantId: string) => boolean;
 }
 
-function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas, onSelectModel }: PlantItemProps) {
+function PlantItem({ plant, biome, onUpdate, onDelete, onSelectAtlas, onSelectModel, onGenerateRock, hasRockMesh }: PlantItemProps) {
   const [expanded, setExpanded] = useState(false);
   
   return (
@@ -158,8 +165,57 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas, onSelectModel }: 
               <option value="mesh">3D Mesh Only</option>
               <option value="hybrid">Hybrid (3D + Billboard)</option>
               <option value="grass-blade">Procedural Grass Blade</option>
+              <option value="procedural-rock">Procedural Rock</option>
             </select>
           </div>
+          
+          {/* Procedural Rock controls */}
+          {plant.renderMode === 'procedural-rock' && (
+            <div class={styles.propertyGroup}>
+              <div class={styles.propertyRow}>
+                <label>Rock Shape Seed</label>
+                <input 
+                  type="number"
+                  min="0"
+                  max="99999"
+                  step="1"
+                  value={plant.rockSeed ?? 42}
+                  onInput={(e) => onUpdate({ rockSeed: parseInt((e.target as HTMLInputElement).value) || 0 })}
+                />
+              </div>
+              <div class={styles.configRow} style={{ marginTop: '4px' }}>
+                {hasRockMesh?.(biome, plant.id) ? (
+                  <>
+                    <span style={{ color: '#4caf50', fontSize: '11px' }}>✅ Rock mesh generated (4 LODs)</span>
+                    <button 
+                      class={styles.presetButton}
+                      style={{ marginTop: '4px', fontSize: '11px' }}
+                      onClick={() => {
+                        const result = onGenerateRock?.(biome, plant.id);
+                        if (result) onUpdate({}); // Force re-render by triggering registry update
+                      }}
+                    >
+                      🔄 Regenerate
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span style={{ color: '#ff9800', fontSize: '11px' }}>⚠ Rock mesh not generated</span>
+                    <button 
+                      class={styles.presetButton}
+                      style={{ marginTop: '4px', fontSize: '11px' }}
+                      onClick={() => {
+                        const result = onGenerateRock?.(biome, plant.id);
+                        if (result) onUpdate({}); // Force re-render by triggering registry update
+                      }}
+                    >
+                      🪨 Generate Rock Mesh
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
           
           {/* Model info */}
           {plant.modelRef && (
@@ -446,7 +502,7 @@ function PlantItem({ plant, onUpdate, onDelete, onSelectAtlas, onSelectModel }: 
 
 // ==================== Main Component ====================
 
-export function VegetationContent({ registry }: VegetationContentProps) {
+export function VegetationContent({ registry, onGenerateRock, hasRockMesh }: VegetationContentProps) {
   // State
   const [selectedBiome, setSelectedBiome] = useState<BiomeChannel>('r');
   const [plants, setPlants] = useState<PlantType[]>([]);
@@ -792,10 +848,13 @@ export function VegetationContent({ registry }: VegetationContentProps) {
             <PlantItem
               key={plant.id}
               plant={plant}
+              biome={selectedBiome}
               onUpdate={(updates) => handleUpdatePlant(plant.id, updates)}
               onDelete={() => handleDeletePlant(plant.id)}
               onSelectAtlas={() => handleSelectAtlas(plant.id)}
               onSelectModel={() => handleSelectModel(plant.id)}
+              onGenerateRock={onGenerateRock}
+              hasRockMesh={hasRockMesh}
             />
           ))
         )}

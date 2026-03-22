@@ -22,7 +22,8 @@ import { VegetationDensityMapGenerator } from './VegetationDensityMapGenerator';
 import { loadCompositeAtlasTexture, clearCompositeCache } from './AtlasTextureCompositor';
 import { VegetationRenderer, type VegetationTileData } from './VegetationRenderer';
 import { VegetationTileCache } from './VegetationTileCache';
-import type { VegetationMesh, VegetationSubMesh } from './types';
+import { ProceduralRockMeshGenerator } from './ProceduralRockMeshGenerator';
+import type { ProceduralRockRef, VegetationMesh, VegetationSubMesh } from './types';
 import type { PlantRegistry } from './PlantRegistry';
 import type { TerrainNode } from '../terrain/TerrainQuadtree';
 import type {
@@ -32,7 +33,7 @@ import type {
   ModelReference,
   VegetationLightParams,
 } from './types';
-import { createDefaultVegetationConfig, createDefaultWindParams } from './types';
+import { createDefaultVegetationConfig, createDefaultWindParams, lodLevelToRockTier } from './types';
 import { DirectionalLight } from '../sceneObjects/lights/DirectionalLight';
 import type { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
 import { Vec3 } from '../types';
@@ -70,6 +71,12 @@ export class VegetationManager {
 
   // Billboard texture cache
   private textureCache: Map<string, UnifiedGPUTexture> = new Map();
+
+  // Procedural rock mesh generator (lazily initialized)
+  private rockMeshGenerator: ProceduralRockMeshGenerator | null = null;
+
+  // Pending rock refs to destroy at start of next frame (deferred cleanup)
+  private _pendingRockDestroy: { plantId: string; ref: ProceduralRockRef }[] = [];
 
   // Subscription cleanup
   private registryUnsubscribe: (() => void) | null = null;
@@ -345,7 +352,7 @@ export class VegetationManager {
 
       this.tileCache.setPlantSpawnResult(tile.tileId, plant.id, plant.color, atlasRegion, result);
 
-      const renderModeMap: Record<string, number> = { 'billboard': 0, 'mesh': 1, 'hybrid': 2, 'grass-blade': 3 };
+      const renderModeMap: Record<string, number> = { 'billboard': 0, 'mesh': 1, 'hybrid': 2, 'grass-blade': 3, 'procedural-rock': 1 };
       this.tileCache.setPlantRenderParams(
         tile.tileId, plant.id,
         renderModeMap[plant.renderMode] ?? 0,
@@ -523,12 +530,28 @@ export class VegetationManager {
     alignedIndexData.set(new Uint8Array(indices.buffer, indices.byteOffset, indices.byteLength));
     this.ctx.queue.writeBuffer(indexBuffer, 0, alignedIndexData);
 
-    // Look up base color texture from material
+    // Look up PBR textures from material
     let baseColorTexture: UnifiedGPUTexture | null = null;
+    let normalTexture: UnifiedGPUTexture | null = null;
+    let metallicRoughnessTexture: UnifiedGPUTexture | null = null;
+    let occlusionTexture: UnifiedGPUTexture | null = null;
+    let emissiveTexture: UnifiedGPUTexture | null = null;
     if (glbMesh.materialIndex !== undefined && glbMesh.materialIndex < glbModel.materials.length) {
-      const material = glbModel.materials[glbMesh.materialIndex];
-      if (material.baseColorTextureIndex !== undefined) {
-        baseColorTexture = textureMap.get(material.baseColorTextureIndex) ?? null;
+      const mat = glbModel.materials[glbMesh.materialIndex];
+      if (mat.baseColorTextureIndex !== undefined) {
+        baseColorTexture = textureMap.get(mat.baseColorTextureIndex) ?? null;
+      }
+      if (mat.normalTextureIndex !== undefined) {
+        normalTexture = textureMap.get(mat.normalTextureIndex) ?? null;
+      }
+      if (mat.metallicRoughnessTextureIndex !== undefined) {
+        metallicRoughnessTexture = textureMap.get(mat.metallicRoughnessTextureIndex) ?? null;
+      }
+      if (mat.occlusionTextureIndex !== undefined) {
+        occlusionTexture = textureMap.get(mat.occlusionTextureIndex) ?? null;
+      }
+      if (mat.emissiveTextureIndex !== undefined) {
+        emissiveTexture = textureMap.get(mat.emissiveTextureIndex) ?? null;
       }
     }
 
@@ -537,6 +560,10 @@ export class VegetationManager {
       indexCount: indices.length,
       indexFormat: is32Bit ? 'uint32' : 'uint16',
       baseColorTexture,
+      normalTexture,
+      metallicRoughnessTexture,
+      occlusionTexture,
+      emissiveTexture,
       windMultiplier: 1.0,
     };
   }
@@ -555,6 +582,23 @@ export class VegetationManager {
   }
 
   private async _ensurePlantMesh(tileId: string, plant: PlantType): Promise<boolean> {
+    // ---- Procedural Rock: use rockRef LOD meshes ----
+    if (plant.renderMode === 'procedural-rock') {
+      if (this.tileCache.getPlantMesh(tileId, plant.id)) return true;
+      if (!plant.rockRef) return false; // Not generated yet — skip silently
+      
+      // Select the correct LOD tier mesh based on the tile's lodLevel
+      // Extract lodLevel from tileId: "cdlod-{lodLevel}-{gridX}-{gridZ}"
+      const tileIdParts = tileId.split('-');
+      const tileLodLevel = tileIdParts.length >= 2 ? parseInt(tileIdParts[1], 10) : 0;
+      const rockTier = lodLevelToRockTier(tileLodLevel, this.maxLodLevels);
+      const mesh = plant.rockRef.lodMeshes[rockTier];
+      
+      this.tileCache.setPlantMesh(tileId, plant.id, mesh);
+      return true;
+    }
+    
+    // ---- Standard GLTF mesh loading ----
     if (plant.modelRef && (plant.renderMode === 'mesh' || plant.renderMode === 'hybrid')) {
       if (this.tileCache.getPlantMesh(tileId, plant.id)) return true;
       
@@ -640,6 +684,9 @@ export class VegetationManager {
     cameraPosition: [number, number, number],
   ): boolean {
     if (!this.enabled || !this.config.enabled || !this.initialized) return false;
+
+    // Flush pending rock ref GPU resource cleanup (deferred from regeneration)
+    this._flushPendingRockDestroy();
 
     this._processSpawns();
 
@@ -767,6 +814,88 @@ export class VegetationManager {
     return drawCalls;
   }
 
+  // ==================== Deferred GPU Cleanup ====================
+
+  /**
+   * Flush pending rock ref GPU resource destruction.
+   * Called at the start of prepareFrame() — by this point, the previous frame's
+   * render pass has completed and no longer references old buffers.
+   */
+  private _flushPendingRockDestroy(): void {
+    if (this._pendingRockDestroy.length === 0) return;
+    // Remove only the ECS entities for the specific plants being regenerated.
+    // This must happen BEFORE buffer destruction to avoid "used while destroyed" errors.
+    for (const { plantId } of this._pendingRockDestroy) {
+      this.renderer.getMeshVariantRenderer().removeEntitiesForPlant(plantId);
+    }
+    // Now safe to destroy old GPU buffers
+    for (const { ref } of this._pendingRockDestroy) {
+      ProceduralRockMeshGenerator.destroyRockRef(ref);
+    }
+    console.log(`[VegetationManager] Flushed ${this._pendingRockDestroy.length} pending rock ref(s)`);
+    this._pendingRockDestroy = [];
+  }
+
+  // ==================== Procedural Rock Generation ====================
+
+  /**
+   * Generate a procedural rock mesh for a plant type.
+   * Called from the UI when user clicks "Generate Rock Mesh".
+   * 
+   * Generates 4 LOD-tier meshes + albedo/normal textures from the plant's rockSeed.
+   * The result is stored on plant.rockRef and triggers a tile cache clear
+   * so the rocks appear on the next frame.
+   * 
+   * @param biome - Biome channel the plant belongs to
+   * @param plantId - Plant type ID
+   * @returns true if generation succeeded
+   */
+  generateRockMesh(biome: import('./types').BiomeChannel, plantId: string): boolean {
+    if (!this.plantRegistry) return false;
+
+    const plant = this.plantRegistry.getPlant(biome, plantId);
+    if (!plant || plant.renderMode !== 'procedural-rock') {
+      console.warn(`[VegetationManager] Cannot generate rock: plant ${plantId} not found or wrong mode`);
+      return false;
+    }
+
+    // Lazily create the generator
+    if (!this.rockMeshGenerator) {
+      this.rockMeshGenerator = new ProceduralRockMeshGenerator(this.ctx);
+    }
+
+    // Store old ref for deferred cleanup (don't destroy now — render pipeline may still reference)
+    const oldRockRef = plant.rockRef;
+
+    // Generate new rock mesh first (before destroying old — render may still reference)
+    const rockRef = this.rockMeshGenerator.generate(plant.rockSeed, plant.color);
+    plant.rockRef = rockRef;
+
+    // Clear tile cache + active node IDs so the CDLOD sync on the next frame
+    // re-adds all tiles and triggers re-spawn with the new rockRef.
+    this.tileCache.clear();
+    this._activeNodeIds.clear();
+
+    // Queue old ref for deferred GPU cleanup — will be destroyed at the start
+    // of the next prepareFrame() call, after the current frame's render pass
+    // has completed and no longer references the old buffers.
+    if (oldRockRef) {
+      this._pendingRockDestroy.push({ plantId, ref: oldRockRef });
+    }
+
+    console.log(`[VegetationManager] Generated procedural rock mesh for "${plant.name}" (seed=${plant.rockSeed})`);
+    return true;
+  }
+
+  /**
+   * Check if a plant type has a generated rock mesh.
+   */
+  hasRockMesh(biome: import('./types').BiomeChannel, plantId: string): boolean {
+    if (!this.plantRegistry) return false;
+    const plant = this.plantRegistry.getPlant(biome, plantId);
+    return plant?.rockRef != null;
+  }
+
   // ==================== Configuration ====================
 
   isEnabled(): boolean {
@@ -855,6 +984,8 @@ export class VegetationManager {
     this.renderer.destroy();
     this.tileCache.destroy();
     this.densityMapGenerator.destroy();
+    this.rockMeshGenerator?.destroy();
+    this.rockMeshGenerator = null;
 
     for (const tex of this.textureCache.values()) tex.destroy();
     this.textureCache.clear();

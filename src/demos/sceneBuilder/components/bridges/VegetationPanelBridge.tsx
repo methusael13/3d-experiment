@@ -10,6 +10,8 @@ import { VegetationContent } from '../panels/VegetationPanel';
 import { DockableWindow } from '../ui/DockableWindow';
 import { isGPUTerrainObject, type GPUTerrainSceneObject } from '../../../../core/sceneObjects';
 import type { PlantRegistry } from '../../../../core/vegetation/PlantRegistry';
+import type { VegetationManager } from '../../../../core/vegetation/VegetationManager';
+import type { BiomeChannel } from '../../../../core/vegetation/types';
 import { TerrainComponent } from '@/core/ecs';
 
 // ==================== Types ====================
@@ -36,7 +38,7 @@ export function VegetationPanelBridge({
 }: VegetationPanelBridgeProps) {
   const store = getSceneBuilderStore();
   
-  // Get plant registry from selected GPU terrain object's terrain manager
+  // Get plant registry and vegetation manager from selected GPU terrain object's terrain manager
   const plantRegistry = useComputed<PlantRegistry | null>(() => {
     const selectedObj = store.firstSelectedObject.value;
     if (!selectedObj) return null;
@@ -46,6 +48,32 @@ export function VegetationPanelBridge({
     
     return terrainComp.manager.getPlantRegistry() ?? null;
   });
+  
+  const vegetationManager = useComputed<VegetationManager | null>(() => {
+    const selectedObj = store.firstSelectedObject.value;
+    if (!selectedObj) return null;
+    
+    const terrainComp = selectedObj.getComponent?.('terrain') as TerrainComponent;
+    if (!terrainComp?.manager) return null;
+    
+    return terrainComp.manager.getVegetationManager() ?? null;
+  });
+  
+  // Rock generation callbacks
+  const handleGenerateRock = useCallback((biome: BiomeChannel, plantId: string): boolean => {
+    const vegMgr = vegetationManager.value;
+    console.log('[VegetationPanelBridge] handleGenerateRock called', biome, plantId, 'vegMgr:', !!vegMgr);
+    if (!vegMgr) return false;
+    const result = vegMgr.generateRockMesh(biome, plantId);
+    console.log('[VegetationPanelBridge] generateRockMesh result:', result);
+    return result;
+  }, [vegetationManager]);
+  
+  const handleHasRockMesh = useCallback((biome: BiomeChannel, plantId: string): boolean => {
+    const vegMgr = vegetationManager.value;
+    if (!vegMgr) return false;
+    return vegMgr.hasRockMesh(biome, plantId);
+  }, [vegetationManager]);
   
   if (!visible) return null;
   
@@ -79,7 +107,11 @@ export function VegetationPanelBridge({
       minSize={{ width: 320, height: 400 }}
       onClose={onClose}
     >
-      <VegetationContent registry={plantRegistry.value} />
+      <VegetationContent 
+        registry={plantRegistry.value}
+        onGenerateRock={handleGenerateRock}
+        hasRockMesh={handleHasRockMesh}
+      />
     </DockableWindow>
   );
 }

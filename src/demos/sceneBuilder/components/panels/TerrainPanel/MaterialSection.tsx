@@ -246,7 +246,6 @@ export function MaterialSection({
         onSelect={handleTextureSelect}
         title={`Select ${activeBiome} Texture`}
         filterType="texture"
-        filterCategory="vegetation"
       />
     </div>
   );
