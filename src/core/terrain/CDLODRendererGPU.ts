@@ -68,7 +68,7 @@ export interface CDLODGPUConfig {
   detailSlopeInfluence: number;
   
   // POM (Parallax Occlusion Mapping) parameters
-  /** Displacement height in world units (default 0.02m) */
+  /** Displacement height in world units (default 0.05m) */
   displacementScale: number;
   /** Minimum ray-march steps for POM (default 4) */
   pomMinSteps: number;
@@ -168,7 +168,7 @@ export function createDefaultCDLODGPUConfig(): CDLODGPUConfig {
     detailFadeEnd: 150,         // Fully faded at 150m
     detailSlopeInfluence: 0.5,  // 50% slope influence (rocky slopes get more detail)
     // POM defaults
-    displacementScale: 0.02,    // 0.02m (2cm) displacement height
+    displacementScale: 0.05,    // 0.02m (2cm) displacement height
     pomMinSteps: 4,             // Minimum ray-march steps
     pomMaxSteps: 32,            // Maximum ray-march steps (at grazing angles)
   };

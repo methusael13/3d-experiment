@@ -7,6 +7,9 @@
 const PI: f32 = 3.14159265359;
 const DEFAULT_TERRAIN_ROUGHNESS: f32 = 1.0;
 
+// Whether to use full PBR IBL regardless of distance
+const FULL_PBR_IBL: bool = true;
+
 // ============================================================================
 // Uniform Structures
 // ============================================================================
@@ -614,7 +617,8 @@ fn performPOM(
   let layerDepth = 1.0 / f32(numSteps);
   
   // Direction to march along (XY of view dir, scaled by height)
-  let p = viewDirTS.xy / max(abs(viewDirTS.z), 0.001) * heightScale;
+  // Clamp min z to 0.25 to prevent extreme UV offsets at grazing angles
+  let p = viewDirTS.xy / max(abs(viewDirTS.z), 0.25) * heightScale;
   let deltaUV = p / f32(numSteps);
   
   // Linear search: march from top (depth=0) to bottom (depth=1)
@@ -668,7 +672,8 @@ fn pomSelfShadow(
   
   // March toward light, check if any height occludes
   let numSteps = 8;
-  let p = lightDirTS.xy / max(abs(lightDirTS.z), 0.001) * heightScale;
+  // Clamp min z to 0.25 to prevent extreme UV offsets at grazing angles
+  let p = lightDirTS.xy / max(abs(lightDirTS.z), 0.25) * heightScale;
   let deltaUV = p / f32(numSteps);
   let layerDepth = 1.0 / f32(numSteps);
   
@@ -1351,7 +1356,7 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
   var directColor: vec3f;
   var ambientColor: vec3f;
   
-  if (isNearTier && nearFactor > 0.99) {
+  if (FULL_PBR_IBL || (isNearTier && nearFactor > 0.99)) {
     // Pure near tier: full PBR
     directColor = terrainPBRDirectional(normal, V, lightDir, albedo, terrainMetallic, terrainRoughness, material.lightColor.rgb) * shadow;
     let rawPBRIBL = calculateTerrainPBRIBL(normal, V, albedo, terrainMetallic, terrainRoughness);
@@ -1391,7 +1396,7 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
   // Multi-light contribution
   let multiLight = computeTerrainMultiLight(input.worldPosition, normal) * albedo;
 
-  var finalColor = aoAmbientColor + directColor + multiLight;
+  var finalColor = aoAmbientColor + (directColor * shadow) + multiLight;
   
   // ===== POM Self-Shadow (NEAR TIER ONLY) =====
   if (isNearTier && uniforms.displacementScale > 0.0) {
