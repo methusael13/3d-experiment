@@ -603,6 +603,7 @@ export function VegetationContent({ registry, onGenerateRock, hasRockMesh }: Veg
       modelPath: gltfFile.path,
       billboardTexturePath: billboardBO?.path ?? null,
       billboardNormalPath: billboardNT?.path ?? null,
+      billboardTranslucencyPath: null, // TODO: detect translucency texture from asset
       variantCount,
       variantNames: variantCount > 1 ? variantNames : undefined,
       selectedVariant: -1, // -1 = combined (all meshes)

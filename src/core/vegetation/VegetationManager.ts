@@ -632,6 +632,20 @@ export class VegetationManager {
       const tex = await this.loadBillboardTexture(plant.modelRef.billboardTexturePath);
       if (tex) {
         this.tileCache.setPlantTexture(tileId, plant.id, tex);
+        // Also load normal map if available
+        if (plant.modelRef.billboardNormalPath) {
+          const normalTex = await this.loadBillboardTexture(plant.modelRef.billboardNormalPath);
+          if (normalTex) {
+            this.tileCache.setPlantNormalTexture(tileId, plant.id, normalTex);
+          }
+        }
+        // Also load translucency map if available
+        if (plant.modelRef.billboardTranslucencyPath) {
+          const translucencyTex = await this.loadBillboardTexture(plant.modelRef.billboardTranslucencyPath);
+          if (translucencyTex) {
+            this.tileCache.setPlantTranslucencyTexture(tileId, plant.id, translucencyTex);
+          }
+        }
         return true;
       }
     } else if (plant.atlasRef && plant.renderMode === 'billboard') {

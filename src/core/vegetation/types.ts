@@ -63,8 +63,10 @@ export interface ModelReference {
   modelPath: string;
   /** Path to billboard BaseColor+Opacity texture (auto-billboard for hybrid mode) */
   billboardTexturePath: string | null;
-  /** Path to billboard Normal+Translucency texture */
+  /** Path to billboard Normal texture (tangent-space RGB normal map) */
   billboardNormalPath: string | null;
+  /** Path to billboard Translucency texture (grayscale, R channel used) */
+  billboardTranslucencyPath: string | null;
   /** Number of mesh variants (from GLTF sub-meshes or multiple files) */
   variantCount: number;
   /** Names of each variant node (from glTF scene graph) */

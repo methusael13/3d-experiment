@@ -44,6 +44,10 @@ export interface PlantTileData {
   maxInstances: number;
   /** Billboard texture for this plant type */
   billboardTexture: UnifiedGPUTexture | null;
+  /** Billboard normal map (RGB tangent-space normal) */
+  billboardNormalTexture: UnifiedGPUTexture | null;
+  /** Billboard translucency map (R channel = translucency) */
+  billboardTranslucencyTexture: UnifiedGPUTexture | null;
   /** 3D mesh for this plant type (null = billboard only) */
   mesh: VegetationMesh | null;
   /** Render mode: 0=billboard, 1=mesh, 2=hybrid (used for per-frame LOD in cull shader) */
@@ -280,8 +284,9 @@ export class VegetationRenderer {
   ): number {
     if (!this.initialized) return 0;
     
-    // Set scene environment on grass blade renderer for shadow receiving
+    // Set scene environment on sub-renderers for shadow/light receiving
     this.grassBladeRenderer.setSceneEnvironment(this._sceneEnvironment);
+    this.billboardRenderer.setSceneEnvironment(this._sceneEnvironment);
     
     // Reset dynamic uniform buffer slot counters for this frame
     this.billboardRenderer.resetFrame();
@@ -354,12 +359,15 @@ export class VegetationRenderer {
         cullResult.billboardBuffer.buffer,
         cullResult.drawArgsBuffer.buffer,
         plant.billboardTexture,
+        plant.billboardNormalTexture,
+        plant.billboardTranslucencyTexture,
         plant.fallbackColor,
         plant.atlasRegion,
         plantWind,
         time,
         maxDistance,
         lodLevel,
+        light,
       );
       
       // NOTE: Mesh indirect draw calls are NOT issued here.

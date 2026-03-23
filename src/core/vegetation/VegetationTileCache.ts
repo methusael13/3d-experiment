@@ -25,6 +25,8 @@ interface PlantCacheEntry {
   atlasRegion: [number, number, number, number];
   spawnResult: SpawnResult;
   billboardTexture: UnifiedGPUTexture | null;
+  billboardNormalTexture: UnifiedGPUTexture | null;
+  billboardTranslucencyTexture: UnifiedGPUTexture | null;
   mesh: VegetationMesh | null;
   renderMode: number;
   billboardDistance: number;
@@ -222,6 +224,8 @@ export class VegetationTileCache {
       atlasRegion,
       spawnResult: result,
       billboardTexture: null,
+      billboardNormalTexture: null,
+      billboardTranslucencyTexture: null,
       mesh: null,
       renderMode: 0,
       billboardDistance: 50,
@@ -264,6 +268,37 @@ export class VegetationTileCache {
     }
   }
   
+  getPlantNormalTexture(tileId: string, plantId: string): UnifiedGPUTexture | null {
+    const entry = this.tiles.get(tileId);
+    const plant = entry?.plants.get(plantId);
+    return plant ? plant.billboardNormalTexture : null;
+  }
+
+  /**
+   * Set the billboard normal+translucency texture for a specific plant on a tile.
+   */
+  setPlantNormalTexture(tileId: string, plantId: string, texture: UnifiedGPUTexture | null): void {
+    const entry = this.tiles.get(tileId);
+    const plant = entry?.plants.get(plantId);
+    if (plant) {
+      plant.billboardNormalTexture = texture;
+    }
+  }
+  
+  getPlantTranslucencyTexture(tileId: string, plantId: string): UnifiedGPUTexture | null {
+    const entry = this.tiles.get(tileId);
+    const plant = entry?.plants.get(plantId);
+    return plant ? plant.billboardTranslucencyTexture : null;
+  }
+
+  setPlantTranslucencyTexture(tileId: string, plantId: string, texture: UnifiedGPUTexture | null): void {
+    const entry = this.tiles.get(tileId);
+    const plant = entry?.plants.get(plantId);
+    if (plant) {
+      plant.billboardTranslucencyTexture = texture;
+    }
+  }
+
   getPlantMesh(tileId: string, plantId: string): VegetationMesh | null {
     const entry = this.tiles.get(tileId);
     const plant = entry?.plants.get(plantId);
@@ -333,6 +368,8 @@ export class VegetationTileCache {
           counterBuffer: plantEntry.spawnResult.counterBuffer,
           maxInstances: plantEntry.spawnResult.maxInstances,
           billboardTexture: plantEntry.billboardTexture,
+          billboardNormalTexture: plantEntry.billboardNormalTexture,
+          billboardTranslucencyTexture: plantEntry.billboardTranslucencyTexture,
           mesh: plantEntry.mesh,
           renderMode: plantEntry.renderMode,
           billboardDistance: plantEntry.billboardDistance,
