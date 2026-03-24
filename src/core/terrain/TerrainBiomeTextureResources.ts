@@ -172,6 +172,13 @@ export class TerrainBiomeTextureResources {
     forest: 4.0,
   };
   
+  // Per-biome POM enabled flags (material-authored opt-in)
+  private pomEnabledFlags: Record<BiomeType, boolean> = {
+    grass: false,
+    rock: false,
+    forest: false,
+  };
+  
   // Track if bind group needs recreation
   private bindGroupDirty = true;
   
@@ -403,14 +410,14 @@ export class TerrainBiomeTextureResources {
   
   /**
    * Create the params uniform buffer.
-   * Size: 96 bytes for BiomeTextureUniformData (24 floats * 4 bytes) - 6 vec4f
+   * Size: 112 bytes for BiomeTextureUniformData (28 floats * 4 bytes) - 7 vec4f
    */
   private createParamsBuffer(): void {
-    // 96 bytes for BiomeTextureUniformData (24 floats * 4 bytes) - 6 vec4f
-    // [albedoEnabled, normalEnabled, aoEnabled, roughnessEnabled, displacementEnabled, tilingScales]
+    // 112 bytes for BiomeTextureUniformData (28 floats * 4 bytes) - 7 vec4f
+    // [albedoEnabled, normalEnabled, aoEnabled, roughnessEnabled, displacementEnabled, pomEnabled, tilingScales]
     this.paramsBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'terrain-biome-params',
-      size: 96,
+      size: 112,
     });
   }
   
@@ -438,6 +445,14 @@ export class TerrainBiomeTextureResources {
       uniformData.roughnessEnabled[i] = roughnessResources.loadedLayers.has(i) ? 1.0 : 0.0;
       uniformData.displacementEnabled[i] = displacementResources.loadedLayers.has(i) ? 1.0 : 0.0;
     }
+    
+    // Override POM enabled flags from stored material-authored values
+    uniformData.pomEnabled = [
+      this.pomEnabledFlags.grass ? 1.0 : 0.0,
+      this.pomEnabledFlags.rock ? 1.0 : 0.0,
+      this.pomEnabledFlags.forest ? 1.0 : 0.0,
+      0.0,  // unused 4th slot for vec4 alignment
+    ];
     
     // Override tiling scales from our stored values
     uniformData.tilingScales = [
@@ -677,6 +692,20 @@ export class TerrainBiomeTextureResources {
    */
   getAllTilingScales(): Record<BiomeType, number> {
     return { ...this.tilingScales };
+  }
+  
+  /**
+   * Set the POM enabled flag for a biome (from material's pomEnabled attribute)
+   */
+  setPomEnabled(biome: BiomeType, enabled: boolean): void {
+    this.pomEnabledFlags[biome] = enabled;
+  }
+  
+  /**
+   * Get the POM enabled flag for a biome
+   */
+  getPomEnabled(biome: BiomeType): boolean {
+    return this.pomEnabledFlags[biome];
   }
   
   /**

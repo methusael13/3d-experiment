@@ -354,7 +354,7 @@ export interface TerrainMaterialParams {
 
 /**
  * GPU uniform data for biome texture parameters.
- * Packed for texture array sampling (96 bytes total = 6 vec4f).
+ * Packed for texture array sampling (112 bytes total = 7 vec4f).
  * 
  * Matches shader struct BiomeTextureParams (simplified for 3 biomes):
  * - albedoEnabled: vec4f [grass, rock, forest, unused]
@@ -362,6 +362,7 @@ export interface TerrainMaterialParams {
  * - aoEnabled: vec4f [grass, rock, forest, unused]
  * - roughnessEnabled: vec4f [grass, rock, forest, unused]
  * - displacementEnabled: vec4f [grass, rock, forest, unused]
+ * - pomEnabled: vec4f [grass, rock, forest, unused]
  * - tilingScales: vec4f [grass, rock, forest, unused]
  */
 export interface BiomeTextureUniformData {
@@ -379,6 +380,9 @@ export interface BiomeTextureUniformData {
   
   // Displacement map enable flags (for POM - Parallax Occlusion Mapping)
   displacementEnabled: [number, number, number, number]; // [grass, rock, forest, unused]
+  
+  // POM enable flags (material-authored opt-in for parallax occlusion mapping)
+  pomEnabled: [number, number, number, number]; // [grass, rock, forest, unused]
   
   // Tiling scales for biomes (world units per texture tile)
   tilingScales: [number, number, number, number]; // [grass, rock, forest, unused]
@@ -441,6 +445,10 @@ export function createBiomeTextureUniform(params: TerrainMaterialParams): BiomeT
     // Defaults to 0 — overridden by TerrainBiomeTextureResources based on loaded state
     displacementEnabled: [0.0, 0.0, 0.0, 0.0],
     
+    // POM enable flags [grass, rock, forest, unused]
+    // Defaults to 0 — overridden by TerrainBiomeTextureResources based on material pomEnabled
+    pomEnabled: [0.0, 0.0, 0.0, 0.0],
+    
     // Tiling scales [grass, rock, forest, unused]
     tilingScales: [
       getTilingScale(params.grassTexture),
@@ -453,7 +461,7 @@ export function createBiomeTextureUniform(params: TerrainMaterialParams): BiomeT
 
 /**
  * Convert BiomeTextureUniformData to Float32Array for GPU upload
- * Layout matches shader struct BiomeTextureParams (96 bytes = 24 floats)
+ * Layout matches shader struct BiomeTextureParams (112 bytes = 28 floats)
  */
 export function biomeTextureUniformToFloat32Array(data: BiomeTextureUniformData): Float32Array {
   return new Float32Array([
@@ -467,6 +475,8 @@ export function biomeTextureUniformToFloat32Array(data: BiomeTextureUniformData)
     ...data.roughnessEnabled,
     // displacementEnabled: vec4f [grass, rock, forest, unused]
     ...data.displacementEnabled,
+    // pomEnabled: vec4f [grass, rock, forest, unused]
+    ...data.pomEnabled,
     // tilingScales: vec4f [grass, rock, forest, unused]
     ...data.tilingScales,
   ]);

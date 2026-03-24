@@ -70,6 +70,7 @@ interface PBRNodeData {
   occlusionStrength?: number;
   bumpScale?: number;
   displacementScale?: number;
+  pomEnabled?: boolean;
   [key: string]: unknown;
 }
 
@@ -236,6 +237,24 @@ export function PBRNode({ data, id }: NodeProps) {
           </div>
         )}
         
+        {/* POM Enable (Parallax Occlusion Mapping — for terrain biome usage) */}
+        <div class={styles.handleRow}>
+          <span class={styles.handleLabelLeft}>Enable POM</span>
+          <div class={`${styles.inlineControl} nopan nodrag`}>
+            <input
+              type="checkbox"
+              checked={d.pomEnabled ?? false}
+              onChange={(e: Event) => {
+                updateNodeData(id, { pomEnabled: (e.target as HTMLInputElement).checked });
+              }}
+              style={{ width: '14px', height: '14px', cursor: 'pointer' }}
+            />
+            <span class={styles.inlineValue} style={{ color: '#888', fontSize: '10px', marginLeft: '4px' }}>
+              {(d.pomEnabled ?? false) ? 'on' : 'off'}
+            </span>
+          </div>
+        </div>
+        
         {/* IOR */}
         <div class={styles.handleRow}>
           <Handle type="target" position={Position.Left} id="ior" />
@@ -329,6 +348,7 @@ export function extractPBRScalars(
   if (typeof data.clearcoatFactor === 'number') scalars.clearcoatFactor = data.clearcoatFactor;
   if (typeof data.clearcoatRoughness === 'number') scalars.clearcoatRoughness = data.clearcoatRoughness;
   if (Array.isArray(data.emissiveFactor))      scalars.emissiveFactor = data.emissiveFactor;
+  if (typeof data.pomEnabled === 'boolean')    scalars.pomEnabled = data.pomEnabled;
 
   return scalars;
 }

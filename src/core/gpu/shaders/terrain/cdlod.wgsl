@@ -10,6 +10,15 @@ const DEFAULT_TERRAIN_ROUGHNESS: f32 = 1.0;
 // Whether to use full PBR IBL regardless of distance
 const FULL_PBR_IBL: bool = true;
 
+// Anti-tiling method: 0 = none, 1 = noise_multi_scale_blending, 2 = hex_tiling
+const TILING_TYPE: i32 = 2;
+
+// Anti-tiling parameters
+const ANTI_TILE_MACRO_SCALE: f32 = 0.13;       // Macro-scale UV multiplier (larger = more visible variation)
+const ANTI_TILE_MACRO_BLEND: f32 = 0.35;       // How much macro-scale blends in (0-1)
+const ANTI_TILE_NOISE_FREQ: f32 = 0.007;       // Noise UV distortion frequency (world-space)
+const ANTI_TILE_NOISE_STRENGTH: f32 = 0.15;    // Noise UV distortion magnitude (in UV tile units)
+
 // ============================================================================
 // Uniform Structures
 // ============================================================================
@@ -104,6 +113,8 @@ struct BiomeTextureParams {
   aoEnabled: vec4f,
   roughnessEnabled: vec4f,
   displacementEnabled: vec4f,
+  // POM enable flags (material-authored opt-in for parallax occlusion mapping)
+  pomEnabled: vec4f,
   
   // Tiling scales (world units per texture tile) - vec4f aligned
   // [grass, rock, forest, unused]
@@ -351,6 +362,19 @@ fn getBiomeRoughnessEnabled(layer: i32) -> f32 {
 // Helper: Get displacement enabled flag for a biome layer (0-2: grass, rock, forest)
 fn getBiomeDisplacementEnabled(layer: i32) -> f32 {
   return biomeParams.displacementEnabled[layer];
+}
+
+// Helper: Get POM enabled flag for a biome layer (0-2: grass, rock, forest)
+// This is the material-authored opt-in: only biomes whose material has pomEnabled=true
+// will go through the expensive POM ray-march path.
+fn getBiomePomEnabled(layer: i32) -> f32 {
+  return biomeParams.pomEnabled[layer];
+}
+
+// Helper: Check if POM should run for a biome layer.
+// Requires BOTH: displacement texture loaded AND material pomEnabled flag set.
+fn isBiomePomActive(layer: i32) -> bool {
+  return getBiomeDisplacementEnabled(layer) > 0.5 && getBiomePomEnabled(layer) > 0.5;
 }
 
 // Helper: Get tiling scale for a biome layer (0-2: grass, rock, forest)
@@ -853,6 +877,175 @@ fn getProceduralDetailNormal(worldXZ: vec2f, distanceToCamera: f32, slope: f32) 
 }
 
 // ============================================================================
+// Anti-Tiling Functions
+// ============================================================================
+
+// Per-biome tiling result: contains all UV data needed for texture sampling.
+// Encapsulates tiling-method-specific computations so fs_main stays clean.
+// When adding new tiling methods (e.g., hex_tiling), only this struct and
+// computeBiomeTilingUVs() need to change.
+struct BiomeTilingUVs {
+  // Detail-scale UVs (used for all texture types: albedo, normal, AO, roughness, displacement)
+  grassUV: vec2f,
+  rockUV: vec2f,
+  forestUV: vec2f,
+  // Detail-scale UV gradients (for textureSampleGrad)
+  grassDdx: vec2f, grassDdy: vec2f,
+  rockDdx: vec2f, rockDdy: vec2f,
+  forestDdx: vec2f, forestDdy: vec2f,
+  // Macro-scale UVs and gradients (used only for albedo anti-tile blend)
+  grassMacroUV: vec2f, grassMacroDdx: vec2f, grassMacroDdy: vec2f,
+  rockMacroUV: vec2f, rockMacroDdx: vec2f, rockMacroDdy: vec2f,
+  forestMacroUV: vec2f, forestMacroDdx: vec2f, forestMacroDdy: vec2f,
+}
+
+// Compute all biome tiling UVs from world position.
+// This is the single entry point for tiling strategy — when switching to
+// hex_tiling (TILING_TYPE=2), modify this function's internals only.
+// Must be called in uniform control flow (before non-uniform branches like POM).
+fn computeBiomeTilingUVs(worldXZ: vec2f) -> BiomeTilingUVs {
+  var result: BiomeTilingUVs;
+  
+  // Noise UV distortion (breaks grid alignment for TILING_TYPE=1)
+  var noiseOffset = vec2f(0.0);
+  if (TILING_TYPE == 1) {
+    let noiseCoord = worldXZ * ANTI_TILE_NOISE_FREQ;
+    let nx = gradientNoise2D(noiseCoord);
+    let ny = gradientNoise2D(noiseCoord + vec2f(31.7, 47.3));
+    noiseOffset = vec2f(nx, ny) * ANTI_TILE_NOISE_STRENGTH;
+  }
+  
+  // Detail-scale UVs (base tiling + noise distortion)
+  result.grassUV = worldXZ / getBiomeTiling(BIOME_GRASS) + noiseOffset;
+  result.rockUV = worldXZ / getBiomeTiling(BIOME_ROCK) + noiseOffset;
+  result.forestUV = worldXZ / getBiomeTiling(BIOME_FOREST) + noiseOffset;
+  
+  // UV gradients (must be computed in uniform control flow)
+  result.grassDdx = dpdx(result.grassUV); result.grassDdy = dpdy(result.grassUV);
+  result.rockDdx = dpdx(result.rockUV); result.rockDdy = dpdy(result.rockUV);
+  result.forestDdx = dpdx(result.forestUV); result.forestDdy = dpdy(result.forestUV);
+  
+  // Macro-scale UVs for multi-scale albedo blend
+  result.grassMacroUV = result.grassUV * ANTI_TILE_MACRO_SCALE;
+  result.rockMacroUV = result.rockUV * ANTI_TILE_MACRO_SCALE;
+  result.forestMacroUV = result.forestUV * ANTI_TILE_MACRO_SCALE;
+  result.grassMacroDdx = result.grassDdx * ANTI_TILE_MACRO_SCALE;
+  result.grassMacroDdy = result.grassDdy * ANTI_TILE_MACRO_SCALE;
+  result.rockMacroDdx = result.rockDdx * ANTI_TILE_MACRO_SCALE;
+  result.rockMacroDdy = result.rockDdy * ANTI_TILE_MACRO_SCALE;
+  result.forestMacroDdx = result.forestDdx * ANTI_TILE_MACRO_SCALE;
+  result.forestMacroDdy = result.forestDdy * ANTI_TILE_MACRO_SCALE;
+  
+  return result;
+}
+
+// ---- Hex-tiling helpers (TILING_TYPE == 2) ----
+// Based on "Procedural Stochastic Textures by Tiling and Blending" (Heitz & Neyret, 2018)
+// Simplified variant: 3 hex cells, per-cell random rotation, smooth barycentric blend.
+
+// 2D hash returning vec2 in [0,1)
+fn hexHash2(p: vec2f) -> vec2f {
+  var q = vec2f(dot(p, vec2f(127.1, 311.7)), dot(p, vec2f(269.5, 183.3)));
+  return fract(sin(q) * 43758.5453);
+}
+
+// Rotate UV by angle (radians)
+fn rotateUV(uv: vec2f, angle: f32) -> vec2f {
+  let c = cos(angle);
+  let s = sin(angle);
+  return vec2f(uv.x * c - uv.y * s, uv.x * s + uv.y * c);
+}
+
+// Hex-tile sample: samples texture at 3 overlapping hex cells with random rotation,
+// blends by smooth barycentric weights. Completely eliminates grid repetition.
+fn sampleBiomeAlbedoHexTiled(
+  layer: i32,
+  baseUV: vec2f,
+  fallbackColor: vec3f,
+  uvDdx: vec2f, uvDdy: vec2f
+) -> vec3f {
+  let enabled = getBiomeAlbedoEnabled(layer);
+  if (enabled < 0.5) { return fallbackColor; }
+  
+  // Hex grid: transform UV to skewed hex coordinates
+  let skew = mat2x2f(1.0, 0.0, -0.57735027, 1.15470054); // 1/sqrt(3), 2/sqrt(3)
+  let hexUV = skew * baseUV;
+  let hexCell = floor(hexUV);
+  let hexFrac = fract(hexUV);
+  
+  // Determine which triangle of the hex cell we're in, pick 3 vertices
+  let inUpper = select(0.0, 1.0, hexFrac.x + hexFrac.y > 1.0);
+  let v0 = hexCell + vec2f(inUpper, inUpper);
+  let v1 = hexCell + vec2f(1.0, 0.0);
+  let v2 = hexCell + vec2f(0.0, 1.0);
+  
+  // Barycentric weights (smooth)
+  var w = vec3f(0.0);
+  if (inUpper > 0.5) {
+    w = vec3f(hexFrac.x + hexFrac.y - 1.0, 1.0 - hexFrac.x, 1.0 - hexFrac.y);
+  } else {
+    w = vec3f(1.0 - hexFrac.x - hexFrac.y, hexFrac.x, hexFrac.y);
+  }
+  // Smooth step to reduce blending zone artifacts
+  w = w * w * (3.0 - 2.0 * w);
+  w = w / (w.x + w.y + w.z);
+  
+  // Per-vertex random rotation angle (0 to 2π)
+  let r0 = hexHash2(v0).x * 2.0 * PI;
+  let r1 = hexHash2(v1).x * 2.0 * PI;
+  let r2 = hexHash2(v2).x * 2.0 * PI;
+  
+  // Sample at 3 rotated UVs (using textureSampleGrad for correct mipmapping)
+  let uv0 = rotateUV(baseUV, r0);
+  let uv1 = rotateUV(baseUV, r1);
+  let uv2 = rotateUV(baseUV, r2);
+  
+  // Rotate gradients too for correct mip selection
+  let ddx0 = rotateUV(uvDdx, r0); let ddy0 = rotateUV(uvDdy, r0);
+  let ddx1 = rotateUV(uvDdx, r1); let ddy1 = rotateUV(uvDdy, r1);
+  let ddx2 = rotateUV(uvDdx, r2); let ddy2 = rotateUV(uvDdy, r2);
+  
+  let c0 = textureSampleGrad(biomeAlbedoArray, biomeSampler, uv0, layer, ddx0, ddy0).rgb;
+  let c1 = textureSampleGrad(biomeAlbedoArray, biomeSampler, uv1, layer, ddx1, ddy1).rgb;
+  let c2 = textureSampleGrad(biomeAlbedoArray, biomeSampler, uv2, layer, ddx2, ddy2).rgb;
+  
+  return c0 * w.x + c1 * w.y + c2 * w.z;
+}
+
+// Sample biome albedo with anti-tiling: blends detail-scale + macro-scale samples
+// to break up visible repetition on large terrains.
+fn sampleBiomeAlbedoAntiTiled(
+  layer: i32,
+  detailUV: vec2f,
+  macroUV: vec2f,
+  fallbackColor: vec3f,
+  uvDdx: vec2f, uvDdy: vec2f,
+  macroDdx: vec2f, macroDdy: vec2f
+) -> vec3f {
+  let enabled = getBiomeAlbedoEnabled(layer);
+  if (enabled < 0.5) { return fallbackColor; }
+  
+  // Hex-tiling path (3× samples, best quality)
+  if (TILING_TYPE == 2) {
+    return sampleBiomeAlbedoHexTiled(layer, detailUV, fallbackColor, uvDdx, uvDdy);
+  }
+  
+  // Detail scale (normal tiling)
+  let detailColor = textureSampleGrad(biomeAlbedoArray, biomeSampler, detailUV, layer, uvDdx, uvDdy).rgb;
+  
+  // Noise + multi-scale path
+  if (TILING_TYPE == 1) {
+    let macroColor = textureSampleGrad(biomeAlbedoArray, biomeSampler, macroUV, layer, macroDdx, macroDdy).rgb;
+    let macroLum = dot(macroColor, vec3f(0.299, 0.587, 0.114));
+    let variation = mix(1.0, macroLum / max(dot(fallbackColor, vec3f(0.299, 0.587, 0.114)), 0.1), ANTI_TILE_MACRO_BLEND);
+    return detailColor * clamp(variation, 0.6, 1.4);
+  }
+  
+  // TILING_TYPE == 0: no anti-tiling
+  return detailColor;
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -1247,15 +1440,14 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     forestWeight = 0.0;
   }
   
-  // ===== Compute tiling UVs per biome =====
-  var grassUV = worldXZ / getBiomeTiling(BIOME_GRASS);
-  var rockUV = worldXZ / getBiomeTiling(BIOME_ROCK);
-  var forestUV = worldXZ / getBiomeTiling(BIOME_FOREST);
-  
-  // Precompute per-biome UV gradients (before non-uniform branches)
-  let grassUVDdx = dpdx(grassUV); let grassUVDdy = dpdy(grassUV);
-  let rockUVDdx = dpdx(rockUV); let rockUVDdy = dpdy(rockUV);
-  let forestUVDdx = dpdx(forestUV); let forestUVDdy = dpdy(forestUV);
+  // ===== Compute tiling UVs per biome (encapsulates all anti-tiling strategy) =====
+  let tiling = computeBiomeTilingUVs(worldXZ);
+  var grassUV = tiling.grassUV;
+  var rockUV = tiling.rockUV;
+  var forestUV = tiling.forestUV;
+  let grassUVDdx = tiling.grassDdx; let grassUVDdy = tiling.grassDdy;
+  let rockUVDdx = tiling.rockDdx; let rockUVDdy = tiling.rockDdy;
+  let forestUVDdx = tiling.forestDdx; let forestUVDdy = tiling.forestDdy;
   
   // ===== POM: Parallax Occlusion Mapping (NEAR TIER ONLY) =====
   // Compute view direction in tangent space for POM
@@ -1272,23 +1464,23 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     // Fade POM height to 0 as distance approaches detailFadeStart
     let pomHeightScale = uniforms.displacementScale * nearFactor;
     
-    // Perform POM per biome (skip if biome has no displacement or zero weight)
-    if (grassWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_GRASS) > 0.5) {
+    // Perform POM per biome (skip if biome has no displacement, POM not enabled, or zero weight)
+    if (grassWeight > 0.01 && isBiomePomActive(BIOME_GRASS)) {
       grassUV = performPOM(V_tangent, grassUV, BIOME_GRASS, pomHeightScale);
     }
-    if (rockWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_ROCK) > 0.5) {
+    if (rockWeight > 0.01 && isBiomePomActive(BIOME_ROCK)) {
       rockUV = performPOM(V_tangent, rockUV, BIOME_ROCK, pomHeightScale);
     }
-    if (forestWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_FOREST) > 0.5) {
+    if (forestWeight > 0.01 && isBiomePomActive(BIOME_FOREST)) {
       forestUV = performPOM(V_tangent, forestUV, BIOME_FOREST, pomHeightScale);
     }
   }
   
   // ===== Sample biome textures using (potentially POM-shifted) UVs =====
-  // Albedo always sampled (needed by both tiers)
-  let grassAlbedoColor = sampleBiomeAlbedoArray(BIOME_GRASS, grassUV, material.grassColor.rgb, grassUVDdx, grassUVDdy);
-  let rockAlbedoColor = sampleBiomeAlbedoArray(BIOME_ROCK, rockUV, material.rockColor.rgb, rockUVDdx, rockUVDdy);
-  let forestAlbedoColor = sampleBiomeAlbedoArray(BIOME_FOREST, forestUV, material.forestColor.rgb, forestUVDdx, forestUVDdy);
+  // Albedo always sampled (needed by both tiers) — uses anti-tiled multi-scale blend
+  let grassAlbedoColor = sampleBiomeAlbedoAntiTiled(BIOME_GRASS, grassUV, tiling.grassMacroUV, material.grassColor.rgb, grassUVDdx, grassUVDdy, tiling.grassMacroDdx, tiling.grassMacroDdy);
+  let rockAlbedoColor = sampleBiomeAlbedoAntiTiled(BIOME_ROCK, rockUV, tiling.rockMacroUV, material.rockColor.rgb, rockUVDdx, rockUVDdy, tiling.rockMacroDdx, tiling.rockMacroDdy);
+  let forestAlbedoColor = sampleBiomeAlbedoAntiTiled(BIOME_FOREST, forestUV, tiling.forestMacroUV, material.forestColor.rgb, forestUVDdx, forestUVDdy, tiling.forestMacroDdx, tiling.forestMacroDdy);
   var albedo = grassAlbedoColor * grassWeight
              + rockAlbedoColor * rockWeight
              + forestAlbedoColor * forestWeight;
@@ -1408,16 +1600,16 @@ fn fs_main(input: VertexOutput) -> FragmentOutput {
     ));
     let pomHeightScale = uniforms.displacementScale * nearFactor;
     var pomShadow = 1.0;
-    // Weighted POM shadow across biomes (use textureSampleLevel for uniform control flow)
-    if (grassWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_GRASS) > 0.5) {
+    // Weighted POM shadow across biomes (only for biomes with POM enabled)
+    if (grassWeight > 0.01 && isBiomePomActive(BIOME_GRASS)) {
       let h = 1.0 - textureSampleLevel(biomeDisplacementArray, biomeSampler, grassUV, BIOME_GRASS, 0.0).r;
       pomShadow = min(pomShadow, mix(1.0, pomSelfShadow(L_tangent, grassUV, BIOME_GRASS, pomHeightScale, h), grassWeight));
     }
-    if (rockWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_ROCK) > 0.5) {
+    if (rockWeight > 0.01 && isBiomePomActive(BIOME_ROCK)) {
       let h = 1.0 - textureSampleLevel(biomeDisplacementArray, biomeSampler, rockUV, BIOME_ROCK, 0.0).r;
       pomShadow = min(pomShadow, mix(1.0, pomSelfShadow(L_tangent, rockUV, BIOME_ROCK, pomHeightScale, h), rockWeight));
     }
-    if (forestWeight > 0.01 && getBiomeDisplacementEnabled(BIOME_FOREST) > 0.5) {
+    if (forestWeight > 0.01 && isBiomePomActive(BIOME_FOREST)) {
       let h = 1.0 - textureSampleLevel(biomeDisplacementArray, biomeSampler, forestUV, BIOME_FOREST, 0.0).r;
       pomShadow = min(pomShadow, mix(1.0, pomSelfShadow(L_tangent, forestUV, BIOME_FOREST, pomHeightScale, h), forestWeight));
     }

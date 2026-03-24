@@ -1073,6 +1073,9 @@ export class TerrainManager {
       await this.renderer.setBiomeTexture(biome, 'normal', resolvedPaths['bump']!, tilingScale);
     }
     
+    // Apply material's pomEnabled flag to biome resources
+    this.renderer.getBiomeResources()?.setPomEnabled(biome, material.pomEnabled ?? false);
+    
     // Apply material's albedo as the biome fallback color
     const colorKey = `${biome}Color` as 'grassColor' | 'rockColor' | 'forestColor';
     this.setMaterial({ [colorKey]: material.albedo as [number, number, number] });

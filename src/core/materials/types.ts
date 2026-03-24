@@ -136,6 +136,10 @@ export interface MaterialDefinition {
   /** Whether this material is unlit (negative IOR in shader) */
   unlit: boolean;
   
+  /** Whether POM (Parallax Occlusion Mapping) is enabled for terrain biome usage.
+   *  Disabled by default — only materials that benefit from depth parallax should opt-in. */
+  pomEnabled: boolean;
+  
   // ---- Texture References ----
   
   /** Texture map references keyed by slot */
@@ -190,6 +194,7 @@ export function createDefaultMaterialDefinition(
     clearcoatRoughness: 0.0,
     alphaCutoff: 0.5,
     unlit: false,
+    pomEnabled: false,
     
     textures: {},
     nodeGraph: null,
