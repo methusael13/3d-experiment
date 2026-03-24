@@ -3,13 +3,22 @@ import type { Entity } from '../Entity';
 import type { ComponentType, SystemContext } from '../types';
 import { VegetationInstanceComponent } from '../components/VegetationInstanceComponent';
 import type { GPUContext } from '../../gpu/GPUContext';
+import { MeshComponent } from '../components/MeshComponent';
 
 /**
  * Byte offset for vegetation instancing uniforms in the MaterialUniforms extra region.
  * Must match the layout expected by vegetationInstancingFeature's per-object resources.
  * 
- * Base MaterialUniforms = 96 bytes (6 × vec4f).
- * Vegetation wind uniforms occupy 10 × f32 = 40 bytes starting at byte 96.
+ * Base MaterialUniforms = 112 bytes (28 floats = 7 × vec4f):
+ *   vec4(albedo.rgb, metallic)          [0-3]
+ *   vec4(roughness, normalScale, occStr, alphaCutoff) [4-7]
+ *   vec4(emissive.rgb, alphaMode)       [8-11]
+ *   vec4(textureFlags[0-3])             [12-15]
+ *   vec4(textureFlags[4-7])             [16-19]
+ *   vec4(triplanarMode, triplanarScale, hasBumpTex, hasDisplacementTex) [20-23]
+ *   vec4(bumpScale, displacementScale, displacementBias, pad) [24-27]
+ * 
+ * Vegetation wind uniforms occupy 10 × f32 = 40 bytes starting at byte 112.
  * 
  * Layout (10 floats):
  *   [0] vegWindStrength
@@ -23,7 +32,7 @@ import type { GPUContext } from '../../gpu/GPUContext';
  *   [8] vegWindMultiplier
  *   [9] _pad (alignment)
  */
-const VEG_UNIFORM_BASE = 96;
+const VEG_UNIFORM_BASE = 112;
 const VEG_UNIFORM_FLOATS = 10;
 
 /**
@@ -83,7 +92,7 @@ export class VegetationInstanceSystem extends System {
     buf[9] = 0; // padding
 
     // Write to all GPU mesh IDs associated with this entity
-    const meshComp = entity.getComponent<import('../components/MeshComponent').MeshComponent>('mesh');
+    const meshComp = entity.getComponent<MeshComponent>('mesh');
     if (meshComp?.isGPUInitialized) {
       for (const gpuMeshId of meshComp.gpuMeshIds) {
         ctx.writeMeshExtraUniforms(gpuMeshId, buf, VEG_UNIFORM_BASE);

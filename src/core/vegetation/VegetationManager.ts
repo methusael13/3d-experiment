@@ -37,6 +37,7 @@ import { createDefaultVegetationConfig, createDefaultWindParams, lodLevelToRockT
 import { DirectionalLight } from '../sceneObjects/lights/DirectionalLight';
 import type { SceneEnvironment } from '../gpu/renderers/shared/SceneEnvironment';
 import { Vec3 } from '../types';
+import { World } from '../ecs/World';
 
 // ==================== VegetationManager ====================
 
@@ -316,7 +317,9 @@ export class VegetationManager {
 
     for (let plantIdx = 0; plantIdx < plants.length; plantIdx++) {
       const plant = plants[plantIdx];
-      if (!this._shouldPlantSpawnAtLOD(plant, tile.lodLevel)) continue;
+      if (!this._shouldPlantSpawnAtLOD(plant, tile.lodLevel)) {
+        continue;
+      }
 
       // Derive a per-plant seed from the global seed so each plant type
       // gets a unique spatial pattern (different jitter, probability rolls)
@@ -668,7 +671,7 @@ export class VegetationManager {
    * Forwarded to VegetationRenderer → VegetationMeshVariantRenderer.
    * Must be called before the first render frame.
    */
-  setWorld(world: import('../ecs/World').World): void {
+  setWorld(world: World): void {
     this.renderer.setWorld(world);
   }
 

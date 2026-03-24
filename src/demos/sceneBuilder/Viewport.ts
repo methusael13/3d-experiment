@@ -879,8 +879,9 @@ export class Viewport {
       }
 
       const mergedOptions = this.gpuPipeline.getMergedRenderOptions(options);
-      // Run pipeline pre-world update
-      this.gpuPipeline.preWorldUpdate(dt, mergedOptions, this._world);
+      // Run pipeline pre-world update (pass scene camera so vegetation mesh entities
+      // are synced BEFORE world.update() — MeshRenderSystem needs them active)
+      this.gpuPipeline.preWorldUpdate(dt, mergedOptions, this._world, sceneCameraAdapter);
 
       // Run all ECS systems
       this.time += dt;

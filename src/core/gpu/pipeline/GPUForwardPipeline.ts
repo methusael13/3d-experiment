@@ -238,10 +238,29 @@ export class GPUForwardPipeline {
     ...options,
   });
 
-  preWorldUpdate(deltaTime: number, options: Required<RenderOptions>, world?: World) {
+  preWorldUpdate(deltaTime: number, options: Required<RenderOptions>, world?: World, sceneCamera?: GPUCamera) {
     // ── Weather + cloud lighting adaptation ──
     this.cloudManager.updateWeather(deltaTime, options, world);
+
+    // ── Pre-world vegetation prepare ──
+    // Vegetation mesh entities must be synced BEFORE world.update() so that
+    // MeshRenderSystem (which runs during world.update) sees them as active
+    // and includes them in variant groups for rendering. Without this,
+    // vegetation mesh entities have active=false when MeshRenderSystem runs,
+    // causing them to be excluded from all draw calls.
+    if (sceneCamera) {
+      this._cachedSceneVpMatrix = new Float32Array(sceneCamera.getVpMatrix());
+      const pos = sceneCamera.getPosition();
+      this._cachedSceneCamPos = [pos[0], pos[1], pos[2]];
+    }
+    if (world && this._cachedSceneVpMatrix) {
+      this.prepareVegetation(world, this._cachedSceneVpMatrix, this._cachedSceneCamPos);
+    }
   }
+
+  // Cached scene camera data for vegetation preparation (updated each frame in preWorldUpdate)
+  private _cachedSceneVpMatrix: Float32Array | null = null;
+  private _cachedSceneCamPos: [number, number, number] = [0, 0, 0];
 
   render(camera: GPUCamera, options: Required<RenderOptions>, sceneCamera?: GPUCamera, world?: World): void {
     const now = performance.now();
@@ -302,8 +321,9 @@ export class GPUForwardPipeline {
       this.lastSSRSystemHasConsumers = false;
     }
 
-    // ── Pre-shadow vegetation prepare ──
-    this.prepareVegetation(world, renderCtx);
+    // NOTE: prepareVegetation() already ran in preWorldUpdate() — do NOT call it
+    // again here, as it would re-run GPU culling and allocate new buffers,
+    // invalidating the buffer references synced to ECS entities before world.update().
 
     // ── Grass blade shadow pass (after vegetation cull, before scene shadow pass) ──
     this.renderGrassShadows(world, encoder, renderCtx);
@@ -384,14 +404,18 @@ export class GPUForwardPipeline {
     }
   }
 
-  private prepareVegetation(world: World | undefined, renderCtx: RenderContextImpl): void {
+  /**
+   * Prepare vegetation for the current frame
+   * - Raw VP matrix + camera position (from preWorldUpdate(), before RenderContext exists)
+   */
+  private prepareVegetation(world: World | undefined, vpMatrix: Float32Array, cameraPosition: Vec3): void {
     if (!world) return;
     const terrainEntity = world.queryFirst('terrain');
     if (!terrainEntity) return;
     const tc = terrainEntity.getComponent<TerrainComponent>('terrain');
     if (tc?.manager?.isReady) {
       tc.manager.setWorld(world);
-      tc.manager.prepareVegetationForFrame(renderCtx.sceneCameraViewProjectionMatrix, renderCtx.sceneCameraPosition);
+      tc.manager.prepareVegetationForFrame(vpMatrix, cameraPosition);
     }
   }
 

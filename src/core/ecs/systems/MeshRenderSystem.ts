@@ -25,7 +25,7 @@ import { GPUContext } from '@/core/gpu';
  * Wind: displacementX, displacementZ, anchorHeight, stiffness, time, turbulence, debugMode, debugMaterialType
  * When wind is not present, wetness starts at byte 96.
  */
-const FEATURE_UNIFORM_BASE = 96; // After base MaterialUniforms (6 × vec4f = 96 bytes)
+const FEATURE_UNIFORM_BASE = 112; // After base MaterialUniforms (7 × vec4f = 112 bytes, includes bump/displacement fields)
 const WIND_UNIFORM_SIZE = 32;    // 8 × f32 (6 base + 2 debug)
 
 /** Byte offset of wind debug fields within the wind uniform block */
