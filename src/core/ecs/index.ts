@@ -59,6 +59,7 @@ export {
   createPointLightEntity,
   createSpotLightEntity,
   createPlayerEntity,
+  attachSkeletonAndAnimation,
 } from './factories';
 export type { ModelEntityMeta, PrimitiveEntityMeta } from './factories';
 

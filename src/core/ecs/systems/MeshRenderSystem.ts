@@ -119,6 +119,10 @@ export class MeshRenderSystem extends System {
       const visibility = entity.getComponent<VisibilityComponent>('visibility');
       if (visibility && !visibility.visible) continue;
 
+      // Skip entities with skeleton hideMesh (bones-only mode)
+      const skelHide = entity.getComponent<SkeletonComponent>('skeleton');
+      if (skelHide?.hideMesh) continue;
+
       // Skip inactive vegetation entities — they have no instances to draw this frame.
       // Without this check, the submesh geometry would render once at origin as a ghost.
       const vegInst = entity.getComponent<VegetationInstanceComponent>('vegetation-instance');
@@ -143,6 +147,9 @@ export class MeshRenderSystem extends System {
 
     // Upload feature uniforms to GPU for entities that need them
     this.uploadFeatureUniforms(entities, _context);
+
+    // Upload bone matrices for skinned entities
+    this.uploadBoneMatrices(entities, _context);
   }
 
   /**
@@ -251,6 +258,22 @@ export class MeshRenderSystem extends System {
     const primComp = entity.getComponent<PrimitiveGeometryComponent>('primitive-geometry');
     if (primComp?.isGPUInitialized && primComp.gpuMeshId >= 0) {
       objectRenderer.writeMeshExtraUniforms(primComp.gpuMeshId, buf, wetnessOffset);
+    }
+  }
+
+  /**
+   * Upload bone matrices from SkeletonComponent to GPU storage buffers.
+   * Runs once per frame for each skinned entity whose skeleton is dirty.
+   */
+  private uploadBoneMatrices(entities: Entity[], context: SystemContext): void {
+    for (const entity of entities) {
+      const skelComp = entity.getComponent<SkeletonComponent>('skeleton');
+      if (!skelComp?.dirty || !skelComp.boneMatrices) continue;
+
+      const meshComp = entity.getComponent<MeshComponent>('mesh');
+      if (!meshComp?.isGPUInitialized || !meshComp.boneBuffer) continue;
+
+      meshComp.uploadBoneMatrices(skelComp, context.ctx.device);
     }
   }
 

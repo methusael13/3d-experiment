@@ -6,6 +6,7 @@ import { UnifiedGPUTexture } from '../../gpu/GPUTexture';
 import type { GPUMaterialTextures, GPUMaterial } from '../../gpu/renderers/ObjectRendererGPU';
 import { RES } from '../../gpu/shaders/composition/resourceNames';
 import type { GLBModel } from '../../../loaders';
+import type { SkeletonComponent } from './SkeletonComponent';
 
 // ===================== Shared Texture Cache =====================
 
@@ -214,7 +215,93 @@ export class MeshComponent extends Component {
       console.log(`[MeshComponent] Mesh data added to ${meshId}:`, meshData);
 
       this.gpuMeshIds.push(meshId);
+
+      // 3. Upload skinning vertex data (JOINTS_0 / WEIGHTS_0) for this mesh
+      if (mesh.jointIndices && mesh.jointWeights) {
+        const vertexCount = mesh.positions!.length / 3;
+        const jointVertexCount = mesh.jointIndices.length / 4;
+        const weightVertexCount = mesh.jointWeights.length / 4;
+        console.log(
+          `[MeshComponent] Skinning data for mesh ${meshId}: ` +
+          `positions=${vertexCount}v, joints=${jointVertexCount}v (${mesh.jointIndices.constructor.name}), ` +
+          `weights=${weightVertexCount}v, ` +
+          `jointRange=[${Math.min(...Array.from(mesh.jointIndices))}..${Math.max(...Array.from(mesh.jointIndices))}]`
+        );
+        if (vertexCount !== jointVertexCount || vertexCount !== weightVertexCount) {
+          console.error(`[MeshComponent] VERTEX COUNT MISMATCH! positions=${vertexCount} joints=${jointVertexCount} weights=${weightVertexCount}`);
+        }
+        ctx.variantMeshPool.setSkinBuffer(meshId, mesh.jointIndices, mesh.jointWeights);
+      }
     }
+
+    // 4. Create bone matrix GPU storage buffer for skinned models
+    if (this.model.skeleton && this.gpuMeshIds.length > 0) {
+      this.initBoneBuffer(ctx);
+    }
+  }
+
+  /**
+   * Create the bone matrix GPU storage buffer and register it as a texture resource
+   * on all submeshes. Called during initWebGPU when the model has a skeleton.
+   *
+   * The bone buffer is shared by all submeshes of this entity. It gets uploaded
+   * per-frame by uploadBoneMatrices() when the AnimationSystem marks dirty.
+   */
+  private initBoneBuffer(ctx: GPUContext): void {
+    if (!this.model?.skeleton) return;
+
+    const jointCount = this.model.skeleton.joints.length;
+    const bufferSize = jointCount * 16 * 4; // mat4 per joint, 4 bytes per float
+
+    const boneBuffer = ctx.device.createBuffer({
+      label: `bone-matrices-${this.modelPath}`,
+      size: bufferSize,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+
+    // Initialize to identity matrices
+    const mapped = new Float32Array(boneBuffer.getMappedRange());
+    for (let i = 0; i < jointCount; i++) {
+      const offset = i * 16;
+      mapped[offset + 0] = 1;
+      mapped[offset + 5] = 1;
+      mapped[offset + 10] = 1;
+      mapped[offset + 15] = 1;
+    }
+    boneBuffer.unmap();
+
+    // Store the bone buffer reference for per-frame uploads
+    this._boneBuffer = boneBuffer;
+
+    // Register as texture resource on every submesh so buildTextureBindGroup can find it
+    const boneResource: GPUBufferBinding = { buffer: boneBuffer };
+    for (const meshId of this.gpuMeshIds) {
+      ctx.variantMeshPool.setTextureResource(meshId, RES.BONE_MATRICES, boneResource);
+    }
+
+    console.log(`[MeshComponent] Created bone buffer: ${jointCount} joints, ${bufferSize} bytes`);
+  }
+
+  /** GPU storage buffer for bone matrices (shared across all submeshes) */
+  private _boneBuffer: GPUBuffer | null = null;
+
+  /** Get the bone buffer for external use (e.g., SkeletonComponent reference) */
+  get boneBuffer(): GPUBuffer | null {
+    return this._boneBuffer;
+  }
+
+  /**
+   * Upload bone matrices from a SkeletonComponent to the GPU storage buffer.
+   * Called per-frame by the render pipeline when skeleton.dirty is true.
+   *
+   * @param skeleton - The SkeletonComponent with updated boneMatrices
+   * @param device - The GPU device for queue.writeBuffer
+   */
+  uploadBoneMatrices(skeleton: SkeletonComponent, device: GPUDevice): void {
+    if (!this._boneBuffer || !skeleton.boneMatrices) return;
+    device.queue.writeBuffer(this._boneBuffer, 0, skeleton.boneMatrices.buffer, skeleton.boneMatrices.byteOffset, skeleton.boneMatrices.byteLength);
+    skeleton.dirty = false;
   }
 
   /**

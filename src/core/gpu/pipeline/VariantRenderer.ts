@@ -163,6 +163,15 @@ export class VariantRenderer {
 
           pass.setVertexBuffer(0, drawParams.vertexBuffer);
 
+          // Bind vertex buffer slot 1: skinning data (joint indices + weights)
+          // The color pipeline for skinned variants has 2 buffer descriptors.
+          if (group.featureIds.includes('skinning')) {
+            const skinBuffer = this.meshPool.getSkinBuffer(meshId);
+            if (skinBuffer) {
+              pass.setVertexBuffer(1, skinBuffer);
+            }
+          }
+
           // Vegetation instancing: use drawIndexedIndirect with GPU-driven instance count
           const vegComp = entity.getComponent<VegetationInstanceComponent>('vegetation-instance');
           if (vegComp?.active && vegComp.drawArgsBuffer && drawParams.indexBuffer) {

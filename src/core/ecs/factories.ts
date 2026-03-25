@@ -17,6 +17,7 @@ import { CharacterPhysicsComponent } from './components/CharacterPhysicsComponen
 import { CameraComponent } from './components/CameraComponent';
 import { SkeletonComponent } from './components/SkeletonComponent';
 import { AnimationComponent, type AnimationState } from './components/AnimationComponent';
+import type { GLBModel } from '../../loaders/types';
 import type { GPUContext } from '../gpu/GPUContext';
 import type { TerrainManager, TerrainManagerConfig } from '../terrain';
 import type { OceanManager, OceanManagerConfig } from '../ocean';
@@ -404,4 +405,99 @@ export function createDirectionalLightEntity(
   entity.addComponent(new VisibilityComponent());
 
   return entity;
+}
+
+// ============================================================================
+// Skeleton & Animation Attachment
+// ============================================================================
+
+/**
+ * Known clip name patterns mapped to animation states.
+ * Case-insensitive matching. First match wins.
+ */
+const CLIP_NAME_TO_STATE: Array<{ patterns: string[]; state: AnimationState }> = [
+  { patterns: ['idle', 'breathing idle', 'standing'],           state: 'idle' },
+  { patterns: ['walk', 'walking', 'walk forward'],              state: 'walk' },
+  { patterns: ['run', 'running', 'run forward', 'jog', 'jogging'], state: 'run' },
+  { patterns: ['jump', 'jumping', 'jump up'],                   state: 'jump' },
+  { patterns: ['fall', 'falling', 'fall idle', 'in air'],       state: 'fall' },
+  { patterns: ['land', 'landing', 'hard landing'],              state: 'land' },
+];
+
+/**
+ * Try to auto-map a clip name to an animation state using known patterns.
+ * Returns the matched AnimationState or null if no match.
+ */
+function autoMapClipToState(clipName: string): AnimationState | null {
+  const lower = clipName.toLowerCase().trim();
+  for (const { patterns, state } of CLIP_NAME_TO_STATE) {
+    for (const pattern of patterns) {
+      if (lower === pattern || lower === `mixamo.com|${pattern}`) {
+        return state;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Attach SkeletonComponent and AnimationComponent to an entity based on
+ * a loaded GLBModel's skeleton and animation data.
+ *
+ * Call this after setting mesh.model on the entity. If the model has no
+ * skeleton, this is a no-op — safe to call on any model.
+ *
+ * Handles:
+ * - Creating SkeletonComponent with bone matrices initialized
+ * - Creating AnimationComponent with all embedded clips registered
+ * - Auto-mapping clip names to animation states (idle/walk/run/jump/fall/land)
+ *
+ * @param entity - The entity to attach skeleton/animation to
+ * @param model - The loaded GLBModel (from loadGLB)
+ * @returns true if skeleton was attached, false if model has no skeleton
+ */
+export function attachSkeletonAndAnimation(entity: Entity, model: GLBModel): boolean {
+  if (!model.skeleton) return false;
+
+  // --- SkeletonComponent ---
+  const skel = entity.addComponent(new SkeletonComponent());
+  skel.skeleton = model.skeleton;
+  skel.initBuffers();
+
+  // --- AnimationComponent ---
+  if (model.animations && model.animations.length > 0) {
+    const anim = entity.addComponent(new AnimationComponent());
+
+    // Register all embedded clips
+    for (const clip of model.animations) {
+      anim.clips.set(clip.name, clip);
+    }
+
+    // Auto-map clip names to animation states
+    const mappedStates = new Set<AnimationState>();
+    for (const clip of model.animations) {
+      const state = autoMapClipToState(clip.name);
+      if (state && !mappedStates.has(state)) {
+        anim.stateToClip.set(state, clip.name);
+        mappedStates.add(state);
+      }
+    }
+
+    // If only one clip and no state was auto-mapped, default it to 'idle'
+    if (model.animations.length === 1 && mappedStates.size === 0) {
+      anim.stateToClip.set('idle', model.animations[0].name);
+    }
+
+    // When not used as a player character (no CharacterPhysicsComponent),
+    // disable auto-state-from-physics so the animation just plays idle in a loop
+    anim.autoStateFromPhysics = entity.hasComponent('character-physics');
+
+    console.log(
+      `[attachSkeletonAndAnimation] ${entity.name}: ${model.skeleton.joints.length} joints, ` +
+      `${model.animations.length} clips, ${mappedStates.size} auto-mapped states` +
+      (mappedStates.size > 0 ? ` (${[...mappedStates].join(', ')})` : ''),
+    );
+  }
+
+  return true;
 }

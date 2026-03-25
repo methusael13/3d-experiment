@@ -38,6 +38,12 @@ export class SkeletonComponent extends Component {
   /** Whether bone matrices have been updated this frame and need GPU re-upload */
   dirty = true;
 
+  /** Whether to render skeleton debug overlay (bones + joints) */
+  showSkeleton = false;
+
+  /** Whether to hide the skinned mesh (show bones only) */
+  hideMesh = false;
+
   /**
    * Initialize bone matrix arrays based on skeleton joint count.
    * Call this after setting `skeleton`.

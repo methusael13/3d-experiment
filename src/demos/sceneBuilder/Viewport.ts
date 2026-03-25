@@ -48,9 +48,11 @@ import { FrustumCullComponent } from '../../core/ecs/components/FrustumCullCompo
 import { LightComponent } from '../../core/ecs/components/LightComponent';
 import { createDirectionalLightEntity } from '../../core/ecs/factories';
 import { ReflectionProbeCaptureRenderer } from '../../core/gpu/renderers/ReflectionProbeCaptureRenderer';
+import { GizmoRendererGPU } from '../../core/gpu/renderers/GizmoRendererGPU';
 import { LightBufferManager } from '../../core/gpu/renderers/LightBufferManager';
 import { LightVisualizerGPU } from '../../core/gpu/renderers/LightVisualizerGPU';
 import { PlayerVisualizerGPU } from '../../core/gpu/renderers/PlayerVisualizerGPU';
+import { SkeletonDebugRenderer } from '../../core/gpu/renderers/SkeletonDebugRenderer';
 import { TerrainLayerBounds } from '@/core/terrain';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
 import { CloudConfig } from '@/core/gpu/clouds';
@@ -213,6 +215,10 @@ export class Viewport {
 
   // Player visualizer for wireframe helpers (sphere + look-direction arrow)
   private playerVisualizer: PlayerVisualizerGPU | null = null;
+
+  // Skeleton debug overlay renderer (bone lines + joint markers)
+  private skeletonDebugRenderer: SkeletonDebugRenderer | null = null;
+  private skeletonGizmoRenderer: GizmoRendererGPU | null = null;
 
   private gpuContext: GPUContext | null = null;
   private gpuPipeline: GPUForwardPipeline | null = null;
@@ -386,7 +392,10 @@ export class Viewport {
       this.lightVisualizer = new LightVisualizerGPU(this.gpuContext);
       // Create player visualizer for wireframe player helpers
       this.playerVisualizer = new PlayerVisualizerGPU(this.gpuContext);
-      console.log('[Viewport] LightBufferManager + ShadowRenderer + LightVisualizer + PlayerVisualizer wired');
+      // Create skeleton debug overlay renderer (reuses a GizmoRendererGPU for line/triangle drawing)
+      this.skeletonDebugRenderer = new SkeletonDebugRenderer();
+      this.skeletonGizmoRenderer = new GizmoRendererGPU(this.gpuContext);
+      console.log('[Viewport] LightBufferManager + ShadowRenderer + LightVisualizer + PlayerVisualizer + SkeletonDebug wired');
 
       // Wire up ReflectionProbeSystem with its capture renderer
       const probeSystem = this._world.getSystem<ReflectionProbeSystem>('reflection-probe');
@@ -421,6 +430,9 @@ export class Viewport {
     this.playerVisualizer = null;
     this.lightBufferManager?.destroy();
     this.lightBufferManager = null;
+    this.skeletonGizmoRenderer?.destroy();
+    this.skeletonGizmoRenderer = null;
+    this.skeletonDebugRenderer = null;
 
     // Pipeline handles cleanup of its own passes
     this.gpuPipeline?.destroy();
@@ -923,6 +935,12 @@ export class Viewport {
       }
     }
 
+    // Render skeleton debug overlay (bone lines + joint markers) for entities with showSkeleton
+    if (this.skeletonDebugRenderer && this.skeletonGizmoRenderer) {
+      const vpMatrix = this.cameraController!.getCamera().getViewProjectionMatrix();
+      this.renderSkeletonDebugOverlay(vpMatrix as Float32Array);
+    }
+
     // Render gizmo via TransformGizmoManager (skip in FPS mode and debug camera mode)
     // This uses the same screen-space scale as hit testing for consistency
     if (!this.fpsMode && !this.debugCameraMode && this.transformGizmo?.hasGPURenderer()) {
@@ -1089,6 +1107,42 @@ export class Viewport {
       [camPos[0], camPos[1], camPos[2]] as [number, number, number],
       this.logicalHeight,
     );
+    passEncoder.end();
+    this.gpuContext.queue.submit([encoder.finish()]);
+  }
+
+  /**
+   * Render skeleton debug overlay (bone lines + joint octahedra) for entities
+   * with SkeletonComponent.showSkeleton enabled.
+   * Uses a dedicated GizmoRendererGPU instance for dynamic line/triangle drawing.
+   */
+  private renderSkeletonDebugOverlay(vpMatrix: Float32Array): void {
+    if (!this.gpuContext || !this.skeletonDebugRenderer || !this.skeletonGizmoRenderer) return;
+
+    const outputTexture = this.gpuContext.context?.getCurrentTexture();
+    if (!outputTexture) return;
+
+    const outputView = outputTexture.createView();
+    const encoder = this.gpuContext.device.createCommandEncoder({
+      label: 'skeleton-debug-overlay-encoder',
+    });
+
+    const passEncoder = encoder.beginRenderPass({
+      label: 'skeleton-debug-overlay-pass',
+      colorAttachments: [{
+        view: outputView,
+        loadOp: 'load',
+        storeOp: 'store',
+      }],
+    });
+
+    this.skeletonDebugRenderer.render(
+      passEncoder,
+      vpMatrix,
+      this.skeletonGizmoRenderer,
+      this._world,
+    );
+
     passEncoder.end();
     this.gpuContext.queue.submit([encoder.finish()]);
   }

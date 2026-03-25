@@ -273,6 +273,31 @@ export class VariantPipelineManager {
       ],
     });
 
+    // Build vertex buffer descriptors.
+    // Buffer 0: standard interleaved (position + normal + uv) — always present.
+    // Buffer 1: skinning data (joint indices + weights) — only for skinned variants.
+    const colorVertexBuffers: GPUVertexBufferLayout[] = [
+      {
+        // Interleaved: position (3) + normal (3) + uv (2) = 8 floats = 32 bytes
+        arrayStride: 32,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: 'float32x3' as GPUVertexFormat },   // position
+          { shaderLocation: 1, offset: 12, format: 'float32x3' as GPUVertexFormat },  // normal
+          { shaderLocation: 2, offset: 24, format: 'float32x2' as GPUVertexFormat },  // uv
+        ],
+      },
+    ];
+
+    if (composed.features.includes('skinning')) {
+      colorVertexBuffers.push({
+        arrayStride: 20, // uint8x4 (4 bytes) + float32x4 (16 bytes)
+        attributes: [
+          { shaderLocation: 5, offset: 0, format: 'uint8x4' as GPUVertexFormat },     // jointIndices
+          { shaderLocation: 6, offset: 4, format: 'float32x4' as GPUVertexFormat },   // jointWeights
+        ],
+      });
+    }
+
     // Create render pipeline
     const pipeline = device.createRenderPipeline({
       label: `variant-pipeline-${composed.featureKey}-${cullMode}`,
@@ -280,17 +305,7 @@ export class VariantPipelineManager {
       vertex: {
         module: shaderModule,
         entryPoint: 'vs_main',
-        buffers: [
-          {
-            // Interleaved: position (3) + normal (3) + uv (2) = 8 floats = 32 bytes
-            arrayStride: 32,
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: 'float32x3' },   // position
-              { shaderLocation: 1, offset: 12, format: 'float32x3' },  // normal
-              { shaderLocation: 2, offset: 24, format: 'float32x2' },  // uv
-            ],
-          },
-        ],
+        buffers: colorVertexBuffers,
       },
       fragment: {
         module: shaderModule,

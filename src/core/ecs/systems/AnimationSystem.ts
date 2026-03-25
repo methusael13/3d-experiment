@@ -93,6 +93,40 @@ const _tempLocal = mat4.create();
  *   globalTransform[i] = parent.globalTransform × localTransformFromPose(i)
  *   boneMatrix[i] = globalTransform[i] × inverseBindMatrix[i]
  */
+/** Cache topological order per skeleton (computed once, reused every frame). */
+const _topoOrderCache = new WeakMap<GLBSkeleton, number[]>();
+
+/**
+ * Get joints in topological order (parents before children).
+ * glTF spec does NOT guarantee skin.joints[] is parent-first ordered.
+ * Without this, child joints read uninitialized parent global transforms.
+ */
+function getTopologicalOrder(skeleton: GLBSkeleton): number[] {
+  const cached = _topoOrderCache.get(skeleton);
+  if (cached) return cached;
+
+  const order: number[] = [];
+  const visited = new Set<number>();
+
+  function visit(idx: number): void {
+    if (visited.has(idx)) return;
+    const joint = skeleton.joints[idx];
+    // Visit parent first (if it exists and is in the skeleton)
+    if (joint.parentIndex >= 0 && joint.parentIndex < skeleton.joints.length) {
+      visit(joint.parentIndex);
+    }
+    visited.add(idx);
+    order.push(idx);
+  }
+
+  for (let i = 0; i < skeleton.joints.length; i++) {
+    visit(i);
+  }
+
+  _topoOrderCache.set(skeleton, order);
+  return order;
+}
+
 function computeBoneMatrices(
   skeleton: GLBSkeleton,
   localT: Float32Array[], // per-joint vec3
@@ -101,8 +135,10 @@ function computeBoneMatrices(
   globalTransforms: Float32Array, // joints.length * 16
   boneMatrices: Float32Array,     // joints.length * 16
 ): void {
-  for (const joint of skeleton.joints) {
-    const i = joint.index;
+  // Process joints in topological order (parents before children)
+  const order = getTopologicalOrder(skeleton);
+  for (const i of order) {
+    const joint = skeleton.joints[i];
     const offset = i * 16;
 
     // Build local transform from animated TRS
@@ -125,8 +161,16 @@ function computeBoneMatrices(
         _tempLocal,
       );
     } else {
-      // Root joint: global = local
-      globalTransforms.set(_tempLocal, offset);
+      // Root joint: global = armatureTransform × local
+      // The armature node (e.g., Blender's "Armature" with Z-up→Y-up rotation)
+      // is the parent of root joints but not itself a joint. Its transform is
+      // baked into the inverse bind matrices, so we must include it here too.
+      const destSlice = globalTransforms.subarray(offset, offset + 16);
+      mat4.multiply(
+        destSlice as unknown as mat4,
+        skeleton.armatureTransform as unknown as mat4,
+        _tempLocal,
+      );
     }
 
     // Final bone matrix = globalTransform × inverseBindMatrix
@@ -137,6 +181,7 @@ function computeBoneMatrices(
       globalTransforms.subarray(offset, offset + 16) as unknown as mat4,
       invBind as unknown as mat4,
     );
+
   }
 }
 

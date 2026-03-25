@@ -470,6 +470,13 @@ export class VariantMeshPool {
     res: ShaderResource & { bindingIndex: number },
     placeholders: PlaceholderTextures,
   ): GPUBindingResource {
+    // Storage buffers — need a valid GPUBufferBinding placeholder, NOT a texture view.
+    // Without this, boneMatrices (or any storage resource) would fall through to the
+    // texture switch and return a GPUTextureView, causing a type mismatch.
+    if (res.kind === 'storage') {
+      return { buffer: placeholders.getStorageBufferPlaceholder(this.ctx) };
+    }
+
     // Samplers
     if (res.kind === 'sampler') {
       if (res.samplerType === 'sampler_comparison') {

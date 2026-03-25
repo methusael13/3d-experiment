@@ -401,6 +401,31 @@ export class PlaceholderTextures {
   get sceneColorHDRView(): GPUTextureView { return this._sceneColorHDRView; }
   /** SSR placeholder - same as sceneColorHDR (1x1 black = no SSR reflections) */
   get ssrTextureView(): GPUTextureView { return this._sceneColorHDRView; }
+
+  // ---- Storage buffer placeholder ----
+  // Lazily created small storage buffer for placeholder bind group entries.
+  // Used when a storage resource (e.g., boneMatrices) is not yet registered —
+  // prevents a type mismatch from falling through to the texture switch.
+  private _storageBufferPlaceholder: GPUBuffer | null = null;
+
+  getStorageBufferPlaceholder(ctx: GPUContext): GPUBuffer {
+    if (!this._storageBufferPlaceholder) {
+      // Create a small identity-matrix storage buffer (1 mat4x4f = 64 bytes)
+      // initialized to identity so skinning pass-through works even if the
+      // real bone buffer hasn't been registered yet.
+      this._storageBufferPlaceholder = ctx.device.createBuffer({
+        label: 'placeholder-storage-buffer',
+        size: 64,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+      });
+      const mapped = new Float32Array(this._storageBufferPlaceholder.getMappedRange());
+      // Identity matrix
+      mapped[0] = 1; mapped[5] = 1; mapped[10] = 1; mapped[15] = 1;
+      this._storageBufferPlaceholder.unmap();
+    }
+    return this._storageBufferPlaceholder;
+  }
   
   /** Reflection probe placeholder - reuses black cubemap (no probe = IBL fallback) */
   get reflectionProbeCubemapView(): GPUTextureView { return this._cubemapView; }

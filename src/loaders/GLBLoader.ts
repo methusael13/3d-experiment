@@ -402,6 +402,43 @@ export class GLBLoader extends BaseLoader<GLBModel> {
     return ['.glb', '.gltf'];
   }
   
+  /**
+   * Compute the world transform of a glTF node by walking up the scene graph.
+   * Builds parent→child chain and composes local transforms from root down.
+   */
+  private computeNodeWorldTransform(nodeIdx: number, gltfNodes: GltfNode[]): Float32Array {
+    // Build child→parent map for the entire scene graph
+    const parentMap = new Map<number, number>();
+    for (let i = 0; i < gltfNodes.length; i++) {
+      const node = gltfNodes[i];
+      if (node?.children) {
+        for (const child of node.children) {
+          parentMap.set(child, i);
+        }
+      }
+    }
+    
+    // Walk from nodeIdx up to root, collecting the chain
+    const chain: number[] = [];
+    let current: number | undefined = nodeIdx;
+    while (current !== undefined) {
+      chain.push(current);
+      current = parentMap.get(current);
+    }
+    
+    // Compose transforms from root down (reverse the chain)
+    const result = mat4.create(); // identity
+    for (let i = chain.length - 1; i >= 0; i--) {
+      const node = gltfNodes[chain[i]];
+      if (node) {
+        const local = getNodeLocalMatrix(node);
+        mat4.multiply(result, result, local);
+      }
+    }
+    
+    return new Float32Array(result as unknown as ArrayLike<number>);
+  }
+  
   async load(): Promise<GLBModel> {
     const loader = new GltfLoader();
     const asset: GltfAsset = await loader.load(this.url);
@@ -651,10 +688,81 @@ export class GLBLoader extends BaseLoader<GLBModel> {
       // Find root joint (first joint with no parent)
       const rootJointIndex = joints.findIndex(j => j.parentIndex === -1);
       
+      // Compute armature transform: the world transform of the armature node
+      // that is the parent of root joints but not itself a joint.
+      // In Blender exports, this is typically the "Armature" node with a 90° X
+      // rotation for Z-up → Y-up coordinate system conversion.
+      // The inverse bind matrices include this transform, so we must also apply it
+      // when computing global joint transforms for root joints.
+      const armatureTransform = new Float32Array(16);
+      // Start as identity
+      armatureTransform[0] = 1; armatureTransform[5] = 1; armatureTransform[10] = 1; armatureTransform[15] = 1;
+      
+      // Determine the armature transform: the world transform of all non-joint
+      // nodes above the skeleton root in the scene graph.
+      //
+      // Strategy: find the glTF node index of the skeleton root (the topmost
+      // joint), then walk up the scene graph collecting transforms of ancestor
+      // nodes that are NOT joints. This captures the "Armature" node transform
+      // (e.g., Blender's Z-up→Y-up 90° X rotation) that the inverse bind
+      // matrices include but that our joint hierarchy walk doesn't.
+      //
+      // Common Blender export scene graph:
+      //   Scene → Armature (non-joint, has rotation) → Hips (root joint)
+      //   skin.skeleton typically points to Hips (a joint)
+      {
+        // Find the glTF node index of the root joint (skeleton root)
+        const rootJoints = joints.filter(j => j.parentIndex === -1);
+        let skeletonRootNodeIdx: number | undefined;
+        
+        if (rootJoints.length > 0) {
+          skeletonRootNodeIdx = jointNodeIndices[rootJoints[0].index];
+        } else if (skin.skeleton !== undefined) {
+          skeletonRootNodeIdx = skin.skeleton;
+        }
+        
+        if (skeletonRootNodeIdx !== undefined) {
+          // Build child→parent map for the scene graph
+          const parentMap = new Map<number, number>();
+          for (let ni = 0; ni < gltfNodes.length; ni++) {
+            if (gltfNodes[ni]?.children) {
+              for (const child of gltfNodes[ni].children!) {
+                parentMap.set(child, ni);
+              }
+            }
+          }
+          
+          // Walk up from the root joint's node, collecting non-joint ancestors
+          // and composing their transforms (from scene root down)
+          const ancestorChain: number[] = [];
+          let current = parentMap.get(skeletonRootNodeIdx);
+          while (current !== undefined) {
+            if (!nodeToJoint.has(current)) {
+              ancestorChain.push(current);
+            }
+            current = parentMap.get(current);
+          }
+          
+          if (ancestorChain.length > 0) {
+            // Compose transforms from scene root down (reverse the chain)
+            const result = mat4.create(); // identity
+            for (let ai = ancestorChain.length - 1; ai >= 0; ai--) {
+              const node = gltfNodes[ancestorChain[ai]];
+              if (node) {
+                const local = getNodeLocalMatrix(node);
+                mat4.multiply(result, result, local);
+              }
+            }
+            armatureTransform.set(new Float32Array(result as unknown as ArrayLike<number>));
+          }
+        }
+      }
+      
       result.skeleton = {
         joints,
         inverseBindMatrices,
         rootJointIndex: rootJointIndex >= 0 ? rootJointIndex : 0,
+        armatureTransform,
       };
     }
     
@@ -796,8 +904,12 @@ export class GLBLoader extends BaseLoader<GLBModel> {
       };
     });
     
-    // Normalize if requested
-    if (this.options.normalize) {
+    // Normalize if requested — but SKIP for skinned meshes.
+    // normalizeGLBModel shifts and scales vertex positions to fit a unit cube,
+    // but the skeleton's inverse bind matrices expect vertices in the original
+    // model space. Normalizing vertices without updating the inverse bind matrices
+    // creates a mismatch that causes severe distortion when skinning is applied.
+    if (this.options.normalize && !result.skeleton) {
       return normalizeGLBModel(result);
     }
     

@@ -57,7 +57,7 @@ export class GizmoRendererGPU {
 
   // Dynamic geometry buffer for LayerBoundsGizmo (reused each frame)
   private dynamicVertexBuffer: UnifiedGPUBuffer;
-  private static readonly DYNAMIC_BUFFER_MAX_VERTICES = 2048;
+  private static readonly DYNAMIC_BUFFER_MAX_VERTICES = 8192;
 
   // Pre-built geometry buffers
 

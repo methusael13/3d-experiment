@@ -49,6 +49,28 @@ export function AnimationSubPanel({ entity, onChanged }: AnimationSubPanelProps)
         Skeleton: {jointCount} joints • {anim.clips.size} clips loaded
       </div>
 
+      {/* Show Skeleton debug overlay */}
+      <Checkbox
+        label="Show Skeleton"
+        checked={skel.showSkeleton}
+        onChange={(checked) => {
+          skel.showSkeleton = checked;
+          onChanged();
+        }}
+      />
+
+      {/* Hide mesh (bones only mode) — only visible when skeleton is shown */}
+      {skel.showSkeleton && (
+        <Checkbox
+          label="Hide Mesh"
+          checked={skel.hideMesh}
+          onChange={(checked) => {
+            skel.hideMesh = checked;
+            onChanged();
+          }}
+        />
+      )}
+
       {/* Current state (read-only, driven by physics) */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
         <span style={{ color: 'var(--text-secondary)' }}>State:</span>

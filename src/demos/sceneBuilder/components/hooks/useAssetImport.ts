@@ -8,7 +8,7 @@ import { getSceneBuilderStore, type SceneBuilderStore } from '../state';
 import { sceneSerializer } from '../../../../loaders/SceneSerializer';
 import { loadGLB, loadGLBNodes, getModelUrl, type GLBModel } from '../../../../loaders';
 import { promptImportMode } from '../ui/ImportModeDialog/ImportModeDialog';
-import { createModelEntity } from '@/core/ecs/factories';
+import { createModelEntity, attachSkeletonAndAnimation } from '@/core/ecs/factories';
 import { MeshComponent } from '@/core/ecs/components/MeshComponent';
 import { BoundsComponent } from '@/core/ecs/components/BoundsComponent';
 import type { Asset } from './useAssetLibrary';
@@ -84,6 +84,8 @@ export function useAssetImport() {
               boundsComp.localBounds = mesh.computeLocalBounds();
               boundsComp.dirty = true;
             }
+            // Attach skeleton & animation if the model has them
+            attachSkeletonAndAnimation(entity, nodeModel as unknown as GLBModel);
             // Init GPU after model data is set (onEntityAdded fires before model is available)
             store.initEntityWebGPU(entity);
           }
@@ -108,6 +110,8 @@ export function useAssetImport() {
               boundsComp.localBounds = mesh.computeLocalBounds();
               boundsComp.dirty = true;
             }
+            // Attach skeleton & animation if the model has them
+            attachSkeletonAndAnimation(entity, model);
             // Init GPU after model data is set (onEntityAdded fires before model is available)
             store.initEntityWebGPU(entity);
           }
@@ -206,6 +210,8 @@ export async function importAssetToScene(asset: Asset): Promise<AssetImportResul
             boundsComp.localBounds = mesh.computeLocalBounds();
             boundsComp.dirty = true;
           }
+          // Attach skeleton & animation if the model has them
+          attachSkeletonAndAnimation(entity, nodeModel as unknown as GLBModel);
           store.initEntityWebGPU(entity);
         }
         entities.push(entity);
@@ -226,6 +232,8 @@ export async function importAssetToScene(asset: Asset): Promise<AssetImportResul
             boundsComp.localBounds = mesh.computeLocalBounds();
             boundsComp.dirty = true;
           }
+          // Attach skeleton & animation if the model has them
+          attachSkeletonAndAnimation(entity, model);
           store.initEntityWebGPU(entity);
         }
         entities.push(entity);

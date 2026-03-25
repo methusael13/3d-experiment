@@ -85,6 +85,19 @@ export interface GLBSkeleton {
 
   /** Index into joints[] for the skeleton root */
   rootJointIndex: number;
+
+  /**
+   * World transform of the armature root node (skin.skeleton or parent of root joints).
+   * Flat Float32Array of length 16 (one mat4, column-major).
+   *
+   * In many glTF files (especially Blender exports), root bone joints are children
+   * of an "Armature" node that has a non-identity transform (e.g., 90° X rotation
+   * for Z-up → Y-up conversion). The inverse bind matrices include this transform,
+   * so the bone matrix computation must also apply it to root joints.
+   *
+   * Identity (16 floats) when no armature parent exists or it has identity transform.
+   */
+  armatureTransform: Float32Array;
 }
 
 /**
