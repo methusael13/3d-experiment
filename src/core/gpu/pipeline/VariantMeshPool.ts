@@ -569,6 +569,14 @@ export class VariantMeshPool {
   }
 
   /**
+   * Get a named texture resource for a mesh (e.g., bone matrices storage buffer).
+   * Returns null if mesh not found or resource not set.
+   */
+  getTextureResource(meshId: number, name: string): GPUBindingResource | null {
+    return this.meshes.get(meshId)?.textureResources.get(name) ?? null;
+  }
+
+  /**
    * Set the skinning vertex buffer for a mesh (Buffer 1: joint indices + weights).
    * Creates a separate GPU buffer with interleaved uint8x4 joint indices (4 bytes)
    * + float32x4 joint weights (16 bytes) = 20 bytes per vertex.

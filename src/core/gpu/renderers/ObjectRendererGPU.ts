@@ -29,6 +29,7 @@ import { BindGroupLayoutBuilder, BindGroupBuilder } from '../GPUBindGroup';
 import objectShaderDefault from '../shaders/object.wgsl?raw';
 import objectShadowShader from '../shaders/object-shadow.wgsl?raw';
 import selectionMaskShader from '../shaders/selection-mask.wgsl?raw';
+import selectionMaskSkinnedShader from '../shaders/selection-mask-skinned.wgsl?raw';
 
 // Import shader manager for live editing
 import { registerWGSLShader, getWGSLShaderSource } from '../../../demos/sceneBuilder/shaderManager';
@@ -38,6 +39,7 @@ import { SceneEnvironment, PlaceholderTextures } from './shared';
 import { ENVIRONMENT_BINDINGS, ENV_BINDING_MASK } from './shared/types';
 import { SHADOW_SLOT_SIZE } from './shared/constants';
 import type { ShadowRendererGPU } from './ShadowRendererGPU';
+import { RES } from '../shaders/composition/resourceNames';
 
 // ============ Types ============
 
@@ -235,6 +237,8 @@ export class ObjectRendererGPU {
   
   // Selection mask pipeline (renders selected meshes to a flat mask texture)
   private selectionMaskPipeline: GPURenderPipeline | null = null;
+  private selectionMaskSkinnedPipeline: GPURenderPipeline | null = null;
+  private selectionMaskBoneBindGroupLayout: GPUBindGroupLayout | null = null;
   private selectionMaskGlobalBuffer: GPUBuffer | null = null;
   private selectionMaskGlobalBindGroup: GPUBindGroup | null = null;
   
@@ -1342,6 +1346,71 @@ export class ObjectRendererGPU {
         { binding: 0, resource: { buffer: this.selectionMaskGlobalBuffer } },
       ],
     });
+    
+    // ---- Skinned variant pipeline ----
+    // Uses the same globalLayout and modelLayout but adds:
+    //   - Slot 1 vertex buffer for skin data (joint indices + weights)
+    //   - Group 2 bind group for bone matrices storage buffer
+    
+    const skinnedShaderModule = this.ctx.device.createShaderModule({
+      label: 'selection-mask-skinned-shader',
+      code: selectionMaskSkinnedShader,
+    });
+    
+    // Group 2: bone matrices storage buffer
+    this.selectionMaskBoneBindGroupLayout = this.ctx.device.createBindGroupLayout({
+      label: 'selection-mask-bone-layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+      ],
+    });
+    
+    const skinnedPipelineLayout = this.ctx.device.createPipelineLayout({
+      label: 'selection-mask-skinned-pipeline-layout',
+      bindGroupLayouts: [globalLayout, modelLayout, this.selectionMaskBoneBindGroupLayout],
+    });
+    
+    this.selectionMaskSkinnedPipeline = this.ctx.device.createRenderPipeline({
+      label: 'selection-mask-skinned-pipeline',
+      layout: skinnedPipelineLayout,
+      vertex: {
+        module: skinnedShaderModule,
+        entryPoint: 'vs_main',
+        buffers: [
+          // Slot 0: Standard interleaved (position+normal+uv) — 32 bytes
+          {
+            arrayStride: 32,
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: 'float32x3' },  // position
+              { shaderLocation: 1, offset: 12, format: 'float32x3' }, // normal
+              { shaderLocation: 2, offset: 24, format: 'float32x2' }, // uv
+            ],
+          },
+          // Slot 1: Skin buffer (uint8x4 joints + float32x4 weights) — 20 bytes
+          {
+            arrayStride: 20,
+            attributes: [
+              { shaderLocation: 5, offset: 0, format: 'uint8x4' },    // jointIndices
+              { shaderLocation: 6, offset: 4, format: 'float32x4' },  // jointWeights
+            ],
+          },
+        ],
+      },
+      fragment: {
+        module: skinnedShaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: 'r8unorm' }],
+      },
+      primitive: {
+        topology: 'triangle-list',
+        cullMode: 'back',
+      },
+      depthStencil: {
+        format: 'depth24plus',
+        depthWriteEnabled: false,
+        depthCompare: 'greater-equal',
+      },
+    });
   }
   
   /**
@@ -1371,18 +1440,84 @@ export class ObjectRendererGPU {
     data[19] = 0;
     this.ctx.queue.writeBuffer(this.selectionMaskGlobalBuffer, 0, data);
     
-    passEncoder.setPipeline(this.selectionMaskPipeline);
-    passEncoder.setBindGroup(0, this.selectionMaskGlobalBindGroup);
+    const meshPool = this.ctx.variantMeshPool;
     
     let drawCalls = 0;
+    let currentIsSkinned: boolean | null = null;
+    
     for (const meshId of this.selectedMeshIds) {
       const mesh = this.meshes.get(meshId);
       if (!mesh) continue;
       
+      // Check if this mesh is skinned via VariantMeshPool
+      const isSkinned = meshPool.isSkinned(meshId);
+      
+      if (isSkinned && this.selectionMaskSkinnedPipeline && this.selectionMaskBoneBindGroupLayout) {
+        // ---- Skinned path ----
+        const skinBuffer = meshPool.getSkinBuffer(meshId);
+        const boneResource = meshPool.getTextureResource(meshId, RES.BONE_MATRICES);
+        
+        if (!skinBuffer || !boneResource) {
+          // Fall back to non-skinned if skin resources are missing
+          if (currentIsSkinned !== false) {
+            passEncoder.setPipeline(this.selectionMaskPipeline!);
+            passEncoder.setBindGroup(0, this.selectionMaskGlobalBindGroup!);
+            currentIsSkinned = false;
+          }
+        } else {
+          // Switch to skinned pipeline if needed
+          if (currentIsSkinned !== true) {
+            passEncoder.setPipeline(this.selectionMaskSkinnedPipeline);
+            passEncoder.setBindGroup(0, this.selectionMaskGlobalBindGroup!);
+            currentIsSkinned = true;
+          }
+          
+          // Create per-mesh model bind group (Group 1)
+          const modelBindGroup = this.ctx.device.createBindGroup({
+            label: `selection-mask-skinned-model-${mesh.id}`,
+            layout: this.selectionMaskSkinnedPipeline.getBindGroupLayout(1),
+            entries: [
+              { binding: 0, resource: { buffer: mesh.modelBuffer.buffer } },
+            ],
+          });
+          
+          // Create bone matrices bind group (Group 2)
+          const boneBindGroup = this.ctx.device.createBindGroup({
+            label: `selection-mask-bone-${mesh.id}`,
+            layout: this.selectionMaskBoneBindGroupLayout,
+            entries: [
+              { binding: 0, resource: boneResource },
+            ],
+          });
+          
+          passEncoder.setBindGroup(1, modelBindGroup);
+          passEncoder.setBindGroup(2, boneBindGroup);
+          passEncoder.setVertexBuffer(0, mesh.vertexBuffer.buffer);
+          passEncoder.setVertexBuffer(1, skinBuffer);
+          
+          if (mesh.indexBuffer) {
+            passEncoder.setIndexBuffer(mesh.indexBuffer.buffer, mesh.indexFormat);
+            passEncoder.drawIndexed(mesh.indexCount, 1, 0, 0, 0);
+            drawCalls++;
+          } else {
+            passEncoder.draw(mesh.vertexCount, 1, 0, 0);
+            drawCalls++;
+          }
+          continue;
+        }
+      }
+      
+      // ---- Non-skinned path ----
+      if (currentIsSkinned !== false) {
+        passEncoder.setPipeline(this.selectionMaskPipeline!);
+        passEncoder.setBindGroup(0, this.selectionMaskGlobalBindGroup!);
+        currentIsSkinned = false;
+      }
+      
       // Create per-mesh bind group (model matrix only)
       const modelBindGroup = this.ctx.device.createBindGroup({
         label: `selection-mask-model-${mesh.id}`,
-        layout: this.selectionMaskPipeline.getBindGroupLayout(1),
+        layout: this.selectionMaskPipeline!.getBindGroupLayout(1),
         entries: [
           { binding: 0, resource: { buffer: mesh.modelBuffer.buffer } },
         ],
@@ -1440,6 +1575,8 @@ export class ObjectRendererGPU {
     // Destroy selection mask resources
     this.selectionMaskGlobalBuffer?.destroy();
     this.selectionMaskPipeline = null;
+    this.selectionMaskSkinnedPipeline = null;
+    this.selectionMaskBoneBindGroupLayout = null;
     this.selectionMaskGlobalBindGroup = null;
   }
 }
