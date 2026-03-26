@@ -145,7 +145,7 @@ const MINOR_LINE_COLOR = vec3f(0.25, 0.25, 0.26);
 const ORIGIN_LINE_COLOR_X = vec3f(0.55, 0.2, 0.2);
 const ORIGIN_LINE_COLOR_Z = vec3f(0.2, 0.2, 0.55);
 
-const SHADOW_BIAS: f32 = 0.003;
+const SHADOW_BIAS: f32 = 0.0;
 const CSM_PCF_SAMPLES: i32 = 3;
 
 // ============================================================================

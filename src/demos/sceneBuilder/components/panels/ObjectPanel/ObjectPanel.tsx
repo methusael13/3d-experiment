@@ -171,7 +171,7 @@ export function ObjectPanel({
   );
 
   return (
-    <Panel title="Object" visible={visible}>
+    <Panel title="Object" visible={visible} maxHeight={null}>
       <SidebarTabs tabs={tabs} defaultTab="transform" />
     </Panel>
   );

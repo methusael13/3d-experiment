@@ -7,7 +7,7 @@ export interface PanelProps {
   children: ComponentChildren;
   visible?: boolean;
   defaultCollapsed?: boolean;
-  maxHeight?: number;
+  maxHeight?: number | null;
 }
 
 export function Panel({ 
@@ -33,7 +33,7 @@ export function Panel({
       </div>
       <div 
         class={`${styles.content} ${isCollapsed ? styles.contentCollapsed : ''}`}
-        style={!isCollapsed ? { maxHeight: `${maxHeight}px` } : undefined}
+        style={!isCollapsed && maxHeight !== null ? { maxHeight: `${maxHeight}px` } : undefined}
       >
         {children}
       </div>
