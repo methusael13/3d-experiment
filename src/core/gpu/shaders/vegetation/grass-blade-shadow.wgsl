@@ -22,6 +22,10 @@ struct ShadowUniforms {
   fadeStartRatio: f32,
   bladeWidthFactor: f32,
   bladeTaperPower: f32,
+  bladeMinBendRad: f32,
+  _pad3: f32,
+  _pad4: f32,
+  _pad5: f32,
 }
 
 struct WindParams {
@@ -140,7 +144,8 @@ fn vertexMain(
   // ---- Per-instance bend variation (must match color shader) ----
   let bendHash1 = hash21(bladePos.xz * 29.3 + 7.7);
   let bendHash2 = hash21(bladePos.xz * 47.1 + 13.3);
-  let leanAmount = GRASS_LEANING + bendHash1 * bendHash1 * 0.6;
+  let minBendNorm = uniforms.bladeMinBendRad / 1.5708;
+  let leanAmount = mix(GRASS_LEANING, 1.5, minBendNorm) + bendHash1 * bendHash1 * mix(0.6, 0.15, minBendNorm);
   let leanAngleOffset = (bendHash2 - 0.5) * 1.2;
   let leanDir = normalize(bladeDir * cos(leanAngleOffset) + perpDir * sin(leanAngleOffset));
   

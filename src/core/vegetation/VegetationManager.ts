@@ -362,6 +362,18 @@ export class VegetationManager {
         plant.billboardDistance,
       );
 
+      // Set blade shape params for grass-blade plants
+      if (plant.renderMode === 'grass-blade') {
+        this.tileCache.setPlantBladeParams(
+          tile.tileId, plant.id,
+          plant.bladeWidthFactor ?? 0.025,
+          plant.bladeTaperPower ?? 1.8,
+          plant.veinFoldStrength ?? 0.4,
+          plant.sssStrength ?? 0.65,
+          plant.bladeMinBendDeg ?? 0,
+        );
+      }
+      
       this.tileCache.setPlantWindAndShadow(
         tile.tileId, plant.id,
         plant.windInfluence ?? 1.0,

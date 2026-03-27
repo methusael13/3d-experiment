@@ -253,6 +253,8 @@ export interface PlantType {
   veinFoldStrength: number;
   /** Subsurface scattering strength. 0=opaque, 1=fully translucent backlit. Default: 0.65 */
   sssStrength: number;
+  /** Minimum bend angle in degrees. 0=some blades upright, 90=all blades flat. Default: 0 */
+  bladeMinBendDeg: number;
 
   // ---- Clumping Fields (only active when renderMode === 'grass-blade') ----
   /** Enable Voronoi-cell-based clumping for grass blades. Default: false */
@@ -310,6 +312,7 @@ export function createDefaultPlantType(id: string, name: string): PlantType {
     bladeTaperPower: 1.8,
     veinFoldStrength: 0.4,
     sssStrength: 0.65,
+    bladeMinBendDeg: 0,
     // Clumping defaults
     clumpEnabled: false,
     clumpCellSize: 2.0,
@@ -470,6 +473,7 @@ const _defaultBladeClumpFields = {
   bladeTaperPower: 1.8,
   veinFoldStrength: 0.4,
   sssStrength: 0.65,
+  bladeMinBendDeg: 0,
   clumpEnabled: false as const,
   clumpCellSize: 2.0,
   clumpJitter: 0.5,

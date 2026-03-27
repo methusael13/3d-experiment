@@ -33,6 +33,12 @@ interface PlantCacheEntry {
   windInfluence: number;
   castShadows: boolean;
   shadowCastDistance: number;
+  // Grass blade shape params
+  bladeWidthFactor: number;
+  bladeTaperPower: number;
+  veinFoldStrength: number;
+  sssStrength: number;
+  bladeMinBendDeg: number;
 }
 
 /**
@@ -232,6 +238,11 @@ export class VegetationTileCache {
       windInfluence: 1.0,
       castShadows: false,
       shadowCastDistance: 50,
+      bladeWidthFactor: 0.025,
+      bladeTaperPower: 1.8,
+      veinFoldStrength: 0.4,
+      sssStrength: 0.65,
+      bladeMinBendDeg: 0,
     });
     
     entry.lastUsedFrame = this.currentFrame;
@@ -333,6 +344,21 @@ export class VegetationTileCache {
   }
   
   /**
+   * Set grass blade shape parameters for a specific plant on a tile.
+   */
+  setPlantBladeParams(tileId: string, plantId: string, widthFactor: number, taperPower: number, veinFoldStrength: number, sssStrength: number, minBendDeg: number): void {
+    const entry = this.tiles.get(tileId);
+    const plant = entry?.plants.get(plantId);
+    if (plant) {
+      plant.bladeWidthFactor = widthFactor;
+      plant.bladeTaperPower = taperPower;
+      plant.veinFoldStrength = veinFoldStrength;
+      plant.sssStrength = sssStrength;
+      plant.bladeMinBendDeg = minBendDeg;
+    }
+  }
+  
+  /**
    * Set per-plant wind influence and shadow casting parameters.
    */
   setPlantWindAndShadow(tileId: string, plantId: string, windInfluence: number, castShadows: boolean, shadowCastDistance: number = 50): void {
@@ -376,6 +402,11 @@ export class VegetationTileCache {
           windInfluence: plantEntry.windInfluence,
           castShadows: plantEntry.castShadows,
           shadowCastDistance: plantEntry.shadowCastDistance ?? 50,
+          bladeWidthFactor: plantEntry.bladeWidthFactor,
+          bladeTaperPower: plantEntry.bladeTaperPower,
+          veinFoldStrength: plantEntry.veinFoldStrength,
+          sssStrength: plantEntry.sssStrength,
+          bladeMinBendDeg: plantEntry.bladeMinBendDeg,
         });
       }
       

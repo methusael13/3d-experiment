@@ -60,6 +60,17 @@ export interface PlantTileData {
   castShadows: boolean;
   /** Maximum distance from camera for shadow casting (meters). Default: 50 */
   shadowCastDistance: number;
+  // Grass blade shape params (only used when renderMode === 3)
+  /** Width of blade relative to height. Default: 0.025 */
+  bladeWidthFactor?: number;
+  /** Non-linear taper exponent. Default: 1.8 */
+  bladeTaperPower?: number;
+  /** Central vein fold strength. Default: 0.4 */
+  veinFoldStrength?: number;
+  /** Subsurface scattering strength. Default: 0.65 */
+  sssStrength?: number;
+  /** Minimum bend angle in degrees. Default: 0 */
+  bladeMinBendDeg?: number;
 }
 
 /**
@@ -333,6 +344,14 @@ export class VegetationRenderer {
       
       // Grass blade mode: renderMode 3 — use grass blade renderer instead of billboard
       if (plant.renderMode === 3) {
+        // Set per-plant blade shape parameters before rendering
+        this.grassBladeRenderer.setBladeParams({
+          widthFactor: plant.bladeWidthFactor,
+          taperPower: plant.bladeTaperPower,
+          veinFoldStrength: plant.veinFoldStrength,
+          sssStrength: plant.sssStrength,
+          minBendDeg: plant.bladeMinBendDeg,
+        });
         drawCalls += this.grassBladeRenderer.renderIndirect(
           passEncoder,
           viewProjection,

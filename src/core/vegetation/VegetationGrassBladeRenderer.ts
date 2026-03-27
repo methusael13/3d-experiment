@@ -43,8 +43,8 @@ const WIND_PARAMS_SIZE = 32;
 /** Vertices per grass blade: (N_SEGMENTS-1) quads × 6 + 3 tip = 27 with N_SEGMENTS=5 */
 const VERTICES_PER_BLADE = 27;
 
-/** Shadow uniforms struct size: mat4(64) + vec3f+f32(16) + vec4f(16) = 96 bytes */
-const SHADOW_UNIFORMS_SIZE = 96;
+/** Shadow uniforms struct size: mat4(64) + vec3f+f32(16) + 2×vec4f(32) = 112 bytes, rounded to 128 for alignment */
+const SHADOW_UNIFORMS_SIZE = 128;
 
 /** Re-export for backward compatibility */
 export type GrassLightParams = VegetationLightParams;
@@ -84,6 +84,7 @@ export class VegetationGrassBladeRenderer {
   private _bladeTaperPower = 1.8;
   private _veinFoldStrength = 0.4;
   private _sssStrength = 0.65;
+  private _bladeMinBendRad = 0.0; // Stored in radians internally
 
   private initialized = false;
 
@@ -102,11 +103,13 @@ export class VegetationGrassBladeRenderer {
     taperPower?: number;
     veinFoldStrength?: number;
     sssStrength?: number;
+    minBendDeg?: number;
   }): void {
     if (params.widthFactor !== undefined) this._bladeWidthFactor = params.widthFactor;
     if (params.taperPower !== undefined) this._bladeTaperPower = params.taperPower;
     if (params.veinFoldStrength !== undefined) this._veinFoldStrength = params.veinFoldStrength;
     if (params.sssStrength !== undefined) this._sssStrength = params.sssStrength;
+    if (params.minBendDeg !== undefined) this._bladeMinBendRad = params.minBendDeg * Math.PI / 180;
   }
 
   // ==================== Initialization ====================
@@ -378,7 +381,7 @@ export class VegetationGrassBladeRenderer {
     data[24] = fallbackColor[0];
     data[25] = fallbackColor[1];
     data[26] = fallbackColor[2];
-    data[27] = 0.0;
+    data[27] = this._bladeMinBendRad;
 
     // sunDirection vec3f + sunIntensityFactor f32 (offset 28-31)
     data[28] = l.sunDirection[0];
@@ -557,6 +560,8 @@ export class VegetationGrassBladeRenderer {
     data[21] = 0.75;                                   // fadeStartRatio (must match color shader)
     data[22] = this._bladeWidthFactor;                 // bladeWidthFactor
     data[23] = this._bladeTaperPower;                  // bladeTaperPower
+    data[24] = this._bladeMinBendRad;                  // bladeMinBendRad
+    data[25] = 0; data[26] = 0; data[27] = 0;         // padding
     this.ctx.queue.writeBuffer(this.shadowUniformsBuffer, slotOffset, data);
 
     // Write wind params

@@ -37,7 +37,7 @@ struct Uniforms {
   lodLevel: f32,
   maxLodLevels: f32,
   fallbackColor: vec3f,
-  _pad0: f32,
+  bladeMinBendRad: f32,  // Minimum bend angle in radians (0=upright possible, π/2=all flat)
   // Analytical lighting (from DirectionalLight)
   sunDirection: vec3f,
   sunIntensityFactor: f32,
@@ -386,7 +386,10 @@ fn vertexMain(
   let bendHash2 = hash21(bladePos.xz * 47.1 + 13.3); // lean direction angle offset
   // Non-uniform distribution: most blades ~0.2-0.4 lean, few extreme droops
   // Use a power curve to bias toward moderate values with occasional extremes
-  let leanAmount = GRASS_LEANING + bendHash1 * bendHash1 * 0.6; // 0.3 to 0.9
+  // Map random hash through min bend range: leanAmount ranges from minBend to ~π/2
+  // minBendRad=0 → range [0.3, 0.9] (original), minBendRad=π/2 → all at ~1.57 (flat)
+  let minBendNorm = uniforms.bladeMinBendRad / 1.5708; // Normalize 0-90° to 0-1
+  let leanAmount = mix(GRASS_LEANING, 1.5, minBendNorm) + bendHash1 * bendHash1 * mix(0.6, 0.15, minBendNorm); // Narrower random range as min increases
   let leanAngleOffset = (bendHash2 - 0.5) * 1.2; // +/- 0.6 radians sideways lean
   
   // Rotate lean direction: mix bladeDir with perpDir based on lean offset

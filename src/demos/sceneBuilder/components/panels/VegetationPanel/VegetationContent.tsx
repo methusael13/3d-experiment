@@ -225,6 +225,19 @@ function PlantItem({ plant, biome, onUpdate, onDelete, onSelectAtlas, onSelectMo
                 />
                 <span class={styles.propertyValue}>{((plant.sssStrength ?? 0.65) * 100).toFixed(0)}%</span>
               </div>
+              
+              <div class={styles.propertyRow}>
+                <label>Min Bend Angle</label>
+                <input 
+                  type="range"
+                  min="0"
+                  max="80"
+                  step="5"
+                  value={plant.bladeMinBendDeg ?? 0}
+                  onInput={(e) => onUpdate({ bladeMinBendDeg: parseFloat((e.target as HTMLInputElement).value) })}
+                />
+                <span class={styles.propertyValue}>{(plant.bladeMinBendDeg ?? 0).toFixed(0)}°</span>
+              </div>
             </div>
           )}
           
