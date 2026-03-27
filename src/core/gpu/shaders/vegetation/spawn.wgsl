@@ -50,6 +50,16 @@ struct SpawnParams {
   
   // LOD density thinning (0..1) — fraction of world-space cells to keep at this LOD
   lodDensityRatio: f32,      // 1.0 = finest LOD (all cells), <1.0 = coarser (skip cells)
+  
+  // Clumping parameters (Voronoi-based, for grass-blade mode)
+  clumpEnabled: u32,         // 0 = disabled, 1 = enabled
+  clumpCellSize: f32,        // Voronoi cell size (world units)
+  clumpJitter: f32,          // How much cell centers are jittered (0-1)
+  clumpFalloff: f32,         // Density falloff from center (0=uniform, 1=tight)
+  clumpFacingMode: u32,      // 0=random, 1=face-outward, 2=face-inward
+  clumpAngleSpread: f32,     // Random angle spread (radians)
+  _clumpPad0: f32,
+  _clumpPad1: f32,
 }
 
 struct PlantInstance {
@@ -297,8 +307,56 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   
   // ---- Calculate instance properties (using world cell for consistency) ----
   let scale = mix(params.minScale, params.maxScale, hash21(worldCell * 31.7 + params.seed * 2.1));
-  let rotation = hash21(worldCell * 41.3 + params.seed * 5.3) * 6.28318; // 0 to 2π
+  var rotation = hash21(worldCell * 41.3 + params.seed * 5.3) * 6.28318; // 0 to 2π
   let variantIndex = f32(u32(hash21(worldCell * 53.9 + params.seed * 7.7) * f32(max(params.variantCount, 1u))));
+  
+  // ---- Voronoi clumping (Feature 4) ----
+  if (params.clumpEnabled > 0u) {
+    let clumpCS = max(params.clumpCellSize, 0.5);
+    let clumpJ = params.clumpJitter;
+    let clumpSeed = params.seed * 1.37;
+    
+    // Find nearest Voronoi cell center (3×3 neighborhood search)
+    let voronoiCell = floor(worldXZ / clumpCS);
+    var bestCenter = vec2f(0.0);
+    var bestDist = 99999.0;
+    for (var dy = -1; dy <= 1; dy++) {
+      for (var dx = -1; dx <= 1; dx++) {
+        let neighborCell = voronoiCell + vec2f(f32(dx), f32(dy));
+        let centerOffset = hash22(neighborCell * 73.1 + clumpSeed * 0.31) * clumpJ;
+        let center = (neighborCell + 0.5 + centerOffset - 0.5 * clumpJ) * clumpCS;
+        let d = distance(worldXZ, center);
+        if (d < bestDist) {
+          bestDist = d;
+          bestCenter = center;
+        }
+      }
+    }
+    
+    // Density falloff from clump center: reject instances far from center
+    let clumpRadius = clumpCS * 0.5;
+    let normalizedDist = bestDist / max(clumpRadius, 0.01);
+    let falloffThreshold = 1.0 - params.clumpFalloff; // Higher falloff → tighter clumps
+    let densityRoll = hash21(worldCell * 67.3 + params.seed * 11.1);
+    let survivalProb = saturate(1.0 - normalizedDist * params.clumpFalloff);
+    if (densityRoll > survivalProb) {
+      return; // Rejected by clump density falloff
+    }
+    
+    // Clump-aware blade rotation based on facing mode
+    let delta = worldXZ - bestCenter;
+    let dirAngle = atan2(delta.y, delta.x);
+    let randomSpread = (hash21(worldCell * 83.1 + params.seed * 13.7) - 0.5) * 2.0 * params.clumpAngleSpread;
+    
+    if (params.clumpFacingMode == 1u) {
+      // Face outward from clump center
+      rotation = dirAngle + randomSpread;
+    } else if (params.clumpFacingMode == 2u) {
+      // Face inward toward clump center
+      rotation = dirAngle + 3.14159 + randomSpread;
+    }
+    // else: clumpFacingMode == 0 → keep random rotation (already set above)
+  }
   
   // ---- Emit instance ----
   let idx = atomicAdd(&counters[0], 1u);

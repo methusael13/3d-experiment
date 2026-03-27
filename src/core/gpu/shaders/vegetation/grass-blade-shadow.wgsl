@@ -1,12 +1,13 @@
 /**
- * Grass Blade Shadow Depth Shader
+ * Grass Blade Shadow Depth Shader (v2)
  * 
  * Depth-only version of grass-blade.wgsl for rendering grass blade geometry
- * into the vegetation shadow map. Uses the same Bézier curve construction
- * and wind animation as the color shader, but outputs only depth.
+ * into the vegetation shadow map. Uses the same Bézier curve construction,
+ * non-linear taper, height fade, and wind animation as the color shader,
+ * but outputs only depth.
  * 
  * Bindings:
- *   Group 0, Binding 0: ShadowUniforms (lightSpaceMatrix, time, maxDistance)
+ *   Group 0, Binding 0: ShadowUniforms (lightSpaceMatrix, time, maxDistance, blade params)
  *   Group 0, Binding 1: WindParams
  *   Group 0, Binding 2: Instance storage buffer (PlantInstance[])
  */
@@ -18,9 +19,9 @@ struct ShadowUniforms {
   cameraPosition: vec3f,
   time: f32,
   maxFadeDistance: f32,
-  _pad0: f32,
-  _pad1: f32,
-  _pad2: f32,
+  fadeStartRatio: f32,
+  bladeWidthFactor: f32,
+  bladeTaperPower: f32,
 }
 
 struct WindParams {
@@ -42,6 +43,14 @@ struct PlantInstance {
 @group(0) @binding(0) var<uniform> uniforms: ShadowUniforms;
 @group(0) @binding(1) var<uniform> wind: WindParams;
 @group(0) @binding(2) var<storage, read> instances: array<PlantInstance>;
+
+// ==================== Hash ====================
+
+fn hash21(p: vec2f) -> f32 {
+  var p3 = fract(vec3f(p.x, p.y, p.x) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
 
 // ==================== Constants ====================
 
@@ -85,6 +94,12 @@ fn evalBezier(p0: vec3f, p1: vec3f, p2: vec3f, t: f32) -> vec3f {
   return omt * omt * p0 + 2.0 * omt * t * p1 + t * t * p2;
 }
 
+// ==================== Non-Linear Width Taper ====================
+
+fn bladeHalfWidth(t: f32, baseWidth: f32, taperPower: f32) -> f32 {
+  return baseWidth * pow(max(1.0 - t, 0.0), taperPower);
+}
+
 // ==================== Vertex Shader ====================
 
 @vertex
@@ -98,12 +113,23 @@ fn vertexMain(
   let bladeHeight = inst.positionAndScale.w;
   let rotation = inst.rotationAndType.x;
   
-  // Distance cull (skip blades beyond shadow distance)
+  // Distance cull using Euclidean distance (shadow map doesn't have camera forward)
   let diff = bladePos - uniforms.cameraPosition;
   let distSq = dot(diff, diff);
   let maxDistSq = uniforms.maxFadeDistance * uniforms.maxFadeDistance;
   if (distSq > maxDistSq) {
-    // Return degenerate position (will be clipped)
+    return vec4f(0.0, 0.0, -2.0, 1.0);
+  }
+  
+  // ---- Feature 5: Distance-based height fade (must match color shader) ----
+  let dist = sqrt(distSq);
+  let fadeStart = uniforms.maxFadeDistance * uniforms.fadeStartRatio;
+  let fadeRange = max(uniforms.maxFadeDistance - fadeStart, 0.01);
+  let heightFade = smoothstep(0.0, 1.0, saturate((uniforms.maxFadeDistance - dist) / fadeRange));
+  let effectiveHeight = bladeHeight * heightFade;
+  
+  // Skip fully faded blades
+  if (effectiveHeight < 0.001) {
     return vec4f(0.0, 0.0, -2.0, 1.0);
   }
   
@@ -111,24 +137,40 @@ fn vertexMain(
   let bladeDir = vec3f(sin(rotation), 0.0, cos(rotation));
   let perpDir = vec3f(bladeDir.z, 0.0, -bladeDir.x);
   
-  // Bézier control points
-  var p0 = bladePos;
-  var p1 = p0 + vec3f(0.0, bladeHeight, 0.0);
-  var p2 = p1 + bladeDir * bladeHeight * GRASS_LEANING;
+  // ---- Per-instance bend variation (must match color shader) ----
+  let bendHash1 = hash21(bladePos.xz * 29.3 + 7.7);
+  let bendHash2 = hash21(bladePos.xz * 47.1 + 13.3);
+  let leanAmount = GRASS_LEANING + bendHash1 * bendHash1 * 0.6;
+  let leanAngleOffset = (bendHash2 - 0.5) * 1.2;
+  let leanDir = normalize(bladeDir * cos(leanAngleOffset) + perpDir * sin(leanAngleOffset));
   
-  // Wind (must match color shader for shadow consistency)
+  // Bézier control points (using effective height and per-instance lean)
+  var p0 = bladePos;
+  var p1 = p0 + vec3f(0.0, effectiveHeight, 0.0);
+  var p2 = p1 + leanDir * effectiveHeight * leanAmount;
+  
+  // ---- Height-based wind (must match color shader) ----
   let windDisp = computeWindDisplacement(bladePos.xz, uniforms.time);
-  p2 += windDisp * bladeHeight * 0.5;
+  p1 += windDisp * effectiveHeight * 0.15;
+  p2 += windDisp * effectiveHeight * 0.5;
   
   // Persistent length correction
-  makePersistentLength(p0, &p1, &p2, bladeHeight);
+  makePersistentLength(p0, &p1, &p2, effectiveHeight);
   
-  // Base width
-  let baseWidth = bladeHeight * 0.04;
+  // ---- Feature 1: Non-linear taper with configurable width ----
+  let widthFactor = uniforms.bladeWidthFactor;
+  let taperPower = uniforms.bladeTaperPower;
+  let baseWidth = effectiveHeight * widthFactor;
   
-  // Vertex decoding (identical to grass-blade.wgsl)
+  // Shadow pass uses full segment count (simpler LOD for shadows)
   let numQuads = N_SEGMENTS - 1u;
   let quadVertCount = numQuads * 6u;
+  let totalVerts = quadVertCount + 3u;
+  
+  // Degenerate for out-of-range vertices
+  if (vertexIndex >= totalVerts) {
+    return vec4f(0.0, 0.0, -2.0, 1.0);
+  }
   
   var worldPosition: vec3f;
   
@@ -139,8 +181,9 @@ fn vertexMain(
     let t0 = f32(quadIndex) / f32(numQuads);
     let t1 = f32(quadIndex + 1u) / f32(numQuads);
     
-    let w0 = baseWidth * (1.0 - t0);
-    let w1 = baseWidth * (1.0 - t1);
+    // Non-linear width at each t
+    let w0 = bladeHalfWidth(t0, baseWidth, taperPower);
+    let w1 = bladeHalfWidth(t1, baseWidth, taperPower);
     
     let pos0 = evalBezier(p0, p1, p2, t0);
     let pos1 = evalBezier(p0, p1, p2, t1);
@@ -164,7 +207,7 @@ fn vertexMain(
     
     let posPrev = evalBezier(p0, p1, p2, tPrev);
     let posTip = evalBezier(p0, p1, p2, 1.0);
-    let wPrev = baseWidth * (1.0 - tPrev);
+    let wPrev = bladeHalfWidth(tPrev, baseWidth, taperPower);
     
     let leftPrev  = posPrev - perpDir * wPrev;
     let rightPrev = posPrev + perpDir * wPrev;

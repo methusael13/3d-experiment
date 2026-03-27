@@ -1,8 +1,10 @@
 /**
- * Procedural Grass Blade Shader
+ * Procedural Grass Blade Shader (v2)
  * 
  * Renders each vegetation instance as a procedural grass blade using
- * a quadratic Bézier curve (P0, P1, P2) with width tapering.
+ * a quadratic Bézier curve (P0, P1, P2) with non-linear width tapering,
+ * central vein fold, PBR specular highlights, enhanced subsurface scattering,
+ * and distance-based height fade.
  * 
  * Per instance data (from spawn buffer):
  *   positionAndScale: vec4f  (xyz = world position = P0, w = blade height)
@@ -12,7 +14,16 @@
  *   P0 = bladePosition (ground)
  *   P1 = P0 + vec3(0, bladeHeight, 0) 
  *   P2 = P1 + bladeDirection * bladeHeight * 0.3
- *   Width tapers from w0 at base to 0 at tip.
+ *   Width tapers non-linearly from base to single-vertex pyramid tip.
+ * 
+ * Features:
+ *   - Non-linear taper (pow curve) for sharp pyramid-tip blades
+ *   - Central vein fold via normal perturbation (no extra verts)
+ *   - PBR specular with anisotropic gloss along blade tangent
+ *   - Enhanced wrap-around SSS with thickness-based translucency
+ *   - Distance-based height fade (blades shrink at view edges)
+ *   - LOD segment reduction (fewer segments for distant blades)
+ *   - Distance-based shader simplification (skip shadows for far blades)
  */
 
 // ==================== Uniforms ====================
@@ -36,6 +47,11 @@ struct Uniforms {
   _pad2: f32,
   groundColor: vec3f,
   _pad3: f32,
+  // Grass blade shape params (new — packed into extended uniforms)
+  bladeWidthFactor: f32,   // Width relative to height (default 0.025)
+  bladeTaperPower: f32,    // Non-linear taper exponent (default 1.8)
+  veinFoldStrength: f32,   // Central vein fold normal perturbation (0-1, default 0.4)
+  sssStrength: f32,        // Subsurface scattering strength (0-1, default 0.65)
 }
 
 struct WindParams {
@@ -112,12 +128,6 @@ struct CloudShadowSceneUniforms {
 
 // ==================== Vegetation Shadow Sampling ====================
 
-/**
- * Sample the vegetation shadow map (grass blade shadows).
- * Projects worldPos into the vegetation shadow map's light space and
- * performs 3×3 PCF. Returns 1.0 (fully lit) if shadow map is disabled
- * or the fragment is outside the shadow map bounds.
- */
 fn sampleVegetationShadow(worldPos: vec3f) -> f32 {
   if (vegShadow.enabled < 0.5) { return 1.0; }
   
@@ -126,7 +136,6 @@ fn sampleVegetationShadow(worldPos: vec3f) -> f32 {
   sc.x = sc.x * 0.5 + 0.5;
   sc.y = sc.y * -0.5 + 0.5;
   
-  // Out-of-bounds check
   if (sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0 || sc.z < 0.0 || sc.z > 1.0) {
     return 1.0;
   }
@@ -134,7 +143,6 @@ fn sampleVegetationShadow(worldPos: vec3f) -> f32 {
   let bias = 0.003;
   let ts = vegShadow.texelSize;
   
-  // 3×3 PCF for soft vegetation shadows
   var shadow = 0.0;
   for (var y = -1; y <= 1; y++) {
     for (var x = -1; x <= 1; x++) {
@@ -241,11 +249,8 @@ fn computeGrassMultiLight(worldPos: vec3f, normal: vec3f) -> vec3f {
 // ==================== Constants ====================
 
 const GRASS_LEANING: f32 = 0.3;
-const N_SEGMENTS: u32 = 5u;        // Number of segments along the blade
-const VERTS_PER_BLADE: u32 = 15u;  // (N_SEGMENTS * 2) + 1 tip vertices → triangle list
-// Actually: N_SEGMENTS quads (2 tris each) + 1 tip tri = N_SEGMENTS*6 + 3
-// Let's use: (N_SEGMENTS-1) quads + 1 tip = (N_SEGMENTS-1)*6 + 3 vertices
-// With N_SEGMENTS=5 control points (t=0..1): 4 quads + 1 tip = 24 + 3 = 27 vertices
+const N_SEGMENTS: u32 = 5u;        // Number of segments along the blade (high LOD)
+// Vertex count: (N_SEGMENTS-1) quads × 6 + 3 tip = 27 with N_SEGMENTS=5
 const TRIANGLES_PER_BLADE: u32 = 27u;
 
 const PI: f32 = 3.14159265;
@@ -257,7 +262,9 @@ struct VertexOutput {
   @location(0) color: vec3f,
   @location(1) normal: vec3f,
   @location(2) worldPos: vec3f,
-  @location(3) bladeT: f32,  // 0 at base, 1 at tip — for self-shadow & gradient
+  @location(3) bladeT: f32,         // 0 at base, 1 at tip
+  @location(4) bladeSide: f32,      // -1 = left, 0 = center, +1 = right (for vein)
+  @location(5) bladeTangent: vec3f, // Tangent along Bézier for anisotropic specular
 }
 
 // ==================== Hash ====================
@@ -297,7 +304,6 @@ fn makePersistentLength(groundPos: vec3f, v1: ptr<function, vec3f>, v2: ptr<func
   let L0 = length(*v2 - groundPos);
   let L = (2.0 * L0 + L1) / 3.0; // Bézier arc length approximation
   
-  // Avoid division by zero
   if (L < 0.0001) { return; }
   
   let ldiff = height / L;
@@ -318,6 +324,18 @@ fn evalBezierDerivative(p0: vec3f, p1: vec3f, p2: vec3f, t: f32) -> vec3f {
   return 2.0 * (1.0 - t) * (p1 - p0) + 2.0 * t * (p2 - p1);
 }
 
+// ==================== Non-Linear Width Taper ====================
+
+/**
+ * Compute blade half-width at parameter t using power-curve taper.
+ * t=0 → full width, t=1 → 0 (pyramid tip).
+ * The taperPower controls how quickly width narrows:
+ *   1.0 = linear (old behavior), 1.8 = moderate taper, 3.0 = very sharp tip
+ */
+fn bladeHalfWidth(t: f32, baseWidth: f32, taperPower: f32) -> f32 {
+  return baseWidth * pow(max(1.0 - t, 0.0), taperPower);
+}
+
 // ==================== Main Vertex Shader ====================
 
 @vertex
@@ -326,9 +344,6 @@ fn vertexMain(
   @builtin(instance_index) instanceIndex: u32,
 ) -> VertexOutput {
   let inst = instances[instanceIndex];
-  
-  // Skip non-grass-blade instances (renderFlag in .z: 0=billboard, 1=mesh, 3 would be grass)
-  // In the culled buffer, all instances are pre-filtered, so we just render them all.
   
   let bladePos = inst.positionAndScale.xyz;
   let bladeHeight = inst.positionAndScale.w;
@@ -340,30 +355,100 @@ fn vertexMain(
   // Perpendicular direction for width (rotate 90° in XZ)
   let perpDir = vec3f(bladeDir.z, 0.0, -bladeDir.x);
   
-  // Construct Bézier control points
-  var p0 = bladePos;
-  var p1 = p0 + vec3f(0.0, bladeHeight, 0.0);
-  var p2 = p1 + bladeDir * bladeHeight * GRASS_LEANING;
+  // ---- Distance-based height fade (Feature 5) ----
+  // Use view-space depth (clipPos.w from perspective projection) instead of Euclidean distance.
+  // clipPos.w equals the eye-space Z depth, which matches how CDLOD tiles are culled
+  // and ensures fade corresponds to actual screen-space depth.
+  let clipPosBase = uniforms.viewProjection * vec4f(bladePos, 1.0);
+  let viewDepthBlade = clipPosBase.w; // Eye-space depth from perspective projection
+  let fadeStart = uniforms.maxFadeDistance * uniforms.fadeStartRatio;
+  let fadeRange = max(uniforms.maxFadeDistance - fadeStart, 0.01);
+  let heightFade = smoothstep(0.0, 1.0, saturate((uniforms.maxFadeDistance - viewDepthBlade) / fadeRange));
+  let effectiveHeight = bladeHeight * heightFade;
   
-  // Wind animation — displace P2
+  // Early out for fully faded blades (degenerate triangle)
+  if (effectiveHeight < 0.001) {
+    var output: VertexOutput;
+    output.position = vec4f(0.0, 0.0, -2.0, 1.0);
+    output.color = vec3f(0.0);
+    output.normal = vec3f(0.0, 1.0, 0.0);
+    output.worldPos = bladePos;
+    output.bladeT = 0.0;
+    output.bladeSide = 0.0;
+    output.bladeTangent = vec3f(0.0, 1.0, 0.0);
+    return output;
+  }
+  
+  // ---- Per-instance bend variation (Fix #4) ----
+  // Hash per-instance to get random lean amount and direction.
+  // Some blades are upright, others droop heavily simulating weak stems.
+  let bendHash1 = hash21(bladePos.xz * 29.3 + 7.7);  // lean amount: 0-1
+  let bendHash2 = hash21(bladePos.xz * 47.1 + 13.3); // lean direction angle offset
+  // Non-uniform distribution: most blades ~0.2-0.4 lean, few extreme droops
+  // Use a power curve to bias toward moderate values with occasional extremes
+  let leanAmount = GRASS_LEANING + bendHash1 * bendHash1 * 0.6; // 0.3 to 0.9
+  let leanAngleOffset = (bendHash2 - 0.5) * 1.2; // +/- 0.6 radians sideways lean
+  
+  // Rotate lean direction: mix bladeDir with perpDir based on lean offset
+  let leanDir = normalize(bladeDir * cos(leanAngleOffset) + perpDir * sin(leanAngleOffset));
+  
+  // Construct Bézier control points with fade-adjusted height and per-instance lean
+  var p0 = bladePos;
+  var p1 = p0 + vec3f(0.0, effectiveHeight, 0.0);
+  var p2 = p1 + leanDir * effectiveHeight * leanAmount;
+  
+  // ---- Height-based wind influence (Fix #3) ----
+  // Wind displaces P1 and P2 proportionally to their height above ground.
+  // P0 (base) never moves. P1 (mid-height) gets moderate displacement.
+  // P2 (tip) gets full displacement. This uses quadratic (t²) weighting
+  // so the base region stays firmly planted.
   let windDisp = computeWindDisplacement(bladePos.xz, uniforms.time);
-  p2 += windDisp * bladeHeight * 0.5;
+  // P1 is at normalized height ~0.5 along the blade → t²=0.25 influence
+  p1 += windDisp * effectiveHeight * 0.15;
+  // P2 is at the tip → full wind influence
+  p2 += windDisp * effectiveHeight * 0.5;
   
   // Persistent length correction
-  makePersistentLength(p0, &p1, &p2, bladeHeight);
+  makePersistentLength(p0, &p1, &p2, effectiveHeight);
   
-  // Base width proportional to height
-  let baseWidth = bladeHeight * 0.04;
+  // ---- Feature 1: Non-linear taper with configurable width ----
+  let widthFactor = uniforms.bladeWidthFactor;
+  let taperPower = uniforms.bladeTaperPower;
+  let baseWidth = effectiveHeight * widthFactor;
+  
+  // ---- LOD-based segment reduction (Feature 6) ----
+  // Close blades: 5 segments (27 verts), mid: 3 segments (15 verts), far: 2 segments (9 verts)
+  let lodLevel = u32(uniforms.lodLevel);
+  var numSegments = N_SEGMENTS;
+  if (lodLevel >= 7u) {
+    numSegments = 2u; // Very distant: 2 segments = 1 quad + 1 tip = 9 verts
+  } else if (lodLevel >= 4u) {
+    numSegments = 3u; // Mid-distance: 3 segments = 2 quads + 1 tip = 15 verts
+  }
+  // else: full 5 segments = 4 quads + 1 tip = 27 verts
   
   // Decode vertex index into segment + side
-  // Layout: N_SEGMENTS-1 quads (each 6 verts) + 1 tip triangle (3 verts)
-  // Total: (N_SEGMENTS-1)*6 + 3 = 27 vertices for N_SEGMENTS=5
-  let numQuads = N_SEGMENTS - 1u;
+  let numQuads = numSegments - 1u;
   let quadVertCount = numQuads * 6u;
+  let totalVerts = quadVertCount + 3u;
+  
+  // If vertex index exceeds the LOD vertex count, emit degenerate
+  if (vertexIndex >= totalVerts) {
+    var output: VertexOutput;
+    output.position = vec4f(0.0, 0.0, -2.0, 1.0);
+    output.color = vec3f(0.0);
+    output.normal = vec3f(0.0, 1.0, 0.0);
+    output.worldPos = bladePos;
+    output.bladeT = 0.0;
+    output.bladeSide = 0.0;
+    output.bladeTangent = vec3f(0.0, 1.0, 0.0);
+    return output;
+  }
   
   var worldPosition: vec3f;
   var t_param: f32;
   var faceNormal: vec3f;
+  var side: f32 = 0.0; // -1 left, +1 right (for vein fold normal perturbation)
   
   if (vertexIndex < quadVertCount) {
     // Quad region
@@ -374,9 +459,9 @@ fn vertexMain(
     let t0 = f32(quadIndex) / f32(numQuads);
     let t1 = f32(quadIndex + 1u) / f32(numQuads);
     
-    // Width at each t (linear taper to 0 at tip)
-    let w0 = baseWidth * (1.0 - t0);
-    let w1 = baseWidth * (1.0 - t1);
+    // Non-linear width at each t (Feature 1: power-curve taper)
+    let w0 = bladeHalfWidth(t0, baseWidth, taperPower);
+    let w1 = bladeHalfWidth(t1, baseWidth, taperPower);
     
     // Bézier positions
     let pos0 = evalBezier(p0, p1, p2, t0);
@@ -391,12 +476,12 @@ fn vertexMain(
     // Two triangles: 0-1-2, 2-1-3
     // 0=left0, 1=right0, 2=left1, 3=right1
     switch localVert {
-      case 0u: { worldPosition = left0;  t_param = t0; }
-      case 1u: { worldPosition = right0; t_param = t0; }
-      case 2u: { worldPosition = left1;  t_param = t1; }
-      case 3u: { worldPosition = left1;  t_param = t1; }
-      case 4u: { worldPosition = right0; t_param = t0; }
-      default: { worldPosition = right1; t_param = t1; }
+      case 0u: { worldPosition = left0;  t_param = t0; side = -1.0; }
+      case 1u: { worldPosition = right0; t_param = t0; side = 1.0; }
+      case 2u: { worldPosition = left1;  t_param = t1; side = -1.0; }
+      case 3u: { worldPosition = left1;  t_param = t1; side = -1.0; }
+      case 4u: { worldPosition = right0; t_param = t0; side = 1.0; }
+      default: { worldPosition = right1; t_param = t1; side = 1.0; }
     }
     
     // Face normal (cross product of quad edges)
@@ -404,22 +489,22 @@ fn vertexMain(
     let edge2 = perpDir;
     faceNormal = normalize(cross(edge1, edge2));
   } else {
-    // Tip triangle (last 3 vertices)
+    // Tip triangle (last 3 vertices) — single vertex at tip (Feature 1: pyramid)
     let tipLocalVert = vertexIndex - quadVertCount;
     let tPrev = f32(numQuads - 1u) / f32(numQuads);
     let tTip = 1.0;
     
     let posPrev = evalBezier(p0, p1, p2, tPrev);
     let posTip = evalBezier(p0, p1, p2, tTip);
-    let wPrev = baseWidth * (1.0 - tPrev);
+    let wPrev = bladeHalfWidth(tPrev, baseWidth, taperPower);
     
     let leftPrev  = posPrev - perpDir * wPrev;
     let rightPrev = posPrev + perpDir * wPrev;
     
     switch tipLocalVert {
-      case 0u: { worldPosition = leftPrev;  t_param = tPrev; }
-      case 1u: { worldPosition = rightPrev; t_param = tPrev; }
-      default: { worldPosition = posTip;    t_param = tTip; }
+      case 0u: { worldPosition = leftPrev;  t_param = tPrev; side = -1.0; }
+      case 1u: { worldPosition = rightPrev; t_param = tPrev; side = 1.0; }
+      default: { worldPosition = posTip;    t_param = tTip;  side = 0.0; }
     }
     
     let edge1 = posTip - posPrev;
@@ -427,15 +512,18 @@ fn vertexMain(
     faceNormal = normalize(cross(edge1, edge2));
   }
   
-  // Distance fade
-  let dist = distance(worldPosition, uniforms.cameraPosition);
-  let fadeStart = uniforms.maxFadeDistance * uniforms.fadeStartRatio;
-  let fade = 1.0 - saturate((dist - fadeStart) / (uniforms.maxFadeDistance - fadeStart));
+  // ---- Feature 2: Central vein fold (normal perturbation) ----
+  // Tilt normals outward from the blade center line to simulate a V-fold
+  let veinFold = uniforms.veinFoldStrength;
+  let foldedNormal = normalize(faceNormal + perpDir * side * veinFold);
+  
+  // Compute tangent along Bézier curve for anisotropic specular
+  let tangent = normalize(evalBezierDerivative(p0, p1, p2, t_param));
   
   // Color gradient: darker green at base, lighter at tip
   let baseColor = uniforms.fallbackColor;
   let tipColor = baseColor * 1.4 + vec3f(0.1, 0.15, 0.0);
-  let bladeColor = mix(baseColor, tipColor, t_param) * fade;
+  let bladeColor = mix(baseColor, tipColor, t_param);
   
   // Per-instance color variation
   let colorVar = hash21(bladePos.xz * 13.7) * 0.2 - 0.1;
@@ -444,9 +532,11 @@ fn vertexMain(
   var output: VertexOutput;
   output.position = uniforms.viewProjection * vec4f(worldPosition, 1.0);
   output.color = finalColor;
-  output.normal = faceNormal;
+  output.normal = foldedNormal;
   output.worldPos = worldPosition;
   output.bladeT = t_param;
+  output.bladeSide = side;
+  output.bladeTangent = tangent;
   return output;
 }
 
@@ -582,28 +672,15 @@ fn fragmentMain(
   @builtin(front_facing) isFrontFace: bool,
 ) -> FragmentOutput {
   var fragOutput: FragmentOutput;
+
   // ---- Analytical inter-blade shadow (light-direction-aware) ----
-  // Models the collective occlusion between densely packed grass blades.
-  // When the sun is low (grazing), shadows extend higher up the blade;
-  // when overhead, only the very base is occluded by the canopy above.
   let lightDir_ib = normalize(uniforms.sunDirection);
   let lightElevation = max(dot(lightDir_ib, vec3f(0.0, 1.0, 0.0)), 0.0);
   let lightGrazeFactor = 1.0 - lightElevation;
-
-  // Shadow depth: how far up the blade does inter-blade occlusion reach
-  // Low sun → shadow extends to ~85% of blade height; overhead → only ~25%
   let shadowDepth = mix(0.25, 0.85, lightGrazeFactor);
-
-  // Smooth occlusion ramp from base (dark) to shadowDepth (fully lit)
   let analyticalShadow = smoothstep(0.0, shadowDepth, input.bladeT);
-
-  // Directional bias: blades facing away from the sun receive more
-  // occlusion because neighboring blades in front block the light.
-  // Reconstruct blade facing from instance data (passed via vertex color variation seed)
   let bladeFacingLight = max(dot(normalize(input.normal.xz), -lightDir_ib.xz), 0.0);
   let facingPenalty = mix(1.0, 0.65, (1.0 - bladeFacingLight) * lightGrazeFactor);
-
-  // Combine: minimum ambient at base, full light above shadowDepth
   let interBladeShadow = mix(0.12, 1.0, analyticalShadow) * facingPenalty;
 
   // ---- Base color in linear space ----
@@ -614,6 +691,12 @@ fn fragmentMain(
   let colorVariation = 0.75 + 0.25 * noiseVal;
   let modulatedColor = baseColor * colorVariation;
   
+  // ---- Feature 2: Central vein darkening ----
+  // Darken color along the blade center line (midrib) based on bladeSide
+  let veinProximity = 1.0 - smoothstep(0.0, 0.35, abs(input.bladeSide));
+  let veinDarkening = mix(1.0, 0.82, veinProximity * uniforms.veinFoldStrength);
+  let veinedColor = modulatedColor * veinDarkening;
+  
   // ---- Normal handling ----
   var normal = normalize(input.normal);
   if (!isFrontFace) {
@@ -622,47 +705,113 @@ fn fragmentMain(
   let upDir = vec3f(0.0, 1.0, 0.0);
   normal = normalize(mix(upDir, normal, 0.25));
   
-  // ---- CSM shadow receiving (skip for distant fragments — beyond fade distance) ----
+  // ---- View depth ----
   let camFwd = csm.cameraForward.xyz;
   let viewDepth = abs(dot(input.worldPos - uniforms.cameraPosition, camFwd));
+  let viewDir = normalize(uniforms.cameraPosition - input.worldPos);
+  let lightDir = normalize(uniforms.sunDirection);
+  
+  // ---- Feature 6: Distance-based shader simplification ----
+  // Close blades get full PBR + all shadows; far blades get simplified lighting
+  let cheapShadingDist = uniforms.maxFadeDistance * 0.5; // Half max distance
+  let useExpensiveShading = viewDepth < cheapShadingDist;
+  
+  // ---- Shadow sampling (conditional on distance) ----
   var shadowFactor = 1.0;
-  if (viewDepth < uniforms.maxFadeDistance) {
-    shadowFactor = sampleCSMShadowGrass(input.worldPos, viewDepth);
+  var vegShadowFactor = 1.0;
+  var cloudShadow = 1.0;
+  
+  if (useExpensiveShading) {
+    // Full shadow sampling for close blades
+    if (viewDepth < uniforms.maxFadeDistance) {
+      shadowFactor = sampleCSMShadowGrass(input.worldPos, viewDepth);
+    }
+    vegShadowFactor = sampleVegetationShadow(input.worldPos);
+    cloudShadow = sampleCloudShadowGrass(input.worldPos);
+  } else {
+    // Simplified: only CSM cascade 0 (no PCF blending, no veg shadow, no cloud shadow)
+    if (viewDepth < uniforms.maxFadeDistance) {
+      let csmEnabled = csm.config.y > 0.5;
+      if (csmEnabled) {
+        let cascadeIdx = selectCascade(viewDepth);
+        shadowFactor = sampleCascadeShadow(input.worldPos, getCSMLightSpaceMatrix(cascadeIdx), cascadeIdx, 0.002, 1.0 / 2048.0);
+      }
+    }
   }
   
+  let combinedShadow = shadowFactor * cloudShadow * vegShadowFactor;
+  
   // ---- Analytical sky-aware lighting ----
-  let lightDir = normalize(uniforms.sunDirection);
   let NdotL = max(dot(normal, lightDir), 0.0);
   
   // Hemisphere ambient
   let hemisphereBlend = normal.y * 0.5 + 0.5;
   let ambientColor = mix(uniforms.groundColor, uniforms.skyColor, hemisphereBlend);
   
-  // ---- Vegetation shadow map sampling (grass-on-grass shadows) ----
-  let vegShadowFactor = sampleVegetationShadow(input.worldPos);
-
-  // Cloud shadow (multiply CSM shadow with cloud transmittance + vegetation shadow)
-  let cloudShadow = sampleCloudShadowGrass(input.worldPos);
-  let combinedShadow = shadowFactor * cloudShadow * vegShadowFactor;
-
   // Direct sun/moon light with shadow
   let diffuseColor = uniforms.sunColor * NdotL * combinedShadow;
+  
+  // ---- Feature 2: PBR Specular with anisotropic gloss ----
+  var specularContrib = vec3f(0.0);
+  if (useExpensiveShading) {
+    let halfVec = normalize(viewDir + lightDir);
+    let NdotH = max(dot(normal, halfVec), 0.0);
+    let VdotH = max(dot(viewDir, halfVec), 0.0);
+    
+    // Grass PBR parameters
+    let grassRoughness = 0.55;
+    let grassSpecular = 0.3;
+    
+    // GGX-lite specular (simplified for grass performance)
+    let alpha = grassRoughness * grassRoughness;
+    let alpha2 = alpha * alpha;
+    let denom = NdotH * NdotH * (alpha2 - 1.0) + 1.0;
+    let D = alpha2 / (PI * denom * denom + 0.0001);
+    
+    // Fresnel (Schlick) for edge highlights — gives waxy gloss at grazing angles
+    let F0 = 0.04; // Dielectric grass surface
+    let fresnel = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+    
+    // Anisotropic term along blade tangent — directional metallic sheen
+    let tangent = normalize(input.bladeTangent);
+    let TdotH = dot(tangent, halfVec);
+    let anisotropicBoost = exp(-2.0 * TdotH * TdotH / max(alpha + 0.01, 0.001));
+    
+    specularContrib = uniforms.sunColor * D * fresnel * anisotropicBoost * grassSpecular * combinedShadow;
+  }
   
   // Combine ambient + shadowed direct
   let lighting = ambientColor + diffuseColor;
   
   // Multi-light contribution (point + spot lights with spot shadows)
   var multiLight = vec3f(0.0);
-  if (viewDepth < uniforms.maxFadeDistance) {
-    // Compute only for the closest lod level
+  if (useExpensiveShading) {
     multiLight = computeGrassMultiLight(input.worldPos, normal);
   }
   
-  // Subsurface scattering (also attenuated by shadow)
-  let viewDir = normalize(uniforms.cameraPosition - input.worldPos);
-  let sss = max(dot(-viewDir, lightDir), 0.0) * 0.2 * input.bladeT * uniforms.sunIntensityFactor * combinedShadow;
+  // ---- Feature 3: Enhanced Subsurface Scattering ----
+  // Wrap-around translucency — light passing through the blade from behind
+  let sssStrength = uniforms.sssStrength;
+  var sssColor = vec3f(0.0);
+  if (sssStrength > 0.001) {
+    // Transmittance direction: slightly biased by normal for more natural spread
+    let transmittanceDir = normalize(-lightDir + normal * 0.2);
+    let VdotT = max(dot(viewDir, transmittanceDir), 0.0);
+    // Sharper falloff (power 3) for focused backlight glow
+    let sssBase = pow(VdotT, 3.0);
+    
+    // Thickness approximation: tip is thinner → more translucent
+    let thickness = mix(0.15, 0.85, 1.0 - input.bladeT);
+    let transmittance = (1.0 - thickness);
+    
+    // SSS factor combines intensity, thickness, and blade parameter
+    let sssFactor = sssBase * transmittance * sssStrength;
+    
+    // Tint through blade color (sunlight passing through green tissue)
+    sssColor = uniforms.sunColor * veinedColor * sssFactor * uniforms.sunIntensityFactor * combinedShadow;
+  }
   
-  let finalColor = modulatedColor * (lighting + sss) + modulatedColor * multiLight;
+  let finalColor = veinedColor * (lighting + specularContrib) + veinedColor * multiLight + sssColor;
   
   fragOutput.color = vec4f(finalColor, 1.0);
   // Pack world-space normal from [-1,1] to [0,1] for G-buffer; grass metallic = 0

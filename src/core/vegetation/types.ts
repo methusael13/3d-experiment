@@ -244,6 +244,30 @@ export interface PlantType {
    */
   maxVegetationLOD: number;
 
+  // ---- Grass Blade Shape Fields (only active when renderMode === 'grass-blade') ----
+  /** Width of blade relative to height. Lower = thinner blades. Default: 0.025. Range: 0.01–0.08 */
+  bladeWidthFactor: number;
+  /** Non-linear taper exponent. Higher = sharper tip. 1.0=linear, 1.8=moderate, 3.0=very sharp. Default: 1.8 */
+  bladeTaperPower: number;
+  /** Central vein fold strength. 0=flat blade, 1=strong V-fold appearance. Default: 0.4 */
+  veinFoldStrength: number;
+  /** Subsurface scattering strength. 0=opaque, 1=fully translucent backlit. Default: 0.65 */
+  sssStrength: number;
+
+  // ---- Clumping Fields (only active when renderMode === 'grass-blade') ----
+  /** Enable Voronoi-cell-based clumping for grass blades. Default: false */
+  clumpEnabled: boolean;
+  /** World-space Voronoi cell size for clumps (meters). Default: 2.0 */
+  clumpCellSize: number;
+  /** Jitter of Voronoi cell centers (0=grid, 1=fully random). Default: 0.5 */
+  clumpJitter: number;
+  /** Density falloff from clump center (0=uniform, 1=tight clusters). Default: 0.5 */
+  clumpFalloff: number;
+  /** Blade orientation mode within clumps. Default: 'outward' */
+  clumpFacingMode: 'random' | 'outward' | 'inward';
+  /** Random angle spread around facing direction (radians). Default: 0.8 */
+  clumpAngleSpread: number;
+
   // ---- Procedural Rock Fields ----
   /** Shape seed for procedural rock generation. Each unique seed produces a different rock shape. Default: 42 */
   rockSeed: number;
@@ -281,6 +305,19 @@ export function createDefaultPlantType(id: string, name: string): PlantType {
     castShadows: false,
     shadowCastDistance: 50,
     maxVegetationLOD: 8,
+    // Grass blade shape defaults
+    bladeWidthFactor: 0.025,
+    bladeTaperPower: 1.8,
+    veinFoldStrength: 0.4,
+    sssStrength: 0.65,
+    // Clumping defaults
+    clumpEnabled: false,
+    clumpCellSize: 2.0,
+    clumpJitter: 0.5,
+    clumpFalloff: 0.5,
+    clumpFacingMode: 'outward',
+    clumpAngleSpread: 0.8,
+    // Procedural rock
     rockSeed: 42,
     rockRef: null,
   };
@@ -427,8 +464,23 @@ export const DEFAULT_BIOME_CONFIGS: Record<BiomeChannel, Omit<BiomePlantConfig, 
 /**
  * Default grassland plant presets.
  */
+/** Default grass blade + clump fields for plant presets that don't use them */
+const _defaultBladeClumpFields = {
+  bladeWidthFactor: 0.025,
+  bladeTaperPower: 1.8,
+  veinFoldStrength: 0.4,
+  sssStrength: 0.65,
+  clumpEnabled: false as const,
+  clumpCellSize: 2.0,
+  clumpJitter: 0.5,
+  clumpFalloff: 0.5,
+  clumpFacingMode: 'outward' as const,
+  clumpAngleSpread: 0.8,
+};
+
 export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
   {
+    ..._defaultBladeClumpFields,
     id: 'tall-grass',
     name: 'Tall Grass',
     color: [0.3, 0.6, 0.2],
@@ -455,6 +507,7 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     rockRef: null,
   },
   {
+    ..._defaultBladeClumpFields,
     id: 'short-grass',
     name: 'Short Grass Clump',
     color: [0.4, 0.5, 0.2],
@@ -481,6 +534,7 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     rockRef: null,
   },
   {
+    ..._defaultBladeClumpFields,
     id: 'wildflower-yellow',
     name: 'Yellow Wildflower',
     color: [0.9, 0.8, 0.2],
@@ -507,6 +561,7 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     rockRef: null,
   },
   {
+    ..._defaultBladeClumpFields,
     id: 'wildflower-purple',
     name: 'Purple Wildflower',
     color: [0.6, 0.3, 0.7],
@@ -533,6 +588,7 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
     rockRef: null,
   },
   {
+    ..._defaultBladeClumpFields,
     id: 'small-shrub',
     name: 'Small Shrub',
     color: [0.25, 0.4, 0.2],
@@ -565,6 +621,7 @@ export const GRASSLAND_PLANT_PRESETS: PlantType[] = [
  */
 export const FOREST_PLANT_PRESETS: PlantType[] = [
   {
+    ..._defaultBladeClumpFields,
     id: 'fern',
     name: 'Fern',
     color: [0.2, 0.45, 0.15],
@@ -591,6 +648,7 @@ export const FOREST_PLANT_PRESETS: PlantType[] = [
     rockRef: null,
   },
   {
+    ..._defaultBladeClumpFields,
     id: 'forest-grass',
     name: 'Forest Grass',
     color: [0.2, 0.4, 0.15],

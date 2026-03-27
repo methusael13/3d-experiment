@@ -41,7 +41,7 @@ export interface SpawnResult {
   maxInstances: number;
 }
 
-const SPAWN_PARAMS_SIZE = 96;
+const SPAWN_PARAMS_SIZE = 128; // 32 floats × 4 bytes (expanded for clump params)
 const DEFAULT_MAX_INSTANCES_PER_TILE = 65536;
 const INSTANCE_STRIDE = 32;
 const COUNTER_BUFFER_SIZE = 16; // 3 x u32 + padding
@@ -215,6 +215,17 @@ export class VegetationSpawner {
     f32[19] = plant.clusterStrength ?? 0;
     f32[20] = plant.minSpacing ?? 0;
     f32[21] = lodDensityRatio; // LOD density thinning ratio (0..1)
+    
+    // Clumping parameters (offsets 22-29)
+    const facingModeMap: Record<string, number> = { 'random': 0, 'outward': 1, 'inward': 2 };
+    u32[22] = (plant.clumpEnabled ?? false) ? 1 : 0;
+    f32[23] = plant.clumpCellSize ?? 2.0;
+    f32[24] = plant.clumpJitter ?? 0.5;
+    f32[25] = plant.clumpFalloff ?? 0.5;
+    u32[26] = facingModeMap[plant.clumpFacingMode ?? 'outward'] ?? 1;
+    f32[27] = plant.clumpAngleSpread ?? 0.8;
+    f32[28] = 0; // _clumpPad0
+    f32[29] = 0; // _clumpPad1
     
     this.paramsBuffer!.write(this.ctx, new Float32Array(buffer));
   }

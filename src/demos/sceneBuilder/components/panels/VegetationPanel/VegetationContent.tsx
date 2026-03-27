@@ -169,6 +169,149 @@ function PlantItem({ plant, biome, onUpdate, onDelete, onSelectAtlas, onSelectMo
             </select>
           </div>
           
+          {/* Grass Blade Shape controls (only for grass-blade mode) */}
+          {plant.renderMode === 'grass-blade' && (
+            <div class={styles.propertyGroup}>
+              <label style={{ fontWeight: 'bold', fontSize: '11px', color: '#8bc34a' }}>🌿 Blade Shape</label>
+              
+              <div class={styles.propertyRow}>
+                <label>Blade Width</label>
+                <input 
+                  type="range"
+                  min="0.01"
+                  max="0.08"
+                  step="0.005"
+                  value={plant.bladeWidthFactor ?? 0.025}
+                  onInput={(e) => onUpdate({ bladeWidthFactor: parseFloat((e.target as HTMLInputElement).value) })}
+                />
+                <span class={styles.propertyValue}>{(plant.bladeWidthFactor ?? 0.025).toFixed(3)}</span>
+              </div>
+              
+              <div class={styles.propertyRow}>
+                <label>Taper Sharpness</label>
+                <input 
+                  type="range"
+                  min="1.0"
+                  max="3.0"
+                  step="0.1"
+                  value={plant.bladeTaperPower ?? 1.8}
+                  onInput={(e) => onUpdate({ bladeTaperPower: parseFloat((e.target as HTMLInputElement).value) })}
+                />
+                <span class={styles.propertyValue}>{(plant.bladeTaperPower ?? 1.8).toFixed(1)}</span>
+              </div>
+              
+              <div class={styles.propertyRow}>
+                <label>Vein Fold</label>
+                <input 
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={plant.veinFoldStrength ?? 0.4}
+                  onInput={(e) => onUpdate({ veinFoldStrength: parseFloat((e.target as HTMLInputElement).value) })}
+                />
+                <span class={styles.propertyValue}>{((plant.veinFoldStrength ?? 0.4) * 100).toFixed(0)}%</span>
+              </div>
+              
+              <div class={styles.propertyRow}>
+                <label>SSS Strength</label>
+                <input 
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={plant.sssStrength ?? 0.65}
+                  onInput={(e) => onUpdate({ sssStrength: parseFloat((e.target as HTMLInputElement).value) })}
+                />
+                <span class={styles.propertyValue}>{((plant.sssStrength ?? 0.65) * 100).toFixed(0)}%</span>
+              </div>
+            </div>
+          )}
+          
+          {/* Grass Clumping controls (only for grass-blade mode) */}
+          {plant.renderMode === 'grass-blade' && (
+            <div class={styles.propertyGroup}>
+              <div class={styles.configRow}>
+                <label>
+                  <input 
+                    type="checkbox"
+                    checked={plant.clumpEnabled ?? false}
+                    onChange={(e) => onUpdate({ clumpEnabled: (e.target as HTMLInputElement).checked })}
+                  />
+                  <span style={{ fontWeight: 'bold', fontSize: '11px', color: '#8bc34a' }}>🌾 Clumping</span>
+                </label>
+              </div>
+              
+              {plant.clumpEnabled && (
+                <>
+                  <div class={styles.propertyRow}>
+                    <label>Cell Size (m)</label>
+                    <input 
+                      type="range"
+                      min="0.5"
+                      max="10"
+                      step="0.5"
+                      value={plant.clumpCellSize ?? 2.0}
+                      onInput={(e) => onUpdate({ clumpCellSize: parseFloat((e.target as HTMLInputElement).value) })}
+                    />
+                    <span class={styles.propertyValue}>{(plant.clumpCellSize ?? 2.0).toFixed(1)}m</span>
+                  </div>
+                  
+                  <div class={styles.propertyRow}>
+                    <label>Jitter</label>
+                    <input 
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={plant.clumpJitter ?? 0.5}
+                      onInput={(e) => onUpdate({ clumpJitter: parseFloat((e.target as HTMLInputElement).value) })}
+                    />
+                    <span class={styles.propertyValue}>{((plant.clumpJitter ?? 0.5) * 100).toFixed(0)}%</span>
+                  </div>
+                  
+                  <div class={styles.propertyRow}>
+                    <label>Falloff</label>
+                    <input 
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={plant.clumpFalloff ?? 0.5}
+                      onInput={(e) => onUpdate({ clumpFalloff: parseFloat((e.target as HTMLInputElement).value) })}
+                    />
+                    <span class={styles.propertyValue}>{((plant.clumpFalloff ?? 0.5) * 100).toFixed(0)}%</span>
+                  </div>
+                  
+                  <div class={styles.propertyRow}>
+                    <label>Facing Mode</label>
+                    <select
+                      value={plant.clumpFacingMode ?? 'outward'}
+                      onChange={(e) => onUpdate({ clumpFacingMode: (e.target as HTMLSelectElement).value as 'random' | 'outward' | 'inward' })}
+                    >
+                      <option value="random">Random</option>
+                      <option value="outward">Outward</option>
+                      <option value="inward">Inward</option>
+                    </select>
+                  </div>
+                  
+                  <div class={styles.propertyRow}>
+                    <label>Angle Spread</label>
+                    <input 
+                      type="range"
+                      min="0"
+                      max="3.14"
+                      step="0.1"
+                      value={plant.clumpAngleSpread ?? 0.8}
+                      onInput={(e) => onUpdate({ clumpAngleSpread: parseFloat((e.target as HTMLInputElement).value) })}
+                    />
+                    <span class={styles.propertyValue}>{((plant.clumpAngleSpread ?? 0.8) * 180 / 3.14159).toFixed(0)}°</span>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          
           {/* Procedural Rock controls */}
           {plant.renderMode === 'procedural-rock' && (
             <div class={styles.propertyGroup}>

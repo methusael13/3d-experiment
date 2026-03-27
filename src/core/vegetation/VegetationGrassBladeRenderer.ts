@@ -28,8 +28,8 @@ import grassBladeShadowShader from '../gpu/shaders/vegetation/grass-blade-shadow
 
 // ==================== Constants ====================
 
-/** Uniforms struct size: mat4x4f(64) + vec3f+f32(16) + 4xf32(16) + vec3f+f32(16) + 4×vec4f(64 for light) = 192 bytes */
-const UNIFORMS_SIZE = 192;
+/** Uniforms struct size: mat4x4f(64) + vec3f+f32(16) + 4xf32(16) + vec3f+f32(16) + 4×vec4f(64 for light) + vec4f(16 blade params) = 208 bytes */
+const UNIFORMS_SIZE = 208;
 
 /** WebGPU minimum uniform buffer offset alignment */
 const UNIFORM_ALIGNMENT = 256;
@@ -79,10 +79,34 @@ export class VegetationGrassBladeRenderer {
   private _vegShadowComparisonSampler: GPUSampler | null = null;
   private _vegShadowPlaceholderUniform: GPUBuffer | null = null;
 
+  // Grass blade shape parameters (set per-plant-type before rendering)
+  private _bladeWidthFactor = 0.025;
+  private _bladeTaperPower = 1.8;
+  private _veinFoldStrength = 0.4;
+  private _sssStrength = 0.65;
+
   private initialized = false;
 
   constructor(ctx: GPUContext) {
     this.ctx = ctx;
+  }
+
+  // ==================== Blade Shape Parameters ====================
+
+  /**
+   * Set grass blade shape parameters for the next draw calls.
+   * Call before render() or renderIndirect() to configure per-plant-type appearance.
+   */
+  setBladeParams(params: {
+    widthFactor?: number;
+    taperPower?: number;
+    veinFoldStrength?: number;
+    sssStrength?: number;
+  }): void {
+    if (params.widthFactor !== undefined) this._bladeWidthFactor = params.widthFactor;
+    if (params.taperPower !== undefined) this._bladeTaperPower = params.taperPower;
+    if (params.veinFoldStrength !== undefined) this._veinFoldStrength = params.veinFoldStrength;
+    if (params.sssStrength !== undefined) this._sssStrength = params.sssStrength;
   }
 
   // ==================== Initialization ====================
@@ -380,7 +404,13 @@ export class VegetationGrassBladeRenderer {
     data[42] = l.groundColor[2];
     data[43] = 0.0;
 
-    // Remaining up to 48 floats (192 bytes) — zeros
+    // Grass blade shape params (offset 44-47) — new in v2
+    data[44] = this._bladeWidthFactor;   // bladeWidthFactor (default 0.025)
+    data[45] = this._bladeTaperPower;    // bladeTaperPower (default 1.8)
+    data[46] = this._veinFoldStrength;   // veinFoldStrength (default 0.4)
+    data[47] = this._sssStrength;        // sssStrength (default 0.65)
+
+    // Total: 48 floats = 192 bytes + 16 bytes blade params = 208 bytes
 
     this.ctx.queue.writeBuffer(this.uniformsBuffer!, bufferOffset, data);
   }
@@ -524,7 +554,9 @@ export class VegetationGrassBladeRenderer {
     data[18] = cameraPosition[2];                     // cameraPosition.z
     data[19] = time;                                  // time
     data[20] = maxShadowDistance;                      // maxFadeDistance
-    data[21] = 0; data[22] = 0; data[23] = 0;        // padding
+    data[21] = 0.75;                                   // fadeStartRatio (must match color shader)
+    data[22] = this._bladeWidthFactor;                 // bladeWidthFactor
+    data[23] = this._bladeTaperPower;                  // bladeTaperPower
     this.ctx.queue.writeBuffer(this.shadowUniformsBuffer, slotOffset, data);
 
     // Write wind params
