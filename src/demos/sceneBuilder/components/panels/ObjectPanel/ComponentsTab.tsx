@@ -13,6 +13,7 @@ import { PlayerComponent } from '@/core/ecs/components/PlayerComponent';
 import { CameraComponent } from '@/core/ecs/components/CameraComponent';
 import type { DebugTextureManager } from '@/core/gpu/renderers/DebugTextureManager';
 import type { ShadowRendererGPU } from '@/core/gpu/renderers/ShadowRendererGPU';
+import { CharacterControllerBridge } from '../../bridges/CharacterControllerBridge';
 import { WetnessSubPanel } from './subpanels/WetnessSubPanel';
 import { LODSubPanel } from './subpanels/LODSubPanel';
 import { WindSubPanel } from './subpanels/WindSubPanel';
@@ -55,9 +56,7 @@ export const OPTIONAL_COMPONENTS: {
       player.active = true;
       return player;
     },
-    renderPanel: (entity, onChanged) => (
-      <PlayerSubPanel entity={entity} onChanged={onChanged} />
-    ),
+    // renderPanel is set dynamically in ComponentsTab to inject onEditController
   },
   {
     type: 'camera',
@@ -203,6 +202,19 @@ export function ComponentsTab({
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
 
+  // Character Controller Graph editor state
+  const [ccEditorEntity, setCcEditorEntity] = useState<Entity | null>(null);
+  const [ccEditorOpen, setCcEditorOpen] = useState(false);
+
+  const handleEditController = useCallback((ent: Entity) => {
+    setCcEditorEntity(ent);
+    setCcEditorOpen(true);
+  }, []);
+
+  const handleCloseController = useCallback(() => {
+    setCcEditorOpen(false);
+  }, []);
+
   const toggleDropdown = useCallback(() => {
     if (dropdownOpen) {
       setDropdownOpen(false);
@@ -326,8 +338,19 @@ export function ComponentsTab({
         </div>
       )}
 
-      {/* Per-component subpanels */}
-      {attached.filter(reg => reg.renderPanel).map((reg) => (
+      {/* Player subpanel — rendered with onEditController injected */}
+      {activeComponents.includes('player') && (
+        <SubPanelCard
+          key="player"
+          label="Player"
+          onRemove={() => handleRemove('player')}
+        >
+          <PlayerSubPanel entity={entity} onChanged={onChanged} onEditController={handleEditController} />
+        </SubPanelCard>
+      )}
+
+      {/* Per-component subpanels (excluding player, handled above) */}
+      {attached.filter(reg => reg.renderPanel && reg.type !== 'player').map((reg) => (
         <SubPanelCard
           key={reg.type}
           label={reg.label}
@@ -340,6 +363,13 @@ export function ComponentsTab({
       {attached.length === 0 && available.length === 0 && (
         <div class={styles.empty}>No optional components available</div>
       )}
+
+      {/* Character Controller Graph Editor (DockableWindow) */}
+      <CharacterControllerBridge
+        entity={ccEditorEntity}
+        isOpen={ccEditorOpen}
+        onClose={handleCloseController}
+      />
     </div>
   );
 }

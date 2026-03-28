@@ -93,4 +93,19 @@ export class AnimationComponent extends Component {
 
   /** Speed above which character plays 'run' (between idle and run = 'walk') */
   runThreshold = 7.0;
+
+  // ==================== Sequence State Tracking ====================
+  // Used by AnimationSystem when the current state is a 'sequence' type.
+
+  /** Current phase index within a sequence state */
+  sequencePhaseIndex = 0;
+
+  /** Playback time within the current phase (seconds) */
+  sequencePhaseTime = 0;
+
+  /** Clip name of the previous phase (for blending between phases) */
+  sequencePrevPhaseClip: string | null = null;
+
+  /** Playback time of the previous phase at the moment of transition */
+  sequencePrevPhaseTime = 0;
 }

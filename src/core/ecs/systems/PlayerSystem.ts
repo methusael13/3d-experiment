@@ -1,10 +1,15 @@
 /**
  * PlayerSystem — ECS system for player input reading and play mode management.
  *
- * Reads raw keyboard/mouse state from InputManager and writes structured
+ * Reads action-based input from ActionInputManager and writes structured
  * input to PlayerComponent (inputDirection, isRunning, jumpRequested, yaw/pitch).
  * Does NOT directly modify position or apply physics — that's handled by
  * CharacterMovementSystem and TerrainCollisionSystem.
+ *
+ * Supports two modes:
+ * - FPS: Pointer-locked mouse controls yaw/pitch directly on PlayerComponent.
+ * - TPS: Merged camera axes (mouse + right stick) write to CameraTargetComponent
+ *   orbit yaw/pitch. Character rotates independently based on movement direction.
  *
  * Also manages play mode enter/exit (pointer lock, activation state).
  *
@@ -21,8 +26,10 @@ import type { ComponentType, SystemContext } from '../types';
 import { PlayerComponent } from '../components/PlayerComponent';
 import { TransformComponent } from '../components/TransformComponent';
 import { CharacterPhysicsComponent } from '../components/CharacterPhysicsComponent';
+import { CameraTargetComponent } from '../components/CameraTargetComponent';
 import { TerrainComponent } from '../components/TerrainComponent';
 import type { InputManager, InputEvent } from '../../../demos/sceneBuilder/InputManager';
+import type { ActionInputManager } from '../../input/ActionInputManager';
 import { World } from '../World';
 
 // Default grid bounds half-size (matches PlayerComponent default)
@@ -35,7 +42,10 @@ export class PlayerSystem extends System {
 
   private inputManager: InputManager;
 
-  // Bound handlers for cleanup
+  /** Action-based input manager (optional — if not set, falls back to legacy input) */
+  private actionInput: ActionInputManager | null = null;
+
+  // Bound handlers for cleanup (legacy FPS input)
   private boundPointerMove: ((e: InputEvent) => void) | null = null;
   private boundPointerLockChange: ((e: InputEvent) => void) | null = null;
   private boundKeyDown: ((e: InputEvent<KeyboardEvent>) => void) | null = null;
@@ -44,8 +54,9 @@ export class PlayerSystem extends System {
   // Callbacks
   private onExitCallback: (() => void) | null = null;
 
-  // Track the active player component for input handlers
+  // Track the active player component and entity for input handlers
   private activePlayer: PlayerComponent | null = null;
+  private activeEntity: Entity | null = null;
 
   /** Whether play mode is active (pointer locked, processing input) */
   private playing = false;
@@ -53,6 +64,14 @@ export class PlayerSystem extends System {
   constructor(inputManager: InputManager) {
     super();
     this.inputManager = inputManager;
+  }
+
+  /**
+   * Set the action-based input manager. When set, the system uses
+   * ActionInputManager for play mode input instead of raw key handlers.
+   */
+  setActionInputManager(actionInput: ActionInputManager): void {
+    this.actionInput = actionInput;
   }
 
   // ==================== Lifecycle ====================
@@ -66,7 +85,7 @@ export class PlayerSystem extends System {
     this.activePlayer = null;
   }
 
-  // ==================== Input Subscriptions ====================
+  // ==================== Input Subscriptions (Legacy FPS) ====================
 
   private setupInputSubscriptions(): void {
     this.boundPointerMove = (e: InputEvent) => this.handlePointerMove(e);
@@ -101,14 +120,33 @@ export class PlayerSystem extends System {
     this.boundKeyUp = null;
   }
 
-  // ==================== Input Handlers ====================
+  // ==================== Legacy FPS Input Handlers ====================
 
   private handlePointerMove(e: InputEvent): void {
     const player = this.activePlayer;
     if (!player || !player.active) return;
 
-    player.yaw -= (e.movementX || 0) * player.mouseSensitivity;
-    player.pitch -= (e.movementY || 0) * player.mouseSensitivity;
+    // When ActionInputManager is active, it handles camera axes via getCameraAxes().
+    // Skip legacy pointer move to avoid double-processing / writing to wrong target.
+    if (this.actionInput) return;
+
+    const mx = e.movementX || 0;
+    const my = e.movementY || 0;
+
+    // Check for TPS orbit mode — write to CameraTargetComponent instead of player yaw/pitch
+    if (this.activeEntity) {
+      const ct = this.activeEntity.getComponent<CameraTargetComponent>('camera-target');
+      if (ct?.mode === 'tps-orbit') {
+        ct.orbitYaw -= mx * ct.yawSensitivity;
+        ct.orbitPitch += my * ct.pitchSensitivity;
+        ct.orbitPitch = Math.max(ct.minPitch, Math.min(ct.maxPitch, ct.orbitPitch));
+        return;
+      }
+    }
+
+    // FPS mode: write to player yaw/pitch directly
+    player.yaw -= mx * player.mouseSensitivity;
+    player.pitch -= my * player.mouseSensitivity;
 
     // Clamp pitch
     player.pitch = Math.max(player.minPitch, Math.min(player.maxPitch, player.pitch));
@@ -196,30 +234,41 @@ export class PlayerSystem extends System {
 
   /**
    * Enter play mode — find the active PlayerComponent in the world,
-   * lock the pointer, and start processing input.
+   * lock the pointer (FPS) or hide cursor (TPS), and start processing input.
    * Returns true if an active player was found, false otherwise (no-op).
    */
   enter(world: World): boolean {
     // Find an entity with an active player component
     const entities = world.query('player');
     let targetPlayer: PlayerComponent | null = null;
+    let targetEntity: Entity | null = null;
     for (const entity of entities) {
       const player = entity.getComponent<PlayerComponent>('player');
       if (player?.active) {
         targetPlayer = player;
+        targetEntity = entity;
         break;
       }
     }
 
-    if (!targetPlayer) {
+    if (!targetPlayer || !targetEntity) {
       console.warn('[PlayerSystem] No active Player component found in the world');
       return false;
     }
 
     this.activePlayer = targetPlayer;
+    this.activeEntity = targetEntity;
     this.playing = true;
+
+    // Both FPS and TPS modes use pointer lock for mouse movement deltas.
+    // Pointer lock is required because movementX/movementY are only available
+    // when the pointer is locked. In TPS mode the orbit camera reads these deltas.
     this.inputManager.requestPointerLock();
-    console.log('[PlayerSystem] Entered play mode');
+
+    const cameraTarget = targetEntity.getComponent<CameraTargetComponent>('camera-target');
+    const modeLabel = cameraTarget?.mode === 'tps-orbit' ? 'TPS orbit' : 'FPS';
+    console.log(`[PlayerSystem] Entered play mode (${modeLabel})`);
+
     return true;
   }
 
@@ -235,6 +284,7 @@ export class PlayerSystem extends System {
     this.activePlayer = null;
     this.playing = false;
     this.inputManager.exitPointerLock();
+    this.actionInput?.resetAll();
     this.onExitCallback?.();
     console.log('[PlayerSystem] Exited play mode');
   }
@@ -308,6 +358,11 @@ export class PlayerSystem extends System {
   update(entities: Entity[], deltaTime: number, context: SystemContext): void {
     if (!this.playing) return;
 
+    // Poll action input if available
+    if (this.actionInput) {
+      this.actionInput.pollAll();
+    }
+
     for (const entity of entities) {
       const player = entity.getComponent<PlayerComponent>('player');
       const transform = entity.getComponent<TransformComponent>('transform');
@@ -322,38 +377,144 @@ export class PlayerSystem extends System {
         player.needsSpawn = false;
       }
 
-      // 1. Derive structured input from key state
-      //    Map WASD booleans to normalized direction vector
-      let forward = 0;
-      let right = 0;
-      if (player.forward) forward += 1;
-      if (player.backward) forward -= 1;
-      if (player.left) right -= 1;
-      if (player.right) right += 1;
+      // Check for CameraTargetComponent to determine input mode
+      const cameraTarget = entity.getComponent<CameraTargetComponent>('camera-target');
 
-      // Normalize diagonal movement
-      const len = Math.sqrt(forward * forward + right * right);
-      if (len > 0) {
-        player.inputDirection[0] = forward / len;
-        player.inputDirection[1] = right / len;
+      if (this.actionInput && cameraTarget) {
+        // Action-Based Input (TPS or FPS with ActionInputManager)
+        this.processActionInput(entity, player, cameraTarget);
       } else {
-        player.inputDirection[0] = 0;
-        player.inputDirection[1] = 0;
+        // Legacy Input (FPS pointer-locked)
+        this.processLegacyInput(player);
       }
 
-      // Sync sprint → isRunning
-      player.isRunning = player.sprint;
+      // 2. Check for Escape key (works in both modes)
+      if (this.actionInput?.isKeyDown('Escape')) {
+        this.exit();
+        return;
+      }
 
-      // 2. Check if CharacterPhysicsComponent is present
+      // 3. Check if CharacterPhysicsComponent is present
       //    If yes, CharacterMovementSystem + TerrainCollisionSystem handle movement.
       //    If no, fall back to legacy inline movement for backward compatibility.
       const physics = entity.getComponent<CharacterPhysicsComponent>('character-physics');
       if (!physics) {
         this.legacyMovement(player, transform, deltaTime, context);
       }
-      // If physics component exists, movement is handled by CharacterMovementSystem (priority 20)
-      // and terrain collision by TerrainCollisionSystem (priority 25).
     }
+  }
+
+  // ==================== Action-Based Input Processing ====================
+
+  /**
+   * Process input from ActionInputManager. Supports both FPS and TPS modes.
+   */
+  private processActionInput(
+    entity: Entity,
+    player: PlayerComponent,
+    cameraTarget: CameraTargetComponent,
+  ): void {
+    const ai = this.actionInput!;
+
+    // Read movement actions (analog-aware)
+    const forward = ai.getAction('forward');
+    const backward = ai.getAction('backward');
+    const left = ai.getAction('left');
+    const right = ai.getAction('right');
+    const jump = ai.getAction('jump');
+    const sprint = ai.getAction('sprint');
+
+    // Compute input direction (analog for sticks, binary for keyboard)
+    player.inputDirection[0] = forward.value - backward.value;
+    player.inputDirection[1] = right.value - left.value;
+
+    // Normalize diagonal
+    const len = Math.sqrt(
+      player.inputDirection[0] ** 2 + player.inputDirection[1] ** 2,
+    );
+    if (len > 1) {
+      player.inputDirection[0] /= len;
+      player.inputDirection[1] /= len;
+    }
+
+    // Sprint + jump
+    player.isRunning = sprint.active;
+    player.jumpRequested = jump.justPressed;
+
+    // Update runtime variables for auto-deactivation conditions
+    const physics = entity.getComponent<CharacterPhysicsComponent>('character-physics');
+    if (physics) {
+      const speed = Math.sqrt(physics.velocity[0] ** 2 + physics.velocity[2] ** 2);
+      ai.setRuntimeVar('speed', speed);
+    }
+
+    // Camera control — differs by mode
+    if (cameraTarget.mode === 'tps-orbit') {
+      // TPS: camera axes control orbit yaw/pitch
+      const camAxes = ai.getCameraAxes();
+      cameraTarget.orbitYaw -= camAxes.deltaX * cameraTarget.yawSensitivity;
+      cameraTarget.orbitPitch += camAxes.deltaY * cameraTarget.pitchSensitivity;
+
+      // Clamp pitch
+      cameraTarget.orbitPitch = Math.max(
+        cameraTarget.minPitch,
+        Math.min(cameraTarget.maxPitch, cameraTarget.orbitPitch),
+      );
+
+      // Scroll wheel → zoom
+      const scroll = ai.getScrollDelta();
+      if (scroll !== 0) {
+        cameraTarget.orbitDistance -= scroll * cameraTarget.zoomSensitivity * 0.01;
+        cameraTarget.orbitDistance = Math.max(
+          cameraTarget.minDistance,
+          Math.min(cameraTarget.maxDistance, cameraTarget.orbitDistance),
+        );
+      }
+    } else {
+      // FPS: camera axes control player yaw/pitch directly
+      const camAxes = ai.getCameraAxes();
+      player.yaw -= camAxes.deltaX * player.mouseSensitivity;
+      player.pitch -= camAxes.deltaY * player.mouseSensitivity;
+
+      // Clamp
+      player.pitch = Math.max(player.minPitch, Math.min(player.maxPitch, player.pitch));
+      while (player.yaw < 0) player.yaw += Math.PI * 2;
+      while (player.yaw >= Math.PI * 2) player.yaw -= Math.PI * 2;
+    }
+
+    // Sync legacy key booleans for backward compat
+    player.forward = forward.active;
+    player.backward = backward.active;
+    player.left = left.active;
+    player.right = right.active;
+    player.sprint = sprint.active;
+  }
+
+  // ==================== Legacy Input Processing ====================
+
+  /**
+   * Process legacy key-based input (FPS mode without ActionInputManager).
+   */
+  private processLegacyInput(player: PlayerComponent): void {
+    let forward = 0;
+    let right = 0;
+    if (player.forward) forward += 1;
+    if (player.backward) forward -= 1;
+    if (player.left) right -= 1;
+    if (player.right) right += 1;
+
+    // Normalize diagonal movement
+    const len = Math.sqrt(forward * forward + right * right);
+    if (len > 0) {
+      player.inputDirection[0] = forward / len;
+      player.inputDirection[1] = right / len;
+    } else {
+      player.inputDirection[0] = 0;
+      player.inputDirection[1] = 0;
+    }
+
+    // Sync sprint → isRunning
+    player.isRunning = player.sprint;
   }
 
   // ==================== Legacy Movement (no CharacterPhysicsComponent) ====================

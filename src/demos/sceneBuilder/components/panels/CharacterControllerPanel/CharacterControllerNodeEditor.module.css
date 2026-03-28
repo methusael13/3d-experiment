@@ -1,0 +1,85 @@
+/* CharacterControllerNodeEditor styles */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  height: 100%;
+}
+
+/* Toolbar */
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #222;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+
+.entityName {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ddd;
+}
+
+.toolbarActions {
+  display: flex;
+  gap: 6px;
+}
+
+.addNodeBtn {
+  padding: 4px 10px;
+  background: #333;
+  color: #bbb;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.addNodeBtn:hover {
+  background: #444;
+  color: #fff;
+}
+
+/* React Flow container */
+.flowContainer {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Empty state */
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: #666;
+}
+
+.emptyIcon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.emptyTitle {
+  font-size: 16px;
+  font-weight: 600;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+.emptyDesc {
+  font-size: 13px;
+  color: #666;
+  text-align: center;
+  max-width: 300px;
+  line-height: 1.5;
+}

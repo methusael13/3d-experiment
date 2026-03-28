@@ -15,6 +15,7 @@ import { OceanComponent } from './components/OceanComponent';
 import { PlayerComponent } from './components/PlayerComponent';
 import { CharacterPhysicsComponent } from './components/CharacterPhysicsComponent';
 import { CameraComponent } from './components/CameraComponent';
+import { CameraTargetComponent } from './components/CameraTargetComponent';
 import { SkeletonComponent } from './components/SkeletonComponent';
 import { AnimationComponent, type AnimationState } from './components/AnimationComponent';
 import type { GLBModel } from '../../loaders/types';
@@ -371,6 +372,69 @@ export function createPlayerEntity(
   // Bounds + Visibility for engine integration
   entity.addComponent(new BoundsComponent());
   entity.addComponent(new VisibilityComponent());
+
+  return entity;
+}
+
+/**
+ * Create a TPS (third-person) player entity with orbit camera support.
+ *
+ * Same as createPlayerEntity but also adds a CameraTargetComponent in TPS orbit mode.
+ * The camera orbits around the character with smooth interpolation, terrain collision,
+ * and optional velocity-driven sway.
+ *
+ * For TPS mode: the character mesh rotates to face movement direction independently
+ * of the camera. WASD/left stick moves relative to the camera orbit yaw.
+ */
+export function createTPSPlayerEntity(
+  world: World,
+  options?: {
+    name?: string;
+    position?: [number, number, number];
+    moveSpeed?: number;
+    runSpeed?: number;
+    sprintMultiplier?: number;
+    jumpForce?: number;
+    playerHeight?: number;
+    gravity?: number;
+    groundFriction?: number;
+    airDrag?: number;
+    fov?: number;
+    near?: number;
+    far?: number;
+    active?: boolean;
+    // TPS orbit options
+    orbitDistance?: number;
+    orbitPitch?: number;
+    lookAtOffset?: [number, number, number];
+    positionSmoothSpeed?: number;
+    rotationSmoothSpeed?: number;
+    collisionEnabled?: boolean;
+    swayEnabled?: boolean;
+  },
+): Entity {
+  // Create base player entity (includes Transform, Player, Physics, Camera, Bounds, Visibility)
+  const entity = createPlayerEntity(world, {
+    ...options,
+    // Don't pass mouseSensitivity — TPS uses CameraTargetComponent sensitivity instead
+  });
+
+  // Override name if not set
+  if (!options?.name) {
+    entity.name = 'Player (TPS)';
+  }
+
+  // Add CameraTargetComponent for TPS orbit
+  entity.addComponent(new CameraTargetComponent({
+    mode: 'tps-orbit',
+    orbitDistance: options?.orbitDistance,
+    orbitPitch: options?.orbitPitch,
+    lookAtOffset: options?.lookAtOffset,
+    positionSmoothSpeed: options?.positionSmoothSpeed,
+    rotationSmoothSpeed: options?.rotationSmoothSpeed,
+    collisionEnabled: options?.collisionEnabled,
+    swayEnabled: options?.swayEnabled,
+  }));
 
   return entity;
 }

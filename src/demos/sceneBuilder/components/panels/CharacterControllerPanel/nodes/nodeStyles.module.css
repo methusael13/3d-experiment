@@ -1,0 +1,288 @@
+/* Character Controller Node Graph — Node Styles */
+
+.node {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #ddd;
+  min-width: 220px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.node:hover {
+  border-color: #555;
+}
+
+:global(.react-flow__node.selected) .node {
+  border-color: #4a9eff;
+  box-shadow: 0 0 0 1px #4a9eff, 0 2px 12px rgba(74, 158, 255, 0.25);
+}
+
+/* Node headers — each node type has its own gradient */
+.characterHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #3d5a2d, #253a1a);
+}
+
+.inputHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #5a4a2d, #3a3219);
+}
+
+.cameraHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #2d4a5a, #19323a);
+}
+
+.animHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #5a2d4a, #3a1932);
+}
+
+.terrainHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #4a3d2d, #322819);
+}
+
+.scriptHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 5px 5px 0 0;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, #3d2d5a, #25193a);
+}
+
+.nodeHeaderIcon {
+  font-size: 14px;
+}
+
+.nodeBody {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Handle rows */
+.handleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 26px;
+  position: relative;
+  padding: 1px 0;
+}
+
+.handleRow :global(.react-flow__handle) {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.handleRow :global(.react-flow__handle-left) {
+  left: -10px;
+}
+
+.handleRow :global(.react-flow__handle-right) {
+  right: -10px;
+}
+
+.handleLabel {
+  font-size: 11px;
+  color: #aaa;
+}
+
+.handleLabelLeft {
+  font-size: 11px;
+  color: #aaa;
+  padding-left: 8px;
+}
+
+.handleLabelRight {
+  font-size: 11px;
+  color: #aaa;
+  padding-right: 8px;
+  text-align: right;
+}
+
+/* Property rows */
+.propRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.propLabel {
+  font-size: 10px;
+  color: #888;
+  white-space: nowrap;
+}
+
+.propValue {
+  font-size: 10px;
+  color: #bbb;
+  text-align: right;
+}
+
+.propInput {
+  width: 60px;
+  padding: 2px 4px;
+  background: #1a1a1a;
+  color: #bbb;
+  border: 1px solid #444;
+  border-radius: 3px;
+  font-size: 10px;
+  text-align: right;
+}
+
+.propInput:focus {
+  border-color: #4a9eff;
+  outline: none;
+}
+
+.propSelect {
+  padding: 2px 4px;
+  background: #1a1a1a;
+  color: #bbb;
+  border: 1px solid #444;
+  border-radius: 3px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+/* Section divider */
+.section {
+  padding-top: 4px;
+  border-top: 1px solid #3a3a3a;
+  margin-top: 4px;
+}
+
+.sectionLabel {
+  font-size: 10px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+/* State list (for AnimStateMachine) */
+.stateList {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.stateItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 6px;
+  background: #1a1a1a;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+.stateName {
+  color: #bbb;
+}
+
+.stateType {
+  color: #666;
+  font-style: italic;
+}
+
+/* Transition list */
+.transitionList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.transitionItem {
+  font-size: 9px;
+  color: #888;
+  padding: 2px 4px;
+  background: #1a1a1a;
+  border-radius: 2px;
+}
+
+/* Add button */
+.addBtn {
+  padding: 3px 8px;
+  background: #333;
+  color: #888;
+  border: 1px solid #444;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  text-align: center;
+}
+
+.addBtn:hover {
+  background: #444;
+  color: #bbb;
+}
+
+/* Checkbox */
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: #888;
+}
+
+.checkbox input {
+  margin: 0;
+}

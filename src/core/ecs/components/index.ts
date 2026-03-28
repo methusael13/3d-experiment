@@ -20,3 +20,7 @@ export { CameraComponent } from './CameraComponent';
 export { FrustumCullComponent } from './FrustumCullComponent';
 export { SkeletonComponent } from './SkeletonComponent';
 export { AnimationComponent, type AnimationState } from './AnimationComponent';
+export { CameraTargetComponent } from './CameraTargetComponent';
+export { CharacterVarsComponent } from './CharacterVarsComponent';
+export { CharacterControllerComponent } from './CharacterControllerComponent';
+export { ScriptComponent } from './ScriptComponent';

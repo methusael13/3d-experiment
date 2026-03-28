@@ -27,6 +27,10 @@ export {
   FrustumCullComponent,
   SkeletonComponent,
   AnimationComponent,
+  CameraTargetComponent,
+  CharacterVarsComponent,
+  CharacterControllerComponent,
+  ScriptComponent,
 } from './components';
 export type { AnimationState } from './components';
 
@@ -46,6 +50,7 @@ export {
   FrustumCullSystem,
   LightingSystem,
   AnimationSystem,
+  ScriptSystem,
 } from './systems';
 export type { ShaderVariantGroup } from './systems';
 
@@ -59,6 +64,7 @@ export {
   createPointLightEntity,
   createSpotLightEntity,
   createPlayerEntity,
+  createTPSPlayerEntity,
   attachSkeletonAndAnimation,
 } from './factories';
 export type { ModelEntityMeta, PrimitiveEntityMeta } from './factories';

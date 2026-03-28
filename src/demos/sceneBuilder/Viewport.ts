@@ -57,6 +57,8 @@ import { TerrainLayerBounds } from '@/core/terrain';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
 import { CloudConfig } from '@/core/gpu/clouds';
 import type { GodRayConfig } from '@/core/gpu/postprocess';
+import { ActionInputManager, GenericGamepadProvider, KeyboardMouseProvider } from '@/core/input';
+import { CameraTargetComponent } from '@/core/ecs/components';
 
 // ==================== Type Definitions ====================
 
@@ -264,6 +266,15 @@ export class Viewport {
     const playerSystem = new PlayerSystem(this.inputManager);
     playerSystem.initialize?.();
     this._world.addSystem(playerSystem);                  // priority 5 — runs early, writes position/rotation
+
+    // Wire up ActionInputManager with keyboard + gamepad providers
+    // This enables the action-based input pipeline (used in TPS mode with configurable controllers)
+    {
+      const actionInput = new ActionInputManager();
+      actionInput.addProvider(new KeyboardMouseProvider());
+      actionInput.addProvider(new GenericGamepadProvider());
+      playerSystem.setActionInputManager(actionInput);
+    }
 
     // Character movement system — converts input + physics into position changes
     // Only runs on entities with CharacterPhysicsComponent (new physics-based pipeline)
@@ -778,11 +789,20 @@ export class Viewport {
         cam.far = orbitCam.far;
         cam.fov = orbitCam.fov * Math.PI / 180; // CameraObject stores degrees, CameraComponent stores radians
         cam.setAspectRatio(this.logicalWidth, this.logicalHeight);
+        // Recompute VP matrix after projection sync (CameraSystem computed it
+        // with the pre-sync projection, so it's stale after near/far/fov change)
+        mat4.multiply(cam.vpMatrix, cam.projMatrix, cam.viewMatrix);
+
+        // For TPS orbit mode, the camera position is NOT the character's transform
+        // position — it's the smoothed orbit camera position stored in CameraTargetComponent.
+        // The cloud ray marcher, atmospheric fog, etc. need the actual camera eye position.
+        const cameraTarget = camEntity!.getComponent<CameraTargetComponent>('camera-target');
+        const camPos = cameraTarget?._currentPosition ?? camTransform.position;
 
         viewCameraAdapter = {
           getViewMatrix: () => cam.viewMatrix as Float32Array,
           getProjectionMatrix: () => cam.projMatrix as Float32Array,
-          getPosition: () => [camTransform.position[0], camTransform.position[1], camTransform.position[2]] as number[],
+          getPosition: () => [camPos[0], camPos[1], camPos[2]] as number[],
           getVpMatrix: () => cam.vpMatrix as Float32Array,
           near: cam.near,
           far: cam.far,

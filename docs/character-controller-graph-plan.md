@@ -1932,19 +1932,216 @@ unified `ActionState` objects with analog values.
 └─────────────────┘
 ```
 
-### InputBinding — Multi-Source
+### InputBinding — Multi-Source with Per-Source Activation Modes
 
 ```typescript
 interface InputBinding {
   /** Abstract action name (e.g., 'forward', 'jump', 'attack') */
   action: string;
 
-  /** Whether this action is continuous (held) or one-shot (pressed) */
-  type: 'held' | 'pressed';
-
   /** Multiple hardware sources can trigger the same action */
   sources: InputSource[];
+
+  /**
+   * Optional auto-deactivation condition for toggle sources.
+   * When a toggle-mode source activates this action, it stays active until
+   * this condition evaluates to true, at which point it auto-deactivates.
+   *
+   * Example: sprint toggle auto-deactivates when speed drops to 0.
+   * If not set, toggle actions stay active until pressed again (standard toggle).
+   */
+  autoDeactivateWhen?: ActionDeactivateCondition;
 }
+
+/**
+ * Conditions that auto-deactivate a toggled action.
+ */
+type ActionDeactivateCondition =
+  | { type: 'variable'; variable: string; operator: '<' | '<=' | '==' | '>' | '>='; value: number }
+  | { type: 'actionInactive'; action: string }; // Deactivate when another action becomes inactive
+
+// Example: sprint auto-deactivates when horizontal speed drops below 0.1
+// autoDeactivateWhen: { type: 'variable', variable: 'speed', operator: '<', value: 0.1 }
+```
+
+Each `InputSource` now carries its own **activation mode** — the same action can be
+`'held'` on keyboard and `'toggle'` on gamepad:
+
+```typescript
+interface KeyboardSource {
+  device: 'keyboard';
+  key: string;
+  /** How this source activates the action — default 'held' */
+  mode?: 'held' | 'pressed' | 'toggle';
+}
+
+interface MouseButtonSource {
+  device: 'mouse';
+  button: number;
+  mode?: 'held' | 'pressed' | 'toggle';
+}
+
+interface GamepadButtonSource {
+  device: 'gamepad';
+  kind: 'button';
+  button: string;
+  /** How this source activates the action — default 'pressed' for buttons */
+  mode?: 'held' | 'pressed' | 'toggle';
+}
+
+interface GamepadAxisSource {
+  device: 'gamepad';
+  kind: 'axis';
+  axis: string;
+  direction: 'positive' | 'negative';
+  deadzone?: number;
+  /** Axes are always 'held' (analog) — mode is not applicable */
+}
+```
+
+**Activation modes:**
+- `'held'` — active while the source is physically held down. Binary for keys/buttons,
+  analog for axes. The default for keyboard keys and gamepad axes.
+- `'pressed'` — active for exactly one frame when pressed. Used for one-shot actions
+  like jump or attack.
+- `'toggle'` — press once to activate, press again to deactivate. Or auto-deactivates
+  when `autoDeactivateWhen` condition is met. Ideal for gamepad sprint.
+
+### How Toggle Mode Works at Runtime
+
+The `InputManager` tracks toggle state per action:
+
+```typescript
+// Internal toggle tracking
+private toggleStates: Map<string, boolean> = new Map(); // action → currently toggled on
+
+pollAll(): void {
+  for (const binding of this.bindings) {
+    let maxValue = 0;
+    let anyToggleJustPressed = false;
+
+    for (const source of binding.sources) {
+      for (const provider of this.providers) {
+        const rawValue = provider.readSource(source);
+        const mode = this.getSourceMode(source);
+
+        if (mode === 'toggle') {
+          // Detect rising edge (just pressed) for toggle flip
+          const wasPressed = this.prevSourceValues.get(sourceKey) ?? 0;
+          if (rawValue > 0 && wasPressed === 0) {
+            anyToggleJustPressed = true;
+          }
+          this.prevSourceValues.set(sourceKey, rawValue);
+        } else if (mode === 'held') {
+          maxValue = Math.max(maxValue, rawValue);
+        } else if (mode === 'pressed') {
+          // Handled separately via justPressed detection
+          maxValue = Math.max(maxValue, rawValue);
+        }
+      }
+    }
+
+    // Flip toggle state on press
+    if (anyToggleJustPressed) {
+      const current = this.toggleStates.get(binding.action) ?? false;
+      this.toggleStates.set(binding.action, !current);
+    }
+
+    // Check auto-deactivation for active toggles
+    if (this.toggleStates.get(binding.action) && binding.autoDeactivateWhen) {
+      if (this.evaluateDeactivateCondition(binding.autoDeactivateWhen)) {
+        this.toggleStates.set(binding.action, false);
+      }
+    }
+
+    // Merge: action is active if ANY held source is active OR toggle is on
+    const toggleActive = this.toggleStates.get(binding.action) ?? false;
+    const heldActive = maxValue > 0;
+    const active = heldActive || toggleActive;
+    const value = toggleActive ? 1.0 : maxValue; // Toggle produces binary 1.0
+
+    // ... produce ActionState as before
+  }
+}
+```
+
+### Sprint Example — Keyboard Hold vs Gamepad Toggle
+
+```typescript
+{
+  action: 'sprint',
+  sources: [
+    // Keyboard: hold Shift to sprint (release = stop sprinting)
+    { device: 'keyboard', key: 'ShiftLeft', mode: 'held' },
+    // Gamepad: press L3 once to toggle sprint on, auto-deactivates when stopping
+    { device: 'gamepad', kind: 'button', button: 'L3', mode: 'toggle' },
+  ],
+  // When toggled on via gamepad, auto-deactivate when speed drops to near-zero
+  // (character came to a stop → next movement starts at walk speed)
+  autoDeactivateWhen: {
+    type: 'variable',
+    variable: 'speed',
+    operator: '<',
+    value: 0.1,
+  },
+}
+```
+
+**Behavior flow:**
+1. Character is idle. Toggle state: OFF.
+2. Player pushes left stick forward → character walks.
+3. Player clicks L3 → toggle flips to ON → `sprint` action becomes active → character runs.
+4. Player keeps moving → character keeps running (toggle stays ON).
+5. Player releases stick → character decelerates → speed drops below 0.1 → toggle auto-deactivates.
+6. Player pushes stick again → character walks (toggle is OFF, no held source active).
+7. Player clicks L3 again → toggle ON → running again.
+
+Meanwhile on keyboard: hold Shift = sprint, release Shift = walk. No toggle, no auto-deactivation. Same action, different modes per device.
+
+### Other Toggle Use Cases
+
+**Aim/scope toggle on gamepad:**
+```typescript
+{
+  action: 'aim',
+  sources: [
+    { device: 'mouse', button: 2, mode: 'held' },           // Mouse: hold RMB
+    { device: 'gamepad', kind: 'button', button: 'L2', mode: 'toggle' }, // Gamepad: toggle
+  ],
+  // No autoDeactivateWhen — standard toggle (press again to un-aim)
+}
+```
+
+**Crouch toggle:**
+```typescript
+{
+  action: 'crouch',
+  sources: [
+    { device: 'keyboard', key: 'KeyC', mode: 'toggle' },    // Keyboard: also toggle
+    { device: 'gamepad', kind: 'button', button: 'circle', mode: 'toggle' },
+  ],
+  // No auto-deactivation — stays crouched until pressed again
+}
+```
+
+### Input Node UI — Mode Column
+
+The Input Node shows the activation mode per device:
+
+```
+┌─ Input ─────────────────────────────────────────────────────┐
+│  Actions:                                                    │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │ sprint  │ 🔤 Shift (hold) │ 🎮 L3 (toggle→stop)   │   │
+│  │ aim     │ 🖱️ RMB (hold)   │ 🎮 L2 (toggle)        │   │
+│  │ crouch  │ 🔤 C (toggle)   │ 🎮 ○ (toggle)         │   │
+│  │ jump    │ 🔤 Space (press)│ 🎮 ✕ (press)          │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Clicking on the mode label (hold/toggle/press) cycles through the available modes for
+that source type.
 
 type InputSource =
   | KeyboardSource

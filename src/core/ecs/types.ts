@@ -31,7 +31,11 @@ export type ComponentType =
   | 'character-physics'
   | 'skeleton'
   | 'animation'
-  | 'vegetation-instance'; // Extensible for future/external components
+  | 'vegetation-instance'
+  | 'camera-target'
+  | 'character-vars'
+  | 'character-controller'
+  | 'script'; // Extensible for future/external components
 
 /**
  * Context provided to systems each frame.
