@@ -1,51 +1,39 @@
 import { useCallback } from 'preact/hooks';
 import { Panel, Slider, Checkbox, Select, Section } from '../../ui';
 import styles from './RenderingPanel.module.css';
-import type { SSAOEffectConfig, CompositeEffectConfig, AtmosphericFogConfig } from '@/core/gpu/postprocess';
-import type { SSRQualityLevel } from '@/core/gpu/pipeline/SSRConfig';
-import type { DebugViewMode } from '@/core/gpu/pipeline/passes/DebugViewPass';
+import type { CompositeEffectConfig, AtmosphericFogConfig } from '@/core/gpu/postprocess';
 import type { CloudConfig } from '@/core/gpu/clouds/types';
 import { WEATHER_PRESET_NAMES } from '@/core/gpu/clouds/WeatherPresets';
 
+import type { SSRQualityLevel } from '@/core/gpu/pipeline/SSRConfig';
+
+// Import engine config types (canonical source of truth)
+import type {
+  WebGPUShadowSettings,
+  SSAOSettings,
+  SSRSettings,
+  AtmosphericFogSettings,
+  GodRayMode,
+  GodRaySettings,
+  DebugViewMode,
+  ResolutionScalePreset,
+} from '@/core/EngineConfig';
+
+// Re-export types that were previously defined locally so existing
+// consumers importing from this file still work.
+export type {
+  WebGPUShadowSettings,
+  SSAOSettings,
+  SSRSettings,
+  AtmosphericFogSettings,
+  GodRayMode,
+  GodRaySettings,
+  DebugViewMode,
+  ResolutionScalePreset,
+};
+
 // Import CSS variables
 import '../../styles/variables.css';
-
-export interface WebGPUShadowSettings {
-  enabled: boolean;
-  resolution: number;
-  shadowRadius: number;
-  softShadows: boolean;
-  // CSM settings
-  csmEnabled: boolean;
-  cascadeCount: number;
-  cascadeBlendFraction: number;
-}
-
-/**
- * SSAO Settings for UI - extends SSAOConfig with enabled flag
- * Uses SSAOConfig from postprocess module for consistency
- */
-export interface SSAOSettings extends Required<SSAOEffectConfig> {
-  /** Whether SSAO effect is enabled */
-  enabled: boolean;
-}
-
-/**
- * SSR Settings for UI
- */
-export interface SSRSettings {
-  /** Whether SSR is enabled */
-  enabled: boolean;
-  /** Quality preset */
-  quality: SSRQualityLevel;
-}
-
-/**
- * Atmospheric fog settings for UI
- */
-export interface AtmosphericFogSettings extends Required<AtmosphericFogConfig> {}
-
-export type { DebugViewMode };
 
 /**
  * Cloud settings for UI
@@ -61,26 +49,6 @@ export interface CloudSettings {
   windDirection: number;
   seed: number;
 }
-
-/**
- * God ray settings for UI
- */
-export type GodRayMode = 'screen-space' | 'volumetric';
-
-export interface GodRaySettings {
-  enabled: boolean;
-  mode: GodRayMode;
-  intensity: number;
-  samples: number;
-  decay: number;
-  weight: number;
-  density: number;
-}
-
-/**
- * Resolution scale preset value type
- */
-export type ResolutionScalePreset = '1.0' | '0.75' | '0.5' | '0.25';
 
 export interface RenderingPanelProps {
   // Resolution scale

@@ -20,7 +20,7 @@ import { MaterialEditorView } from '../panels/MaterialEditorPanel/MaterialEditor
 import { useKeyboardShortcuts } from '../hooks';
 import { DockingManagerProvider } from '../ui';
 import { ImportModeDialog } from '../ui/ImportModeDialog/ImportModeDialog';
-import { Viewport } from '../../Viewport';
+import { Viewport } from '../../EditorViewport';
 import type { Entity } from '@/core/ecs/Entity';
 import type { GroupComponent } from '@/core/ecs/components/GroupComponent';
 import styles from './SceneBuilderApp.module.css';

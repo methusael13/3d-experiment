@@ -22,7 +22,7 @@ import { ObjectRendererGPU } from '../renderers/ObjectRendererGPU';
 import { ShadowRendererGPU, DebugTextureManager } from '../renderers';
 import { SceneEnvironment, type IBLResources } from '../renderers/shared';
 import { DynamicSkyIBL } from '../ibl';
-import { WebGPUShadowSettings } from '@/demos/sceneBuilder/components/panels/RenderingPanel';
+import type { WebGPUShadowSettings } from '@/core/EngineConfig';
 import {
   PostProcessPipeline,
   type SSAOEffectConfig,

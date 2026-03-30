@@ -6,7 +6,7 @@
 import { useRef, useEffect, useCallback } from 'preact/hooks';
 import { useSignalEffect } from '@preact/signals';
 import { vec3, mat4, quat as quatType } from 'gl-matrix';
-import { Viewport, type ViewportOptions } from '../../Viewport';
+import { Viewport, type ViewportOptions } from '../../EditorViewport';
 import { getSceneBuilderStore } from '../state';
 import { ViewportToolbar } from '../layout';
 import { useFileDrop } from '../hooks';

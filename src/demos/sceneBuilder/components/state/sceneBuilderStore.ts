@@ -6,7 +6,7 @@
  */
 
 import { signal, computed, batch, type Signal } from '@preact/signals';
-import type { Viewport } from '../../Viewport';
+import type { Viewport } from '../../EditorViewport';
 import type { World } from '@/core/ecs/World';
 import type { Entity } from '@/core/ecs/Entity';
 import type { GizmoMode, GizmoOrientation } from '../../gizmos';
