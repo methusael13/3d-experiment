@@ -260,6 +260,17 @@ export class PlayerSystem extends System {
     this.activeEntity = targetEntity;
     this.playing = true;
 
+    // Flush any stale input state accumulated while in editor mode (scroll deltas,
+    // mouse movement, key states). Without this, the first play-mode frame would
+    // apply all scroll events from editor zooming to the TPS orbit distance.
+    this.actionInput?.resetAll();
+    // Also flush the raw scroll/mouse deltas from the KeyboardMouseProvider
+    const kbm = this.actionInput?.getKeyboardMouseProvider();
+    if (kbm) {
+      kbm.readScrollDelta();   // Consume and discard stale scroll
+      kbm.readCameraAxis();    // Consume and discard stale mouse deltas
+    }
+
     // Both FPS and TPS modes use pointer lock for mouse movement deltas.
     // Pointer lock is required because movementX/movementY are only available
     // when the pointer is locked. In TPS mode the orbit camera reads these deltas.

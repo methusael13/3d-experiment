@@ -41,15 +41,15 @@ import { GLBSkeleton } from '@/loaders/types';
 // ============================================================================
 
 const DEFAULT_MOVEMENT: CompiledMovementConfig = {
-  moveSpeed: 5.0,
-  runSpeed: 10.0,
+  moveSpeed: 1.0,
+  runSpeed: 5.0,
   sprintMultiplier: 2.0,
   jumpForce: 8.0,
   rotationSpeed: 720,
   gravity: -20.0,
   groundFriction: 10.0,
   airDrag: 0.5,
-  playerHeight: 1.8,
+  playerHeight: 0.0,
   collisionRadius: 0.3,
 };
 
@@ -58,11 +58,11 @@ const DEFAULT_CAMERA: CompiledCameraConfig = {
   fov: Math.PI / 3,
   near: 0.1,
   far: 1000,
-  lookAtOffset: [0, 1.5, 0],
-  orbitDistance: 5,
+  lookAtOffset: [-0.8, 1.5, 0],
+  orbitDistance: 3,
   orbitPitch: 20,
   minPitch: -10,
-  maxPitch: 60,
+  maxPitch: 80,
   minDistance: 1.5,
   maxDistance: 15,
   yawSensitivity: 0.3,
