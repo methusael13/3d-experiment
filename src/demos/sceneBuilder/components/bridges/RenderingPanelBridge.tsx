@@ -4,7 +4,7 @@
 
 import { useState, useCallback, useMemo } from 'preact/hooks';
 import { getSceneBuilderStore } from '../state';
-import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings, type SSRSettings, type AtmosphericFogSettings, type CloudSettings, type GodRaySettings, type DebugViewMode, type ResolutionScalePreset } from '../panels';
+import { RenderingPanel, type WebGPUShadowSettings, type SSAOSettings, type SSRSettings, type AtmosphericFogSettings, type VolumetricFogSettings, type CloudSettings, type GodRaySettings, type DebugViewMode, type ResolutionScalePreset } from '../panels';
 import type { CompositeEffectConfig, AtmosphericFogConfig } from '@/core/gpu/postprocess';
 import type { SSRQualityLevel } from '@/core/gpu/pipeline/SSRConfig';
 
@@ -252,6 +252,34 @@ export function ConnectedRenderingPanel({
     }
   }, [store]);
   
+  // Volumetric fog state (Phase 6)
+  const [volumetricFogSettings, setVolumetricFogSettings] = useState<VolumetricFogSettings>({
+    enabled: false,
+    fogHeight: 0,
+    fogHeightFalloff: 0.02,
+    fogBaseDensity: 0.015,
+    fogColor: [0.85, 0.88, 0.92],
+    mieG: 0.76,
+    scatteringScale: 1.0,
+    ambientFogIntensity: 0.05,
+    noiseEnabled: false,
+    noiseScale: 0.003,
+    noiseStrength: 0.5,
+    temporalEnabled: true,
+    temporalBlend: 0.95,
+  });
+
+  const handleVolumetricFogSettingsChange = useCallback((settings: Partial<VolumetricFogSettings>) => {
+    setVolumetricFogSettings((prev: VolumetricFogSettings) => {
+      const updated = { ...prev, ...settings };
+      const viewport = store.viewport;
+      if (viewport) {
+        viewport.setVolumetricFogSettings?.(updated);
+      }
+      return updated;
+    });
+  }, [store]);
+
   // God ray state
   const [godRaySettings, setGodRaySettings] = useState<GodRaySettings>({
     enabled: false,
@@ -317,6 +345,8 @@ export function ConnectedRenderingPanel({
       onCloudShadowDebugToggle={handleCloudShadowDebugToggle}
       weatherPreset={weatherPreset}
       onWeatherPresetChange={handleWeatherPresetChange}
+      volumetricFogSettings={volumetricFogSettings}
+      onVolumetricFogSettingsChange={handleVolumetricFogSettingsChange}
       godRaySettings={godRaySettings}
       onGodRaySettingsChange={handleGodRaySettingsChange}
       debugViewMode={debugViewMode}

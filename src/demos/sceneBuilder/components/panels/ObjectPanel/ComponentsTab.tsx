@@ -6,6 +6,7 @@ import type { ComponentType } from '@/core/ecs/types';
 import { LODComponent } from '@/core/ecs/components/LODComponent';
 import { WetnessComponent } from '@/core/ecs/components/WetnessComponent';
 import { WindComponent } from '@/core/ecs/components/WindComponent';
+import { WindSourceComponent } from '@/core/ecs/components/WindSourceComponent';
 import { SSRComponent } from '@/core/ecs/components/SSRComponent';
 import { ReflectionProbeComponent } from '@/core/ecs/components/ReflectionProbeComponent';
 import { TransformComponent } from '@/core/ecs/components/TransformComponent';
@@ -17,6 +18,7 @@ import { CharacterControllerBridge } from '../../bridges/CharacterControllerBrid
 import { WetnessSubPanel } from './subpanels/WetnessSubPanel';
 import { LODSubPanel } from './subpanels/LODSubPanel';
 import { WindSubPanel } from './subpanels/WindSubPanel';
+import { WindSourceSubPanel } from './subpanels/WindSourceSubPanel';
 import { SSRSubPanel } from './subpanels/SSRSubPanel';
 import { ReflectionProbeSubPanel } from './subpanels/ReflectionProbeSubPanel';
 import { LightSubPanel } from './subpanels/LightSubPanel';
@@ -88,11 +90,21 @@ export const OPTIONAL_COMPONENTS: {
   },
   {
     type: 'wind',
-    label: 'Wind',
-    description: 'Vegetation wind animation (sway & flutter)',
+    label: 'Wind Receiver',
+    description: 'Responds to global & local wind (vegetation sway & flutter)',
     create: () => new WindComponent(),
     renderPanel: (entity, onChanged) => (
       <WindSubPanel entity={entity} onChanged={onChanged} />
+    ),
+  },
+  {
+    type: 'wind-source',
+    label: 'Wind Source',
+    description: 'Local wind emitter (helicopter, fan, explosion)',
+    dependencies: ['transform'],
+    create: () => new WindSourceComponent(),
+    renderPanel: (entity, onChanged) => (
+      <WindSourceSubPanel entity={entity} onChanged={onChanged} />
     ),
   },
   {
@@ -129,6 +141,17 @@ export const INTRINSIC_COMPONENT_PANELS: {
     label: 'Light Properties',
     renderPanel: (entity, onChanged, debugTextureManager, shadowRenderer) => (
       <LightSubPanel entity={entity} onChanged={onChanged} debugTextureManager={debugTextureManager} shadowRenderer={shadowRenderer} />
+    ),
+  },
+  {
+    type: 'wind',
+    label: 'Global Wind',
+    renderPanel: () => (
+      <div style={{ padding: '8px 0', fontSize: '12px', color: '#aaa', lineHeight: '1.5' }}>
+        🌀 This entity represents the scene's global wind.<br />
+        Use the <strong>Environment Panel → Wind</strong> tab to configure
+        direction, strength, turbulence, and gusts.
+      </div>
     ),
   },
   {

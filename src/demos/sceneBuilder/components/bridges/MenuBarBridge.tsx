@@ -8,7 +8,7 @@ import { useCallback, useMemo, useRef } from 'preact/hooks';
 import { getSceneBuilderStore, duplicateSelected, deleteSelected, selectAll, groupSelection, ungroupSelection } from '../state';
 import { MenuBar, type MenuDefinition, type MenuAction, type AppTab } from '../layout';
 import { shaderPanelVisible, toggleShaderPanel } from './ShaderDebugPanelBridge';
-import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity, createPointLightEntity, createSpotLightEntity, createEmptyEntity, createPlayerEntity } from '@/core/ecs/factories';
+import { createPrimitiveEntity, createModelEntity, createTerrainEntity, createOceanEntity, createPointLightEntity, createSpotLightEntity, createEmptyEntity, createPlayerEntity, createGlobalWindEntity } from '@/core/ecs/factories';
 import { PrimitiveGeometryComponent } from '@/core/ecs/components/PrimitiveGeometryComponent';
 import { TransformComponent } from '@/core/ecs/components/TransformComponent';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
@@ -429,6 +429,22 @@ export function ConnectedMenuBar() {
     world.select(entity.id);
   }, [store]);
 
+  const handleAddWind = useCallback(() => {
+    const world = store.world;
+    if (!world) return;
+
+    // Only allow one global wind entity
+    const existing = world.queryFirst('wind');
+    if (existing) {
+      console.warn('[MenuBar] Global wind entity already exists in the world');
+      world.select(existing.id);
+      return;
+    }
+
+    const entity = createGlobalWindEntity(world);
+    world.select(entity.id);
+  }, [store]);
+
   const handleAddEmpty = useCallback(() => {
     const world = store.world;
     if (!world) return;
@@ -503,6 +519,8 @@ export function ConnectedMenuBar() {
         { separator: true, id: 'sep2', label: '' },
         { id: 'point-light', label: '💡 Point Light', onClick: handleAddPointLight },
         { id: 'spot-light', label: '🔦 Spot Light', onClick: handleAddSpotLight },
+        { separator: true, id: 'sep3', label: '' },
+        { id: 'wind', label: '🌀 Wind', onClick: handleAddWind },
       ],
     },
   ], [
@@ -510,7 +528,7 @@ export function ConnectedMenuBar() {
     handleSelectAll, handleDuplicate, handleDeleteSelected, handleGroupSelection, handleUngroup,
     handleSetViewportMode, handleToggleGrid, handleToggleAxes, handleExpandView, handlePlayMode, handleCameraPreset,
     handleToggleShaderEditor, handleToggleDebugCamera,
-    handleAddPrimitive, handleAddTerrain, handleAddWater, handleAddPointLight, handleAddSpotLight, handleAddEmpty, handleAddPlayer,
+    handleAddPrimitive, handleAddTerrain, handleAddWater, handleAddPointLight, handleAddSpotLight, handleAddWind, handleAddEmpty, handleAddPlayer,
     hasSelection.value, multiSelection.value, viewportState.value, shaderPanelVisible.value, fpsModeActive.value, debugCameraModeActive.value,
   ]);
   

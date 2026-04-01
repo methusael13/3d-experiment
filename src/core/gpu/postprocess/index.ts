@@ -40,3 +40,7 @@ export { GodRayEffect } from './effects/GodRayEffect';
 export type { GodRayConfig } from './effects/GodRayEffect';
 
 export { FroxelGodRayEffect } from './effects/FroxelGodRayEffect';
+
+// Volumetric fog (Phase 6) — re-exported from volumetric module
+export { VolumetricFogEffect } from '../volumetric/VolumetricFogEffect';
+export type { VolumetricFogConfig } from '../volumetric/types';

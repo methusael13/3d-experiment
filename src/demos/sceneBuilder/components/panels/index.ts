@@ -16,7 +16,7 @@ export { MaterialPanel } from './MaterialPanel';
 export type { MaterialPanelProps } from './MaterialPanel';
 
 export { RenderingPanel } from './RenderingPanel';
-export type { RenderingPanelProps, WebGPUShadowSettings, SSAOSettings, SSRSettings, AtmosphericFogSettings, CloudSettings, GodRaySettings, GodRayMode, DebugViewMode, ResolutionScalePreset } from './RenderingPanel/RenderingPanel';
+export type { RenderingPanelProps, WebGPUShadowSettings, SSAOSettings, SSRSettings, AtmosphericFogSettings, VolumetricFogSettings, CloudSettings, GodRaySettings, GodRayMode, DebugViewMode, ResolutionScalePreset } from './RenderingPanel/RenderingPanel';
 
 export { TerrainPanel, TERRAIN_PRESETS } from './TerrainPanel';
 export type {

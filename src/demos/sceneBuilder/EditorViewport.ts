@@ -15,6 +15,7 @@ import { mat4, quat } from 'gl-matrix';
 import type { Vec2, Vec3 } from '../../core/types';
 import { Engine, type EngineOptions } from '../../core/Engine';
 import type { GPUCamera, RenderOptions } from '../../core/gpu/pipeline/GPUForwardPipeline';
+import type { VolumetricFogSettings } from '../../core/EngineConfig';
 import type { GPUContext } from '../../core/gpu/GPUContext';
 import type { TerrainManager } from '../../core/terrain/TerrainManager';
 import { TransformGizmoManager, GizmoMode } from './gizmos';
@@ -409,6 +410,7 @@ export class EditorViewport {
   setCompositeSettings(c: Partial<CompositeEffectConfig>): void { this._engine?.setCompositeSettings(c); }
   setAtmosphericFogSettings(s: Partial<AtmosphericFogConfig> & { enabled?: boolean }): void { this._engine?.setAtmosphericFogSettings(s); }
   setGodRaySettings(s: Partial<GodRayConfig>): void { this._engine?.setGodRaySettings(s); }
+  setVolumetricFogSettings(s: Partial<VolumetricFogSettings>): void { this._engine?.setVolumetricFogSettings(s); }
   setCloudSettings(s: Partial<CloudConfig>): void { this._engine?.setCloudSettings(s); }
   setWeatherPreset(name: string, duration?: number): void { this._engine?.setWeatherPreset(name, duration); }
   clearWeatherPreset(): void { this._engine?.clearWeatherPreset(); }

@@ -9,6 +9,7 @@ export { LightComponent } from './LightComponent';
 export { TerrainComponent } from './TerrainComponent';
 export { OceanComponent } from './OceanComponent';
 export { WindComponent } from './WindComponent';
+export { WindSourceComponent } from './WindSourceComponent';
 export { LODComponent } from './LODComponent';
 export { WetnessComponent } from './WetnessComponent';
 export { SSRComponent } from './SSRComponent';

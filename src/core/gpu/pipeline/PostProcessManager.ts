@@ -26,6 +26,7 @@ import {
   type GodRayConfig,
   type EffectUniforms,
 } from '../postprocess';
+import { VolumetricFogEffect, type VolumetricFogConfig } from '../volumetric';
 import type { RenderContext } from './RenderContext';
 import type { RenderOptions } from './GPUForwardPipeline';
 import type { CloudManager } from './CloudManager';
@@ -90,6 +91,11 @@ export class PostProcessManager {
     const froxelGodRayEffect = new FroxelGodRayEffect();
     froxelGodRayEffect.enabled = false;
     this.pipeline.addEffect(froxelGodRayEffect, 131);
+
+    // Add Volumetric Fog effect (order 149, replaces AtmosphericFog when active, starts DISABLED)
+    const volumetricFogEffect = new VolumetricFogEffect();
+    volumetricFogEffect.enabled = false;
+    this.pipeline.addEffect(volumetricFogEffect, 149);
   }
 
   // ========== Pipeline Access ==========

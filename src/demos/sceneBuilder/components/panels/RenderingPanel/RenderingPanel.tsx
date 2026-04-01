@@ -13,6 +13,7 @@ import type {
   SSAOSettings,
   SSRSettings,
   AtmosphericFogSettings,
+  VolumetricFogSettings,
   GodRayMode,
   GodRaySettings,
   DebugViewMode,
@@ -26,6 +27,7 @@ export type {
   SSAOSettings,
   SSRSettings,
   AtmosphericFogSettings,
+  VolumetricFogSettings,
   GodRayMode,
   GodRaySettings,
   DebugViewMode,
@@ -82,6 +84,10 @@ export interface RenderingPanelProps {
   // Weather preset (Phase 5)
   weatherPreset: string | null;
   onWeatherPresetChange: (preset: string) => void;
+
+  // Volumetric fog settings (Phase 6)
+  volumetricFogSettings: VolumetricFogSettings;
+  onVolumetricFogSettingsChange: (settings: Partial<VolumetricFogSettings>) => void;
 
   // God ray settings
   godRaySettings: GodRaySettings;
@@ -172,6 +178,8 @@ export function RenderingPanel({
   onCloudShadowDebugToggle,
   weatherPreset,
   onWeatherPresetChange,
+  volumetricFogSettings,
+  onVolumetricFogSettingsChange,
   godRaySettings,
   onGodRaySettingsChange,
   debugViewMode,
@@ -738,6 +746,119 @@ export function RenderingPanel({
             format={(v) => String(Math.round(v))}
             onChange={(v) => onGodRaySettingsChange({ samples: Math.round(v) })}
             disabled={!godRaySettings.enabled}
+          />
+        </div>
+      </Section>
+
+      {/* Volumetric Fog (Phase 6 — Froxel-based) */}
+      <Section title="Volumetric Fog" defaultCollapsed={true}>
+        <Checkbox
+          label="Enable Volumetric Fog"
+          checked={volumetricFogSettings.enabled}
+          onChange={(enabled) => onVolumetricFogSettingsChange({ enabled })}
+        />
+
+        <div class={`${styles.shadowControls} ${!volumetricFogSettings.enabled ? styles.disabled : ''}`}>
+          <Slider
+            label="Fog Density"
+            value={volumetricFogSettings.fogBaseDensity}
+            min={0.001}
+            max={0.1}
+            step={0.001}
+            format={(v) => v.toFixed(3)}
+            onChange={(v) => onVolumetricFogSettingsChange({ fogBaseDensity: v })}
+            disabled={!volumetricFogSettings.enabled}
+          />
+
+          <Slider
+            label="Fog Height"
+            value={volumetricFogSettings.fogHeight}
+            min={-500}
+            max={500}
+            step={5}
+            format={(v) => `${Math.round(v)}m`}
+            onChange={(v) => onVolumetricFogSettingsChange({ fogHeight: v })}
+            disabled={!volumetricFogSettings.enabled}
+          />
+
+          <Slider
+            label="Height Falloff"
+            value={volumetricFogSettings.fogHeightFalloff}
+            min={0.005}
+            max={0.5}
+            step={0.005}
+            format={(v) => v.toFixed(3)}
+            onChange={(v) => onVolumetricFogSettingsChange({ fogHeightFalloff: v })}
+            disabled={!volumetricFogSettings.enabled}
+          />
+
+          <Slider
+            label="Scattering Scale"
+            value={volumetricFogSettings.scatteringScale}
+            min={0.1}
+            max={5.0}
+            step={0.1}
+            format={(v) => v.toFixed(1)}
+            onChange={(v) => onVolumetricFogSettingsChange({ scatteringScale: v })}
+            disabled={!volumetricFogSettings.enabled}
+          />
+
+          <Slider
+            label="Mie Anisotropy"
+            value={volumetricFogSettings.mieG}
+            min={0}
+            max={0.95}
+            step={0.05}
+            format={(v) => v.toFixed(2)}
+            onChange={(v) => onVolumetricFogSettingsChange({ mieG: v })}
+            disabled={!volumetricFogSettings.enabled}
+          />
+
+          <Slider
+            label="Ambient Fog"
+            value={volumetricFogSettings.ambientFogIntensity}
+            min={0}
+            max={0.5}
+            step={0.01}
+            format={(v) => v.toFixed(2)}
+            onChange={(v) => onVolumetricFogSettingsChange({ ambientFogIntensity: v })}
+            disabled={!volumetricFogSettings.enabled}
+          />
+
+          <Checkbox
+            label="3D Noise (Wispy Fog)"
+            checked={volumetricFogSettings.noiseEnabled}
+            onChange={(v) => onVolumetricFogSettingsChange({ noiseEnabled: v })}
+            disabled={!volumetricFogSettings.enabled}
+          />
+
+          <Slider
+            label="Noise Scale"
+            value={volumetricFogSettings.noiseScale}
+            min={0.001}
+            max={1.0}
+            step={0.001}
+            format={(v) => v.toFixed(3)}
+            onChange={(v) => onVolumetricFogSettingsChange({ noiseScale: v })}
+            disabled={!volumetricFogSettings.enabled || !volumetricFogSettings.noiseEnabled}
+          />
+
+          <Slider
+            label="Noise Strength"
+            value={volumetricFogSettings.noiseStrength}
+            min={0}
+            max={1}
+            step={0.05}
+            format={(v) => v.toFixed(2)}
+            onChange={(v) => onVolumetricFogSettingsChange({ noiseStrength: v })}
+            disabled={!volumetricFogSettings.enabled || !volumetricFogSettings.noiseEnabled}
+          />
+
+          <Checkbox
+            label="Temporal Smoothing"
+            checked={volumetricFogSettings.temporalEnabled}
+            onChange={(v) => onVolumetricFogSettingsChange({ temporalEnabled: v })}
+            disabled={!volumetricFogSettings.enabled}
           />
         </div>
       </Section>

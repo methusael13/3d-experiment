@@ -1465,11 +1465,11 @@ Register cloud textures with the existing `DebugTextureManager`:
 
 **Goal**: Weather variety, correct lighting adaptation, and production polish.
 
-1. **IBL re-capture under clouds** (§6.4.4)
-   - Trigger IBL cubemap re-capture when average coverage changes by >0.1
-   - Render sky with cloud transmittance overlay during capture
-   - Amortized: 1 face/frame, 6 frames total
-   - Result: blue sky → gray dome under overcast, PBR ambient responds correctly
+1. **IBL re-capture trigger under clouds** (§6.4.4 — Option 1: Simple)
+   - Trigger `DynamicSkyIBL.forceUpdate()` when average coverage changes by >0.1
+   - Re-captures sky-only (Nishita atmospheric scattering) with weather-dimmed sun intensity
+   - Result: IBL shifts from bright blue → dimmer/grayer as coverage increases, because the sun intensity input is attenuated by `effectiveSunScale`
+   - **Note:** This is the simple approach — clouds are NOT rendered into the cubemap faces. The accurate approach (Option 2: ray-marching through the cloud layer during cubemap capture) is deferred to Phase 6d.
 
 2. **Ambient boost under overcast** (§6.4.5)
    - `ambientMultiplier = 1.0 + coverage × 0.3` — prevents overly dark overcast scenes
@@ -1578,8 +1578,16 @@ Register cloud textures with the existing `DebugTextureManager`:
 3. **Performance profiling** — target 1–3ms total for froxel pipeline
 4. **Serialization** — save/load volumetric fog settings in scene files
 5. **ECS `CloudComponent`** and `VolumetricFogComponent`** on scene entity for settings persistence
+6. **Accurate IBL re-capture with cloud transmittance** (§6.4.4 — Option 2)
+   - During `DynamicSkyIBL` cubemap face capture, ray-march through the cloud layer (simplified, 8 steps max per direction)
+   - Multiply sky color by cloud transmittance, add cloud in-scattering to each cubemap texel
+   - Result: IBL cubemap correctly reflects cloud-occluded sky — gray dome under overcast, bright patches where cloud gaps let sunlight through
+   - Amortized: 1 face/frame, 6 frames total (same cadence as existing `DynamicSkyIBL`)
+   - Only triggered when `|averageCoverage - lastIBLCoverage| > 0.1` (existing trigger in `CloudManager.needsIBLRecapture()`)
+   - Requires passing cloud noise textures + weather map to the sky-to-cubemap capture shader, or using a simplified density lookup
+   - This upgrades the Phase 5 simple approach (which only dims the sun intensity input) to produce physically accurate cloud-affected ambient lighting
 
-**Deliverable**: Complete froxel volumetric fog integrated with clouds, all light types, and scene serialization.
+**Deliverable**: Complete froxel volumetric fog integrated with clouds, all light types, scene serialization, and accurate cloud-aware IBL.
 
 ---
 

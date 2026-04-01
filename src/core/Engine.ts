@@ -36,7 +36,7 @@ import { SSRSystem } from './ecs/systems/SSRSystem';
 import { ReflectionProbeSystem } from './ecs/systems/ReflectionProbeSystem';
 import { LightComponent } from './ecs/components/LightComponent';
 import type { RGBColor } from './sceneObjects/lights';
-import type { WebGPUShadowSettings, SSAOSettings, SSRSettings } from './EngineConfig';
+import type { WebGPUShadowSettings, SSAOSettings, SSRSettings, VolumetricFogSettings } from './EngineConfig';
 import type { CompositeEffectConfig, AtmosphericFogConfig, GodRayConfig } from './gpu/postprocess';
 import type { CloudConfig } from './gpu/clouds/types';
 
@@ -115,6 +115,7 @@ export class Engine {
     const shadowRenderer = pipeline.getShadowRenderer();
     sceneEnv.setLightBufferManager(lightBufferManager);
     sceneEnv.setShadowRenderer(shadowRenderer);
+    pipeline.setLightBufferManager(lightBufferManager);
 
     // 5. Create reflection probe capture renderer
     const reflectionProbeCaptureRenderer = new ReflectionProbeCaptureRenderer(gpuContext);
@@ -367,6 +368,10 @@ export class Engine {
 
   setGodRaySettings(settings: Partial<GodRayConfig>): void {
     this.pipeline.setGodRayConfig(settings);
+  }
+
+  setVolumetricFogSettings(settings: Partial<VolumetricFogSettings>): void {
+    this.pipeline.setVolumetricFogConfig(settings);
   }
 
   setCloudSettings(settings: Partial<CloudConfig>): void {

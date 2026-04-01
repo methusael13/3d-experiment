@@ -12,6 +12,7 @@ export type {
   SSAOSettings,
   SSRSettings,
   AtmosphericFogSettings,
+  VolumetricFogSettings,
   GodRaySettings,
   GodRayMode,
   DebugViewMode,

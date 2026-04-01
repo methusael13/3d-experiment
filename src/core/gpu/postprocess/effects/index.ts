@@ -18,3 +18,7 @@ export { GodRayEffect } from './GodRayEffect';
 export type { GodRayConfig } from './GodRayEffect';
 
 export { FroxelGodRayEffect } from './FroxelGodRayEffect';
+
+// Re-export volumetric fog from its own module
+export { VolumetricFogEffect } from '../../volumetric/VolumetricFogEffect';
+export type { VolumetricFogConfig } from '../../volumetric/types';

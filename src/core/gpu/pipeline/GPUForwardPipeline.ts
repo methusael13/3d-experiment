@@ -29,6 +29,7 @@ import {
   type CompositeEffectConfig,
   type AtmosphericFogConfig,
   type GodRayConfig,
+  VolumetricFogConfig,
 } from '../postprocess';
 import { WeatherStateManager, type CloudConfig, type SerializedWeatherState } from '../clouds';
 import { RenderContextImpl, type RenderContextOptions } from './RenderContext';
@@ -47,7 +48,9 @@ import type { SSRConfig, SSRQualityLevel } from './SSRConfig';
 import { SelectionOutlineRendererGPU } from '../renderers/SelectionOutlineRendererGPU';
 import { RenderTargetManager } from './RenderTargetManager';
 import { CloudManager } from './CloudManager';
+import { VolumetricFogManager } from './VolumetricFogManager';
 import { PostProcessManager } from './PostProcessManager';
+import type { LightBufferManager } from '../renderers/LightBufferManager';
 import { Vec3 } from '@/core/types';
 
 // ========== Public Types ==========
@@ -112,6 +115,7 @@ export class GPUForwardPipeline {
   // Delegated managers
   private renderTargets: RenderTargetManager;
   private cloudManager: CloudManager;
+  private volumetricFogManager: VolumetricFogManager;
   private postProcessManager: PostProcessManager;
 
   // Renderers
@@ -150,6 +154,10 @@ export class GPUForwardPipeline {
   private time = 0;
   private lastFrameTime = performance.now();
   private lastDrawCallsCount = 0;
+
+  // Light buffer manager — set by Engine after construction for volumetric fog point/spot lights
+  private _lightBufferManager: LightBufferManager | null = null;
+
 
   constructor(ctx: GPUContext, options: GPUForwardPipelineOptions) {
     this.ctx = ctx;
@@ -190,6 +198,9 @@ export class GPUForwardPipeline {
 
     // Cloud manager (owns clouds, weather, temporal filter, GPU profiling)
     this.cloudManager = new CloudManager(ctx, this.width, this.height);
+
+    // Volumetric fog manager (Phase 6 — froxel-based fog)
+    this.volumetricFogManager = new VolumetricFogManager(ctx);
 
     // Cloud debug textures (providers may be null until clouds are enabled)
     this.debugTextureManager.register('cloud-result', 'float', () => this.cloudManager.rayMarcher?.outputView ?? null);
@@ -333,6 +344,17 @@ export class GPUForwardPipeline {
       if (pass.enabled && pass.category === 'scene') {
         pass.execute(renderCtx);
       }
+    }
+
+    // ── Volumetric fog compute passes (before post-processing) ──
+    if (this.volumetricFogManager.enabled) {
+      this.volumetricFogManager.execute(
+        encoder, renderCtx, options,
+        this.time, deltaTime, nearPlane, farPlane,
+        this.shadowRenderer, this.cloudManager,
+        this._lightBufferManager,
+        this.postProcessManager.getPipeline(),
+      );
     }
 
     // ── Cloud shadow + ray march ──
@@ -494,6 +516,9 @@ export class GPUForwardPipeline {
   getDebugTextureManager(): DebugTextureManager { return this.debugTextureManager; }
   getPostProcessPipeline(): PostProcessPipeline | null { return this.postProcessManager.getPipeline(); }
 
+  /** Set the LightBufferManager for volumetric fog point/spot light injection */
+  setLightBufferManager(manager: LightBufferManager): void { this._lightBufferManager = manager; }
+
   // ==================== Post-Processing (delegates to PostProcessManager) ====================
 
   setSSAOEnabled(enabled: boolean): void { this.postProcessManager.setSSAOEnabled(enabled); }
@@ -526,6 +551,20 @@ export class GPUForwardPipeline {
     if (config.enabled !== undefined) this.setCloudEnabled(config.enabled);
     this.cloudManager.setConfig(config);
   }
+
+  setVolumetricFogConfig(config: Partial<VolumetricFogConfig>): void {
+    // Handle enable/disable
+    if (config.enabled !== undefined) {
+      this.volumetricFogManager.setEnabled(
+        config.enabled,
+        this.postProcessManager.getPipeline(),
+        this.debugTextureManager,
+      );
+    }
+    // Forward all config to the manager
+    this.volumetricFogManager.setConfig(config);
+  }
+  
   getCloudConfig(): CloudConfig | null { return this.cloudManager.getConfig(); }
 
   // ==================== Weather (delegates to CloudManager) ====================
@@ -602,6 +641,7 @@ export class GPUForwardPipeline {
     this.selectionOutlineRenderer.destroy();
     this.debugTextureManager.destroy();
     this.cloudManager.destroy();
+    this.volumetricFogManager.destroy();
     for (const pass of this.passes) pass.destroy?.();
   }
 

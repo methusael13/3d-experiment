@@ -16,6 +16,7 @@ import { PlayerComponent } from './components/PlayerComponent';
 import { CharacterPhysicsComponent } from './components/CharacterPhysicsComponent';
 import { CameraComponent } from './components/CameraComponent';
 import { CameraTargetComponent } from './components/CameraTargetComponent';
+import { WindComponent } from './components/WindComponent';
 import { SkeletonComponent } from './components/SkeletonComponent';
 import { AnimationComponent, type AnimationState } from './components/AnimationComponent';
 import type { GLBModel } from '../../loaders/types';
@@ -465,6 +466,49 @@ export function createDirectionalLightEntity(
   if (options?.azimuth !== undefined) light.azimuth = options.azimuth;
   if (options?.elevation !== undefined) light.elevation = options.elevation;
   light.castsShadow = options?.castsShadow ?? true;
+
+  entity.addComponent(new VisibilityComponent());
+
+  return entity;
+}
+
+// ============================================================================
+// Global Wind Entity Factory
+// ============================================================================
+
+/**
+ * Create a global wind entity — a singleton entity representing the
+ * scene's global wind configuration.
+ *
+ * This entity carries a WindComponent with wind enabled by default.
+ * WindSystem processes it like any other wind receiver, and its
+ * WindComponent holds the per-entity response parameters (influence,
+ * stiffness, etc.). The global wind direction/strength/turbulence
+ * are configured via the EnvironmentPanel WindTab (WindManager).
+ *
+ * Only one global wind entity should exist in the world (enforced
+ * by the UI, similar to Player).
+ */
+export function createGlobalWindEntity(
+  world: World,
+  options?: {
+    name?: string;
+    position?: [number, number, number];
+    influence?: number;
+    stiffness?: number;
+  },
+): Entity {
+  const entity = world.createEntity(options?.name ?? 'Global Wind');
+
+  const transform = entity.addComponent(new TransformComponent());
+  if (options?.position) {
+    vec3.set(transform.position, options.position[0], options.position[1], options.position[2]);
+  }
+
+  const wind = entity.addComponent(new WindComponent());
+  wind.enabled = true;
+  if (options?.influence !== undefined) wind.influence = options.influence;
+  if (options?.stiffness !== undefined) wind.stiffness = options.stiffness;
 
   entity.addComponent(new VisibilityComponent());
 

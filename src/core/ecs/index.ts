@@ -19,6 +19,7 @@ export {
   TerrainComponent,
   OceanComponent,
   WindComponent,
+  WindSourceComponent,
   LODComponent,
   WetnessComponent,
   PlayerComponent,
@@ -65,6 +66,7 @@ export {
   createSpotLightEntity,
   createPlayerEntity,
   createTPSPlayerEntity,
+  createGlobalWindEntity,
   attachSkeletonAndAnimation,
 } from './factories';
 export type { ModelEntityMeta, PrimitiveEntityMeta } from './factories';

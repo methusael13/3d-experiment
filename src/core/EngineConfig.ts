@@ -74,6 +74,26 @@ export type GodRayMode = 'screen-space' | 'volumetric';
  * God ray settings for the rendering pipeline.
  * Previously: GodRaySettings in RenderingPanel.tsx
  */
+/**
+ * Volumetric fog settings for the froxel-based fog system (Phase 6).
+ * When enabled, replaces AtmosphericFogEffect with a full 3D froxel grid.
+ */
+export interface VolumetricFogSettings {
+  enabled: boolean;
+  fogHeight: number;
+  fogHeightFalloff: number;
+  fogBaseDensity: number;
+  fogColor: [number, number, number];
+  mieG: number;
+  scatteringScale: number;
+  ambientFogIntensity: number;
+  noiseEnabled: boolean;
+  noiseScale: number;
+  noiseStrength: number;
+  temporalEnabled: boolean;
+  temporalBlend: number;
+}
+
 export interface GodRaySettings {
   enabled: boolean;
   mode: GodRayMode;

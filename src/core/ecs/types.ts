@@ -16,6 +16,7 @@ export type ComponentType =
   | 'group'
   | 'primitive-geometry'
   | 'wind'
+  | 'wind-source'
   | 'vegetation'
   | 'biome-mask'
   | 'terrain'
