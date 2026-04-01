@@ -85,37 +85,75 @@ export function WaterPanel({ params, onParamsChange, terrainSize = 1024 }: Water
           />
         </div>
 
-        {/* Color Settings */}
+        {/* Physical Appearance */}
         <div class={styles.section}>
-          <div class={styles.sectionTitle}>Colors</div>
+          <div class={styles.sectionTitle}>Physical Appearance</div>
           
-          <div class={styles.colorColumn}>
-            <ColorPicker
-              label="Water Color"
-              value={params.waterColor}
-              onChange={(v) => handleChange('waterColor', v)}
+          <label class={styles.checkboxLabel}>
+            <input
+              type="checkbox"
+              checked={params.usePhysicalColor}
+              onChange={(e) => handleChange('usePhysicalColor', (e.target as HTMLInputElement).checked)}
             />
-            <ColorPicker
-              label="Deep Color"
-              value={params.deepColor}
-              onChange={(v) => handleChange('deepColor', v)}
-            />
-            <ColorPicker
-              label="Foam Color"
-              value={params.foamColor}
-              onChange={(v) => handleChange('foamColor', v)}
-            />
-          </div>
+            Physical Water Color
+          </label>
 
-          <Slider
-            label="Depth Falloff"
-            value={params.depthFalloff}
-            min={0.01}
-            max={10.0}
-            step={0.01}
-            format={(v) => v.toFixed(2)}
-            onChange={(v) => handleChange('depthFalloff', v)}
-          />
+          {params.usePhysicalColor ? (
+            <>
+              <Slider
+                label="Turbidity"
+                value={params.turbidity}
+                min={0}
+                max={5}
+                step={0.1}
+                format={(v) => v.toFixed(1)}
+                onChange={(v) => handleChange('turbidity', v)}
+              />
+
+              <div class={styles.colorColumn}>
+                <ColorPicker
+                  label="Scatter Tint"
+                  value={params.scatterTint}
+                  onChange={(v) => handleChange('scatterTint', v)}
+                />
+                <ColorPicker
+                  label="Foam Color"
+                  value={params.foamColor}
+                  onChange={(v) => handleChange('foamColor', v)}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div class={styles.colorColumn}>
+                <ColorPicker
+                  label="Water Color"
+                  value={params.waterColor}
+                  onChange={(v) => handleChange('waterColor', v)}
+                />
+                <ColorPicker
+                  label="Deep Color"
+                  value={params.deepColor}
+                  onChange={(v) => handleChange('deepColor', v)}
+                />
+                <ColorPicker
+                  label="Foam Color"
+                  value={params.foamColor}
+                  onChange={(v) => handleChange('foamColor', v)}
+                />
+              </div>
+
+              <Slider
+                label="Depth Falloff"
+                value={params.depthFalloff}
+                min={0.01}
+                max={10.0}
+                step={0.01}
+                format={(v) => v.toFixed(2)}
+                onChange={(v) => handleChange('depthFalloff', v)}
+              />
+            </>
+          )}
 
           <Slider
             label="Opacity"

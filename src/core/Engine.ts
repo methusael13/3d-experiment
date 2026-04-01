@@ -98,7 +98,11 @@ export class Engine {
    */
   static async create(options: EngineOptions): Promise<Engine> {
     // 1. Initialize WebGPU context
-    const gpuContext = await GPUContext.getInstance(options.canvas);
+    const gpuContext = await GPUContext.getInstance(options.canvas, {
+      requiredLimits: {
+        maxComputeInvocationsPerWorkgroup: 512
+      }
+    });
 
     // 2. Create rendering pipeline
     const pipeline = new GPUForwardPipeline(gpuContext, {
@@ -341,6 +345,10 @@ export class Engine {
     if (settings.enabled) {
       this.pipeline.setSSAOConfig({ ...settings });
     }
+  }
+
+  setSDFEnabled(enabled: boolean): void {
+    this.pipeline.setSDFEnabled(enabled);
   }
 
   setSSRSettings(settings: SSRSettings): void {

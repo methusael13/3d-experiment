@@ -596,6 +596,19 @@ export class GPUForwardPipeline {
 
   // ==================== SSR ====================
 
+  // ==================== SDF / Global Distance Field ====================
+
+  setSDFEnabled(enabled: boolean): void {
+    const tp = this.passes.find(p => p.name === 'transparent') as TransparentPass | undefined;
+    if (tp) { tp.sdfEnabled = enabled; }
+  }
+  isSDFEnabled(): boolean {
+    const tp = this.passes.find(p => p.name === 'transparent') as TransparentPass | undefined;
+    return tp?.sdfEnabled ?? true;
+  }
+
+  // ==================== SSR ====================
+
   setSSREnabled(enabled: boolean): void {
     this.ssrPass?.setEnabled(enabled);
     const tp = this.passes.find(p => p.name === 'transparent') as TransparentPass | undefined;

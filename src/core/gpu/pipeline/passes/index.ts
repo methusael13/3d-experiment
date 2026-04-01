@@ -36,6 +36,8 @@ import type { VariantMeshPool } from '../VariantMeshPool';
 import { SSRConfig } from '../SSRConfig';
 import { FrustumCullComponent } from '@/core/ecs';
 import { Vec3 } from '@/core/types';
+import { GlobalDistanceField } from '../../sdf/GlobalDistanceField';
+import type { SDFTerrainStampParams } from '../../sdf/types';
 
 // ============================================================================
 // SKY PASS
@@ -283,6 +285,12 @@ export class TransparentPass extends BaseRenderPass {
   /** SSR config settings (set by pipeline when SSR quality changes) */
   ssrConfig: Omit<SSRConfig, 'enabled' | 'quality'> | null = null;
   
+  /** Whether SDF/Global Distance Field is enabled (set by pipeline from UI) */
+  sdfEnabled: boolean = true;
+  
+  /** Global Distance Field for SDF-based contact foam (lazy initialized) */
+  private gdf: GlobalDistanceField | null = null;
+  
   constructor() {
     super();
   }
@@ -315,6 +323,26 @@ export class TransparentPass extends BaseRenderPass {
     
     // Get terrain config for size/scale (default if no terrain)
     const terrainConfig = terrainManager?.getConfig();
+    
+    // === Global Distance Field (SDF) update ===
+    // Lazy-initialize GDF on first frame that has both ocean + terrain (gated by sdfEnabled toggle)
+    if (this.sdfEnabled && terrainManager?.isReady && terrainManager.getHeightmap()) {
+      if (!this.gdf) {
+        this.gdf = new GlobalDistanceField(ctx.ctx);
+        this.gdf.initialize();
+        console.log('[TransparentPass] GlobalDistanceField initialized for water contact foam');
+      }
+      // Build terrain stamp params from terrain manager
+      const heightmap = terrainManager.getHeightmap()!;
+      const terrainStampParams: SDFTerrainStampParams = {
+        heightmapView: heightmap.view,
+        heightScale: terrainConfig?.heightScale ?? 50,
+        terrainWorldSize: terrainConfig?.worldSize ?? 1000,
+      };
+      // Update GDF (compute pass — records into same encoder before render pass)
+      this.gdf.update(ctx.encoder, ctx.cameraPosition, terrainStampParams);
+    }
+    
     // Read light from ECS
     const dirLight = ctx.getDirectionalLight();
     const lightDirection = dirLight.direction;
@@ -356,6 +384,8 @@ export class TransparentPass extends BaseRenderPass {
       // SSR enabled flag (respects global SSR toggle from UI)
       ssrEnabled: this.ssrEnabled,
       ssrConfig: this.ssrConfig ?? undefined,
+      // Global Distance Field for SDF contact foam (G1) — only pass when SDF is enabled
+      globalDistanceField: this.sdfEnabled ? (this.gdf ?? undefined) : undefined,
     });
     
     pass.end();

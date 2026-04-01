@@ -71,6 +71,10 @@ export interface RenderingPanelProps {
   ssrSettings: SSRSettings;
   onSSRSettingsChange: (settings: Partial<SSRSettings>) => void;
 
+  // SDF / Global Distance Field
+  sdfEnabled: boolean;
+  onSDFEnabledChange: (enabled: boolean) => void;
+
   // Atmospheric fog settings
   atmosphericFogSettings: AtmosphericFogSettings;
   onAtmosphericFogSettingsChange: (settings: Partial<AtmosphericFogSettings>) => void;
@@ -184,6 +188,8 @@ export function RenderingPanel({
   onGodRaySettingsChange,
   debugViewMode,
   onDebugViewModeChange,
+  sdfEnabled,
+  onSDFEnabledChange,
   compositeSettings,
   onCompositeSettingsChange,
 }: RenderingPanelProps) {
@@ -493,6 +499,15 @@ export function RenderingPanel({
             />
           </div>
         </div>
+      </Section>
+
+      {/* Global Distance Field */}
+      <Section title="Distance Field (SDF)" defaultCollapsed={false}>
+        <Checkbox
+          label="Enable Global Distance Field"
+          checked={sdfEnabled}
+          onChange={onSDFEnabledChange}
+        />
       </Section>
 
       {/* Post Processing - SSAO */}

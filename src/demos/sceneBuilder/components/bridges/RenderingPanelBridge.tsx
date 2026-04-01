@@ -15,6 +15,7 @@ interface RenderingState {
   shadowSettings: WebGPUShadowSettings;
   ssaoSettings: SSAOSettings;
   ssrSettings: SSRSettings;
+  sdfEnabled: boolean;
   compositeSettings: Required<CompositeEffectConfig>;
   webgpuEnabled: boolean;
   webgpuStatus: string;
@@ -43,6 +44,7 @@ const defaultRenderingState: RenderingState = {
     enabled: false,
     quality: 'medium' as SSRQualityLevel,
   },
+  sdfEnabled: true,
   compositeSettings: {
     tonemapping: 3, // ACES
     gamma: 2.2,
@@ -76,6 +78,7 @@ export function ConnectedRenderingPanel({
   const [ssrSettings, setSSRSettings] = useState<SSRSettings>(
     defaultRenderingState.ssrSettings
   );
+  const [sdfEnabled, setSDFEnabled] = useState<boolean>(defaultRenderingState.sdfEnabled);
   const [debugViewMode, setDebugViewMode] = useState<DebugViewMode>('off');
   const [compositeSettings, setCompositeSettings] = useState<Required<CompositeEffectConfig>>(
     defaultRenderingState.compositeSettings
@@ -337,6 +340,12 @@ export function ConnectedRenderingPanel({
       onSSAOSettingsChange={handleSSAOSettingsChange}
       ssrSettings={ssrSettings}
       onSSRSettingsChange={handleSSRSettingsChange}
+      sdfEnabled={sdfEnabled}
+      onSDFEnabledChange={(enabled: boolean) => {
+        setSDFEnabled(enabled);
+        const viewport = store.viewport;
+        if (viewport) { viewport.setSDFEnabled?.(enabled); }
+      }}
       atmosphericFogSettings={atmosphericFogSettings}
       onAtmosphericFogSettingsChange={handleAtmosphericFogSettingsChange}
       cloudSettings={cloudSettings}

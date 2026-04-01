@@ -407,6 +407,7 @@ export class EditorViewport {
   setWebGPUShadowSettings(s: WebGPUShadowSettings): void { this._engine?.setShadowSettings(s); }
   setSSAOSettings(s: SSAOSettings): void { this._engine?.setSSAOSettings(s); }
   setSSRSettings(s: SSRSettings): void { this._engine?.setSSRSettings(s); }
+  setSDFEnabled(enabled: boolean): void { this._engine?.setSDFEnabled(enabled); }
   setCompositeSettings(c: Partial<CompositeEffectConfig>): void { this._engine?.setCompositeSettings(c); }
   setAtmosphericFogSettings(s: Partial<AtmosphericFogConfig> & { enabled?: boolean }): void { this._engine?.setAtmosphericFogSettings(s); }
   setGodRaySettings(s: Partial<GodRayConfig>): void { this._engine?.setGodRaySettings(s); }

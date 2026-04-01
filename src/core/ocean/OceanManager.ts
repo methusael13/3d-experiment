@@ -16,6 +16,7 @@ import {
 import { UnifiedGPUTexture } from '../gpu/GPUTexture';
 import type { SceneEnvironment } from '../gpu/renderers/shared';
 import { SSRConfig } from '../gpu/pipeline/SSRConfig';
+import type { GlobalDistanceField } from '../gpu/sdf/GlobalDistanceField';
 
 /**
  * Ocean manager configuration
@@ -75,6 +76,8 @@ export interface OceanRenderParams {
   ssrEnabled?: boolean;
   /** SSR ray march settings (from SSRConfig quality preset) */
   ssrConfig?: Omit<SSRConfig, 'enabled' | 'quality'>;
+  /** Global Distance Field for SDF-based contact foam (optional, G1) */
+  globalDistanceField?: GlobalDistanceField | null;
 }
 
 /**
@@ -152,6 +155,7 @@ export class OceanManager {
       viewMatrix: params.viewMatrix,
       ssrEnabled: params.ssrEnabled,
       ssrConfig: params.ssrConfig,
+      globalDistanceField: params.globalDistanceField,
     });
   }
   

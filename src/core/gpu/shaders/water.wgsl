@@ -38,6 +38,8 @@ struct WaterMaterial {
   params3: vec4f,
   ssrParams1: vec4f,  // x = maxSteps, y = refinementSteps, z = maxDistance, w = stepSize
   ssrParams2: vec4f,  // x = thickness, y = edgeFade, z = jitter (0 or 1), w = unused
+  absorptionCoeffs: vec4f,  // xyz = RGB absorption per meter, w = turbidity
+  scatterTint: vec4f,       // xyz = scatter tint color, w = usePhysicalColor (0 or 1)
 }
 
 // ============================================================================
@@ -49,6 +51,53 @@ struct WaterMaterial {
 @group(0) @binding(2) var depthTexture: texture_depth_2d;
 @group(0) @binding(3) var texSampler: sampler;
 @group(0) @binding(4) var sceneColorTexture: texture_2d<f32>;
+
+// ============================================================================
+// Bindings - Group 1 (SDF - Global Distance Field for contact foam)
+// ============================================================================
+
+@group(1) @binding(0) var sdfTexture: texture_3d<f32>;
+@group(1) @binding(1) var sdfSampler: sampler;
+@group(1) @binding(2) var<uniform> sdfParams: SDFParams;
+
+struct SDFParams {
+  center: vec3f,
+  _pad0: f32,
+  extent: vec3f,
+  voxelSize: f32,
+}
+
+fn sdfLoadTexel(coord: vec3i, maxCoord: vec3i) -> f32 {
+  let c = clamp(coord, vec3i(0), maxCoord);
+  return textureLoad(sdfTexture, vec3u(c), 0).r;
+}
+
+fn sampleSDF(worldPos: vec3f) -> f32 {
+  let uvw = (worldPos - sdfParams.center + sdfParams.extent) / (sdfParams.extent * 2.0);
+  if (any(uvw < vec3f(0.0)) || any(uvw > vec3f(1.0))) { return 999.0; }
+  // Manual trilinear interpolation (r32float is unfilterable in WebGPU)
+  let texSize = vec3f(textureDimensions(sdfTexture));
+  let maxCoord = vec3i(texSize) - vec3i(1);
+  let tc = uvw * texSize - 0.5; // texel center coords
+  let tc0 = vec3i(floor(tc));
+  let f = tc - floor(tc); // fractional part [0,1)
+  // 8-corner trilinear
+  let c000 = sdfLoadTexel(tc0, maxCoord);
+  let c100 = sdfLoadTexel(tc0 + vec3i(1, 0, 0), maxCoord);
+  let c010 = sdfLoadTexel(tc0 + vec3i(0, 1, 0), maxCoord);
+  let c110 = sdfLoadTexel(tc0 + vec3i(1, 1, 0), maxCoord);
+  let c001 = sdfLoadTexel(tc0 + vec3i(0, 0, 1), maxCoord);
+  let c101 = sdfLoadTexel(tc0 + vec3i(1, 0, 1), maxCoord);
+  let c011 = sdfLoadTexel(tc0 + vec3i(0, 1, 1), maxCoord);
+  let c111 = sdfLoadTexel(tc0 + vec3i(1, 1, 1), maxCoord);
+  let c00 = mix(c000, c100, f.x);
+  let c10 = mix(c010, c110, f.x);
+  let c01 = mix(c001, c101, f.x);
+  let c11 = mix(c011, c111, f.x);
+  let c0 = mix(c00, c10, f.y);
+  let c1 = mix(c01, c11, f.y);
+  return mix(c0, c1, f.z);
+}
 
 // ============================================================================
 // Bindings - Group 3 (SceneEnvironment: Shadow + IBL)
@@ -268,14 +317,9 @@ fn cheapAtmosphere(rayDir: vec3f, sunDir: vec3f) -> vec3f {
   return blueSky2 * (1.0 + 1.0 * pow(1.0 - rayDir.y, 3.0));
 }
 
-fn sampleIBLReflection(reflectDir: vec3f, roughness: f32, sunDir: vec3f, sunIntensityFactor: f32) -> vec3f {
+fn sampleIBLReflection(reflectDir: vec3f, roughness: f32) -> vec3f {
   let lod = roughness * 6.0;
-  let envColor = textureSampleLevel(env_iblSpecular, env_cubeSampler, reflectDir, lod).rgb;
-  let brightness = dot(envColor, vec3f(0.299, 0.587, 0.114));
-  if (brightness < 0.001) {
-    return cheapAtmosphere(reflectDir, sunDir) * sunIntensityFactor;
-  }
-  return envColor;
+  return textureSampleLevel(env_iblSpecular, env_cubeSampler, reflectDir, lod).rgb;
 }
 
 fn getSun(rayDir: vec3f, sunDir: vec3f, intensity: f32) -> f32 {
@@ -560,17 +604,34 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let detailDelta = detailNormalPerturbation(input.worldPosition.xz, time, wavelength, detailStrength * detailFade);
   N = normalize(N + vec3f(detailDelta.x, 0.0, detailDelta.z));
 
-  // ===== Fresnel =====
-  let NdotV = max(0.0, dot(N, viewDir));
+  // ===== Physical Color Mode =====
+  let usePhysicalColor = material.scatterTint.w > 0.5;
+
+  // ===== Fresnel via BRDF LUT (split-sum) =====
+  let NdotV = max(0.001, dot(N, viewDir));
+  let waterRoughness = 0.05; // Water is nearly perfectly smooth
+  let F0 = vec3f(0.02); // IOR 1.33 → F0 ≈ 0.02
+
+  // Sample BRDF LUT: x = F0 scale, y = F0 bias
+  let brdf = textureSampleLevel(env_brdfLut, env_lutSampler, vec2f(NdotV, waterRoughness), 0.0).rg;
+  let specularScale = F0 * brdf.x + brdf.y; // Integrated Fresnel reflectance
+
+  // Also compute scalar Fresnel for legacy path and alpha blending
   let rawFresnel = pow(1.0 - NdotV, fresnelPower);
-  let fresnel = 0.02 + 0.98 * smoothstep(0.0, 1.0, rawFresnel);
+  let fresnel = select(
+    0.02 + 0.98 * smoothstep(0.0, 1.0, rawFresnel), // Legacy Fresnel
+    specularScale.r,                                    // Physical Fresnel from BRDF LUT
+    usePhysicalColor
+  );
 
   // ===== Reflection =====
   var R = normalize(reflect(-viewDir, N));
-  R.y = abs(R.y);
-  let skyColor = sampleIBLReflection(R, 0.05, sunDir, sunIntensityFactor);
+  // Allow below-horizon reflections (SSR handles them); clamp only to avoid degenerate sampling
+  R = normalize(R + vec3f(0.0, max(0.0, -R.y) * 0.01, 0.0));
+  let envReflection = sampleIBLReflection(R, waterRoughness);
   let sunReflection = getSun(R, sunDir, sunIntensity) * sunIntensityFactor;
-  var reflection = skyColor + vec3f(1.0, 0.95, 0.9) * sunReflection;
+  var reflection = envReflection * select(vec3f(1.0), specularScale, usePhysicalColor)
+                 + vec3f(1.0, 0.95, 0.9) * sunReflection;
 
   // ===== Inline SSR =====
   let ssrEnabled = uniforms.shadowParams.w > 0.5;
@@ -614,15 +675,43 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let maxColorDepth = 30.0;
   let waterDepthMeters = select(min(rawWaterDepth, maxColorDepth), maxColorDepth, isOpenOcean);
 
-  // ===== Subsurface Scattering =====
-  let absorptionCoeff = depthFalloff * 0.05;
-  let transmittance = exp(-waterDepthMeters * absorptionCoeff);
-  let waterTint = mix(material.scatterColor.rgb, material.waterColor.rgb, transmittance);
+  // ===== Subsurface Scattering / Water Body Color =====
+  var waterBodyColor: vec3f;
+  if (usePhysicalColor) {
+    // Physical absorption model: Beer-Lambert with sky-derived illumination
+    let absorption = material.absorptionCoeffs.xyz * material.absorptionCoeffs.w; // coeffs * turbidity
+    let physTransmittance = exp(-waterDepthMeters * absorption);
 
-  // ===== Shore Foam =====
+    // Sample diffuse sky irradiance for subsurface ambient light
+    let skyDiffuse = textureSampleLevel(env_iblDiffuse, env_cubeSampler, vec3f(0.0, 1.0, 0.0), 0.0).rgb;
+
+    // Water body color = sky light transmitted through water column + scattered light
+    let scatterTint = material.scatterTint.xyz;
+    waterBodyColor = skyDiffuse * physTransmittance + scatterTint * (1.0 - physTransmittance);
+  } else {
+    // Legacy path: manual waterColor/deepColor blend with depth falloff
+    let absorptionCoeff = depthFalloff * 0.05;
+    let transmittance = exp(-waterDepthMeters * absorptionCoeff);
+    waterBodyColor = mix(material.scatterColor.rgb, material.waterColor.rgb, transmittance);
+  }
+
+  // ===== Shore Foam + SDF Contact Foam =====
   let foamPattern = foamNoise(input.worldPosition.xz * 0.3, time);
   let foamFade = 1.0 - saturate(waterDepthMeters / max(foamThreshold, 0.001));
   let shoreFoam = select(0.0, foamFade * foamPattern, foamThreshold > 0.0);
+
+  // SDF-based contact foam: foam where water is just above terrain surface
+  // sdfDist > 0 means water pixel is above terrain, < 0 means inside terrain
+  // We want foam only where water is very close ABOVE terrain (shoreline contact)
+  let contactFoamWidth = 1.0; // meters — foam appears within this distance above terrain
+  let sdfDist = sampleSDF(input.worldPosition);
+  // One-sided: only foam where 0 < sdfDist < contactFoamWidth (water just above terrain)
+  // Guard: skip if sdfDist >= 100 (out of SDF bounds / no terrain data)
+  let contactFoamRaw = select(0.0, smoothstep(contactFoamWidth, 0.0, sdfDist), sdfDist >= 0.0 && sdfDist < 100.0);
+  let contactFoam = contactFoamRaw * foamPattern; // Use same noise for breakup
+
+  // Combine shore foam and contact foam (take max)
+  let totalFoam = max(shoreFoam, contactFoam);
 
   // ===== Refraction =====
   let refractionStrength = material.params3.x;
@@ -637,26 +726,51 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     refractedColor = textureLoad(sceneColorTexture, texCoord, 0).rgb;
     refractionMix = depthAttenuation * (1.0 - fresnel * 0.5);
     let tintStrength = 1.0 - depthAttenuation;
-    refractedColor = mix(refractedColor, refractedColor * waterTint * 2.0, tintStrength);
+    refractedColor = mix(refractedColor, refractedColor * waterBodyColor * 2.0, tintStrength);
   }
 
   // ===== Final Color Composition =====
-  var baseColor = waterTint * sunIntensityFactor * ambientIntensity;
-  if (refractionMix > 0.001) {
-    baseColor = mix(baseColor, refractedColor, refractionMix);
-  }
-
   // ===== Shadow (CSM + cloud shadow combined) =====
   let waterNormalUp = vec3f(0.0, 1.0, 0.0);
   let csmShadow = waterSampleShadow(input.lightSpacePos, input.worldPosition, waterNormalUp, sunDir);
   let cloudShadow = sampleCloudShadowWater(input.worldPosition);
   let shadow = csmShadow * cloudShadow;
-  baseColor *= mix(0.4, 1.0, shadow);
 
-  let shadowedReflection = reflection * mix(0.3, 1.0, shadow);
-  var finalColor = mix(baseColor, shadowedReflection, fresnel * 0.4) + fresnel * shadowedReflection * 0.3;
-  finalColor += vec3f(0.02, 0.04, 0.08) * ambientIntensity * sunIntensityFactor;
-  finalColor = mix(finalColor, material.foamColor.rgb * sunIntensityFactor * ambientIntensity, shoreFoam * 0.8);
+  var finalColor: vec3f;
+  if (usePhysicalColor) {
+    // Energy-conserving composition: kS + kD = 1 (for non-metals)
+    let kS = specularScale;                   // Fresnel reflectance (from BRDF LUT)
+    let kD = (vec3f(1.0) - kS);              // Water is non-metallic
+
+    // Base transmitted color (water body + refraction)
+    var transmitted = waterBodyColor;
+    if (refractionMix > 0.001) {
+      transmitted = mix(transmitted, refractedColor, refractionMix);
+    }
+
+    // Apply shadow to both transmitted and reflected light
+    transmitted *= mix(0.4, 1.0, shadow);
+    let shadowedReflection = reflection * mix(0.3, 1.0, shadow);
+
+    // Energy-conserving: reflected + transmitted = 1
+    finalColor = shadowedReflection * kS + transmitted * kD;
+
+    // Direct sun specular added separately (not energy-conserved with IBL, intentional)
+    // Sun specular is already in `reflection` via sunReflection
+  } else {
+    // Legacy composition path (preserved for backward compatibility)
+    var baseColor = waterBodyColor * sunIntensityFactor * ambientIntensity;
+    if (refractionMix > 0.001) {
+      baseColor = mix(baseColor, refractedColor, refractionMix);
+    }
+    baseColor *= mix(0.4, 1.0, shadow);
+    let shadowedReflection = reflection * mix(0.3, 1.0, shadow);
+    finalColor = mix(baseColor, shadowedReflection, fresnel * 0.4) + fresnel * shadowedReflection * 0.3;
+    finalColor += vec3f(0.02, 0.04, 0.08) * ambientIntensity * sunIntensityFactor;
+  }
+
+  // Foam (same for both paths) — uses combined shore + SDF contact foam
+  finalColor = mix(finalColor, material.foamColor.rgb * sunIntensityFactor * ambientIntensity, totalFoam * 0.8);
 
   // ===== Alpha =====
   let minAlpha = 0.7;

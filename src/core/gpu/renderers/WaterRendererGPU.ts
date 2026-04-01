@@ -21,6 +21,7 @@ import { SceneEnvironment, PlaceholderTextures } from './shared';
 import waterShaderSource from '../shaders/water.wgsl?raw';
 import { registerWGSLShader, unregisterWGSLShader, getWGSLShaderSource } from '@/demos/sceneBuilder/shaderManager';
 import { SSRConfig } from '../pipeline/SSRConfig';
+import type { GlobalDistanceField } from '../sdf/GlobalDistanceField';
 
 /**
  * Water configuration
@@ -29,9 +30,9 @@ import { SSRConfig } from '../pipeline/SSRConfig';
 export interface WaterConfig {
   /** Water surface Y level (normalized -0.5 to 0.5, scaled by heightScale) */
   waterLevel: number;
-  /** Water surface color (shallow areas) */
+  /** Water surface color (shallow areas) — used when usePhysicalColor is false */
   waterColor: [number, number, number];
-  /** Deep water color */
+  /** Deep water color — used when usePhysicalColor is false */
   deepColor: [number, number, number];
   /** Foam color (shoreline/crests) */
   foamColor: [number, number, number];
@@ -39,13 +40,13 @@ export interface WaterConfig {
   waveScale: number;
   /** Base opacity (0-1) */
   opacity: number;
-  /** Fresnel power (higher = more reflection at edges) */
+  /** Fresnel power (higher = more reflection at edges) — used when usePhysicalColor is false */
   fresnelPower: number;
   /** Specular power for sun reflection */
   specularPower: number;
   /** Depth threshold for foam effect */
   foamThreshold: number;
-  /** How quickly water becomes opaque with depth */
+  /** How quickly water becomes opaque with depth — used when usePhysicalColor is false */
   depthFalloff: number;
   /** Base wavelength in world units (smaller = more waves, larger = bigger swells) */
   wavelength: number;
@@ -53,6 +54,16 @@ export interface WaterConfig {
   detailStrength: number;
   /** Refraction strength for shallow water (0 = none, 0.5-1.5 = typical) */
   refractionStrength: number;
+  
+  // === Physical Appearance (W1) ===
+  /** Use physically-based water color from absorption + IBL (default: true for new scenes) */
+  usePhysicalColor: boolean;
+  /** RGB absorption coefficients per meter (pure water: R=0.45, G=0.064, B=0.0145) */
+  absorptionCoeffs: [number, number, number];
+  /** Turbidity multiplier for absorption (1=clear, 5=muddy) */
+  turbidity: number;
+  /** Suspended particle scatter tint color (visible in deep water) */
+  scatterTint: [number, number, number];
   
   // Grid placement parameters
   /** Grid center X coordinate in world units */
@@ -110,7 +121,9 @@ export interface WaterRenderParams {
   /** Whether SSR is globally enabled (user toggle) */
   ssrEnabled?: boolean;
   /** SSR ray march settings (from SSRConfig quality preset) */
-  ssrConfig?: Omit<SSRConfig, 'enabled' | 'quality'>
+  ssrConfig?: Omit<SSRConfig, 'enabled' | 'quality'>;
+  /** Global Distance Field for SDF-based contact foam (optional, G1) */
+  globalDistanceField?: GlobalDistanceField | null;
 }
 
 /**
@@ -132,6 +145,11 @@ export function createDefaultWaterConfig(): WaterConfig {
     wavelength: 20.0,  // 20 world units - good default for visible waves
     detailStrength: 0.3, // High-frequency normal detail (0-1)
     refractionStrength: 0.8, // Subtle refraction for shallow water visibility
+    // Physical appearance defaults (W1)
+    usePhysicalColor: true,
+    absorptionCoeffs: [0.45, 0.064, 0.0145], // Pure water absorption (red absorbs fastest)
+    turbidity: 1.0,           // Clear water
+    scatterTint: [0.03, 0.07, 0.17], // Deep blue-green scatter
     // Grid placement defaults - will be set to match terrain size on first render
     gridCenterX: 0,
     gridCenterZ: 0,
@@ -168,6 +186,12 @@ export class WaterRendererGPU {
   // Bind groups
   private bindGroup: GPUBindGroup | null = null;
   
+  // SDF (Group 1) resources
+  private sdfBindGroupLayout: GPUBindGroupLayout | null = null;
+  private sdfPlaceholderBindGroup: GPUBindGroup | null = null;
+  private sdfPlaceholderTexture: GPUTexture | null = null;
+  private sdfPlaceholderUniformBuffer: UnifiedGPUBuffer | null = null;
+  
   // Mesh data
   private indexCount: number = 0;
   private currentCellsX: number = 0;
@@ -191,9 +215,9 @@ export class WaterRendererGPU {
     this.ctx = ctx;
     this.config = { ...createDefaultWaterConfig(), ...config };
     
-    // Uniform builders: 6 mat4 (96) + 5 vec4 (20) = 116 floats for uniforms, 36 for material
+    // Uniform builders: 6 mat4 (96) + 5 vec4 (20) = 116 floats for uniforms, 44 for material
     this.uniformBuilder = new UniformBuilder(116);
-    this.materialBuilder = new UniformBuilder(36); // 9 vec4 = 36 floats (7 base + 2 SSR params)
+    this.materialBuilder = new UniformBuilder(44); // 11 vec4 = 44 floats (7 base + 2 SSR + 2 physical color)
     
     // Create default SceneEnvironment for Group 3 layout and placeholder bind group
     this.defaultSceneEnvironment = new SceneEnvironment(ctx);
@@ -209,6 +233,7 @@ export class WaterRendererGPU {
     this.createBuffers();
     this.createSampler();
     this.createBindGroupLayout();
+    this.createSDFBindGroupLayout();
     this.createRenderPipeline();
     this.registerShader();
   }
@@ -312,10 +337,10 @@ export class WaterRendererGPU {
       size: 464, // 116 * 4 bytes
     });
     
-    // Material buffer: 9 vec4s = 36 floats = 144 bytes (7 base + 2 SSR params)
+    // Material buffer: 11 vec4s = 44 floats = 176 bytes (7 base + 2 SSR + 2 physical color)
     this.materialBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'water-material',
-      size: 144,
+      size: 176,
     });
   }
   
@@ -344,13 +369,78 @@ export class WaterRendererGPU {
   }
   
   /**
+   * Create SDF bind group layout (Group 1) and placeholder resources
+   * Provides a fallback bind group when no GDF is available
+   */
+  private createSDFBindGroupLayout(): void {
+    // Group 1 layout: 3D texture + sampler + uniform buffer
+    // r32float textures are 'unfilterable-float' in WebGPU, requiring non-filtering samplers
+    this.sdfBindGroupLayout = this.ctx.device.createBindGroupLayout({
+      label: 'water-sdf-bind-group-layout',
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '3d' } },
+        { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'non-filtering' } },
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+
+    // Create a tiny 2×2×2 placeholder 3D texture filled with 999.0 (max distance = no contact foam)
+    this.sdfPlaceholderTexture = this.ctx.device.createTexture({
+      label: 'water-sdf-placeholder',
+      size: [2, 2, 2],
+      format: 'r32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      dimension: '3d',
+    });
+    // Fill placeholder with 999.0 (8 voxels × 4 bytes = 32 bytes, row alignment: 256)
+    // WebGPU requires bytesPerRow to be a multiple of 256 for writeTexture
+    const placeholderData = new Float32Array(2 * 2 * 2);
+    placeholderData.fill(999.0);
+    this.ctx.queue.writeTexture(
+      { texture: this.sdfPlaceholderTexture },
+      placeholderData,
+      { bytesPerRow: 2 * 4, rowsPerImage: 2 },
+      { width: 2, height: 2, depthOrArrayLayers: 2 },
+    );
+
+    // Placeholder uniform: center=0, extent=1, voxelSize=1 (returns 999 for all queries)
+    this.sdfPlaceholderUniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
+      label: 'water-sdf-placeholder-uniforms',
+      size: 32, // 8 floats
+    });
+    this.sdfPlaceholderUniformBuffer.write(this.ctx, new Float32Array([
+      0, 0, 0, 0,  // center + pad
+      1, 1, 1, 1,  // extent + voxelSize
+    ]));
+
+    const placeholderSampler = this.ctx.device.createSampler({
+      label: 'water-sdf-placeholder-sampler',
+      // Non-filtering sampler required for unfilterable-float (r32float) textures
+    });
+
+    this.sdfPlaceholderBindGroup = this.ctx.device.createBindGroup({
+      label: 'water-sdf-placeholder-bind-group',
+      layout: this.sdfBindGroupLayout,
+      entries: [
+        { binding: 0, resource: this.sdfPlaceholderTexture.createView({ dimension: '3d' }) },
+        { binding: 1, resource: placeholderSampler },
+        { binding: 2, resource: { buffer: this.sdfPlaceholderUniformBuffer.buffer } },
+      ],
+    });
+  }
+  
+  /**
    * Create render pipeline with 4-group layout
    * - Group 0: Water-specific resources
+   * - Group 1: SDF (Global Distance Field) for contact foam
    * - Group 3: SceneEnvironment (IBL + shadow) - uses SceneEnvironment.layout
    */
   private createRenderPipeline(shaderSource: string = this.currentShaderSource): void {
     if (!this.bindGroupLayout) {
       this.createBindGroupLayout();
+    }
+    if (!this.sdfBindGroupLayout) {
+      this.createSDFBindGroupLayout();
     }
     
     // Create shader module
@@ -359,11 +449,11 @@ export class WaterRendererGPU {
       code: shaderSource,
     });
     
-    // Create 4-group pipeline layout (Groups 1,2 unused)
-    // Use SceneEnvironment.layout for Group 3 to ensure compatibility
+    // Create 4-group pipeline layout
+    // Group 0: Water uniforms/material, Group 1: SDF, Group 2: unused, Group 3: SceneEnvironment
     this.pipelineLayout = this.ctx.device.createPipelineLayout({
       label: 'water-pipeline-layout',
-      bindGroupLayouts: [this.bindGroupLayout!, undefined as any, undefined as any, this.defaultSceneEnvironment.layout],
+      bindGroupLayouts: [this.bindGroupLayout!, this.sdfBindGroupLayout!, undefined as any, this.defaultSceneEnvironment.layout],
     });
     
     // Vertex buffer layout
@@ -501,6 +591,25 @@ export class WaterRendererGPU {
     passEncoder.setPipeline(this.pipeline);
     passEncoder.setBindGroup(0, this.bindGroup);
     
+    // Set bind group 1 for SDF (contact foam)
+    // Use live GDF if available, otherwise placeholder (returns 999 = no contact foam)
+    const gdf = params.globalDistanceField;
+    let sdfBindGroup = this.sdfPlaceholderBindGroup;
+    if (gdf?.isReady && gdf.getSampleView() && gdf.sampler && gdf.consumerUniformBuffer && this.sdfBindGroupLayout) {
+      sdfBindGroup = this.ctx.device.createBindGroup({
+        label: 'water-sdf-live-bind-group',
+        layout: this.sdfBindGroupLayout,
+        entries: [
+          { binding: 0, resource: gdf.getSampleView()! },
+          { binding: 1, resource: gdf.sampler },
+          { binding: 2, resource: { buffer: gdf.consumerUniformBuffer.buffer } },
+        ],
+      });
+    }
+    if (sdfBindGroup) {
+      passEncoder.setBindGroup(1, sdfBindGroup);
+    }
+    
     // Set bind group 3 for IBL reflections
     // Use provided SceneEnvironment or fall back to default (placeholder textures)
     const environment = params.sceneEnvironment ?? this.defaultSceneEnvironment;
@@ -606,6 +715,20 @@ export class WaterRendererGPU {
         params.ssrConfig?.edgeFade ?? 0.15,
         (params.ssrConfig?.jitter ?? false) ? 1.0 : 0.0,
         0.0
+      )
+      // absorptionCoeffs: xyz = RGB absorption per meter, w = turbidity
+      .vec4(
+        this.config.absorptionCoeffs[0],
+        this.config.absorptionCoeffs[1],
+        this.config.absorptionCoeffs[2],
+        this.config.turbidity
+      )
+      // scatterTint: xyz = scatter tint color, w = usePhysicalColor flag
+      .vec4(
+        this.config.scatterTint[0],
+        this.config.scatterTint[1],
+        this.config.scatterTint[2],
+        this.config.usePhysicalColor ? 1.0 : 0.0
       );
     
     this.materialBuffer!.write(this.ctx, this.materialBuilder.build());
@@ -644,6 +767,8 @@ export class WaterRendererGPU {
     this.indexBuffer?.destroy();
     this.uniformBuffer?.destroy();
     this.materialBuffer?.destroy();
+    this.sdfPlaceholderTexture?.destroy();
+    this.sdfPlaceholderUniformBuffer?.destroy();
     
     this.vertexBuffer = null;
     this.indexBuffer = null;
@@ -652,6 +777,10 @@ export class WaterRendererGPU {
     this.pipelineWrapper = null;
     this.bindGroup = null;
     this.bindGroupLayout = null;
+    this.sdfBindGroupLayout = null;
+    this.sdfPlaceholderBindGroup = null;
+    this.sdfPlaceholderTexture = null;
+    this.sdfPlaceholderUniformBuffer = null;
     this.sampler = null;
     this.lastDepthTexture = null;
     this.lastSceneColorTexture = null;
