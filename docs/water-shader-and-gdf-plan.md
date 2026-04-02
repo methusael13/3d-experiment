@@ -1460,3 +1460,79 @@ export interface SDFConfig {
 | **Total runtime sampling** | **~0.45 ms** |
 
 **Grand total worst case**: ~3.85 ms additional GPU time. In practice, the SDF is mostly idle after initial build (static scenes), and the FFT is constant cost but replaces the vertex-shader Gerstner computation.
+
+---
+
+## 7. W2 Implementation Status & Follow-Up
+
+### Current State (Implemented)
+
+Phase W2 is functionally complete with a **procedural multi-octave compute shader** producing animated ocean displacement. The full pipeline is:
+
+1. **Animate shader** (`ocean-animate.wgsl`): 8-octave Gerstner-like waves with deep-water dispersion, written to `rg32float` textures
+2. **Finalize shader** (`ocean-finalize.wgsl`): Reads displacement, computes normals via central differences, outputs `rgba16float` displacement + normal maps
+3. **Water shader** (`water.wgsl`): Samples 3 cascades (250m/37m/5m), blends displacement + normals, conditionally disables old Gerstner path
+4. **UI controls**: Wind Speed, Direction, Amplitude, Choppiness, Fetch, Directional Spread in Water Panel
+
+### Known Issue: Spectrum → IFFT Pipeline Produces Zeros
+
+The original FFT pipeline (spectrum generation → animate with time evolution → IFFT butterfly → finalize) was fully implemented but the **animate shader reads zeros from the spectrum texture**. Root cause investigation:
+
+- ✅ Spectrum generation compute shader (`ocean-spectrum.wgsl`) dispatches correctly
+- ✅ Animate compute shader (`ocean-animate.wgsl`) dispatches and produces output (confirmed with forced test values)
+- ❌ `textureLoad()` in animate shader reads all zeros from the spectrum `rgba16float` storage texture
+- The bind group layout was fixed (`sampleType: 'float'` for `rgba16float`), but the issue persists
+- **Hypothesis**: WebGPU same-encoder compute-to-compute resource hazard — the spectrum texture is written by one compute pass and read by the next within the same `GPUCommandEncoder`, without an explicit barrier. WebGPU implicitly serializes compute passes but the texture may not be flushed from the storage write cache.
+
+### Follow-Up Tasks (Priority Order)
+
+1. ~~**Fix spectrum → animate texture read**~~ ✅ **FIXED**
+   - Root cause: WebGPU same-encoder compute-to-compute resource hazard — spectrum texture written as storage, then read as sampled texture in the same command encoder without a barrier.
+   - Fix: Split spectrum generation into a separate `GPUCommandEncoder` + `device.queue.submit()` call, which creates an implicit GPU barrier ensuring storage writes are flushed before the animate pass reads.
+
+2. ~~**Fix IFFT butterfly pass**~~ ✅ **FIXED**
+   - Re-enabled `cascade.fftPass.execute()` calls for Dy, Dx, Dz (was bypassed with `copyTextureToTexture`).
+   - The butterfly works correctly within the same encoder because it uses separate ping-pong textures with distinct read/write views per pass.
+
+3. **Wind system integration** (Phase W4, ~1 day) — **TODO**
+   - Wire `WindForceParams` from `WindSystem` to `FFTOceanSpectrum.setWindSpeed/setWindDirection`
+   - Already stubbed in the plan
+
+4. ~~**Remove debug logging**~~ ✅ **FIXED**
+   - Removed `_debugFrameCount` and periodic `console.log` from `FFTOceanSpectrum.update()`
+   - Removed `_fftDebugCount` and periodic `console.log` from `WaterRendererGPU.buildFFTBindGroup()`
+
+### Completed Restoration Steps
+
+All temporary workarounds have been resolved:
+
+1. ✅ **Restored `ocean-animate.wgsl`**: Now reads `inputSpectrum` via `textureLoad()`, computes `H(k,t) = H₀(k) × e^(iωt) + conj(H₀(-k)) × e^(-iωt)`, and outputs Dy/Dx/Dz frequency-domain complex textures with proper horizontal displacement via `-i·kx/|k|·H(k,t)`.
+
+2. ✅ **Re-enabled IFFT butterfly** in `FFTOceanSpectrum.ts`: `cascade.fftPass.execute()` calls replace the `encoder.copyTextureToTexture()` workaround for all 3 displacement components.
+
+3. ✅ **Restored sign correction** in `ocean-finalize.wgsl`: `(-1)^(x+y)` checkerboard sign flip re-added for proper centered-FFT output.
+
+4. **Test with amplitude readback**: Use a staging buffer to read back a few displacement texels from the finalize output to verify non-zero values end-to-end. *(Recommended as a follow-up validation step)*
+
+5. **Fix FFT normal computation — analytical frequency-domain normals** ✅ **DONE**
+   - **Problem**: The previous `ocean-finalize.wgsl` computed normals via finite differences (central differences on adjacent IFFT texels). This produced flat/incorrect normals because the `(-1)^(x+y)` sign correction pattern means adjacent texels have opposite signs, causing the central difference `hR - hL` to produce inconsistent gradients.
+   - **Solution**: Normals are now computed **analytically in frequency domain** (standard Tessendorf approach). In `ocean-animate.wgsl`, `∂h/∂x` and `∂h/∂z` are computed as separate frequency-domain outputs (bindings 5 & 6) alongside Dy/Dx/Dz:
+     ```wgsl
+     // Analytical slope in frequency domain:
+     // ∂h/∂x(k,t) = i·kx · H(k,t)
+     // ∂h/∂z(k,t) = i·kz · H(k,t)
+     let iH = vec2f(-hkt.y, hkt.x);  // i × H(k,t)
+     let slopeX = iH * k.x;          // i·kx·H
+     let slopeZ = iH * k.y;          // i·kz·H
+     ```
+   - These slope textures get their own IFFT butterfly passes (2 more per cascade: slopeXFreq→slopeXSpatial, slopeZFreq→slopeZSpatial), then in finalize the normal is simply:
+     ```wgsl
+     let N = normalize(vec3f(-slopeX, 1.0, -slopeZ));
+     ```
+   - This avoids finite differences entirely, produces smooth normals that perfectly match the displacement, and is the industry-standard approach used by every production ocean renderer (UE5 Water, Unity HDRP Water, Sea of Thieves).
+   - **Files modified**: `ocean-animate.wgsl` (added slopeX/slopeZ storage outputs at bindings 5,6), `FFTOceanSpectrum.ts` (added 4 slope textures per cascade, 2 extra IFFT passes, updated animate + finalize bind group layouts), `ocean-finalize.wgsl` (reads IFFT'd slope textures at bindings 6,7 instead of finite differences)
+
+6. **FFT debug texture visualization** ✅ **DONE**
+   - Added 5 debug textures registered with `DebugTextureManager`: spectrum, dy-freq, dy-spatial, displacement, normal
+   - Toggleable from WaterPanel UI via "FFT Debug Textures" checkbox section
+   - Wired through `WaterPanelBridge` → `store.viewport.getDebugTextureManager()`

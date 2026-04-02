@@ -291,6 +291,12 @@ export class TransparentPass extends BaseRenderPass {
   /** Global Distance Field for SDF-based contact foam (lazy initialized) */
   private gdf: GlobalDistanceField | null = null;
   
+  /** Track whether FFT debug textures have been registered */
+  private fftDebugRegistered: boolean = false;
+  
+  /** Debug texture manager reference (set by GPUForwardPipeline) */
+  debugTextureManager: DebugTextureManager | null = null;
+  
   constructor() {
     super();
   }
@@ -314,6 +320,19 @@ export class TransparentPass extends BaseRenderPass {
     
     // Skip if no ocean manager (presence in scene = enabled)
     if (!oceanManager || !oceanManager.isReady) return;
+    
+    // === FFT Ocean compute update (Phase W2) ===
+    // Run FFT spectrum animation + IFFT before the render pass begins
+    oceanManager.updateFFT(ctx.encoder, ctx.time);
+    
+    // Lazy-register FFT debug textures with DebugTextureManager (once)
+    if (!this.fftDebugRegistered && this.debugTextureManager) {
+      const fft = oceanManager.getFFTSpectrum();
+      if (fft?.isReady) {
+        fft.registerDebugTextures(this.debugTextureManager);
+        this.fftDebugRegistered = true;
+      }
+    }
     
     // Copy depth for shader reading (water uses depth for transparency effects)
     ctx.copyDepthForReading();

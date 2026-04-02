@@ -22,6 +22,7 @@ import waterShaderSource from '../shaders/water.wgsl?raw';
 import { registerWGSLShader, unregisterWGSLShader, getWGSLShaderSource } from '@/demos/sceneBuilder/shaderManager';
 import { SSRConfig } from '../pipeline/SSRConfig';
 import type { GlobalDistanceField } from '../sdf/GlobalDistanceField';
+import type { FFTOceanSpectrum } from '../../ocean/FFTOceanSpectrum';
 
 /**
  * Water configuration
@@ -124,6 +125,8 @@ export interface WaterRenderParams {
   ssrConfig?: Omit<SSRConfig, 'enabled' | 'quality'>;
   /** Global Distance Field for SDF-based contact foam (optional, G1) */
   globalDistanceField?: GlobalDistanceField | null;
+  /** FFT ocean spectrum for GPU-computed waves (optional, W2) */
+  fftSpectrum?: FFTOceanSpectrum | null;
 }
 
 /**
@@ -192,6 +195,13 @@ export class WaterRendererGPU {
   private sdfPlaceholderTexture: GPUTexture | null = null;
   private sdfPlaceholderUniformBuffer: UnifiedGPUBuffer | null = null;
   
+  // FFT (Group 2) resources
+  private fftBindGroupLayout: GPUBindGroupLayout | null = null;
+  private fftPlaceholderBindGroup: GPUBindGroup | null = null;
+  private fftPlaceholderTexture: GPUTexture | null = null;
+  private fftPlaceholderUniformBuffer: UnifiedGPUBuffer | null = null;
+  private fftPlaceholderSampler: GPUSampler | null = null;
+  
   // Mesh data
   private indexCount: number = 0;
   private currentCellsX: number = 0;
@@ -210,6 +220,10 @@ export class WaterRendererGPU {
   
   // Current shader source (for hot-reloading)
   private currentShaderSource: string = waterShaderSource;
+  
+  // Track whether FFT was active last frame (for mesh resolution decisions)
+  // Default to true since FFT is always active when OceanManager initializes
+  private _lastFFTEnabled: boolean = true;
   
   constructor(ctx: GPUContext, config?: Partial<WaterConfig>) {
     this.ctx = ctx;
@@ -234,6 +248,7 @@ export class WaterRendererGPU {
     this.createSampler();
     this.createBindGroupLayout();
     this.createSDFBindGroupLayout();
+    this.createFFTBindGroupLayout();
     this.createRenderPipeline();
     this.registerShader();
   }
@@ -312,8 +327,16 @@ export class WaterRendererGPU {
    * Returns true if mesh was rebuilt
    */
   private rebuildMeshIfNeeded(): boolean {
-    const cellsX = Math.max(1, Math.ceil(this.config.gridSizeX / this.config.cellSize));
-    const cellsZ = Math.max(1, Math.ceil(this.config.gridSizeZ / this.config.cellSize));
+    // When FFT is active, use a fixed grid resolution (256×256) to properly resolve
+    // wave displacement textures, independent of the cellSize UI control.
+    // cellSize only affects grid density for the legacy Gerstner path.
+    const fftActive = this._lastFFTEnabled;
+    const cellsX = fftActive
+      ? 256
+      : Math.max(1, Math.ceil(this.config.gridSizeX / this.config.cellSize));
+    const cellsZ = fftActive
+      ? 256
+      : Math.max(1, Math.ceil(this.config.gridSizeZ / this.config.cellSize));
     
     // Limit to reasonable max to prevent memory issues
     const maxCells = 2048;
@@ -430,6 +453,127 @@ export class WaterRendererGPU {
   }
   
   /**
+   * Create FFT bind group layout (Group 2) and placeholder resources.
+   * Group 2 provides FFT displacement + normal maps from the compute pipeline.
+   * When FFT is not ready, placeholders provide flat water (fftEnabled=0).
+   */
+  private createFFTBindGroupLayout(): void {
+    // Group 2 layout: 6 textures (3 displacement + 3 normal) + sampler + uniform
+    this.fftBindGroupLayout = this.ctx.device.createBindGroupLayout({
+      label: 'water-fft-bind-group-layout',
+      entries: [
+        // Displacement maps (rgba16float) for 3 cascades
+        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 1, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 2, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        // Normal maps (rgba16float) for 3 cascades
+        { binding: 3, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 4, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        { binding: 5, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        // Sampler (linear, repeat)
+        { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+        // FFT params uniform
+        { binding: 7, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+      ],
+    });
+
+    // Create 2x2 placeholder rgba16float texture
+    // Use rgba16float to match live FFT textures. Default uninitialized content is fine
+    // because fftEnabled=0 in the uniform means shader takes Gerstner path, never reads these.
+    this.fftPlaceholderTexture = this.ctx.device.createTexture({
+      label: 'water-fft-placeholder',
+      size: [2, 2],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    // Write zeros as raw bytes (rgba16float: 4 channels × 2 bytes = 8 bytes/pixel, 2×2 = 32 bytes)
+    const placeholderBytes = new Uint16Array(2 * 2 * 4); // 4 pixels × 4 channels, all zeros (float16 zero = 0x0000)
+    this.ctx.queue.writeTexture(
+      { texture: this.fftPlaceholderTexture },
+      placeholderBytes,
+      { bytesPerRow: 2 * 4 * 2 }, // 2 pixels × 4 channels × 2 bytes = 16 bytes/row
+      { width: 2, height: 2 },
+    );
+
+    this.fftPlaceholderSampler = this.ctx.device.createSampler({
+      label: 'water-fft-placeholder-sampler',
+      magFilter: 'linear',
+      minFilter: 'linear',
+      addressModeU: 'repeat',
+      addressModeV: 'repeat',
+    });
+
+    // FFT params uniform: tileSizes=(1,1,1,0=cascadeCount), params=(1,1,0=fftDisabled,0)
+    this.fftPlaceholderUniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
+      label: 'water-fft-placeholder-uniforms',
+      size: 32, // 2 vec4 = 8 floats
+    });
+    this.fftPlaceholderUniformBuffer.write(this.ctx, new Float32Array([
+      1.0, 1.0, 1.0, 0.0,   // tileSizes: x,y,z, cascadeCount=0 (disabled)
+      1.0, 1.0, 0.0, 0.0,   // params: amplitudeScale, choppiness, fftEnabled=0, unused
+    ]));
+
+    const placeholderView = this.fftPlaceholderTexture.createView();
+    this.fftPlaceholderBindGroup = this.ctx.device.createBindGroup({
+      label: 'water-fft-placeholder-bind-group',
+      layout: this.fftBindGroupLayout,
+      entries: [
+        { binding: 0, resource: placeholderView },
+        { binding: 1, resource: placeholderView },
+        { binding: 2, resource: placeholderView },
+        { binding: 3, resource: placeholderView },
+        { binding: 4, resource: placeholderView },
+        { binding: 5, resource: placeholderView },
+        { binding: 6, resource: this.fftPlaceholderSampler },
+        { binding: 7, resource: { buffer: this.fftPlaceholderUniformBuffer.buffer } },
+      ],
+    });
+  }
+  
+  /**
+   * Build a live FFT bind group from FFTOceanSpectrum data.
+   * Returns the placeholder bind group if FFT is not ready.
+   */
+  buildFFTBindGroup(fftSpectrum: FFTOceanSpectrum | null): GPUBindGroup {
+    if (!fftSpectrum?.isReady || !this.fftBindGroupLayout || !this.fftPlaceholderSampler) {
+      return this.fftPlaceholderBindGroup!;
+    }
+
+    const config = fftSpectrum.getConfig();
+    const cascadeCount = fftSpectrum.getCascadeCount();
+
+    // Get views for each cascade (fall back to placeholder for missing cascades)
+    const placeholderView = this.fftPlaceholderTexture!.createView();
+    const dv0 = fftSpectrum.getDisplacementView(0) ?? placeholderView;
+    const dv1 = cascadeCount >= 2 ? (fftSpectrum.getDisplacementView(1) ?? placeholderView) : placeholderView;
+    const dv2 = cascadeCount >= 3 ? (fftSpectrum.getDisplacementView(2) ?? placeholderView) : placeholderView;
+    const nv0 = fftSpectrum.getNormalView(0) ?? placeholderView;
+    const nv1 = cascadeCount >= 2 ? (fftSpectrum.getNormalView(1) ?? placeholderView) : placeholderView;
+    const nv2 = cascadeCount >= 3 ? (fftSpectrum.getNormalView(2) ?? placeholderView) : placeholderView;
+
+    // Write FFT params uniform
+    this.fftPlaceholderUniformBuffer!.write(this.ctx, new Float32Array([
+      config.tileSizes[0], config.tileSizes[1], config.tileSizes[2], cascadeCount,
+      config.amplitudeScale, config.choppiness, 1.0, 0.0, // fftEnabled=1.0
+    ]));
+
+    return this.ctx.device.createBindGroup({
+      label: 'water-fft-live-bind-group',
+      layout: this.fftBindGroupLayout,
+      entries: [
+        { binding: 0, resource: dv0 },
+        { binding: 1, resource: dv1 },
+        { binding: 2, resource: dv2 },
+        { binding: 3, resource: nv0 },
+        { binding: 4, resource: nv1 },
+        { binding: 5, resource: nv2 },
+        { binding: 6, resource: fftSpectrum.sampler ?? this.fftPlaceholderSampler },
+        { binding: 7, resource: { buffer: this.fftPlaceholderUniformBuffer!.buffer } },
+      ],
+    });
+  }
+  
+  /**
    * Create render pipeline with 4-group layout
    * - Group 0: Water-specific resources
    * - Group 1: SDF (Global Distance Field) for contact foam
@@ -449,11 +593,16 @@ export class WaterRendererGPU {
       code: shaderSource,
     });
     
+    // Ensure FFT bind group layout exists
+    if (!this.fftBindGroupLayout) {
+      this.createFFTBindGroupLayout();
+    }
+    
     // Create 4-group pipeline layout
-    // Group 0: Water uniforms/material, Group 1: SDF, Group 2: unused, Group 3: SceneEnvironment
+    // Group 0: Water uniforms/material, Group 1: SDF, Group 2: FFT ocean, Group 3: SceneEnvironment
     this.pipelineLayout = this.ctx.device.createPipelineLayout({
       label: 'water-pipeline-layout',
-      bindGroupLayouts: [this.bindGroupLayout!, this.sdfBindGroupLayout!, undefined as any, this.defaultSceneEnvironment.layout],
+      bindGroupLayouts: [this.bindGroupLayout!, this.sdfBindGroupLayout!, this.fftBindGroupLayout!, this.defaultSceneEnvironment.layout],
     });
     
     // Vertex buffer layout
@@ -567,6 +716,9 @@ export class WaterRendererGPU {
    * Render water surface
    */
   render(passEncoder: GPURenderPassEncoder, params: WaterRenderParams): number {
+    // Track FFT state for mesh resolution decisions
+    this._lastFFTEnabled = !!(params.fftSpectrum?.isReady);
+    
     // Rebuild mesh if grid dimensions changed
     this.rebuildMeshIfNeeded();
 
@@ -609,6 +761,10 @@ export class WaterRendererGPU {
     if (sdfBindGroup) {
       passEncoder.setBindGroup(1, sdfBindGroup);
     }
+    
+    // Set bind group 2 for FFT ocean displacement/normal maps
+    const fftBindGroup = this.buildFFTBindGroup(params.fftSpectrum ?? null);
+    passEncoder.setBindGroup(2, fftBindGroup);
     
     // Set bind group 3 for IBL reflections
     // Use provided SceneEnvironment or fall back to default (placeholder textures)
@@ -769,6 +925,8 @@ export class WaterRendererGPU {
     this.materialBuffer?.destroy();
     this.sdfPlaceholderTexture?.destroy();
     this.sdfPlaceholderUniformBuffer?.destroy();
+    this.fftPlaceholderTexture?.destroy();
+    this.fftPlaceholderUniformBuffer?.destroy();
     
     this.vertexBuffer = null;
     this.indexBuffer = null;
@@ -781,6 +939,11 @@ export class WaterRendererGPU {
     this.sdfPlaceholderBindGroup = null;
     this.sdfPlaceholderTexture = null;
     this.sdfPlaceholderUniformBuffer = null;
+    this.fftBindGroupLayout = null;
+    this.fftPlaceholderBindGroup = null;
+    this.fftPlaceholderTexture = null;
+    this.fftPlaceholderUniformBuffer = null;
+    this.fftPlaceholderSampler = null;
     this.sampler = null;
     this.lastDepthTexture = null;
     this.lastSceneColorTexture = null;

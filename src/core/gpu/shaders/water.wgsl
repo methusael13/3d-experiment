@@ -53,6 +53,77 @@ struct WaterMaterial {
 @group(0) @binding(4) var sceneColorTexture: texture_2d<f32>;
 
 // ============================================================================
+// Bindings - Group 2 (FFT Ocean Displacement + Normal Maps)
+// ============================================================================
+
+@group(2) @binding(0) var fftDisplacement0: texture_2d<f32>;
+@group(2) @binding(1) var fftDisplacement1: texture_2d<f32>;
+@group(2) @binding(2) var fftDisplacement2: texture_2d<f32>;
+@group(2) @binding(3) var fftNormal0: texture_2d<f32>;
+@group(2) @binding(4) var fftNormal1: texture_2d<f32>;
+@group(2) @binding(5) var fftNormal2: texture_2d<f32>;
+@group(2) @binding(6) var fftSampler: sampler;
+@group(2) @binding(7) var<uniform> fftParams: FFTWaterParams;
+
+struct FFTWaterParams {
+  // vec4: tileSize0, tileSize1, tileSize2, cascadeCount
+  tileSizes: vec4f,
+  // vec4: amplitudeScale, choppiness, fftEnabled (0/1), unused
+  params: vec4f,
+}
+
+// ============================================================================
+// FFT Displacement Sampling
+// ============================================================================
+
+struct FFTDisplacementResult {
+  displacement: vec3f,
+  normal: vec3f,
+}
+
+fn sampleFFTOcean(worldXZ: vec2f) -> FFTDisplacementResult {
+  var result: FFTDisplacementResult;
+  result.displacement = vec3f(0.0);
+  result.normal = vec3f(0.0, 1.0, 0.0);
+
+  let cascadeCount = i32(fftParams.tileSizes.w);
+  let amplitudeScale = fftParams.params.x;
+  let choppiness = fftParams.params.y;
+
+  if (cascadeCount < 1) { return result; }
+
+  // Cascade 0 (primary ocean waves)
+  // Displacement and normals are already fully scaled by the compute pipeline
+  // (choppiness in ocean-animate.wgsl, amplitudeScale in ocean-finalize.wgsl)
+  let uv0 = worldXZ / fftParams.tileSizes.x;
+  let disp0 = textureSampleLevel(fftDisplacement0, fftSampler, uv0, 0.0).xyz;
+  let n0 = textureSampleLevel(fftNormal0, fftSampler, uv0, 0.0).xyz * 2.0 - 1.0;
+  result.displacement += disp0;
+  var blendedNormal = n0;
+
+  if (cascadeCount >= 2) {
+    // Cascade 1 (medium detail)
+    let uv1 = worldXZ / fftParams.tileSizes.y;
+    let disp1 = textureSampleLevel(fftDisplacement1, fftSampler, uv1, 0.0).xyz;
+    let n1 = textureSampleLevel(fftNormal1, fftSampler, uv1, 0.0).xyz * 2.0 - 1.0;
+    result.displacement += disp1;
+    blendedNormal += n1 * 0.5;
+  }
+
+  if (cascadeCount >= 3) {
+    // Cascade 2 (fine ripples)
+    let uv2 = worldXZ / fftParams.tileSizes.z;
+    let disp2 = textureSampleLevel(fftDisplacement2, fftSampler, uv2, 0.0).xyz;
+    let n2 = textureSampleLevel(fftNormal2, fftSampler, uv2, 0.0).xyz * 2.0 - 1.0;
+    result.displacement += disp2;
+    blendedNormal += n2 * 0.25;
+  }
+
+  result.normal = normalize(blendedNormal);
+  return result;
+}
+
+// ============================================================================
 // Bindings - Group 1 (SDF - Global Distance Field for contact foam)
 // ============================================================================
 
@@ -476,14 +547,31 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   let gridScaleXZ = uniforms.gridScale.xy;
   let normalizedPos = input.position - vec2f(0.5);
   let worldXZ = gridCenterXZ + normalizedPos * gridScaleXZ;
-  let gerstner = getGerstnerWaves(worldXZ, time, waveScale, wavelength);
+
+  let fftEnabled = fftParams.params.z > 0.5;
+
+  var displacement: vec3f;
+  var normal: vec3f;
+
+  if (fftEnabled) {
+    // FFT ocean: sample displacement from compute-generated textures
+    let fftResult = sampleFFTOcean(worldXZ);
+    displacement = fftResult.displacement;
+    normal = fftResult.normal;
+
+  } else {
+    // Fallback: original 4-wave Gerstner
+    let gerstner = getGerstnerWaves(worldXZ, time, waveScale, wavelength);
+    displacement = gerstner.displacement;
+    normal = normalize(cross(gerstner.tangent, gerstner.binormal));
+  }
+
   let worldPos = uniforms.modelMatrix * vec4f(
-    worldXZ.x + gerstner.displacement.x,
-    waterLevel + gerstner.displacement.y,
-    worldXZ.y + gerstner.displacement.z,
+    worldXZ.x + displacement.x,
+    waterLevel + displacement.y,
+    worldXZ.y + displacement.z,
     1.0
   );
-  let normal = normalize(cross(gerstner.tangent, gerstner.binormal));
   output.clipPosition = uniforms.viewProjectionMatrix * worldPos;
   output.worldPosition = worldPos.xyz;
   output.texCoord = input.uv;
@@ -596,13 +684,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   let sunIntensityFactor = saturate(sunIntensity / 5.0);
 
   // ===== Wave Normal =====
+  let fftActiveFS = fftParams.params.z > 0.5;
   let distFactor = min(1.0, sqrt(input.distanceToCamera * 0.002) * 0.7);
   var N = normalize(mix(input.gerstnerNormal, vec3f(0.0, 1.0, 0.0), distFactor));
-  let detailStrength = material.params2.w;
-  let wavelength = material.params2.z;
-  let detailFade = 1.0 - min(1.0, input.distanceToCamera * 0.003);
-  let detailDelta = detailNormalPerturbation(input.worldPosition.xz, time, wavelength, detailStrength * detailFade);
-  N = normalize(N + vec3f(detailDelta.x, 0.0, detailDelta.z));
+  // Only apply procedural detail normals when using Gerstner (non-FFT).
+  // FFT normals already contain multi-octave detail from the compute pipeline.
+  if (!fftActiveFS) {
+    let detailStrength = material.params2.w;
+    let wavelength = material.params2.z;
+    let detailFade = 1.0 - min(1.0, input.distanceToCamera * 0.003);
+    let detailDelta = detailNormalPerturbation(input.worldPosition.xz, time, wavelength, detailStrength * detailFade);
+    N = normalize(N + vec3f(detailDelta.x, 0.0, detailDelta.z));
+  }
 
   // ===== Physical Color Mode =====
   let usePhysicalColor = material.scatterTint.w > 0.5;

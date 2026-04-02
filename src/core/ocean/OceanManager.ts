@@ -17,6 +17,7 @@ import { UnifiedGPUTexture } from '../gpu/GPUTexture';
 import type { SceneEnvironment } from '../gpu/renderers/shared';
 import { SSRConfig } from '../gpu/pipeline/SSRConfig';
 import type { GlobalDistanceField } from '../gpu/sdf/GlobalDistanceField';
+import { FFTOceanSpectrum, type FFTOceanConfig } from './FFTOceanSpectrum';
 
 /**
  * Ocean manager configuration
@@ -90,6 +91,9 @@ export class OceanManager {
   // Water renderer (owned by this manager)
   private waterRenderer: WaterRendererGPU | null = null;
   
+  // FFT ocean spectrum (Phase W2)
+  private fftSpectrum: FFTOceanSpectrum | null = null;
+  
   // State
   private isInitialized = false;
   
@@ -107,8 +111,28 @@ export class OceanManager {
     // Create water renderer with config
     this.waterRenderer = new WaterRendererGPU(this.ctx, this.config.waterConfig);
     
+    // Initialize FFT ocean spectrum (Phase W2)
+    this.fftSpectrum = new FFTOceanSpectrum(this.ctx);
+    this.fftSpectrum.initialize();
+    
     this.isInitialized = true;
-    console.log('[OceanManager] Initialized');
+    console.log('[OceanManager] Initialized (with FFT ocean)');
+  }
+  
+  /**
+   * Run FFT ocean compute pipeline (call before render, in compute pass phase).
+   * Records compute dispatches into the provided command encoder.
+   */
+  updateFFT(encoder: GPUCommandEncoder, time: number): void {
+    if (!this.fftSpectrum?.isReady) return;
+    this.fftSpectrum.update(encoder, time);
+  }
+  
+  /**
+   * Get the FFT ocean spectrum (for texture binding by water renderer)
+   */
+  getFFTSpectrum(): FFTOceanSpectrum | null {
+    return this.fftSpectrum;
   }
   
   /**
@@ -156,6 +180,7 @@ export class OceanManager {
       ssrEnabled: params.ssrEnabled,
       ssrConfig: params.ssrConfig,
       globalDistanceField: params.globalDistanceField,
+      fftSpectrum: this.fftSpectrum,
     });
   }
   
@@ -258,6 +283,8 @@ export class OceanManager {
   // ============ Cleanup ============
   
   destroy(): void {
+    this.fftSpectrum?.destroy();
+    this.fftSpectrum = null;
     this.waterRenderer?.destroy();
     this.waterRenderer = null;
     this.isInitialized = false;

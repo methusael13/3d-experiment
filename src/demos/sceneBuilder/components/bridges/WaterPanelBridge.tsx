@@ -6,12 +6,13 @@
 import { useCallback, useState, useEffect } from 'preact/hooks';
 import { useComputed } from '@preact/signals';
 import { getSceneBuilderStore } from '../state';
-import { WaterPanel, type WaterParams } from '../panels/WaterPanel';
+import { WaterPanel, type WaterParams, type FFTParams, FFT_DEBUG_TEXTURES, type FFTDebugTextureName } from '../panels/WaterPanel';
 import { OceanComponent } from '@/core/ecs/components/OceanComponent';
 import { TerrainComponent } from '@/core/ecs/components/TerrainComponent';
 import { createDefaultWaterConfig } from '../../../../core/gpu/renderers';
 import type { OceanManager } from '@/core/ocean/OceanManager';
 import { BoundsComponent } from '@/core/ecs';
+import type { FFTOceanSpectrum } from '@/core/ocean/FFTOceanSpectrum';
 
 // ==================== Connected Component ====================
 
@@ -74,6 +75,71 @@ export function ConnectedWaterPanel() {
     }
   }, [selectedOceanManager, store]);
   
+  // FFT params
+  const [fftLocalParams, setFFTLocalParams] = useState<FFTParams | null>(null);
+  
+  // Sync FFT params when selection changes
+  useEffect(() => {
+    const manager = selectedOceanManager.value;
+    if (!manager) {
+      setFFTLocalParams(null);
+      return;
+    }
+    
+    const fft = manager.getFFTSpectrum();
+    if (fft?.isReady) {
+      const config = fft.getConfig();
+      const angle = Math.atan2(config.windDirection[1], config.windDirection[0]) * 180 / Math.PI;
+      setFFTLocalParams({
+        windSpeed: config.windSpeed,
+        windDirectionAngle: ((angle % 360) + 360) % 360,
+        choppiness: config.choppiness,
+        amplitudeScale: config.amplitudeScale,
+        fetch: config.fetch,
+        spectrumType: config.spectrumType,
+        directionalSpread: config.directionalSpread,
+      });
+    } else {
+      setFFTLocalParams(null);
+    }
+  }, [selectedOceanManager.value]);
+  
+  // Handler for FFT param changes
+  const handleFFTParamsChange = useCallback((changes: Partial<FFTParams>) => {
+    const manager = selectedOceanManager.value;
+    if (!manager) return;
+    
+    const fft = manager.getFFTSpectrum();
+    if (!fft) return;
+    
+    // Apply changes to FFTOceanSpectrum
+    if ('windSpeed' in changes && changes.windSpeed !== undefined) {
+      fft.setWindSpeed(changes.windSpeed);
+    }
+    if ('windDirectionAngle' in changes && changes.windDirectionAngle !== undefined) {
+      const rad = changes.windDirectionAngle * Math.PI / 180;
+      fft.setWindDirection([Math.cos(rad), Math.sin(rad)]);
+    }
+    if ('choppiness' in changes && changes.choppiness !== undefined) {
+      fft.setChoppiness(changes.choppiness);
+    }
+    if ('amplitudeScale' in changes && changes.amplitudeScale !== undefined) {
+      fft.setAmplitudeScale(changes.amplitudeScale);
+    }
+    if ('fetch' in changes && changes.fetch !== undefined) {
+      fft.setFetch(changes.fetch);
+    }
+    if ('spectrumType' in changes && changes.spectrumType !== undefined) {
+      fft.setSpectrumType(changes.spectrumType);
+    }
+    if ('directionalSpread' in changes && changes.directionalSpread !== undefined) {
+      fft.setDirectionalSpread(changes.directionalSpread);
+    }
+    
+    // Update local state
+    setFFTLocalParams(prev => prev ? { ...prev, ...changes } : null);
+  }, [selectedOceanManager]);
+  
   // Only render if an ocean is selected
   if (!selectedOceanManager.value) {
     return null;
@@ -90,11 +156,31 @@ export function ConnectedWaterPanel() {
     }
   }
   
+  // Debug texture toggles — state tracks which are enabled in DebugTextureManager
+  const [debugTextureState, setDebugTextureState] = useState<Record<FFTDebugTextureName, boolean>>(() => {
+    const initial: Record<string, boolean> = {};
+    for (const name of FFT_DEBUG_TEXTURES) { initial[name] = false; }
+    return initial as Record<FFTDebugTextureName, boolean>;
+  });
+
+  const handleDebugTextureToggle = useCallback((name: FFTDebugTextureName, enabled: boolean) => {
+    // Toggle via the DebugTextureManager (accessed through the engine pipeline)
+    const dtm = store.viewport?.getDebugTextureManager?.();
+    if (dtm) {
+      dtm.setEnabled(name, enabled);
+    }
+    setDebugTextureState(prev => ({ ...prev, [name]: enabled }));
+  }, [store]);
+
   return (
     <WaterPanel
       params={waterParams}
       onParamsChange={handleParamsChange}
+      fftParams={fftLocalParams}
+      onFFTParamsChange={handleFFTParamsChange}
       terrainSize={terrainSize}
+      debugTextures={debugTextureState}
+      onDebugTextureToggle={handleDebugTextureToggle}
     />
   );
 }

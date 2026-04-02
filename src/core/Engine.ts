@@ -100,7 +100,8 @@ export class Engine {
     // 1. Initialize WebGPU context
     const gpuContext = await GPUContext.getInstance(options.canvas, {
       requiredLimits: {
-        maxComputeInvocationsPerWorkgroup: 512
+        maxComputeInvocationsPerWorkgroup: 512,
+        maxStorageTexturesPerShaderStage: 8
       }
     });
 

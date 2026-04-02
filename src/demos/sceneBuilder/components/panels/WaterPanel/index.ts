@@ -1,1 +1,1 @@
-export { WaterPanel, type WaterPanelProps, type WaterParams } from './WaterPanel';
+export { WaterPanel, FFT_DEBUG_TEXTURES, type WaterPanelProps, type WaterParams, type FFTParams, type FFTDebugTextureName } from './WaterPanel';

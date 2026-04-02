@@ -221,6 +221,7 @@ export class GPUForwardPipeline {
     const skyPass = new SkyPass(this.skyRenderer);
     const opaquePass = new OpaquePass({ objectRenderer: this.objectRenderer, shadowRenderer: this.shadowRenderer, meshPool: this.ctx.variantMeshPool });
     const transparentPass = new TransparentPass();
+    transparentPass.debugTextureManager = this.debugTextureManager;
     const groundPass = new GroundPass({ gridRenderer: this.gridRenderer, shadowRenderer: this.shadowRenderer });
     const overlayPass = new OverlayPass(this.gridRenderer);
     const debugPass = new DebugPass({ shadowRenderer: this.shadowRenderer, debugTextureManager: this.debugTextureManager });

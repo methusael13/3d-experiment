@@ -6,21 +6,57 @@ import { useCallback, useMemo } from 'preact/hooks';
 import { Panel, Slider, ColorPicker } from '../../ui';
 import styles from './WaterPanel.module.css';
 import { WaterConfig } from '../../../../../core/gpu/renderers/WaterRendererGPU';
+import type { SpectrumType } from '../../../../../core/ocean/FFTOceanSpectrum';
 
 export type WaterParams = WaterConfig;
+
+/** FFT ocean parameters exposed to the UI */
+export interface FFTParams {
+  windSpeed: number;
+  windDirectionAngle: number; // degrees 0-360
+  choppiness: number;
+  amplitudeScale: number;
+  fetch: number;
+  spectrumType: SpectrumType;
+  directionalSpread: number;
+}
+
+/** FFT debug texture toggle names */
+export const FFT_DEBUG_TEXTURES = [
+  'fft-spectrum',
+  'fft-dy-freq',
+  'fft-dy-spatial',
+  'fft-displacement',
+  'fft-normal',
+] as const;
+
+export type FFTDebugTextureName = typeof FFT_DEBUG_TEXTURES[number];
 
 export interface WaterPanelProps {
   params: WaterParams;
   onParamsChange: (params: Partial<WaterParams>) => void;
+  /** FFT ocean parameters (null if FFT not available) */
+  fftParams?: FFTParams | null;
+  onFFTParamsChange?: (params: Partial<FFTParams>) => void;
   terrainSize?: number;
+  /** Debug texture toggle states */
+  debugTextures?: Record<FFTDebugTextureName, boolean>;
+  onDebugTextureToggle?: (name: FFTDebugTextureName, enabled: boolean) => void;
 }
 
-export function WaterPanel({ params, onParamsChange, terrainSize = 1024 }: WaterPanelProps) {
+export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChange, terrainSize = 1024, debugTextures, onDebugTextureToggle }: WaterPanelProps) {
   const handleChange = useCallback(
     <K extends keyof WaterParams>(key: K, value: WaterParams[K]) => {
       onParamsChange({ [key]: value } as Partial<WaterParams>);
     },
     [onParamsChange]
+  );
+
+  const handleFFTChange = useCallback(
+    <K extends keyof FFTParams>(key: K, value: FFTParams[K]) => {
+      onFFTParamsChange?.({ [key]: value } as Partial<FFTParams>);
+    },
+    [onFFTParamsChange]
   );
 
   // Calculate cell count from grid size and cell size
@@ -84,6 +120,77 @@ export function WaterPanel({ params, onParamsChange, terrainSize = 1024 }: Water
             onChange={(v) => handleChange('detailStrength', v)}
           />
         </div>
+
+        {/* FFT Ocean Waves */}
+        {fftParams && (
+          <div class={styles.section}>
+            <div class={styles.sectionTitle}>FFT Ocean Waves</div>
+
+            <Slider
+              label="Wind Speed"
+              value={fftParams.windSpeed}
+              min={0}
+              max={30}
+              step={0.5}
+              format={(v) => `${v.toFixed(1)} m/s`}
+              onChange={(v) => handleFFTChange('windSpeed', v)}
+            />
+
+            <Slider
+              label="Wind Direction"
+              value={fftParams.windDirectionAngle}
+              min={0}
+              max={360}
+              step={5}
+              format={(v) => `${v.toFixed(0)}°`}
+              onChange={(v) => handleFFTChange('windDirectionAngle', v)}
+            />
+
+            <Slider
+              label="Amplitude"
+              value={fftParams.amplitudeScale}
+              min={0}
+              max={3}
+              step={0.05}
+              format={(v) => v.toFixed(2)}
+              onChange={(v) => handleFFTChange('amplitudeScale', v)}
+            />
+
+            <Slider
+              label="Choppiness"
+              value={fftParams.choppiness}
+              min={0}
+              max={2}
+              step={0.05}
+              format={(v) => v.toFixed(2)}
+              onChange={(v) => handleFFTChange('choppiness', v)}
+            />
+
+            <Slider
+              label="Fetch"
+              value={fftParams.fetch}
+              min={100}
+              max={100000}
+              step={500}
+              format={(v) => v >= 1000 ? `${(v / 1000).toFixed(1)}km` : `${v.toFixed(0)}m`}
+              onChange={(v) => handleFFTChange('fetch', v)}
+            />
+
+            <Slider
+              label="Dir. Spread"
+              value={fftParams.directionalSpread}
+              min={1}
+              max={32}
+              step={1}
+              format={(v) => v.toFixed(0)}
+              onChange={(v) => handleFFTChange('directionalSpread', v)}
+            />
+
+            <div class={styles.gridInfo}>
+              Spectrum: {fftParams.spectrumType.toUpperCase()} · 3 cascades @ 256²
+            </div>
+          </div>
+        )}
 
         {/* Physical Appearance */}
         <div class={styles.section}>
@@ -234,6 +341,23 @@ export function WaterPanel({ params, onParamsChange, terrainSize = 1024 }: Water
             Grid: {gridInfo.cellsX}×{gridInfo.cellsZ} = {gridInfo.totalQuads.toLocaleString()} quads
           </div>
         </div>
+
+        {/* FFT Debug Textures */}
+        {fftParams && debugTextures && onDebugTextureToggle && (
+          <div class={styles.section}>
+            <div class={styles.sectionTitle}>FFT Debug Textures</div>
+            {FFT_DEBUG_TEXTURES.map(name => (
+              <label key={name} class={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={debugTextures[name] ?? false}
+                  onChange={(e) => onDebugTextureToggle(name, (e.target as HTMLInputElement).checked)}
+                />
+                {name.replace('fft-', '').replace(/-/g, ' ')}
+              </label>
+            ))}
+          </div>
+        )}
       </div>
     </Panel>
   );
