@@ -598,10 +598,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   var displacement: vec3f;
   var normal: vec3f;
 
+  // Distance-based fade: reduce FFT displacement/normals at far distances to prevent
+  // pixelation from sparse grid vertices at the horizon. Blends to flat water.
+  let camDist = length(worldXZ - cameraPosition.xz);
+  let fftFade = 1.0 - smoothstep(500.0, 2000.0, camDist);
+
   if (fftEnabled) {
     let fftResult = sampleFFTOcean(worldXZ);
-    displacement = fftResult.displacement;
-    normal = fftResult.normal;
+    displacement = fftResult.displacement * fftFade;
+    normal = normalize(mix(vec3f(0.0, 1.0, 0.0), fftResult.normal, fftFade));
   } else {
     let gerstner = getGerstnerWaves(worldXZ, time, waveScale, wavelength);
     displacement = gerstner.displacement;

@@ -168,7 +168,7 @@ export function createDefaultWaterConfig(): WaterConfig {
     gridSizeZ: 1024,
     cellSize: 4.0,    // 4 world units per cell (256 cells for 1024 terrain)
     // Projected grid defaults (W6)
-    gridMode: 'projected',   // Default to projected grid for FFT ocean
+    gridMode: 'uniform',     // Default to uniform (bounded) grid; user can enable projected for infinite ocean
     projectedMaxDistance: 50000,
   };
 }

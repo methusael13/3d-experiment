@@ -266,10 +266,17 @@ export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChang
             Projected Grid (infinite ocean)
           </label>
 
-          {params.gridMode === 'projected' && (
+          {params.gridMode === 'projected' ? (
             <div class={styles.gridInfo}>
               256×256 screen-space grid · adapts to camera
             </div>
+          ) : (
+            <>
+              <Slider label="Center X" value={params.gridCenterX} min={-terrainSize} max={terrainSize} step={10} format={(v) => v.toFixed(0)} onChange={(v) => handleChange('gridCenterX', v)} />
+              <Slider label="Center Z" value={params.gridCenterZ} min={-terrainSize} max={terrainSize} step={10} format={(v) => v.toFixed(0)} onChange={(v) => handleChange('gridCenterZ', v)} />
+              <Slider label="Size X" value={params.gridSizeX} min={10} max={terrainSize * 2} step={10} format={(v) => v.toFixed(0)} onChange={(v) => handleChange('gridSizeX', v)} />
+              <Slider label="Size Z" value={params.gridSizeZ} min={10} max={terrainSize * 2} step={10} format={(v) => v.toFixed(0)} onChange={(v) => handleChange('gridSizeZ', v)} />
+            </>
           )}
         </div>
 
