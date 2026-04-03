@@ -77,6 +77,12 @@ export interface WaterConfig {
   gridSizeZ: number;
   /** Cell size in world units (smaller = smoother waves, more triangles) */
   cellSize: number;
+  
+  // === Projected Grid (W6) ===
+  /** Grid mode: 'uniform' = world-space grid, 'projected' = screen-space projected grid */
+  gridMode: 'uniform' | 'projected';
+  /** Max projection distance for projected grid in meters (default: 50000) */
+  projectedMaxDistance: number;
 }
 
 /**
@@ -127,6 +133,8 @@ export interface WaterRenderParams {
   globalDistanceField?: GlobalDistanceField | null;
   /** FFT ocean spectrum for GPU-computed waves (optional, W2) */
   fftSpectrum?: FFTOceanSpectrum | null;
+  /** Inverse projector matrix for projected grid (W6) — computed by ProjectedGridBuilder */
+  projectorInverse?: Float32Array;
 }
 
 /**
@@ -159,6 +167,9 @@ export function createDefaultWaterConfig(): WaterConfig {
     gridSizeX: 1024,  // Will be overridden by terrain size
     gridSizeZ: 1024,
     cellSize: 4.0,    // 4 world units per cell (256 cells for 1024 terrain)
+    // Projected grid defaults (W6)
+    gridMode: 'projected',   // Default to projected grid for FFT ocean
+    projectedMaxDistance: 50000,
   };
 }
 
@@ -229,8 +240,9 @@ export class WaterRendererGPU {
     this.ctx = ctx;
     this.config = { ...createDefaultWaterConfig(), ...config };
     
-    // Uniform builders: 6 mat4 (96) + 5 vec4 (20) = 116 floats for uniforms, 44 for material
-    this.uniformBuilder = new UniformBuilder(116);
+    // Uniform builders: 7 mat4 (112) + 5 vec4 (20) = 132 floats for uniforms, 44 for material
+    // Added projectorInverse mat4 (16 floats) for W6 projected grid
+    this.uniformBuilder = new UniformBuilder(132);
     this.materialBuilder = new UniformBuilder(44); // 11 vec4 = 44 floats (7 base + 2 SSR + 2 physical color)
     
     // Create default SceneEnvironment for Group 3 layout and placeholder bind group
@@ -354,10 +366,11 @@ export class WaterRendererGPU {
    * Create uniform buffers
    */
   private createBuffers(): void {
-    // Uniform buffer: 6 mat4 (96) + 5 vec4 (20) = 116 floats = 464 bytes
+    // Uniform buffer: 7 mat4 (112) + 5 vec4 (20) = 132 floats = 528 bytes
+    // Added projectorInverse mat4 for W6 projected grid
     this.uniformBuffer = UnifiedGPUBuffer.createUniform(this.ctx, {
       label: 'water-uniforms',
-      size: 464, // 116 * 4 bytes
+      size: 528, // 132 * 4 bytes
     });
     
     // Material buffer: 11 vec4s = 44 floats = 176 bytes (7 base + 2 SSR + 2 physical color)
@@ -813,13 +826,14 @@ export class WaterRendererGPU {
       .mat4(params.modelMatrix as Float32Array)           // 16-31
       .vec4(params.cameraPosition[0], params.cameraPosition[1], params.cameraPosition[2], params.time) // 32-35
       .vec4(params.terrainSize, waterLevelWorld, params.heightScale, sunIntensity) // 36-39
-      .vec4(this.config.gridCenterX, this.config.gridCenterZ, 0.0, 0.0) // 40-43
+      .vec4(this.config.gridCenterX, this.config.gridCenterZ, this.config.gridMode === 'projected' ? 1.0 : 0.0, this.config.projectedMaxDistance) // 40-43: gridCenter.xy, gridMode, projectedMaxDist
       .vec4(this.config.gridSizeX, this.config.gridSizeZ, near, far)    // 44-47
       .mat4(lightSpaceMatrix)                             // 48-63
       .vec4(params.shadowEnabled ? 1.0 : 0.0, params.shadowBias ?? 0.002, params.csmEnabled ? 1.0 : 0.0, params.ssrEnabled ? 1.0 : 0.0) // 64-67: shadow + SSR enabled
       .mat4(projectionMatrix)                             // 68-83
       .mat4(inverseProjectionMatrix)                      // 84-99
-      .mat4(viewMatrix);                                  // 100-115
+      .mat4(viewMatrix)                                   // 100-115
+      .mat4(params.projectorInverse ?? identity);         // 116-131: projectorInverse for projected grid (W6)
     
     this.uniformBuffer!.write(this.ctx, this.uniformBuilder.build());
   }

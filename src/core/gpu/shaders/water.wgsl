@@ -19,13 +19,14 @@ struct Uniforms {
   modelMatrix: mat4x4f,
   cameraPositionTime: vec4f,
   params: vec4f,
-  gridCenter: vec4f,
-  gridScale: vec4f,
+  gridCenter: vec4f,       // xy = gridCenterXZ, z = gridMode (0=uniform, 1=projected), w = projectedMaxDist
+  gridScale: vec4f,        // xy = gridSizeXZ, zw = near/far
   lightSpaceMatrix: mat4x4f,
   shadowParams: vec4f,
   projectionMatrix: mat4x4f,
   inverseProjectionMatrix: mat4x4f,
   viewMatrix: mat4x4f,
+  projectorInverse: mat4x4f,  // Inverse VP for projected grid (W6)
 }
 
 struct WaterMaterial {
@@ -543,24 +544,65 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   let cameraPosition = uniforms.cameraPositionTime.xyz;
   let waveScale = material.params1.x;
   let wavelength = material.params2.z;
-  let gridCenterXZ = uniforms.gridCenter.xy;
-  let gridScaleXZ = uniforms.gridScale.xy;
-  let normalizedPos = input.position - vec2f(0.5);
-  let worldXZ = gridCenterXZ + normalizedPos * gridScaleXZ;
-
   let fftEnabled = fftParams.params.z > 0.5;
 
+  // Grid mode: 0 = uniform (world-space), 1 = projected (screen-space)
+  let gridMode = uniforms.gridCenter.z;
+  let isProjected = gridMode > 0.5;
+
+  // ===== Determine world XZ position from grid vertex =====
+  var worldXZ: vec2f;
+
+  if (isProjected) {
+    // PROJECTED GRID (W6): unproject screen-space [0,1]² grid onto water plane
+    // input.position is in [0,1] range — convert to [-1,1] NDC
+    let screenNDC = input.position * 2.0 - 1.0;
+
+    // Unproject near and far points using inverse VP (projectorInverse)
+    // Reversed-Z: near = depth 1.0, far = depth 0.0
+    let nearClip = uniforms.projectorInverse * vec4f(screenNDC.x, screenNDC.y, 1.0, 1.0);
+    let farClip  = uniforms.projectorInverse * vec4f(screenNDC.x, screenNDC.y, 0.0, 1.0);
+    let nearW = nearClip.xyz / nearClip.w;
+    let farW  = farClip.xyz / farClip.w;
+
+    // Ray from near to far plane
+    let rayDir = farW - nearW;
+
+    // Intersect ray with water plane y = waterLevel
+    // t = (waterLevel - nearW.y) / rayDir.y
+    let denom = rayDir.y;
+    let maxDist = select(50000.0, uniforms.gridCenter.w, uniforms.gridCenter.w > 0.0);
+
+    if (abs(denom) < 0.00001) {
+      // Ray parallel to water plane — degenerate vertex, push far away
+      worldXZ = nearW.xz + normalize(rayDir.xz) * maxDist;
+    } else {
+      let t = (waterLevel - nearW.y) / denom;
+      if (t < 0.0) {
+        // Ray points away from water plane — push vertex to horizon
+        worldXZ = nearW.xz + normalize(rayDir.xz) * maxDist;
+      } else {
+        let clampedT = min(t, maxDist / max(length(rayDir), 0.001));
+        worldXZ = nearW.xz + rayDir.xz * clampedT;
+      }
+    }
+  } else {
+    // UNIFORM GRID (legacy): world-space grid centered at gridCenter
+    let gridCenterXZ = uniforms.gridCenter.xy;
+    let gridScaleXZ = uniforms.gridScale.xy;
+    let normalizedPos = input.position - vec2f(0.5);
+    worldXZ = gridCenterXZ + normalizedPos * gridScaleXZ;
+  }
+
+  // ===== Sample displacement (same for both grid modes) =====
   var displacement: vec3f;
   var normal: vec3f;
 
   if (fftEnabled) {
-    // FFT ocean: sample displacement from compute-generated textures
     let fftResult = sampleFFTOcean(worldXZ);
     displacement = fftResult.displacement;
     normal = fftResult.normal;
-
   } else {
-    // Fallback: original 4-wave Gerstner
     let gerstner = getGerstnerWaves(worldXZ, time, waveScale, wavelength);
     displacement = gerstner.displacement;
     normal = normalize(cross(gerstner.tangent, gerstner.binormal));

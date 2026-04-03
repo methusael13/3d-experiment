@@ -18,6 +18,7 @@ import type { SceneEnvironment } from '../gpu/renderers/shared';
 import { SSRConfig } from '../gpu/pipeline/SSRConfig';
 import type { GlobalDistanceField } from '../gpu/sdf/GlobalDistanceField';
 import { FFTOceanSpectrum, type FFTOceanConfig } from './FFTOceanSpectrum';
+import { ProjectedGridBuilder } from './ProjectedGridBuilder';
 
 /**
  * Ocean manager configuration
@@ -79,6 +80,8 @@ export interface OceanRenderParams {
   ssrConfig?: Omit<SSRConfig, 'enabled' | 'quality'>;
   /** Global Distance Field for SDF-based contact foam (optional, G1) */
   globalDistanceField?: GlobalDistanceField | null;
+  /** Inverse projector matrix for projected grid (W6) — computed by ProjectedGridBuilder */
+  projectorInverse?: Float32Array;
 }
 
 /**
@@ -93,6 +96,9 @@ export class OceanManager {
   
   // FFT ocean spectrum (Phase W2)
   private fftSpectrum: FFTOceanSpectrum | null = null;
+  
+  // Projected grid builder (Phase W6)
+  private projectedGridBuilder: ProjectedGridBuilder = new ProjectedGridBuilder();
   
   // State
   private isInitialized = false;
@@ -181,6 +187,15 @@ export class OceanManager {
       ssrConfig: params.ssrConfig,
       globalDistanceField: params.globalDistanceField,
       fftSpectrum: this.fftSpectrum,
+      // Projected grid: compute inverse projector from camera matrices (W6)
+      projectorInverse: params.viewMatrix && params.projectionMatrix
+        ? this.projectedGridBuilder.computeProjectorInverse(
+            params.viewMatrix,
+            params.projectionMatrix,
+            params.cameraPosition as unknown as Float32Array,
+            this.waterRenderer!.getConfig().waterLevel * params.heightScale,
+          )
+        : undefined,
     });
   }
   
