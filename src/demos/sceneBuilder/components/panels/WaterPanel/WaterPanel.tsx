@@ -1,8 +1,8 @@
 /**
- * WaterPanel - Panel for configuring water/ocean settings
- * Shown only when an Ocean object is selected
+ * WaterPanel - Panel for configuring FFT ocean water settings
+ * Organized by: Surface > Wind & Spectrum > Appearance > Debug
  */
-import { useCallback, useMemo } from 'preact/hooks';
+import { useCallback } from 'preact/hooks';
 import { Panel, Slider, ColorPicker } from '../../ui';
 import styles from './WaterPanel.module.css';
 import { WaterConfig } from '../../../../../core/gpu/renderers/WaterRendererGPU';
@@ -59,24 +59,12 @@ export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChang
     [onFFTParamsChange]
   );
 
-  // Calculate cell count from grid size and cell size
-  const gridInfo = useMemo(() => {
-    const cellsX = Math.max(1, Math.ceil(params.gridSizeX / params.cellSize));
-    const cellsZ = Math.max(1, Math.ceil(params.gridSizeZ / params.cellSize));
-    const maxCells = 2048;
-    const clampedX = Math.min(cellsX, maxCells);
-    const clampedZ = Math.min(cellsZ, maxCells);
-    return {
-      cellsX: clampedX,
-      cellsZ: clampedZ,
-      totalQuads: clampedX * clampedZ,
-    };
-  }, [params.gridSizeX, params.gridSizeZ, params.cellSize]);
+  const isFFTActive = !!fftParams;
 
   return (
-    <Panel title="Water">
+    <Panel title="🌊 Water">
       <div class={styles.container}>
-        {/* Wave Settings */}
+        {/* ===== Surface ===== */}
         <div class={styles.section}>
           <div class={styles.sectionTitle}>Surface</div>
           
@@ -90,41 +78,55 @@ export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChang
             onChange={(v) => handleChange('waterLevel', v)}
           />
 
-          <Slider
-            label="Wave Scale"
-            value={params.waveScale}
-            min={0}
-            max={3}
-            step={0.1}
-            format={(v) => v.toFixed(1)}
-            onChange={(v) => handleChange('waveScale', v)}
-          />
+          {isFFTActive && (
+            <>
+              <Slider
+                label="Amplitude"
+                value={fftParams.amplitudeScale}
+                min={0}
+                max={5}
+                step={0.05}
+                format={(v) => v.toFixed(2)}
+                onChange={(v) => handleFFTChange('amplitudeScale', v)}
+              />
+
+              <Slider
+                label="Choppiness"
+                value={fftParams.choppiness}
+                min={0}
+                max={3}
+                step={0.05}
+                format={(v) => v.toFixed(2)}
+                onChange={(v) => handleFFTChange('choppiness', v)}
+              />
+            </>
+          )}
 
           <Slider
-            label="Wavelength"
-            value={params.wavelength}
-            min={5}
-            max={100}
-            step={1}
-            format={(v) => `${v.toFixed(0)}m`}
-            onChange={(v) => handleChange('wavelength', v)}
-          />
-
-          <Slider
-            label="Detail Strength"
-            value={params.detailStrength}
-            min={0}
+            label="Opacity"
+            value={params.opacity}
+            min={0.1}
             max={1}
             step={0.05}
             format={(v) => v.toFixed(2)}
-            onChange={(v) => handleChange('detailStrength', v)}
+            onChange={(v) => handleChange('opacity', v)}
+          />
+
+          <Slider
+            label="Refraction"
+            value={params.refractionStrength}
+            min={0}
+            max={1.5}
+            step={0.05}
+            format={(v) => v.toFixed(2)}
+            onChange={(v) => handleChange('refractionStrength', v)}
           />
         </div>
 
-        {/* FFT Ocean Waves */}
-        {fftParams && (
+        {/* ===== Wind & Spectrum ===== */}
+        {isFFTActive && (
           <div class={styles.section}>
-            <div class={styles.sectionTitle}>FFT Ocean Waves</div>
+            <div class={styles.sectionTitle}>Wind & Spectrum</div>
 
             <Slider
               label="Wind Speed"
@@ -144,26 +146,6 @@ export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChang
               step={5}
               format={(v) => `${v.toFixed(0)}°`}
               onChange={(v) => handleFFTChange('windDirectionAngle', v)}
-            />
-
-            <Slider
-              label="Amplitude"
-              value={fftParams.amplitudeScale}
-              min={0}
-              max={3}
-              step={0.05}
-              format={(v) => v.toFixed(2)}
-              onChange={(v) => handleFFTChange('amplitudeScale', v)}
-            />
-
-            <Slider
-              label="Choppiness"
-              value={fftParams.choppiness}
-              min={0}
-              max={2}
-              step={0.05}
-              format={(v) => v.toFixed(2)}
-              onChange={(v) => handleFFTChange('choppiness', v)}
             />
 
             <Slider
@@ -187,14 +169,14 @@ export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChang
             />
 
             <div class={styles.gridInfo}>
-              Spectrum: {fftParams.spectrumType.toUpperCase()} · 3 cascades @ 256²
+              {fftParams.spectrumType.toUpperCase()} · 3 cascades @ 256²
             </div>
           </div>
         )}
 
-        {/* Physical Appearance */}
+        {/* ===== Appearance ===== */}
         <div class={styles.section}>
-          <div class={styles.sectionTitle}>Physical Appearance</div>
+          <div class={styles.sectionTitle}>Appearance</div>
           
           <label class={styles.checkboxLabel}>
             <input
@@ -223,11 +205,6 @@ export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChang
                   value={params.scatterTint}
                   onChange={(v) => handleChange('scatterTint', v)}
                 />
-                <ColorPicker
-                  label="Foam Color"
-                  value={params.foamColor}
-                  onChange={(v) => handleChange('foamColor', v)}
-                />
               </div>
             </>
           ) : (
@@ -243,11 +220,6 @@ export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChang
                   value={params.deepColor}
                   onChange={(v) => handleChange('deepColor', v)}
                 />
-                <ColorPicker
-                  label="Foam Color"
-                  value={params.foamColor}
-                  onChange={(v) => handleChange('foamColor', v)}
-                />
               </div>
 
               <Slider
@@ -262,90 +234,49 @@ export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChang
             </>
           )}
 
-          <Slider
-            label="Opacity"
-            value={params.opacity}
-            min={0.1}
-            max={1}
-            step={0.05}
-            format={(v) => v.toFixed(2)}
-            onChange={(v) => handleChange('opacity', v)}
-          />
+          <div class={styles.colorColumn}>
+            <ColorPicker
+              label="Foam Color"
+              value={params.foamColor}
+              onChange={(v) => handleChange('foamColor', v)}
+            />
+          </div>
 
           <Slider
-            label="Foam Threshold"
+            label="Shore Foam"
             value={params.foamThreshold}
             min={0}
-            max={5}
+            max={10}
             step={0.1}
             format={(v) => `${v.toFixed(1)}m`}
             onChange={(v) => handleChange('foamThreshold', v)}
           />
         </div>
 
-        {/* Grid Placement Settings */}
+        {/* ===== Grid Mode ===== */}
         <div class={styles.section}>
-          <div class={styles.sectionTitle}>Grid Placement</div>
+          <div class={styles.sectionTitle}>Grid</div>
           
-          <Slider
-            label="Center X"
-            value={params.gridCenterX}
-            min={-terrainSize}
-            max={terrainSize}
-            step={10}
-            format={(v) => v.toFixed(0)}
-            onChange={(v) => handleChange('gridCenterX', v)}
-          />
+          <label class={styles.checkboxLabel}>
+            <input
+              type="checkbox"
+              checked={params.gridMode === 'projected'}
+              onChange={(e) => handleChange('gridMode', (e.target as HTMLInputElement).checked ? 'projected' : 'uniform')}
+            />
+            Projected Grid (infinite ocean)
+          </label>
 
-          <Slider
-            label="Center Z"
-            value={params.gridCenterZ}
-            min={-terrainSize}
-            max={terrainSize}
-            step={10}
-            format={(v) => v.toFixed(0)}
-            onChange={(v) => handleChange('gridCenterZ', v)}
-          />
-
-          <Slider
-            label="Size X"
-            value={params.gridSizeX}
-            min={10}
-            max={terrainSize * 2}
-            step={10}
-            format={(v) => v.toFixed(0)}
-            onChange={(v) => handleChange('gridSizeX', v)}
-          />
-
-          <Slider
-            label="Size Z"
-            value={params.gridSizeZ}
-            min={10}
-            max={terrainSize * 2}
-            step={10}
-            format={(v) => v.toFixed(0)}
-            onChange={(v) => handleChange('gridSizeZ', v)}
-          />
-
-          <Slider
-            label="Cell Size"
-            value={params.cellSize}
-            min={0.5}
-            max={20}
-            step={0.5}
-            format={(v) => v.toFixed(1)}
-            onChange={(v) => handleChange('cellSize', v)}
-          />
-
-          <div class={styles.gridInfo}>
-            Grid: {gridInfo.cellsX}×{gridInfo.cellsZ} = {gridInfo.totalQuads.toLocaleString()} quads
-          </div>
+          {params.gridMode === 'projected' && (
+            <div class={styles.gridInfo}>
+              256×256 screen-space grid · adapts to camera
+            </div>
+          )}
         </div>
 
-        {/* FFT Debug Textures */}
-        {fftParams && debugTextures && onDebugTextureToggle && (
+        {/* ===== FFT Debug Textures ===== */}
+        {isFFTActive && debugTextures && onDebugTextureToggle && (
           <div class={styles.section}>
-            <div class={styles.sectionTitle}>FFT Debug Textures</div>
+            <div class={styles.sectionTitle}>Debug Textures</div>
             {FFT_DEBUG_TEXTURES.map(name => (
               <label key={name} class={styles.checkboxLabel}>
                 <input
