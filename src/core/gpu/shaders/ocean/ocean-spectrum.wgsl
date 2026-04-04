@@ -170,6 +170,32 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     S = piersonMoskowitzSpectrum2D(k, windDir, windSpeed, spread);
   }
 
+  // ===== Swell contribution =====
+  // Swell is a narrow-band spectrum from distant storms, blended with local wind waves.
+  let swellMix = specParams.params2.x;
+  if (swellMix > 0.001) {
+    let swellDir = normalize(vec2f(specParams.params2.y, specParams.params2.z));
+    let swellWavelength = max(specParams.params2.w, 10.0);
+    let swellK = TAU / swellWavelength;
+
+    // Narrow-band swell spectrum: Gaussian peak centered at swellK
+    let kLen2 = dot(k, k);
+    let swellKLen = sqrt(kLen2);
+    // Peak width: narrower than wind waves (swell is well-organized)
+    let swellSigma = swellK * 0.15; // 15% bandwidth
+    let swellPeak = exp(-pow(swellKLen - swellK, 2.0) / (2.0 * swellSigma * swellSigma));
+
+    // Directional focus: swell is very directional (high spread)
+    let swellCosTheta = select(0.0, dot(normalize(k), swellDir), swellKLen > 0.0001);
+    let swellSpread = pow(max(swellCosTheta, 0.0), spread * 4.0); // 4× narrower than wind waves
+
+    // Swell amplitude: scale relative to wind spectrum energy
+    let swellAmplitude = swellPeak * swellSpread * 0.5;
+
+    // Blend: add swell on top of wind spectrum, weighted by swellMix
+    S += swellAmplitude * swellMix;
+  }
+
   // Apply amplitude scale
   // The raw spectrum values are very small (SI units: m²s). 
   // We need a large normalization factor based on tile size to produce 

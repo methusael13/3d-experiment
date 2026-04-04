@@ -45,7 +45,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let rawDx = textureLoad(inputDx, vec2i(gid.xy), 0).r;
   let rawDz = textureLoad(inputDz, vec2i(gid.xy), 0).r;
 
-  let dy = rawDy * amplitudeScale;
+  // Negate height: the standard-order IFFT (DC at index 0, no centered sign flip)
+  // produces inverted height. Crests should point up, troughs down.
+  let dy = -rawDy * amplitudeScale;
   let dx = rawDx;
   let dz = rawDz;
 

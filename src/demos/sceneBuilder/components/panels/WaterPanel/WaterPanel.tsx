@@ -19,6 +19,9 @@ export interface FFTParams {
   fetch: number;
   spectrumType: SpectrumType;
   directionalSpread: number;
+  swellMix: number;
+  swellDirectionAngle: number; // degrees 0-360
+  swellWavelength: number;
 }
 
 /** FFT debug texture toggle names */
@@ -168,6 +171,40 @@ export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChang
               onChange={(v) => handleFFTChange('directionalSpread', v)}
             />
 
+            <Slider
+              label="Swell Mix"
+              value={fftParams.swellMix}
+              min={0}
+              max={1}
+              step={0.05}
+              format={(v) => v.toFixed(2)}
+              onChange={(v) => handleFFTChange('swellMix', v)}
+            />
+
+            {fftParams.swellMix > 0 && (
+              <>
+                <Slider
+                  label="Swell Dir."
+                  value={fftParams.swellDirectionAngle}
+                  min={0}
+                  max={360}
+                  step={5}
+                  format={(v) => `${v.toFixed(0)}°`}
+                  onChange={(v) => handleFFTChange('swellDirectionAngle', v)}
+                />
+
+                <Slider
+                  label="Swell λ"
+                  value={fftParams.swellWavelength}
+                  min={50}
+                  max={500}
+                  step={10}
+                  format={(v) => `${v.toFixed(0)}m`}
+                  onChange={(v) => handleFFTChange('swellWavelength', v)}
+                />
+              </>
+            )}
+
             <div class={styles.gridInfo}>
               {fftParams.spectrumType.toUpperCase()} · 3 cascades @ 256²
             </div>
@@ -266,9 +303,19 @@ export function WaterPanel({ params, onParamsChange, fftParams, onFFTParamsChang
             Projected Grid (infinite ocean)
           </label>
 
+          <Slider
+            label="Mesh Resolution"
+            value={params.meshResolution}
+            min={64}
+            max={4096}
+            step={64}
+            format={(v) => `${v}×${v} (${(v * v / 1000).toFixed(0)}K tri)`}
+            onChange={(v) => handleChange('meshResolution', v)}
+          />
+
           {params.gridMode === 'projected' ? (
             <div class={styles.gridInfo}>
-              256×256 screen-space grid · adapts to camera
+              {params.meshResolution}×{params.meshResolution} screen-space grid · adapts to camera
             </div>
           ) : (
             <>

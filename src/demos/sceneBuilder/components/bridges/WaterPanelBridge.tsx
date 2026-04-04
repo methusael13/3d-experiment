@@ -98,6 +98,9 @@ export function ConnectedWaterPanel() {
         fetch: config.fetch,
         spectrumType: config.spectrumType,
         directionalSpread: config.directionalSpread,
+        swellMix: config.swellMix,
+        swellDirectionAngle: Math.round(Math.atan2(config.swellDirection[0], config.swellDirection[1]) * 180 / Math.PI + 360) % 360,
+        swellWavelength: config.swellWavelength,
       });
     } else {
       setFFTLocalParams(null);
@@ -134,6 +137,16 @@ export function ConnectedWaterPanel() {
     }
     if ('directionalSpread' in changes && changes.directionalSpread !== undefined) {
       fft.setDirectionalSpread(changes.directionalSpread);
+    }
+    if ('swellMix' in changes && changes.swellMix !== undefined) {
+      fft.setSwellMix(changes.swellMix);
+    }
+    if ('swellDirectionAngle' in changes && changes.swellDirectionAngle !== undefined) {
+      const rad = changes.swellDirectionAngle * Math.PI / 180;
+      fft.setSwellDirection([Math.sin(rad), Math.cos(rad)]);
+    }
+    if ('swellWavelength' in changes && changes.swellWavelength !== undefined) {
+      fft.setSwellWavelength(changes.swellWavelength);
     }
     
     // Update local state

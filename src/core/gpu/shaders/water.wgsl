@@ -319,6 +319,7 @@ struct VertexOutput {
   @location(3) distanceToCamera: f32,
   @location(4) gerstnerNormal: vec3f,
   @location(5) lightSpacePos: vec4f,
+  @location(6) waveHeight: f32,
 }
 
 // ============================================================================
@@ -377,17 +378,6 @@ fn getGerstnerWaves(worldXZ: vec2f, time: f32, waveScale: f32, baseWavelength: f
 // ============================================================================
 // IBL / Atmosphere
 // ============================================================================
-
-fn cheapAtmosphere(rayDir: vec3f, sunDir: vec3f) -> vec3f {
-  let special1 = 1.0 / (rayDir.y * 1.0 + 0.1);
-  let special2 = 1.0 / (sunDir.y * 11.0 + 1.0);
-  let raySunDot = pow(abs(dot(sunDir, rayDir)), 2.0);
-  let sunColor = mix(vec3f(1.0), max(vec3f(0.0), vec3f(1.0) - vec3f(5.5, 13.0, 22.4) / 22.4), special2);
-  let blueSky = vec3f(5.5, 13.0, 22.4) / 22.4 * sunColor;
-  var blueSky2 = max(vec3f(0.0), blueSky - vec3f(5.5, 13.0, 22.4) * 0.002 * (special1 + -6.0 * sunDir.y * sunDir.y));
-  blueSky2 *= special1 * (0.24 + raySunDot * 0.24);
-  return blueSky2 * (1.0 + 1.0 * pow(1.0 - rayDir.y, 3.0));
-}
 
 fn sampleIBLReflection(reflectDir: vec3f, roughness: f32) -> vec3f {
   let lod = roughness * 6.0;
@@ -555,8 +545,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
   if (isProjected) {
     // PROJECTED GRID (W6): unproject screen-space [0,1]² grid onto water plane
-    // input.position is in [0,1] range — convert to [-1,1] NDC
-    let screenNDC = input.position * 2.0 - 1.0;
+    // input.position is in [0,1] range — convert to NDC with overshoot.
+    // Expand 10% beyond [-1,1] to prevent edge gaps when FFT displacement
+    // pushes vertices inward (choppiness lateral movement).
+    let screenNDC = input.position * 2.2 - 1.1;
 
     // Unproject near and far points using inverse VP (projectorInverse)
     // Reversed-Z: near = depth 1.0, far = depth 0.0
@@ -626,6 +618,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   output.distanceToCamera = length(cameraPosition - worldPos.xyz);
   output.gerstnerNormal = normal;
   output.lightSpacePos = uniforms.lightSpaceMatrix * vec4f(worldPos.xyz, 1.0);
+  output.waveHeight = displacement.y; // Pass wave height to FS for body color modulation
   return output;
 }
 
@@ -749,7 +742,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
 
   // ===== Fresnel via BRDF LUT (split-sum) =====
   let NdotV = max(0.001, dot(N, viewDir));
-  let waterRoughness = 0.05; // Water is nearly perfectly smooth
+  // View-angle roughness boost: at grazing angles, micro-geometry and wave
+  // curvature increase effective roughness, blurring the reflection and
+  // preventing mirror-bright blowout at the horizon.
+  let baseRoughness = 0.05; // Water at normal incidence is nearly mirror-smooth
+  let waterRoughness = mix(baseRoughness, 0.35, pow(1.0 - NdotV, 5.0));
   let F0 = vec3f(0.02); // IOR 1.33 → F0 ≈ 0.02
 
   // Sample BRDF LUT: x = F0 scale, y = F0 bias
@@ -768,10 +765,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   var R = normalize(reflect(-viewDir, N));
   // Allow below-horizon reflections (SSR handles them); clamp only to avoid degenerate sampling
   R = normalize(R + vec3f(0.0, max(0.0, -R.y) * 0.01, 0.0));
-  let envReflection = sampleIBLReflection(R, waterRoughness);
+  // Soft-tonemap IBL reflection to prevent HDR blowout from bright skies.
+  // Reinhard-style per-channel compression: bright values are compressed while
+  // dim values pass through linearly. This preserves color hue while capping intensity.
+  let envRaw = sampleIBLReflection(R, waterRoughness);
+  // Hard clamp + Reinhard: first limit peak values, then compress.
+  // This ensures even extremely bright HDR skies produce water-like reflections
+  // rather than flat white. Max ~1.2 lets some brightness variation show through.
+  let envClamped = min(envRaw, vec3f(3.0));
+  let envLum = dot(envClamped, vec3f(0.2126, 0.7152, 0.0722));
+  let envReflection = envClamped / (1.0 + envLum * 0.5);
+
+  // IBL reflection (ambient sky light — present even in shadow)
+  var reflection = envReflection * select(vec3f(1.0), specularScale, usePhysicalColor);
+
+  // Sun specular is added AFTER shadow computation so it can be properly gated.
+  // Store it separately for now; it will be added during final composition.
   let sunReflection = getSun(R, sunDir, sunIntensity) * sunIntensityFactor;
-  var reflection = envReflection * select(vec3f(1.0), specularScale, usePhysicalColor)
-                 + vec3f(1.0, 0.95, 0.9) * sunReflection;
 
   // ===== Inline SSR =====
   let ssrEnabled = uniforms.shadowParams.w > 0.5;
@@ -820,10 +830,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   if (usePhysicalColor) {
     // Physical absorption model: Beer-Lambert with sky-derived illumination
     let absorption = material.absorptionCoeffs.xyz * material.absorptionCoeffs.w; // coeffs * turbidity
-    let physTransmittance = exp(-waterDepthMeters * absorption);
+
+    // Enhancement W9.1: Wave height modulates effective optical depth.
+    // Crests are thinner water → more transmission → lighter/greener.
+    // Troughs are thicker water → more absorption → darker/bluer.
+    // This is the primary visual cue for wave structure without specular.
+    let waveHeightMod = input.waveHeight * 3.0; // amplify for visual impact
+    let effectiveDepth = max(0.5, waterDepthMeters - waveHeightMod);
+    let physTransmittance = exp(-effectiveDepth * absorption);
 
     // Sample diffuse sky irradiance for subsurface ambient light
-    let skyDiffuse = textureSampleLevel(env_iblDiffuse, env_cubeSampler, vec3f(0.0, 1.0, 0.0), 0.0).rgb;
+    // Tonemap to prevent blowout from bright HDR skies (same approach as specular)
+    let skyDiffuseRaw = textureSampleLevel(env_iblDiffuse, env_cubeSampler, vec3f(0.0, 1.0, 0.0), 0.0).rgb;
+    let skyDiffLum = dot(skyDiffuseRaw, vec3f(0.2126, 0.7152, 0.0722));
+    let skyDiffuse = skyDiffuseRaw / (1.0 + skyDiffLum);
 
     // Water body color = sky light transmitted through water column + scattered light
     let scatterTint = material.scatterTint.xyz;
@@ -843,7 +863,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
   // SDF-based contact foam: foam where water is just above terrain surface
   // sdfDist > 0 means water pixel is above terrain, < 0 means inside terrain
   // We want foam only where water is very close ABOVE terrain (shoreline contact)
-  let contactFoamWidth = 1.0; // meters — foam appears within this distance above terrain
+  let contactFoamWidth = material.params3.w; // meters — from WaterConfig.contactFoamWidth
   let sdfDist = sampleSDF(input.worldPosition);
   // One-sided: only foam where 0 < sdfDist < contactFoamWidth (water just above terrain)
   // Guard: skip if sdfDist >= 100 (out of SDF bounds / no terrain data)
@@ -895,8 +915,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     // Energy-conserving: reflected + transmitted = 1
     finalColor = shadowedReflection * kS + transmitted * kD;
 
-    // Direct sun specular added separately (not energy-conserved with IBL, intentional)
-    // Sun specular is already in `reflection` via sunReflection
+    // Direct sun specular: gated by shadow so highlights vanish in occluded regions.
+    // Added on top of energy-conserving base (intentional artistic bloom).
+    finalColor += vec3f(1.0, 0.95, 0.9) * sunReflection * shadow;
   } else {
     // Legacy composition path (preserved for backward compatibility)
     var baseColor = waterBodyColor * sunIntensityFactor * ambientIntensity;
@@ -907,6 +928,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
     let shadowedReflection = reflection * mix(0.3, 1.0, shadow);
     finalColor = mix(baseColor, shadowedReflection, fresnel * 0.4) + fresnel * shadowedReflection * 0.3;
     finalColor += vec3f(0.02, 0.04, 0.08) * ambientIntensity * sunIntensityFactor;
+    // Sun specular gated by shadow (legacy path)
+    finalColor += vec3f(1.0, 0.95, 0.9) * sunReflection * shadow;
   }
 
   // Foam (same for both paths) — uses combined shore + SDF contact foam

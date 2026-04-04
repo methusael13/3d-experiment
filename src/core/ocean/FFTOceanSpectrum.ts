@@ -46,6 +46,12 @@ export interface FFTOceanConfig {
   amplitudeScale: number;
   /** Horizontal displacement strength */
   choppiness: number;
+  /** Swell mix (0 = no swell, 1 = full swell blended with wind waves) */
+  swellMix: number;
+  /** Swell direction (normalized [x, z]) — often different from wind direction */
+  swellDirection: [number, number];
+  /** Swell peak wavelength in meters (50-500, default 150) */
+  swellWavelength: number;
 }
 
 export function createDefaultFFTOceanConfig(): FFTOceanConfig {
@@ -60,6 +66,9 @@ export function createDefaultFFTOceanConfig(): FFTOceanConfig {
     directionalSpread: 8,
     amplitudeScale: 1.0,
     choppiness: 1.5,
+    swellMix: 0.0,
+    swellDirection: [0.5, 0.866],  // ~60° offset from default wind direction
+    swellWavelength: 150,
   };
 }
 
@@ -404,8 +413,8 @@ export class FFTOceanSpectrum {
       N, tileSize, this.config.windSpeed, this.config.windDirection[0],
       // params1: windDirZ, fetch, spectrumType, directionalSpread
       this.config.windDirection[1], this.config.fetch, spectrumTypeIndex, this.config.directionalSpread,
-      // params2: swellMix, swellDirX, swellDirZ, swellWavelength (unused for now)
-      0, 0, 0, 0,
+      // params2: swellMix, swellDirX, swellDirZ, swellWavelength
+      this.config.swellMix, this.config.swellDirection[0], this.config.swellDirection[1], this.config.swellWavelength,
       // params3: seed0, seed1, amplitudeScale, unused
       this.seed[0], this.seed[1], this.config.amplitudeScale, 0,
     ]));
@@ -625,6 +634,27 @@ export class FFTOceanSpectrum {
   setChoppiness(choppiness: number): void {
     this.config.choppiness = choppiness;
     // Applied in animate shader, no spectrum regen needed
+  }
+
+  setSwellMix(mix: number): void {
+    if (this.config.swellMix !== mix) {
+      this.config.swellMix = mix;
+      this.markSpectrumDirty();
+    }
+  }
+
+  setSwellDirection(dir: [number, number]): void {
+    if (this.config.swellDirection[0] !== dir[0] || this.config.swellDirection[1] !== dir[1]) {
+      this.config.swellDirection = dir;
+      this.markSpectrumDirty();
+    }
+  }
+
+  setSwellWavelength(wavelength: number): void {
+    if (this.config.swellWavelength !== wavelength) {
+      this.config.swellWavelength = wavelength;
+      this.markSpectrumDirty();
+    }
   }
 
   /** Set gust factor (temporary amplitude boost, e.g. from wind system) */

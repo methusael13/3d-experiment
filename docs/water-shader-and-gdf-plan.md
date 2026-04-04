@@ -14,6 +14,9 @@
    - [Phase W4: Wind System Integration](#phase-w4-wind-system-integration)
    - [Phase W5: WaterPanel UI Overhaul](#phase-w5-waterpanel-ui-overhaul)
    - [Phase W6: Projected Grid / Adaptive LOD Mesh](#phase-w6-projected-grid--adaptive-lod-mesh)
+   - [Phase W7: SDF Wave Dampening](#phase-w7-sdf-wave-dampening)
+   - [Phase W8: Interactive Wave Simulation (Boundary-Aware)](#phase-w8-interactive-wave-simulation-boundary-aware)
+   - [Phase W9: Wave Visibility & Diffuse Detail](#phase-w9-wave-visibility--diffuse-detail)
 3. [Part B: Global Distance Field](#3-part-b-global-distance-field)
    - [Phase G1: Terrain-Only SDF (Single Cascade)](#phase-g1-terrain-only-sdf-single-cascade)
    - [Phase G2: Multi-Cascade + Camera Scrolling](#phase-g2-multi-cascade--camera-scrolling)
@@ -549,7 +552,20 @@ update(encoder, time, deltaTime, windParams?: WindForceParams) {
 ║   Cascade Count      [3 ▼]       ║
 ║   Tile Size          [===|====]   ║
 ║                                   ║
-║ ▸ Grid Placement (collapsed)      ║
+║ ▼ Grid & Mesh                     ║
+║   Grid Mode  [Projected Bounded▼] ║
+║   ── uniform + projected-bounded: ║
+║   Center X           [===|====]   ║
+║   Center Z           [===|====]   ║
+║   Size X             [===|====]   ║
+║   Size Z             [===|====]   ║
+║   ── uniform only:                ║
+║   Cell Size          [===|====]   ║
+║   ── projected modes only:        ║
+║   Grid Resolution X  [===|====]   ║
+║   Grid Resolution Z  [===|====]   ║
+║   Max Distance       [===|====]   ║
+║   Coastline Mask   [Heightmap ▼]  ║
 ╚═══════════════════════════════════╝
 ```
 
@@ -581,6 +597,27 @@ update(encoder, time, deltaTime, windParams?: WindForceParams) {
 | FFT Quality | Resolution | `fftResolution` | Dropdown | 128/256/512 | 256 |
 | FFT Quality | Cascades | `fftCascadeCount` | Dropdown | 1/2/3 | 3 |
 | FFT Quality | Tile Size | `fftTileSize` | Slider | 50–2000 m | 250 |
+| Grid & Mesh | Grid Mode | `gridMode` | Dropdown | uniform / projected / projected-bounded | projected-bounded |
+| Grid & Mesh | Center X | `gridCenterX` | Slider | -terrain..terrain | 0 |
+| Grid & Mesh | Center Z | `gridCenterZ` | Slider | -terrain..terrain | 0 |
+| Grid & Mesh | Size X | `gridSizeX` | Slider | 10..terrain×2 | 1024 |
+| Grid & Mesh | Size Z | `gridSizeZ` | Slider | 10..terrain×2 | 1024 |
+| Grid & Mesh | Cell Size | `cellSize` | Slider | 0.5–20 | 4.0 |
+| Grid & Mesh | Grid Res X | `projectedGridResX` | Slider | 128–512 | 256 |
+| Grid & Mesh | Grid Res Z | `projectedGridResZ` | Slider | 128–512 | 256 |
+| Grid & Mesh | Max Distance | `projectedMaxDistance` | Slider | 1000–100000 m | 50000 |
+| Grid & Mesh | Coastline Mask | `coastlineMask` | Dropdown | none / heightmap / sdf | heightmap |
+
+**Grid & Mesh: Conditional visibility by `gridMode`:**
+
+| Control | `uniform` | `projected` | `projected-bounded` |
+|---------|-----------|-------------|---------------------|
+| Center X/Z | ✅ shown | ❌ hidden | ✅ shown |
+| Size X/Z | ✅ shown | ❌ hidden | ✅ shown |
+| Cell Size | ✅ shown | ❌ hidden | ❌ hidden |
+| Grid Res X/Z | ❌ hidden | ✅ shown | ✅ shown |
+| Max Distance | ❌ hidden | ✅ shown | ✅ shown |
+| Coastline Mask | ❌ hidden | ✅ shown | ✅ shown |
 
 #### Files Modified
 - `src/demos/sceneBuilder/components/panels/WaterPanel/WaterPanel.tsx` — Full rewrite
@@ -775,23 +812,372 @@ private createProjectedGrid(resX: number = 256, resZ: number = 256): void {
 
 This makes Phase W6 a **non-breaking upgrade** — the same mesh structure, same bind group layout, just a different interpretation in the vertex shader.
 
+#### Grid Modes: Bounded vs. Infinite
+
+A pure projected grid fills the entire visible frustum-plane intersection, which is wrong for two common cases:
+
+1. **Bounded water bodies** (lakes, pools, rivers) — water has a finite world-space footprint
+2. **Distant coastline viewing** — looking at the ocean from inland, the water should start at the coastline, not the screen bottom
+
+The solution is **three grid modes**:
+
+| Mode | Description | Use Case |
+|------|------------|----------|
+| `'uniform'` | Current behavior: world-space grid with explicit bounds | Small lakes, pools, rivers, contained water |
+| `'projected'` | Pure screen-space projected grid, infinite extent | Open ocean with no visible land |
+| `'projected-bounded'` | Projected grid clamped to world-space AABB + coastline masking | **Ocean with coastline, large lakes** (recommended default) |
+
+**`'projected-bounded'` vertex shader logic:**
+
+```wgsl
+// After projecting grid vertex to water plane:
+var worldXZ = nearW.xz + ray.xz * clampedT;
+
+if (gridMode == PROJECTED_BOUNDED) {
+    let boundsMin = waterBoundsMin.xz;  // from uniforms (reuses gridCenterX/Z ± gridSizeX/Z)
+    let boundsMax = waterBoundsMax.xz;
+    
+    // Soft-clamp: vertices outside AABB pile up at the boundary edge
+    // This is better than hard-discard because it avoids mesh holes
+    worldXZ = clamp(worldXZ, boundsMin, boundsMax);
+}
+
+// Then apply displacement as normal...
+let disp = sampleFFTDisplacement(worldXZ);
+```
+
+Soft-clamping gives:
+- High vertex density where the camera looks (projected grid property)
+- Clean termination at the water body boundary (no infinite ocean)
+- Dense vertices piling up at the shore edge (good for foam/detail)
+
+**Coastline masking** — The AABB gives a rectangular boundary, but real coastlines are irregular. Two refinement options:
+
+| Mask Type | Method | Precision | Cost |
+|-----------|--------|-----------|------|
+| `'none'` | AABB clamp only (rectangular edge) | Low | Free |
+| `'heightmap'` | Sample terrain heightmap in vertex shader; collapse vertices where `terrainH > waterLevel` | High | 1 texture fetch/vertex |
+| `'sdf'` | Sample GDF in vertex shader; collapse where `sdfDist < 0` (inside terrain) | Highest | 1 3D texture fetch/vertex |
+
+```wgsl
+// Coastline masking (after worldXZ is computed):
+if (coastlineMask == HEIGHTMAP) {
+    let terrainUV = worldXZToTerrainUV(worldXZ);
+    let terrainH = textureSampleLevel(heightmap, sampler, terrainUV, 0).r * heightScale;
+    if (terrainH > waterLevel + 0.1) {
+        // Vertex is on land — collapse to degenerate triangle
+        output.clipPosition = vec4f(0.0, 0.0, -1.0, 1.0);
+        return output;
+    }
+} else if (coastlineMask == SDF) {
+    let sdfDist = sampleSDF(vec3f(worldXZ.x, waterLevel, worldXZ.y));
+    if (sdfDist < -0.5) { // clearly inside terrain
+        output.clipPosition = vec4f(0.0, 0.0, -1.0, 1.0);
+        return output;
+    }
+}
+```
+
+**When to use each combination:**
+
+| Scenario | Grid Mode | Coastline Mask |
+|----------|-----------|---------------|
+| Swimming pool / fountain | `uniform` | `none` |
+| Small lake | `uniform` | `none` |
+| Large lake (horizon visible on some sides) | `projected-bounded` | `heightmap` |
+| Ocean with coastline | `projected-bounded` | `heightmap` or `sdf` |
+| Open ocean (no land visible) | `projected` | `none` |
+| Infinite water world | `projected` | `none` |
+
+Default for new ocean objects: `'projected-bounded'` with `coastlineMask: 'heightmap'`.
+
 #### New Config Fields
 
 ```typescript
 // Added to WaterConfig:
-gridMode: 'uniform' | 'projected';    // 'uniform' = current behavior, 'projected' = new
+gridMode: 'uniform' | 'projected' | 'projected-bounded';
 projectedGridResX: number;             // 128–512, default 256
 projectedGridResZ: number;             // 128–512, default 256
 projectedMaxDistance: number;           // Max projection distance in meters (default: 50000)
+coastlineMask: 'none' | 'heightmap' | 'sdf'; // How to mask land in projected modes (default: 'heightmap')
+// Note: For 'projected-bounded', the AABB is derived from gridCenterX/Z ± gridSizeX/Z (existing fields)
+// For 'projected', gridCenter/gridSize are ignored (infinite ocean)
+// For 'uniform', behavior unchanged from current implementation
 ```
 
 #### Files Created
-- `src/core/ocean/ProjectedGridBuilder.ts` — Projector matrix computation
+- `src/core/ocean/ProjectedGridBuilder.ts` — Projector matrix computation + coastline mask setup
 
 #### Files Modified
-- `src/core/gpu/renderers/WaterRendererGPU.ts` — Add projector matrix uniform, toggle grid mode
-- `src/core/gpu/shaders/water.wgsl` — Vertex shader: projected grid path
-- `src/core/ocean/OceanManager.ts` — Compute projector each frame from camera
+- `src/core/gpu/renderers/WaterRendererGPU.ts` — Add projector matrix uniform, grid mode + coastline mask uniforms
+- `src/core/gpu/shaders/water.wgsl` — Vertex shader: projected grid path with AABB clamping + coastline masking
+- `src/core/ocean/OceanManager.ts` — Compute projector each frame from camera, bind terrain heightmap for coastline mask
+
+---
+
+### Phase W7: SDF Wave Dampening
+
+**Goal**: Attenuate FFT wave displacement near submerged/partially-submerged objects using the Global Distance Field, creating natural calm zones around obstacles with contact foam filling the gaps.
+
+**Approach**: Sample SDF in the vertex shader (not just fragment) to reduce displacement near geometry.
+
+```wgsl
+// In vertex shader, after computing FFT displacement:
+let sdfDist = sampleSDF(vec3f(worldXZ.x, waterLevel, worldXZ.y));
+let dampFactor = smoothstep(0.0, dampRadius, sdfDist); // 0 near object, 1 far away
+displacement *= dampFactor;
+```
+
+**Visual Result**:
+- Near object (SDF ≈ 0): No waves, flat water + white contact foam ring
+- Transition zone (SDF 0→dampRadius): Waves gradually diminish, partial foam
+- Far from object (SDF > dampRadius): Full FFT ocean waves
+
+**Changes Required**:
+1. Update SDF bind group layout visibility from `FRAGMENT` to `VERTEX | FRAGMENT`
+2. Add SDF sampling call in vertex shader before displacement application
+3. Add `dampRadius` parameter to `WaterConfig` (default ~3m)
+
+**Dependencies**: G1 (terrain SDF), G3 (mesh primitive stamping for non-terrain objects)
+
+**Effort**: ~2-3 hours
+
+---
+
+### Phase W8: Interactive Wave Simulation (Boundary-Aware)
+
+**Goal**: Overlay a 2D wave equation simulation on top of FFT ocean to achieve wave reflection, diffraction around objects, and interaction sources (ripples, wakes) — without full fluid dynamics.
+
+**Architecture**: FFT ocean provides the base open-ocean waves. A separate 2D heightfield simulation handles near-field object interaction. The two are composited in the vertex shader:
+
+```
+Final displacement = FFT ocean × SDF damping + Interactive wave heightfield
+```
+
+#### Pipeline (per frame, all GPU compute)
+
+```
+┌─────────────────────────────────────────────────┐
+│ 1. SDF → 2D Obstacle Mask (new compute shader)  │
+│    Project GDF down to top-down occupancy map    │
+│    → obstacleMask[512²] (0=water, 1=solid)      │
+│                                                  │
+│ 2. Interaction Source Injection                   │
+│    Write impulse heights at object positions      │
+│    - Bobbing: sinusoidal at XZ position          │
+│    - Moving: line of perturbations behind vel     │
+│    - Splash: single-frame impulse at impact       │
+│                                                  │
+│ 3. 2D Wave Equation Solver (Jacobi iteration)    │
+│    ∂²h/∂t² = c²∇²h - damping × ∂h/∂t           │
+│    Boundary: h=0 inside obstacle mask             │
+│    Ping-pong: prevHeight ↔ currHeight → nextHeight│
+│    → interactiveHeight[512²]                     │
+│                                                  │
+│ 4. Compositing (water.wgsl vertex shader)        │
+│    sdfDist → dampFactor for FFT attenuation       │
+│    totalDisp = fftDisp × dampFactor + iWaveHeight │
+└─────────────────────────────────────────────────┘
+```
+
+#### Wave Equation Discretization
+
+```wgsl
+@compute @workgroup_size(8, 8, 1)
+fn waveStep(@builtin(global_invocation_id) gid: vec3u) {
+  let hPrev = textureLoad(prevHeight, gid.xy, 0).r;
+  let hCurr = textureLoad(currHeight, gid.xy, 0).r;
+  let laplacian = textureLoad(currHeight, gid.xy + vec2u(1,0), 0).r
+                + textureLoad(currHeight, gid.xy - vec2u(1,0), 0).r
+                + textureLoad(currHeight, gid.xy + vec2u(0,1), 0).r
+                + textureLoad(currHeight, gid.xy - vec2u(0,1), 0).r
+                - 4.0 * hCurr;
+  let hNext = 2.0 * hCurr - hPrev + c*c*dt*dt * laplacian
+            - damping * (hCurr - hPrev);
+  // Boundary: zero displacement inside obstacles
+  let obstacle = textureLoad(obstacleMask, gid.xy, 0).r;
+  textureStore(nextHeight, gid.xy, vec4f(select(hNext, 0.0, obstacle > 0.5)));
+}
+```
+
+#### What This Achieves (without full fluid dynamics)
+
+| Feature | Supported | How |
+|---------|-----------|-----|
+| Wave reflection off walls | ✅ | Boundary h=0 reflects incoming waves |
+| Diffraction around corners | ✅ | Wave equation naturally diffracts |
+| Interference patterns | ✅ | Two reflected fronts collide naturally |
+| Object ripples/splashes | ✅ | Impulse injection at object position |
+| Wake behind moving objects | ✅ | Line of impulses behind velocity |
+| Decay over distance | ✅ | Damping term in wave equation |
+| Currents/vortices | ❌ | Needs velocity field (SWE/NS) |
+| Breaking waves | ❌ | Needs volume simulation |
+
+#### Performance Budget
+
+| Resolution | Coverage | Cost/frame | Use case |
+|-----------|----------|------------|----------|
+| 256×256 | 100m × 100m around camera | ~0.1ms | Minimum viable |
+| 512×512 | 200m × 200m around camera | ~0.3ms | Good quality |
+
+The simulation grid scrolls with the camera (like a shadow cascade). Far away, only FFT waves are visible.
+
+#### New Files
+- `src/core/ocean/InteractiveWaveSim.ts` — Manages compute pipeline, ping-pong textures, obstacle mask
+- `src/core/gpu/shaders/ocean/wave-sim-step.wgsl` — 2D wave equation Jacobi solver
+- `src/core/gpu/shaders/ocean/obstacle-mask-project.wgsl` — Project 3D SDF to 2D occupancy
+- `src/core/gpu/shaders/ocean/wave-source-inject.wgsl` — Write interaction impulses
+
+#### Modified Files
+- `src/core/gpu/shaders/water.wgsl` — Sample interactive heightfield in vertex shader, composite with FFT
+- `src/core/gpu/renderers/WaterRendererGPU.ts` — New bind group for interactive wave textures
+- `src/core/ocean/OceanManager.ts` — Dispatch interactive wave sim each frame
+
+**Dependencies**: W7 (SDF dampening), G1 (terrain SDF), G3 (mesh primitives in SDF)
+
+**Effort**: ~12-15 hours
+
+---
+
+### Phase W9: Wave Visibility & Diffuse Detail
+
+**Goal**: Make waves clearly visible even without specular highlights. Currently, turbulent water looks flat/uniform when viewed from angles where Fresnel → full reflection of a uniform sky region. In real life, waves are easily discernible on overcast days through several non-specular mechanisms.
+
+**Effort**: ~1-2 days total for all 4 techniques
+
+#### Why Real Waves Are Visible Without Specular
+
+Real ocean waves are visible through 4 distinct visual mechanisms, each independent of sun specular:
+
+1. **Normal-dependent sky gradient reflection** — Each wave facet reflects a different part of the sky hemisphere. Crests facing up reflect zenith (blue), slopes facing sideways reflect horizon (lighter/warmer). Even with overcast skies, the zenith-to-horizon gradient creates visible contrast across the wave surface.
+
+2. **Wave-height body color variation** — Thinner water at wave crests transmits more skylight → appears lighter/greener. Thicker water in troughs absorbs more → appears darker/bluer. This is the dominant visual cue for wave structure in the absence of specular.
+
+3. **Geometric self-shadowing** — Wave crests cast shadows on troughs. Creates dark bands between waves that strongly define wave shape. Most visible at low sun angles.
+
+4. **Normal-dependent Fresnel variation** — Different wave facets have different NdotV → different amounts of sky vs body color. The FFT normals already provide this, but the effect is muted when the body color is too uniform (see point 2).
+
+#### Enhancement 1: Wave Height → Body Color Modulation (★★★★★)
+
+**Problem**: Over open ocean with no terrain floor, `waterDepthMeters` defaults to `maxColorDepth = 30m` for every pixel. The Beer-Lambert absorption produces a single uniform blue regardless of wave displacement.
+
+**Fix**: Use FFT vertical displacement (wave height) to modulate the effective optical depth. Wave crests have less water above the "virtual floor" → more light transmission → lighter color. Troughs have more water → more absorption → darker.
+
+The wave height needs to be passed from the vertex shader to the fragment shader. Currently `gerstnerNormal` is passed but not the displacement itself.
+
+```wgsl
+// Vertex output: add wave height
+@location(6) waveHeight: f32,
+
+// In vertex shader:
+output.waveHeight = displacement.y; // positive = crest, negative = trough
+
+// In fragment shader (physical color path):
+// Modulate effective depth by wave height — crests are thinner, troughs deeper
+let waveHeightMod = input.waveHeight * 2.0; // scale factor for visual impact
+let effectiveDepth = max(0.5, waterDepthMeters - waveHeightMod);
+let absorption = material.absorptionCoeffs.xyz * material.absorptionCoeffs.w;
+let physTransmittance = exp(-effectiveDepth * absorption);
+```
+
+**Changes**: `water.wgsl` — add `waveHeight` to VertexOutput, compute in VS, use in FS absorption.
+
+**Effort**: ~15 minutes
+
+#### Enhancement 2: Reduce IBL Tonemap Compression (★★★★)
+
+**Problem**: The Reinhard tonemap on `envReflection` was added to prevent HDR blowout, but it also compresses the natural sky gradient variation that makes wave facets distinguishable. With `envReflection = envClamped / (1.0 + envLum * 0.5)`, a sky gradient from lum=0.5 to lum=2.0 gets compressed to 0.33 to 0.57 — only 0.24 range out of 1.0.
+
+**Fix**: Use a gentler tonemap that preserves more relative contrast. Instead of Reinhard, use exposure + soft clamp:
+
+```wgsl
+// Replace per-pixel Reinhard with exposure-based approach
+let envRaw = sampleIBLReflection(R, waterRoughness);
+let exposedEnv = envRaw * 0.5; // exposure reduction (adjustable)
+let envReflection = min(exposedEnv, vec3f(1.5)); // soft ceiling
+```
+
+This preserves the natural color ratios within the IBL while preventing blowout. The sky gradient from bright horizon to dark zenith remains visible as wave facets rotate through different reflection directions.
+
+**Changes**: `water.wgsl` — replace Reinhard tonemap with exposure + clamp.
+
+**Effort**: ~10 minutes
+
+#### Enhancement 3: Jacobian-Based Whitecap Foam (★★★★)
+
+This is the existing **Phase W3** — included here for completeness as it's one of the 4 key wave visibility mechanisms. The Jacobian determinant of the displacement field identifies where waves fold over (whitecaps). See Phase W3 for full details.
+
+**Summary**: Compute `J = (1 + ∂Dx/∂x)(1 + ∂Dz/∂z) - (∂Dx/∂z)(∂Dz/∂x)` in `ocean-finalize.wgsl`, store in `.w` channel, use as foam trigger in `water.wgsl`.
+
+**Effort**: ~3 days (Phase W3)
+
+#### Enhancement 4: Wave Self-Shadowing (★★★)
+
+**Goal**: Approximate wave crests casting shadows on troughs. This is most visible at low sun angles where waves create pronounced dark/light bands.
+
+**Approach**: Horizon-based ray march along the sun direction from each water pixel. Step through the displacement map checking if any nearby wave crest occludes the sun. This is conceptually similar to parallax occlusion mapping.
+
+```wgsl
+fn waveSelfShadow(worldXZ: vec2f, sunDir: vec3f) -> f32 {
+  if (!selfShadowEnabled) { return 1.0; }
+
+  let sunXZ = normalize(sunDir.xz);
+  let sunElevation = sunDir.y; // how steep the sun angle is
+  if (sunElevation > 0.7) { return 1.0; } // sun too high for visible wave shadows
+
+  var shadow = 1.0;
+  let stepCount = 8; // 8 samples along sun direction
+  let stepSize = 2.0; // meters per step (tune based on wave scale)
+  var maxHorizon = 0.0;
+
+  for (var i = 1; i <= stepCount; i++) {
+    let offset = sunXZ * f32(i) * stepSize;
+    let sampleXZ = worldXZ + offset;
+
+    // Sample FFT displacement height at offset position
+    let uv = sampleXZ / fftParams.tileSizes.x;
+    let sampleH = textureSampleLevel(fftDisplacement0, fftSampler, uv, 0.0).y;
+
+    // Expected sun height at this distance
+    let expectedH = f32(i) * stepSize * sunElevation;
+
+    // If wave height exceeds expected sun angle, it's occluding
+    if (sampleH > expectedH + input.waveHeight) {
+      shadow *= 0.7; // partial shadow (soft)
+    }
+  }
+  return shadow;
+}
+```
+
+**UI toggle**: Exposed as a checkbox `waveSelfShadow: boolean` in WaterConfig. Default: `false` (opt-in, since it adds ~8 texture fetches per pixel). Added to WaterPanel as a checkbox in the Appearance section.
+
+**Changes**:
+- `water.wgsl` — add `waveSelfShadow()` function, multiply shadow term by result
+- `WaterRendererGPU.ts` — add `waveSelfShadow: boolean` to WaterConfig, wire through material uniform
+- `WaterPanel.tsx` — add toggle checkbox
+- `WaterPanelBridge.tsx` — sync toggle
+
+**Effort**: ~1 day
+
+#### New Config Fields
+
+```typescript
+// Added to WaterConfig:
+waveSelfShadow: boolean;      // Enable wave crest self-shadowing (default: false, opt-in)
+```
+
+#### Combined Impact
+
+With all 4 enhancements active, waves become visible through multiple overlapping cues:
+- **Color**: Crests lighter (less absorption), troughs darker (more absorption)
+- **Reflection**: Each facet reflects a different sky region (gradient preserved)
+- **Shadow**: Crests cast bands of shadow on troughs (self-shadowing)
+- **Foam**: Breaking crests have white foam patches (Jacobian, Phase W3)
+
+Even with the sun behind clouds (no specular), the combination of absorption variation + sky gradient + self-shadowing produces clearly defined wave shapes.
+
+**Dependencies**: W2 (FFT displacement for wave height), W3 (Jacobian foam)
 
 ---
 
@@ -1259,6 +1645,8 @@ G1 ──── G2 ──── G3 ──── G4 ──── G5              
          W3 ←──── G1 ──┘  (foam uses SDF from G1)
          W5 ←──── G4       (UI exposes contact foam from G4)
          W6 ←──── W2       (projected grid needs FFT texture sampling)
+         W7 ←──── G1+G3    (SDF wave dampening needs terrain+mesh SDF)
+         W8 ←──── W7+G3    (interactive waves need obstacle mask from SDF)
 ```
 
 ### Suggested Order
@@ -1404,15 +1792,19 @@ export interface WaterConfig {
   fftTileSize: number;             // 50–2000 meters, physical tile size
   
   // === Grid / Mesh ===
-  gridMode: 'uniform' | 'projected'; // 'uniform' = world-space grid, 'projected' = screen-space
-  gridCenterX: number;             // uniform mode only
-  gridCenterZ: number;             // uniform mode only
-  gridSizeX: number;               // uniform mode only
-  gridSizeZ: number;               // uniform mode only
-  cellSize: number;                // uniform mode only
-  projectedGridResX: number;       // projected mode: 128–512, default 256
-  projectedGridResZ: number;       // projected mode: 128–512, default 256
-  projectedMaxDistance: number;     // projected mode: max projection meters (default: 50000)
+  gridMode: 'uniform' | 'projected' | 'projected-bounded';
+  //   'uniform'            = world-space grid with explicit bounds (current behavior)
+  //   'projected'          = screen-space projected grid, infinite extent
+  //   'projected-bounded'  = projected grid clamped to AABB + coastline masking (recommended default)
+  gridCenterX: number;             // uniform + projected-bounded: AABB center X
+  gridCenterZ: number;             // uniform + projected-bounded: AABB center Z
+  gridSizeX: number;               // uniform + projected-bounded: AABB extent X
+  gridSizeZ: number;               // uniform + projected-bounded: AABB extent Z
+  cellSize: number;                // uniform mode only (projected modes use projectedGridRes)
+  projectedGridResX: number;       // projected modes: 128–512, default 256
+  projectedGridResZ: number;       // projected modes: 128–512, default 256
+  projectedMaxDistance: number;     // projected modes: max projection meters (default: 50000)
+  coastlineMask: 'none' | 'heightmap' | 'sdf'; // projected modes: how to mask land (default: 'heightmap')
   
   // === Lighting (kept from current) ===
   fresnelPower: number;            // For fallback/artistic override

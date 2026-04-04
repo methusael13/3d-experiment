@@ -55,6 +55,10 @@ export interface WaterConfig {
   detailStrength: number;
   /** Refraction strength for shallow water (0 = none, 0.5-1.5 = typical) */
   refractionStrength: number;
+  /** SDF-based contact foam width in meters (0 = disabled, default 1.0) */
+  contactFoamWidth: number;
+  /** Mesh grid resolution (cells per axis, 64-512, default 256). Higher = smoother wave displacement at cost of triangles */
+  meshResolution: number;
   
   // === Physical Appearance (W1) ===
   /** Use physically-based water color from absorption + IBL (default: true for new scenes) */
@@ -156,6 +160,8 @@ export function createDefaultWaterConfig(): WaterConfig {
     wavelength: 20.0,  // 20 world units - good default for visible waves
     detailStrength: 0.3, // High-frequency normal detail (0-1)
     refractionStrength: 0.8, // Subtle refraction for shallow water visibility
+    contactFoamWidth: 1.0,   // SDF-based contact foam distance in meters
+    meshResolution: 256,     // Grid cells per axis (64-512)
     // Physical appearance defaults (W1)
     usePhysicalColor: true,
     absorptionCoeffs: [0.45, 0.064, 0.0145], // Pure water absorption (red absorbs fastest)
@@ -343,11 +349,12 @@ export class WaterRendererGPU {
     // wave displacement textures, independent of the cellSize UI control.
     // cellSize only affects grid density for the legacy Gerstner path.
     const fftActive = this._lastFFTEnabled;
+    const meshRes = this.config.meshResolution ?? 256;
     const cellsX = fftActive
-      ? 256
+      ? meshRes
       : Math.max(1, Math.ceil(this.config.gridSizeX / this.config.cellSize));
     const cellsZ = fftActive
-      ? 256
+      ? meshRes
       : Math.max(1, Math.ceil(this.config.gridSizeZ / this.config.cellSize));
     
     // Limit to reasonable max to prevent memory issues
@@ -870,8 +877,8 @@ export class WaterRendererGPU {
       .vec4(this.config.waveScale, this.config.foamThreshold, this.config.fresnelPower, this.config.opacity)
       // params2: ambientIntensity, depthFalloff, wavelength, detailStrength
       .vec4(params.ambientIntensity ?? 0.3, this.config.depthFalloff, this.config.wavelength, this.config.detailStrength)
-      // params3: refractionStrength, screenWidth, screenHeight, unused
-      .vec4(refractionStrength, screenWidth, screenHeight, 0.0)
+      // params3: refractionStrength, screenWidth, screenHeight, contactFoamWidth
+      .vec4(refractionStrength, screenWidth, screenHeight, this.config.contactFoamWidth ?? 1.0)
       // ssrParams1: maxSteps, refinementSteps, maxDistance, stepSize
       .vec4(
         params.ssrConfig?.maxSteps ?? 64,
