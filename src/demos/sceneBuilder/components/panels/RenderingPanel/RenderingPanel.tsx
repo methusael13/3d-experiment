@@ -141,6 +141,7 @@ const debugViewOptions = [
   { value: 'depth', label: 'Depth Buffer' },
   { value: 'normals', label: 'Normals' },
   { value: 'ssr', label: 'SSR Result' },
+  { value: 'sdf', label: 'SDF Distance Field' },
 ];
 
 const ssrQualityOptions = [

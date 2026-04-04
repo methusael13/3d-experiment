@@ -39,6 +39,8 @@ import {
   type FogVolumeDescriptor,
 } from '../volumetric';
 import { WindComponent } from '@/core/ecs';
+import type { GlobalDistanceField } from '../sdf/GlobalDistanceField';
+
 export class VolumetricFogManager {
   private ctx: GPUContext;
   private _enabled = false;
@@ -55,6 +57,9 @@ export class VolumetricFogManager {
   // Previous frame VP matrix for temporal reprojection
   private prevViewProjMatrix = new Float32Array(16);
   private hasPrevVP = false;
+
+  // G4: Global Distance Field reference (set by GPUForwardPipeline each frame)
+  private _gdf: GlobalDistanceField | null = null;
 
   constructor(ctx: GPUContext) {
     this.ctx = ctx;
@@ -127,6 +132,29 @@ export class VolumetricFogManager {
 
   getConfig(): VolumetricFogConfig {
     return { ...this._config };
+  }
+
+  // ========== G4: SDF Integration ==========
+
+  /**
+   * Set the Global Distance Field reference for fog-SDF integration (G4).
+   * Called by GPUForwardPipeline each frame after GDF update.
+   * When set, the density injector can sample SDF to:
+   * - Zero fog density inside solid geometry
+   * - Enhance density near surfaces (ground fog hugging)
+   */
+  setGDF(gdf: GlobalDistanceField | null): void {
+    this._gdf = gdf;
+    // Pass SDF resources to density injector for surface-aware fog
+    if (this.densityInjector && gdf?.isReady) {
+      this.densityInjector.setSDFResources(
+        gdf.getSampleView(2),        // Coarse cascade (1024m) for fog — broadest coverage
+        gdf.sampler,
+        gdf.consumerUniformBuffer?.buffer ?? null,
+      );
+    } else if (this.densityInjector) {
+      this.densityInjector.setSDFResources(null, null, null);
+    }
   }
 
   // ========== Per-Frame Execution ==========

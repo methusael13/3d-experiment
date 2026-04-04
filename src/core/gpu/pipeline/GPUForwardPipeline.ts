@@ -43,6 +43,10 @@ import {
   OverlayPass, DebugPass, SelectionMaskPass, SelectionOutlinePass,
   SSRPass, DebugViewPass,
 } from './passes';
+import { GlobalDistanceField } from '../sdf/GlobalDistanceField';
+import type { SDFPrimitive, SDFTerrainStampParams } from '../sdf/types';
+import { BoundsComponent } from '../../ecs/components/BoundsComponent';
+import { OceanComponent } from '../../ecs/components/OceanComponent';
 import type { DebugViewMode } from './passes';
 import type { SSRConfig, SSRQualityLevel } from './SSRConfig';
 import { SelectionOutlineRendererGPU } from '../renderers/SelectionOutlineRendererGPU';
@@ -158,6 +162,9 @@ export class GPUForwardPipeline {
   // Light buffer manager — set by Engine after construction for volumetric fog point/spot lights
   private _lightBufferManager: LightBufferManager | null = null;
 
+  // Global Distance Field (G2: pipeline-level ownership, multi-cascade, camera scrolling)
+  private gdf: GlobalDistanceField | null = null;
+  private _sdfEnabled = true;
 
   constructor(ctx: GPUContext, options: GPUForwardPipelineOptions) {
     this.ctx = ctx;
@@ -339,6 +346,9 @@ export class GPUForwardPipeline {
 
     // ── Grass blade shadow pass (after vegetation cull, before scene shadow pass) ──
     this.renderGrassShadows(world, encoder, renderCtx);
+
+    // ── GDF compute pre-pass (G2: before any render passes that need SDF) ──
+    this.updateGDF(encoder, renderCtx);
 
     // ── Scene passes (render to HDR buffer) ──
     for (const pass of this.passes) {
@@ -600,12 +610,17 @@ export class GPUForwardPipeline {
   // ==================== SDF / Global Distance Field ====================
 
   setSDFEnabled(enabled: boolean): void {
+    this._sdfEnabled = enabled;
     const tp = this.passes.find(p => p.name === 'transparent') as TransparentPass | undefined;
     if (tp) { tp.sdfEnabled = enabled; }
   }
   isSDFEnabled(): boolean {
-    const tp = this.passes.find(p => p.name === 'transparent') as TransparentPass | undefined;
-    return tp?.sdfEnabled ?? true;
+    return this._sdfEnabled;
+  }
+
+  /** Get the pipeline-owned GDF instance (for external consumers) */
+  getGlobalDistanceField(): GlobalDistanceField | null {
+    return this.gdf;
   }
 
   // ==================== SSR ====================
@@ -656,10 +671,128 @@ export class GPUForwardPipeline {
     this.debugTextureManager.destroy();
     this.cloudManager.destroy();
     this.volumetricFogManager.destroy();
+    this.gdf?.destroy();
+    this.gdf = null;
     for (const pass of this.passes) pass.destroy?.();
   }
 
   // ==================== Private Helpers ====================
+
+  /**
+   * Update the Global Distance Field (G2/G3: multi-cascade, camera scrolling, mesh primitives).
+   * Runs as a compute pre-pass before any render passes that need SDF data.
+   * Lazy-initializes GDF on first frame that has terrain with a heightmap.
+   * Independent of ocean/water — any consumer (water, fog, AO) can use GDF.
+   */
+  private updateGDF(encoder: GPUCommandEncoder, renderCtx: RenderContextImpl): void {
+    if (!this._sdfEnabled) return;
+
+    const world = renderCtx.world;
+    if (!world) return;
+
+    // Get terrain manager for heightmap stamping (optional — GDF works without terrain too)
+    let terrainManager = null;
+    const terrainEntity = world.queryFirst('terrain');
+    if (terrainEntity) {
+      const tc = terrainEntity.getComponent<TerrainComponent>('terrain');
+      terrainManager = tc?.manager ?? null;
+    }
+
+    // G3: Collect mesh primitives from ECS (boxes from world-space AABBs)
+    const meshPrimitives = this.collectSDFPrimitives(world, renderCtx.cameraPosition);
+
+    // Need either terrain or mesh primitives to justify GDF initialization
+    const hasTerrain = terrainManager?.isReady && terrainManager.getHeightmap();
+    if (!hasTerrain && meshPrimitives.length === 0) return;
+
+    // Lazy-initialize GDF on first use
+    if (!this.gdf) {
+      this.gdf = new GlobalDistanceField(this.ctx);
+      this.gdf.initialize();
+      console.log('[GPUForwardPipeline] GlobalDistanceField initialized (G2: pipeline-level, multi-cascade)');
+    }
+
+    // Build terrain stamp params (null if no terrain — GDF skips terrain stamping)
+    let terrainStampParams: SDFTerrainStampParams | undefined;
+    if (hasTerrain) {
+      const terrainConfig = terrainManager!.getConfig();
+      const heightmap = terrainManager!.getHeightmap()!;
+      terrainStampParams = {
+        heightmapView: heightmap.view,
+        heightScale: terrainConfig?.heightScale ?? 50,
+        terrainWorldSize: terrainConfig?.worldSize ?? 1000,
+      };
+    }
+
+    // Update GDF (all cascades, hysteresis-based re-centering, terrain + mesh stamping)
+    this.gdf.update(encoder, renderCtx.cameraPosition, terrainStampParams, meshPrimitives);
+
+    // Pass GDF reference to TransparentPass (water reads it for contact foam)
+    const tp = this.passes.find(p => p.name === 'transparent') as TransparentPass | undefined;
+    if (tp) {
+      tp.externalGDF = this.gdf;
+    }
+
+    // G4: Pass GDF reference to VolumetricFogManager for fog-SDF integration
+    this.volumetricFogManager.setGDF(this.gdf);
+
+    // Pass GDF to DebugViewPass for SDF visualization
+    this.debugViewPass?.setGDF(this.gdf);
+  }
+
+  /**
+   * G3: Collect SDF primitives from ECS world.
+   * Queries entities with BoundsComponent that have computed worldBounds,
+   * converts AABBs to SDFPrimitive boxes, and filters out non-mesh entities
+   * (terrain, ocean, lights) and distant objects.
+   */
+  private collectSDFPrimitives(world: World, cameraPosition: Float32Array | number[]): SDFPrimitive[] {
+    const primitives: SDFPrimitive[] = [];
+    const camX = cameraPosition[0], camY = cameraPosition[1], camZ = cameraPosition[2];
+    // Only stamp primitives within the coarsest cascade range (~512m) for efficiency
+    const maxRange = 512;
+    const maxRangeSq = maxRange * maxRange;
+
+    // Query all entities with bounds component
+    const entities = world.query('bounds');
+    for (const entity of entities) {
+      const bounds = entity.getComponent<BoundsComponent>('bounds');
+      if (!bounds?.worldBounds) continue;
+
+      // Skip terrain and ocean entities — they have their own SDF stamping
+      if (entity.hasComponent('terrain') || entity.hasComponent('ocean')) continue;
+      // Skip light entities
+      if (entity.hasComponent('light')) continue;
+
+      const wb = bounds.worldBounds;
+      const minX = wb.min[0], minY = wb.min[1], minZ = wb.min[2];
+      const maxX = wb.max[0], maxY = wb.max[1], maxZ = wb.max[2];
+
+      // Compute AABB center and half-extents
+      const cx = (minX + maxX) * 0.5;
+      const cy = (minY + maxY) * 0.5;
+      const cz = (minZ + maxZ) * 0.5;
+      const hx = (maxX - minX) * 0.5;
+      const hy = (maxY - minY) * 0.5;
+      const hz = (maxZ - minZ) * 0.5;
+
+      // Skip very small objects (< 0.1m half-extent in all dimensions)
+      if (hx < 0.1 && hy < 0.1 && hz < 0.1) continue;
+
+      // Distance check from camera to AABB center
+      const dx = cx - camX, dy = cy - camY, dz = cz - camZ;
+      const distSq = dx * dx + dy * dy + dz * dz;
+      if (distSq > maxRangeSq) continue;
+
+      primitives.push({
+        type: 'box',
+        center: new Float32Array([cx, cy, cz]) as any,
+        extents: new Float32Array([hx, hy, hz]) as any,
+      });
+    }
+
+    return primitives;
+  }
 
   private findMeshRenderSystem(world: World): MeshRenderSystem | undefined {
     for (const s of world.getSystems()) { if (s instanceof MeshRenderSystem) return s; }

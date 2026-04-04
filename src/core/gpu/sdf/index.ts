@@ -7,5 +7,6 @@
 
 export { GlobalDistanceField } from './GlobalDistanceField';
 export { SDFTerrainStamper } from './SDFTerrainStamper';
+export { SDFPrimitiveStamper } from './SDFPrimitiveStamper';
 export { createDefaultSDFConfig } from './types';
-export type { SDFConfig, SDFCascade, SDFTerrainStampParams, SDFShaderParams } from './types';
+export type { SDFConfig, SDFCascade, SDFTerrainStampParams, SDFShaderParams, SDFPrimitive, SDFPrimitiveType } from './types';

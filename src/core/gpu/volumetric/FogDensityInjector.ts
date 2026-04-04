@@ -30,6 +30,11 @@ export class FogDensityInjector {
   // External 3D noise texture (set when noise is enabled, e.g. reuse cloud detail noise)
   private _noiseView: GPUTextureView | null = null;
 
+  // G4: SDF resources for geometry-aware fog (set by VolumetricFogManager)
+  private _sdfView: GPUTextureView | null = null;
+  private _sdfSampler: GPUSampler | null = null;
+  private _sdfUniformBuffer: GPUBuffer | null = null;
+
   // Wind offset accumulators
   private windOffsetX = 0;
   private windOffsetY = 0;
@@ -104,6 +109,31 @@ export class FogDensityInjector {
   /** Set external 3D noise texture (e.g. cloud detail noise) */
   setNoiseTexture(view: GPUTextureView | null): void {
     this._noiseView = view;
+  }
+
+  /**
+   * G4: Set SDF resources for geometry-aware fog.
+   * When SDF is available, the density shader can:
+   * - Zero fog density inside solid geometry (prevents fog leaking through walls)
+   * - Enhance density near surfaces (ground fog hugging effect)
+   * 
+   * Note: Currently stores the references for future shader integration.
+   * The fog-density-inject.wgsl shader will be extended in a follow-up
+   * to add an optional SDF bind group (group 1) for sampling.
+   */
+  setSDFResources(
+    sdfView: GPUTextureView | null,
+    sdfSampler: GPUSampler | null,
+    sdfUniformBuffer: GPUBuffer | null,
+  ): void {
+    this._sdfView = sdfView;
+    this._sdfSampler = sdfSampler;
+    this._sdfUniformBuffer = sdfUniformBuffer;
+  }
+
+  /** Whether SDF resources are currently available for fog-SDF integration */
+  get hasSDFResources(): boolean {
+    return this._sdfView !== null && this._sdfSampler !== null && this._sdfUniformBuffer !== null;
   }
 
   /** Update wind offset for noise animation */

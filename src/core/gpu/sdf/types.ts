@@ -77,19 +77,34 @@ export interface SDFShaderParams {
   resolution: number;
 }
 
-/** Default SDF configuration (single cascade for G1) */
+/** SDF primitive types for mesh approximation (G3) */
+export type SDFPrimitiveType = 'sphere' | 'box' | 'capsule';
+
+/** A simplified SDF primitive representing a mesh object */
+export interface SDFPrimitive {
+  /** Primitive type */
+  type: SDFPrimitiveType;
+  /** World-space center */
+  center: vec3;
+  /** Half-extents (xyz for box, x=radius for sphere, x=radius y=halfHeight for capsule) */
+  extents: vec3;
+}
+
+/** Default SDF configuration — 3 cascades (G2) with mesh stamping (G3) */
 export function createDefaultSDFConfig(): SDFConfig {
   return {
     enabled: true,
-    cascadeCount: 1,
+    cascadeCount: 3,
     baseResolution: 128,
     cascadeExtents: [
-      { halfWidth: 32, halfHeight: 16, halfDepth: 32 },  // Fine: 64m × 32m × 64m
+      { halfWidth: 32, halfHeight: 16, halfDepth: 32 },    // Fine: 64m × 32m × 64m (contact foam, near AO)
+      { halfWidth: 128, halfHeight: 64, halfDepth: 128 },   // Medium: 256m × 128m × 256m (mid-range fog, AO)
+      { halfWidth: 512, halfHeight: 256, halfDepth: 512 },  // Coarse: 1024m × 512m × 1024m (distant fog)
     ],
     updateBudgetMs: 2.0,
     hysteresisDistance: 8,
     enableTerrainStamping: true,
-    enableMeshStamping: false,
+    enableMeshStamping: true,
     enableJFA: false,
   };
 }

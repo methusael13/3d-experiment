@@ -9,8 +9,9 @@ import { vec3 } from 'gl-matrix';
 import { GPUContext } from '../GPUContext';
 import { UnifiedGPUBuffer, UniformBuilder } from '../index';
 import { SDFTerrainStamper } from './SDFTerrainStamper';
+import { SDFPrimitiveStamper } from './SDFPrimitiveStamper';
 import { ShaderModuleManager } from '../GPUShaderModule';
-import type { SDFConfig, SDFCascade, SDFTerrainStampParams } from './types';
+import type { SDFConfig, SDFCascade, SDFTerrainStampParams, SDFPrimitive } from './types';
 import { createDefaultSDFConfig } from './types';
 import sdfClearSource from '../shaders/sdf/sdf-clear.wgsl?raw';
 
@@ -23,6 +24,7 @@ export class GlobalDistanceField {
 
   // Compute resources
   private terrainStamper: SDFTerrainStamper | null = null;
+  private primitiveStamper: SDFPrimitiveStamper | null = null;
   private clearPipeline: GPUComputePipeline | null = null;
   private clearBindGroupLayout: GPUBindGroupLayout | null = null;
   private clearUniformBuffer: UnifiedGPUBuffer | null = null;
@@ -53,6 +55,9 @@ export class GlobalDistanceField {
     this.createCascades();
     this.createClearPipeline();
     this.terrainStamper = new SDFTerrainStamper(this.ctx);
+    if (this.config.enableMeshStamping) {
+      this.primitiveStamper = new SDFPrimitiveStamper(this.ctx);
+    }
 
     // Non-filtering sampler required for r32float (unfilterable-float) textures
     this._sampler = this.ctx.device.createSampler({
@@ -161,49 +166,98 @@ export class GlobalDistanceField {
   }
 
   /**
-   * Update the SDF. Called each frame (or when dirty).
+   * Update the SDF. Called each frame.
+   * G2: Updates all cascades with hysteresis-based camera scrolling.
+   * G3: Stamps mesh primitives after terrain stamping.
    * 
    * @param encoder - Command encoder to record compute passes into
-   * @param cameraPosition - Current camera position (for cascade centering in G2)
+   * @param cameraPosition - Current camera position (for cascade centering)
    * @param terrainParams - Terrain heightmap info for stamping
+   * @param meshPrimitives - Scene mesh primitives to stamp into SDF (G3)
    */
   update(
     encoder: GPUCommandEncoder,
     cameraPosition: vec3,
-    terrainParams?: SDFTerrainStampParams
+    terrainParams?: SDFTerrainStampParams,
+    meshPrimitives?: SDFPrimitive[]
   ): void {
     if (!this.initialized || !this.config.enabled) return;
 
-    // For G1: single cascade, center on camera XZ, fixed Y range
-    const cascade = this.cascades[0];
-    if (!cascade) return;
+    let anyUpdated = false;
 
-    // Re-center cascade on camera (snap to voxel grid)
-    const snapX = Math.round(cameraPosition[0] / cascade.voxelSize) * cascade.voxelSize;
-    const snapZ = Math.round(cameraPosition[2] / cascade.voxelSize) * cascade.voxelSize;
-    // Y center: offset slightly above typical water level
-    const snapY = Math.round(cameraPosition[1] / cascade.voxelSize) * cascade.voxelSize;
+    // G2: Process ALL cascades with hysteresis-based re-centering
+    for (let i = 0; i < this.cascades.length; i++) {
+      const cascade = this.cascades[i];
 
-    const moved = cascade.center[0] !== snapX || cascade.center[1] !== snapY || cascade.center[2] !== snapZ;
-    if (moved || this.needsRebuild) {
-      vec3.set(cascade.center, snapX, snapY, snapZ);
-      cascade.dirty = true;
+      // Snap camera position to voxel grid for this cascade
+      const snapX = Math.round(cameraPosition[0] / cascade.voxelSize) * cascade.voxelSize;
+      const snapZ = Math.round(cameraPosition[2] / cascade.voxelSize) * cascade.voxelSize;
+      const snapY = Math.round(cameraPosition[1] / cascade.voxelSize) * cascade.voxelSize;
+
+      // Hysteresis: only re-center if camera moved beyond threshold (in voxels)
+      const dx = Math.abs(cascade.center[0] - snapX) / cascade.voxelSize;
+      const dy = Math.abs(cascade.center[1] - snapY) / cascade.voxelSize;
+      const dz = Math.abs(cascade.center[2] - snapZ) / cascade.voxelSize;
+      const maxDrift = Math.max(dx, dy, dz);
+
+      if (maxDrift > this.config.hysteresisDistance || this.needsRebuild) {
+        vec3.set(cascade.center, snapX, snapY, snapZ);
+        cascade.dirty = true;
+      }
+
+      if (!cascade.dirty) continue;
+
+      // Clear cascade
+      this.clearCascade(encoder, cascade);
+
+      // Stamp terrain (all cascades get terrain)
+      if (this.config.enableTerrainStamping && terrainParams && this.terrainStamper) {
+        this.terrainStamper.stamp(encoder, cascade, terrainParams);
+      }
+
+      // G3: Stamp mesh primitives (after terrain, so min() combines both)
+      if (this.config.enableMeshStamping && meshPrimitives && meshPrimitives.length > 0 && this.primitiveStamper) {
+        // For coarser cascades, filter to only primitives that overlap the cascade volume
+        const filtered = this.filterPrimitivesForCascade(cascade, meshPrimitives);
+        if (filtered.length > 0) {
+          this.primitiveStamper.stamp(encoder, cascade, filtered);
+        }
+      }
+
+      cascade.dirty = false;
+      anyUpdated = true;
     }
 
-    if (!cascade.dirty) return;
-
-    // Clear + stamp terrain
-    this.clearCascade(encoder, cascade);
-
-    if (this.config.enableTerrainStamping && terrainParams && this.terrainStamper) {
-      this.terrainStamper.stamp(encoder, cascade, terrainParams);
+    if (anyUpdated) {
+      this.needsRebuild = false;
+      // Consumer uniforms use cascade 0 (finest) for water/foam sampling
+      if (this.cascades.length > 0) {
+        this.updateConsumerUniforms(this.cascades[0]);
+      }
     }
+  }
 
-    cascade.dirty = false;
-    this.needsRebuild = false;
+  /**
+   * Filter primitives to only those that overlap a cascade's bounding volume.
+   * Avoids wasting compute on distant primitives in fine cascades,
+   * or tiny primitives in coarse cascades.
+   */
+  private filterPrimitivesForCascade(cascade: SDFCascade, primitives: SDFPrimitive[]): SDFPrimitive[] {
+    const cx = cascade.center[0], cy = cascade.center[1], cz = cascade.center[2];
+    const ex = cascade.extent[0], ey = cascade.extent[1], ez = cascade.extent[2];
+    const minX = cx - ex, maxX = cx + ex;
+    const minY = cy - ey, maxY = cy + ey;
+    const minZ = cz - ez, maxZ = cz + ez;
+    // Expand AABB by the largest primitive radius to catch overlapping ones
+    const expand = cascade.voxelSize * 4; // generous overlap margin
 
-    // Update consumer uniform buffer
-    this.updateConsumerUniforms(cascade);
+    return primitives.filter(p => {
+      const px = p.center[0], py = p.center[1], pz = p.center[2];
+      const pr = Math.max(p.extents[0], p.extents[1], p.extents[2]);
+      return px + pr > minX - expand && px - pr < maxX + expand
+          && py + pr > minY - expand && py - pr < maxY + expand
+          && pz + pr > minZ - expand && pz - pr < maxZ + expand;
+    });
   }
 
   /**
@@ -265,6 +319,8 @@ export class GlobalDistanceField {
   destroy(): void {
     this.terrainStamper?.destroy();
     this.terrainStamper = null;
+    this.primitiveStamper?.destroy();
+    this.primitiveStamper = null;
 
     for (const c of this.cascades) {
       c.texture.destroy();

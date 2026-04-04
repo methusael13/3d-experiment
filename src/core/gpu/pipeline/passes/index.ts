@@ -13,8 +13,6 @@ import type { GridRendererGPU, GridGroundRenderParams } from '../../renderers/Gr
 import type { ShadowRendererGPU } from '../../renderers/ShadowRendererGPU';
 import type { DebugTextureManager } from '../../renderers/DebugTextureManager';
 import type { SelectionOutlineRendererGPU } from '../../renderers/SelectionOutlineRendererGPU';
-import { LightComponent } from '../../../ecs/components/LightComponent';
-import { TransformComponent } from '../../../ecs/components/TransformComponent';
 // Shadow Pass re-export
 export { ShadowPass } from './ShadowPass';
 export type { ShadowPassDependencies } from './ShadowPass';
@@ -36,8 +34,7 @@ import type { VariantMeshPool } from '../VariantMeshPool';
 import { SSRConfig } from '../SSRConfig';
 import { FrustumCullComponent } from '@/core/ecs';
 import { Vec3 } from '@/core/types';
-import { GlobalDistanceField } from '../../sdf/GlobalDistanceField';
-import type { SDFTerrainStampParams } from '../../sdf/types';
+import type { GlobalDistanceField } from '../../sdf/GlobalDistanceField';
 
 // ============================================================================
 // SKY PASS
@@ -288,8 +285,8 @@ export class TransparentPass extends BaseRenderPass {
   /** Whether SDF/Global Distance Field is enabled (set by pipeline from UI) */
   sdfEnabled: boolean = true;
   
-  /** Global Distance Field for SDF-based contact foam (lazy initialized) */
-  private gdf: GlobalDistanceField | null = null;
+  /** External GDF reference (set by GPUForwardPipeline each frame, G2: pipeline-level ownership) */
+  externalGDF: GlobalDistanceField | null = null;
   
   /** Track whether FFT debug textures have been registered */
   private fftDebugRegistered: boolean = false;
@@ -343,24 +340,8 @@ export class TransparentPass extends BaseRenderPass {
     // Get terrain config for size/scale (default if no terrain)
     const terrainConfig = terrainManager?.getConfig();
     
-    // === Global Distance Field (SDF) update ===
-    // Lazy-initialize GDF on first frame that has both ocean + terrain (gated by sdfEnabled toggle)
-    if (this.sdfEnabled && terrainManager?.isReady && terrainManager.getHeightmap()) {
-      if (!this.gdf) {
-        this.gdf = new GlobalDistanceField(ctx.ctx);
-        this.gdf.initialize();
-        console.log('[TransparentPass] GlobalDistanceField initialized for water contact foam');
-      }
-      // Build terrain stamp params from terrain manager
-      const heightmap = terrainManager.getHeightmap()!;
-      const terrainStampParams: SDFTerrainStampParams = {
-        heightmapView: heightmap.view,
-        heightScale: terrainConfig?.heightScale ?? 50,
-        terrainWorldSize: terrainConfig?.worldSize ?? 1000,
-      };
-      // Update GDF (compute pass — records into same encoder before render pass)
-      this.gdf.update(ctx.encoder, ctx.cameraPosition, terrainStampParams);
-    }
+    // GDF is now updated by GPUForwardPipeline.updateGDF() before scene passes.
+    // TransparentPass receives it via this.externalGDF (set each frame by the pipeline).
     
     // Read light from ECS
     const dirLight = ctx.getDirectionalLight();
@@ -403,8 +384,8 @@ export class TransparentPass extends BaseRenderPass {
       // SSR enabled flag (respects global SSR toggle from UI)
       ssrEnabled: this.ssrEnabled,
       ssrConfig: this.ssrConfig ?? undefined,
-      // Global Distance Field for SDF contact foam (G1) — only pass when SDF is enabled
-      globalDistanceField: this.sdfEnabled ? (this.gdf ?? undefined) : undefined,
+      // Global Distance Field for SDF contact foam — uses pipeline-level GDF (G2)
+      globalDistanceField: this.sdfEnabled ? (this.externalGDF ?? undefined) : undefined,
     });
     
     pass.end();
